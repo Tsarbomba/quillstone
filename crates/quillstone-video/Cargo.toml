@@ -1,0 +1,7 @@
+[package]
+name = "quillstone-video"
+description = "Video decode pipeline and frame scheduling for Quillstone"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

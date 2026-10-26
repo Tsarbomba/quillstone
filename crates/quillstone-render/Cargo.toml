@@ -1,0 +1,9 @@
+[package]
+name = "quillstone-render"
+description = "Screen layout and draw lists for Quillstone (GPU backend to follow)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quillstone-script.workspace = true
+quillstone-runtime.workspace = true

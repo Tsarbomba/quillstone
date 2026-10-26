@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# The windowed player pulls in GPU crates; it is its own workspace (see player/).
+exclude = ["player"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+quillstone-script = { path = "crates/quillstone-script" }
+quillstone-runtime = { path = "crates/quillstone-runtime" }
+quillstone-video = { path = "crates/quillstone-video" }
+quillstone-render = { path = "crates/quillstone-render" }
+quillstone-audio = { path = "crates/quillstone-audio" }
+quillstone-ui = { path = "crates/quillstone-ui" }
+
+[profile.release]
+lto = "thin"

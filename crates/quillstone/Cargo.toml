@@ -1,0 +1,11 @@
+[package]
+name = "quillstone"
+description = "The Quillstone visual novel engine: app binary and CLI"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quillstone-script.workspace = true
+quillstone-runtime.workspace = true
+quillstone-render.workspace = true
+quillstone-video.workspace = true

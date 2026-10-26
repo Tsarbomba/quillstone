@@ -1,0 +1,9 @@
+# The demo's look. Every line is optional; see SCRIPT.md ("Themes").
+accent_color = #ffd98c
+name_color = #ffd98c
+button_hover_color = #4a3a7ae0
+textbox_image = assets/gui/textbox.png
+menu_background = assets/night.png
+menu_music = assets/calm.ogg
+# A bundled font looks the same on every PC (otherwise the system font is used):
+# font = assets/fonts/YourFont.ttf

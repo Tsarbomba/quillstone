@@ -1,0 +1,183 @@
+//! Text rasterization: [`TextJob`] -> RGBA pixels.
+//!
+//! With the `text` feature this uses cosmic-text. Without it, [`TextRenderer::rasterize`]
+//! returns `None` and text simply isn't drawn.
+
+use quillstone_render::TextJob;
+
+pub struct Bitmap {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8, straight (non-premultiplied) alpha, row-major.
+    pub rgba: Vec<u8>,
+}
+
+#[cfg(feature = "text")]
+pub use real::TextRenderer;
+#[cfg(not(feature = "text"))]
+pub use stub::TextRenderer;
+
+#[cfg(not(feature = "text"))]
+mod stub {
+    use super::*;
+
+    pub struct TextRenderer;
+
+    impl TextRenderer {
+        pub fn new(_fonts: Vec<Vec<u8>>) -> Self {
+            TextRenderer
+        }
+
+        pub fn rasterize(&mut self, _job: &TextJob) -> Option<Bitmap> {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "text")]
+mod real {
+    use super::*;
+    use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
+    use quillstone_render::Align;
+
+    pub struct TextRenderer {
+        fonts: FontSystem,
+        swash: SwashCache,
+        /// The theme font's family name, if one was loaded; else system fonts.
+        family: Option<String>,
+    }
+
+    impl TextRenderer {
+        /// `files`: `.ttf` / `.otf` contents to use for all text, regular first, then
+        /// the same family's bold and italic faces (picked for `**bold**` / `*italic*`).
+        /// System fonts stay available as a fallback for characters they lack.
+        pub fn new(files: Vec<Vec<u8>>) -> Self {
+            let mut fonts = FontSystem::new();
+            let mut family = None;
+            for (i, data) in files.into_iter().enumerate() {
+                let before = fonts.db().faces().count();
+                fonts.db_mut().load_font_data(data);
+                let name = fonts.db().faces().nth(before).and_then(|f| f.families.first()).map(|(name, _)| name.clone());
+                match name {
+                    Some(name) if i == 0 => family = Some(name),
+                    Some(_) => {}
+                    None => eprintln!("warning: one of the theme's font files isn't a font cosmic-text can read"),
+                }
+            }
+            TextRenderer { fonts, swash: SwashCache::new(), family }
+        }
+
+        pub fn rasterize(&mut self, job: &TextJob) -> Option<Bitmap> {
+            let width = job.rect.w.max(1.0) as u32;
+            let height = job.rect.h.max(1.0) as u32;
+            // cosmic-text panics on a zero line height, so never go below 1px.
+            let size_px = job.size_px.max(1.0);
+            let line_height = (size_px * 1.35).round().max(1.0);
+            let metrics = Metrics::new(size_px, line_height);
+
+            // Lay out the *whole* text so wrapping never changes while it types out.
+            let mut buffer = Buffer::new(&mut self.fonts, metrics);
+            {
+                let mut b = buffer.borrow_with(&mut self.fonts);
+                b.set_size(Some(width as f32), None);
+                let attrs = match &self.family {
+                    Some(name) => Attrs::new().family(Family::Name(name)),
+                    None => Attrs::new(),
+                };
+                if job.runs.is_empty() {
+                    b.set_text(&job.text, &attrs, Shaping::Advanced, None);
+                } else {
+                    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let spans = job.runs.iter().map(|run| {
+                        let mut a = attrs.clone();
+                        if run.style.bold {
+                            a = a.weight(Weight::BOLD);
+                        }
+                        if run.style.italic {
+                            a = a.style(Style::Italic);
+                        }
+                        if let Some([r, g, b]) = run.style.color {
+                            a = a.color(Color::rgb(byte(r), byte(g), byte(b)));
+                        }
+                        (&job.text[run.start..run.end], a)
+                    });
+                    b.set_rich_text(spans, &attrs, Shaping::Advanced, None);
+                }
+            }
+            // Without this, `layout_runs()` below is empty: set_text only marks the
+            // text dirty, and shaping/layout happens here.
+            buffer.shape_until_scroll(&mut self.fonts, false);
+
+            // Glyphs that start at or after this byte offset are not typed yet.
+            let byte_limit = job
+                .text
+                .char_indices()
+                .nth(job.visible_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(usize::MAX);
+
+            let [r, g, b, a] = job.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            let base = Color::rgba(r, g, b, 255);
+
+            let line_count = buffer.layout_runs().count();
+            let block_h = line_count as f32 * line_height;
+            let y_off = match job.align {
+                Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
+                Align::Left => 0.0,
+            };
+
+            if line_count == 0 && !job.text.trim().is_empty() {
+                eprintln!(
+                    "warning: text produced no layout lines ({:?}); fonts loaded: {}",
+                    job.text,
+                    self.fonts.db().len()
+                );
+            }
+
+            // Premultiplied colour and coverage per pixel (coloured runs differ).
+            let mut acc = vec![[0.0f32; 4]; (width * height) as usize];
+            for run in buffer.layout_runs() {
+                let x_off = match job.align {
+                    Align::Center => ((width as f32 - run.line_w) / 2.0).max(0.0),
+                    Align::Left => 0.0,
+                };
+                let line_y = (run.line_y + y_off).round() as i32;
+                for glyph in run.glyphs.iter() {
+                    if glyph.start >= byte_limit {
+                        continue;
+                    }
+                    let physical = glyph.physical((x_off, 0.0), 1.0);
+                    let glyph_color = glyph.color_opt.unwrap_or(base);
+                    self.swash.with_pixels(&mut self.fonts, physical.cache_key, glyph_color, |x, y, color| {
+                        let px = physical.x + x;
+                        let py = line_y + physical.y + y;
+                        if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
+                            return;
+                        }
+                        let cover = color.a() as f32 / 255.0;
+                        let slot = &mut acc[py as usize * width as usize + px as usize];
+                        let src = [color.r(), color.g(), color.b()].map(|c| c as f32 / 255.0 * cover);
+                        for k in 0..3 {
+                            slot[k] = src[k] + slot[k] * (1.0 - cover); // source-over
+                        }
+                        slot[3] = cover + slot[3] * (1.0 - cover);
+                    });
+                }
+            }
+
+            // Back to straight alpha; `a` scales the whole text's opacity.
+            let opacity = a as f32 / 255.0;
+            let mut rgba = vec![0u8; (width * height * 4) as usize];
+            for (i, [pr, pg, pb, cover]) in acc.iter().enumerate() {
+                if *cover > 0.0 {
+                    let straight = |c: f32| ((c / cover).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    rgba[i * 4] = straight(*pr);
+                    rgba[i * 4 + 1] = straight(*pg);
+                    rgba[i * 4 + 2] = straight(*pb);
+                    rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
+                }
+            }
+            Some(Bitmap { width, height, rgba })
+        }
+    }
+}

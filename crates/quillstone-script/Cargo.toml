@@ -1,0 +1,7 @@
+[package]
+name = "quillstone-script"
+description = "Parser and compiler for Quillstone's markdown-based script format"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

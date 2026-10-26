@@ -1,0 +1,590 @@
+//! Quillstone player: opens a window and plays a script.
+//!
+//! Controls: click / Space / Enter / Right = advance (first press finishes typing),
+//! 1-9 or click = choose, Backspace / Left / mouse wheel up = go back,
+//! H / Page Up = history, A = auto-forward, S / L = save / load screens,
+//! F5 / F9 = quick save / quick load, Tab = skip on/off, hold Ctrl = skip,
+//! Esc / right-click = settings, F11 = fullscreen. The game logic lives in `quillstone-ui`; this file only
+//! turns window events into its `Event`s and carries out what comes back.
+
+// A shipped game opens no console window (build with `--features no-console`).
+#![cfg_attr(feature = "no-console", windows_subsystem = "windows")]
+
+mod audio;
+#[cfg(feature = "audio")]
+mod ffaudio;
+mod gamepad;
+mod reload;
+mod gfx;
+mod text;
+mod video;
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::exit;
+use std::sync::Arc;
+use std::time::Instant;
+
+use quillstone_render::pixels::Level;
+use quillstone_render::{build_frame, letterbox, to_virtual, Size, Theme};
+use quillstone_script::{parse, AssetKind, Op, Program};
+use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp};
+use quillstone_video::Videos;
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key as WinitKey, NamedKey};
+use winit::window::{Fullscreen, Window, WindowId};
+
+use audio::Audio;
+use gfx::Gfx;
+
+/// A decoded image (as its mip chain) waiting for the GPU to exist.
+struct PendingImage {
+    key: String,
+    chain: Vec<Level>,
+}
+
+struct App {
+    title: String,
+    game: Game<'static>,
+    gamepads: gamepad::Gamepads,
+    /// The script file and its folder, for hot reload.
+    script_path: PathBuf,
+    root: PathBuf,
+    watch: reload::Watch,
+    /// Where settings are saved; `None` if no per-user folder could be found.
+    settings_file: Option<PathBuf>,
+    /// `None` when there is no sound device (or the `audio` feature is off).
+    audio: Option<Audio>,
+    pending_images: Vec<PendingImage>,
+    image_sizes: HashMap<String, Size>,
+    /// The theme's font files (regular first), handed to the text renderer when the GPU exists.
+    fonts: Vec<Vec<u8>>,
+    videos: Videos,
+    /// The frame of each playing video that is on the GPU (to upload only new ones).
+    uploaded: HashMap<String, u64>,
+    window: Option<Arc<Window>>,
+    gfx: Option<Gfx>,
+    last_frame: Instant,
+}
+
+fn main() {
+    // A crash in a double-clicked game would vanish with its console: keep the message.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        if let Some(dir) = exe_dir() {
+            let _ = std::fs::write(dir.join("error.txt"), format!("the game crashed: {info}\n"));
+        }
+    }));
+    let path = match std::env::args().nth(1) {
+        Some(p) => PathBuf::from(p),
+        None => find_game().unwrap_or_else(|| {
+            fatal(
+                "usage: quillstone-player <script.quill.md>\n\
+                 (or put the script next to the player, or in a `game` folder beside it, as main.quill.md)"
+                    .into(),
+            )
+        }),
+    };
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| fatal(format!("cannot read {}: {e}", path.display())));
+    let program = parse(&source).unwrap_or_else(|errors| {
+        let lines: Vec<String> =
+            errors.iter().map(|e| format!("{}:{}: error: {}", path.display(), e.line, e.message)).collect();
+        fatal(lines.join("\n"))
+    });
+    // The program lives as long as the app does; leaking it keeps the game simple.
+    let program: &'static Program = Box::leak(Box::new(program));
+    let root = path.parent().map(PathBuf::from).unwrap_or_default();
+
+    let theme = load_theme(program, &root);
+    let fonts: Vec<Vec<u8>> = theme
+        .fonts()
+        .into_iter()
+        .filter_map(|f| std::fs::read(root.join(f)).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
+        .collect();
+
+    let mut image_sizes = HashMap::new();
+    let pending_images = load_images(program, &theme, &root, &mut image_sizes);
+
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("game").trim_end_matches(".quill");
+    let dir = data_dir(&game_id(program.title.as_deref().unwrap_or(stem)));
+    if dir.is_none() {
+        eprintln!("warning: no per-user folder found; settings and saves won't be kept");
+    }
+    let settings_file = dir.as_ref().map(|d| d.join("settings.txt"));
+    let settings = settings_file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map(|text| Settings::parse(&text))
+        .unwrap_or_default();
+
+    // Sound effects are preloaded so they start instantly; music and voice stream.
+    let sfx = program.ops.iter().filter_map(|op| match op {
+        Op::Sfx { src, .. } => Some(src.as_str()),
+        _ => None,
+    });
+    let audio = Audio::new(&root, sfx);
+
+    let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
+    game.set_voice_files(voice_files(program, &root));
+    game.set_theme(theme);
+    let mut app = App {
+        title: program.title.clone().unwrap_or_else(|| "Quillstone".to_string()),
+        game,
+        gamepads: gamepad::Gamepads::new(),
+        watch: reload::Watch::new(&path, program, &root),
+        script_path: path.clone(),
+        root: root.clone(),
+        settings_file,
+        audio,
+        pending_images,
+        image_sizes,
+        fonts,
+        videos: Videos::new(video::opener(&root)),
+        uploaded: HashMap::new(),
+        window: None,
+        gfx: None,
+        last_frame: Instant::now(),
+    };
+    app.play_audio();
+
+    let event_loop = EventLoop::new().expect("failed to create the event loop");
+    event_loop.run_app(&mut app).expect("event loop error");
+}
+
+/// Decode every image the script and theme use that isn't in `sizes` yet, up
+/// front so nothing hitches mid-story (fine for small games; a real asset loader
+/// would stream them on a background thread). Their sizes go into `sizes`.
+fn load_images(program: &Program, theme: &Theme, root: &Path, sizes: &mut HashMap<String, Size>) -> Vec<PendingImage> {
+    let mut pending = Vec::new();
+    let script_images = program.assets().filter(|(_, kind, _)| *kind == AssetKind::Image).map(|(_, _, a)| a);
+    let gallery = program.extra_assets().filter(|(kind, _)| *kind == AssetKind::Image).map(|(_, a)| a);
+    for asset in script_images.chain(gallery).chain(theme.images()) {
+        if sizes.contains_key(asset) {
+            continue;
+        }
+        match image::open(root.join(asset)) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+                sizes.insert(asset.to_string(), Size::new(width as f32, height as f32));
+                let chain = gfx::prepare_image(width, height, rgba.into_raw());
+                pending.push(PendingImage { key: asset.to_string(), chain });
+            }
+            Err(e) => eprintln!("warning: cannot load image {asset}: {e}"),
+        }
+    }
+    pending
+}
+
+/// Auto-voice: the sound files in the script's `voice:` folder, by name without
+/// extension (which is the line's `voice_name`), as paths relative to the script.
+fn voice_files(program: &Program, root: &Path) -> HashMap<String, String> {
+    let Some(folder) = &program.voice_folder else { return HashMap::new() };
+    let entries = match std::fs::read_dir(root.join(folder)) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("warning: cannot read the voice folder {folder}: {e}");
+            return HashMap::new();
+        }
+    };
+    entries
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| quillstone_script::kind_from_path(name) == AssetKind::Audio)
+        .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
+        .collect()
+}
+
+/// The theme the script names in its front matter, or the built-in look.
+fn load_theme(program: &Program, root: &Path) -> Theme {
+    let Some(file) = &program.theme else { return Theme::default() };
+    match std::fs::read_to_string(root.join(file)) {
+        Ok(text) => {
+            let (theme, problems) = Theme::parse(&text);
+            for p in problems {
+                eprintln!("warning: {file}: {p}");
+            }
+            theme
+        }
+        Err(e) => {
+            eprintln!("warning: cannot read the theme {file}: {e}; using the built-in look");
+            Theme::default()
+        }
+    }
+}
+
+/// A folder-safe name for this game's per-user data.
+fn game_id(name: &str) -> String {
+    let mut id = String::new();
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            id.extend(c.to_lowercase());
+        } else if !id.ends_with('-') && !id.is_empty() {
+            id.push('-');
+        }
+    }
+    let id = id.trim_end_matches('-').to_string();
+    if id.is_empty() {
+        "game".into()
+    } else {
+        id
+    }
+}
+
+/// The per-user folder for this game's settings (and, later, saves).
+/// Windows: %APPDATA%\Quillstone\<id>; macOS: ~/Library/Application Support/Quillstone/<id>;
+/// elsewhere: $XDG_CONFIG_HOME (or ~/.config)/quillstone/<id>.
+fn exe_dir() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+}
+
+/// A shipped game, started by double-clicking: the script next to the executable
+/// or in a `game` folder beside it, `main.quill.md` or else the only `.quill.md` file.
+fn find_game() -> Option<PathBuf> {
+    let exe = exe_dir()?;
+    [exe.join("game"), exe].into_iter().find_map(|dir| {
+        let main = dir.join("main.quill.md");
+        if main.is_file() {
+            return Some(main);
+        }
+        let mut scripts = std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file() && p.to_string_lossy().ends_with(".quill.md"));
+        match (scripts.next(), scripts.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    })
+}
+
+/// Stop with an error. Also written to `error.txt` next to the executable,
+/// because a double-clicked game's console window closes before anyone reads it.
+fn fatal(message: String) -> ! {
+    eprintln!("{message}");
+    if let Some(dir) = exe_dir() {
+        let _ = std::fs::write(dir.join("error.txt"), format!("{message}\n"));
+    }
+    exit(1);
+}
+
+fn data_dir(id: &str) -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = if cfg!(windows) {
+        env("APPDATA")?.join("Quillstone")
+    } else if cfg!(target_os = "macos") {
+        env("HOME")?.join("Library/Application Support/Quillstone")
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))?.join("quillstone")
+    };
+    Some(base.join(id))
+}
+
+/// Write a file so that a crash or power cut midway can't leave it half
+/// written: write a temporary file next to it, then rename it into place.
+fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Saves live in the per-user folder, next to the settings.
+struct FileStorage {
+    dir: Option<PathBuf>,
+}
+
+impl Storage for FileStorage {
+    fn read(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(self.dir.as_ref()?.join(name)).ok()
+    }
+
+    fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {
+        let dir = self.dir.as_ref().ok_or("no folder to save in")?;
+        write_file(&dir.join(name), contents).map_err(|e| e.to_string())
+    }
+
+    fn now(&self) -> Timestamp {
+        let now = chrono::Local::now();
+        Timestamp { millis: now.timestamp_millis().max(0) as u64, text: now.format("%Y-%m-%d %H:%M").to_string() }
+    }
+}
+
+fn fullscreen(on: bool) -> Option<Fullscreen> {
+    on.then_some(Fullscreen::Borderless(None))
+}
+
+impl App {
+    /// The script or theme was saved: carry on with the new version (see `reload.rs`).
+    fn reload(&mut self) {
+        let parsed = std::fs::read_to_string(&self.script_path).map_err(|e| e.to_string()).and_then(|source| {
+            parse(&source).map_err(|errors| {
+                for e in &errors {
+                    eprintln!("{}:{}: error: {}", self.script_path.display(), e.line, e.message);
+                }
+                format!("line {}: {}", errors[0].line, errors[0].message)
+            })
+        });
+        let program = match parsed {
+            Ok(program) => program,
+            Err(e) => return self.game.show_notice(format!("Not reloaded: {e}")),
+        };
+        // Each version lives as long as the app (a few kilobytes per edit, while developing).
+        let program: &'static Program = Box::leak(Box::new(program));
+        let theme = load_theme(program, &self.root);
+        let images = load_images(program, &theme, &self.root, &mut self.image_sizes);
+        match &mut self.gfx {
+            Some(gfx) => images.into_iter().for_each(|i| gfx.add_image(i.key, &i.chain)),
+            None => self.pending_images.extend(images),
+        }
+        match self.game.reload(program) {
+            Ok(()) => {
+                self.game.set_theme(theme);
+                self.game.set_voice_files(voice_files(program, &self.root));
+                self.game.show_notice("Script reloaded");
+            }
+            Err(e) => self.game.show_notice(format!("Not reloaded: {e}")),
+        }
+        self.watch = reload::Watch::new(&self.script_path, program, &self.root);
+    }
+
+    fn play_audio(&mut self) {
+        let actions = self.game.take_audio();
+        if let Some(audio) = &mut self.audio {
+            for action in actions {
+                audio.run(action);
+            }
+        }
+    }
+
+    /// Carry out whatever the game asked for since the last call.
+    fn pump(&mut self, event_loop: &ActiveEventLoop) {
+        self.play_audio();
+        for request in self.game.take_requests() {
+            match request {
+                Request::Quit => event_loop.exit(),
+                Request::Fullscreen(on) => {
+                    if let Some(window) = &self.window {
+                        window.set_fullscreen(fullscreen(on));
+                    }
+                }
+                Request::SaveSettings => {
+                    if let Some(file) = &self.settings_file {
+                        if let Err(e) = write_file(file, &self.game.settings().to_text()) {
+                            eprintln!("warning: cannot save settings to {}: {e}", file.display());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn redraw(&mut self) {
+        // Nothing to draw into while minimized.
+        let minimized = self.window.as_ref().is_some_and(|w| {
+            let s = w.inner_size();
+            s.width == 0 || s.height == 0
+        });
+        if minimized {
+            self.last_frame = Instant::now(); // don't let the typewriter jump on restore
+            return;
+        }
+        if self.gfx.is_none() {
+            return;
+        }
+
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
+        self.last_frame = now;
+        if let Some(audio) = &mut self.audio {
+            if audio.update() {
+                self.game.music_ended();
+            }
+        }
+        self.update_videos(dt);
+        let voice = self.audio.as_ref().is_some_and(|a| a.voice_playing());
+        self.game.tick(dt, voice);
+
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let (w, h) = gfx.size();
+        let sizes = &self.image_sizes;
+        let draws = self.game.draw_list(&|src: &str| sizes.get(src).copied());
+        gfx.render(&build_frame(&draws, Size::new(w as f32, h as f32)));
+    }
+
+    /// Keep the playing clips in line with the story, put new frames on the GPU
+    /// (they are drawn like images, under their file name), and tell the game
+    /// how its cutscene is doing.
+    fn update_videos(&mut self, dt: f32) {
+        self.videos.sync(&self.game.wanted_videos());
+        if !self.game.media_paused() {
+            self.videos.advance(std::time::Duration::from_secs_f32(dt));
+        }
+        for (src, e) in self.videos.take_errors() {
+            eprintln!("warning: cannot play video {src}: {e}");
+        }
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let playing = self.videos.sources();
+        self.uploaded.retain(|src, _| {
+            let keep = playing.contains(src);
+            if !keep {
+                gfx.remove_frame(src);
+                self.image_sizes.remove(src);
+            }
+            keep
+        });
+        for src in &playing {
+            if let Some((picture, id)) = self.videos.frame(src) {
+                if self.uploaded.get(src) != Some(&id) {
+                    gfx.set_frame(src, picture.width, picture.height, &picture.rgba);
+                    self.image_sizes.insert(src.clone(), Size::new(picture.width as f32, picture.height as f32));
+                    self.uploaded.insert(src.clone(), id);
+                }
+            }
+        }
+        if let Some(cutscene) = self.game.view().video.as_ref().map(|v| v.src.clone()) {
+            self.game.video_update(self.videos.playing(&cutscene), self.videos.finished(&cutscene));
+        }
+    }
+
+    /// A window position in physical pixels, as a point on the virtual screen.
+    fn to_virtual(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (w, h) = self.gfx.as_ref()?.size();
+        to_virtual(x, y, letterbox(Size::new(w as f32, h as f32)))
+    }
+}
+
+/// The game's name for a key, if it uses it. Held-down repeats only count for
+/// keys where repeating makes sense (moving through lists and sliders).
+fn map_key(key: &WinitKey, repeat: bool) -> Option<Key> {
+    let k = match key {
+        WinitKey::Named(named) => match named {
+            NamedKey::Space => Key::Space,
+            NamedKey::Enter => Key::Enter,
+            NamedKey::ArrowLeft => Key::Left,
+            NamedKey::ArrowRight => Key::Right,
+            NamedKey::ArrowUp => Key::Up,
+            NamedKey::ArrowDown => Key::Down,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::Home => Key::Home,
+            NamedKey::End => Key::End,
+            NamedKey::Tab => Key::Tab,
+            NamedKey::Control => Key::Ctrl,
+            NamedKey::F5 => Key::F5,
+            NamedKey::F9 => Key::F9,
+            NamedKey::F11 => Key::F11,
+            _ => return None,
+        },
+        WinitKey::Character(s) => Key::Char(s.chars().next()?),
+        _ => return None,
+    };
+    let repeats = matches!(k, Key::Left | Key::Right | Key::Up | Key::Down | Key::PageUp | Key::PageDown);
+    (!repeat || repeats).then_some(k)
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let attributes = Window::default_attributes()
+            .with_title(&self.title)
+            .with_inner_size(LogicalSize::new(1280.0, 720.0))
+            .with_fullscreen(fullscreen(self.game.settings().fullscreen));
+        let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
+
+        let mut gfx = Gfx::new(event_loop, window.clone(), std::mem::take(&mut self.fonts));
+        for image in self.pending_images.drain(..) {
+            gfx.add_image(image.key, &image.chain);
+        }
+        self.gfx = Some(gfx);
+        self.last_frame = Instant::now();
+        window.request_redraw();
+        self.window = Some(window);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                self.game.autosave();
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                // Minimizing reports 0x0; keep the old surface and just stop drawing
+                // (see `redraw`) until a real size comes back.
+                if size.width > 0 && size.height > 0 {
+                    if let Some(gfx) = &mut self.gfx {
+                        gfx.resize(size.width, size.height);
+                    }
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = self.to_virtual(position.x as f32, position.y as f32);
+                self.game.handle(Event::CursorMoved(at));
+            }
+            WindowEvent::CursorLeft { .. } => self.game.handle(Event::CursorMoved(None)),
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Right => Button::Right,
+                    _ => return,
+                };
+                self.game.handle(match state {
+                    ElementState::Pressed => Event::Press(button),
+                    ElementState::Released => Event::Release(button),
+                });
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                };
+                if dy != 0.0 {
+                    self.game.handle(Event::Wheel(dy));
+                }
+            }
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, repeat, .. }, .. } => {
+                if let Some(key) = map_key(&logical_key, repeat) {
+                    self.game.handle(match state {
+                        ElementState::Pressed => Event::Key(key),
+                        ElementState::Released => Event::KeyReleased(key),
+                    });
+                }
+            }
+            // A Ctrl held while switching away would never be seen let go.
+            WindowEvent::Focused(false) => self.game.handle(Event::KeyReleased(Key::Ctrl)),
+            WindowEvent::RedrawRequested => self.redraw(),
+            _ => {}
+        }
+        self.pump(event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.watch.changed() {
+            self.reload();
+            self.pump(event_loop);
+        }
+        let pad = self.gamepads.poll();
+        if !pad.is_empty() {
+            for event in pad {
+                self.game.handle(event);
+            }
+            self.pump(event_loop);
+        }
+        // Keep animating (typewriter, fades); the surface's vsync paces this.
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}

@@ -1,0 +1,8 @@
+[package]
+name = "quillstone-runtime"
+description = "Pure state machine that executes a compiled Quillstone script"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quillstone-script.workspace = true

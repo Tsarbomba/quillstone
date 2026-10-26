@@ -1,0 +1,571 @@
+//! Save files: a [`Session`] (the scene plus recent rollback history) as text.
+//!
+//! The format is line-based: one record per line, words and `"quoted strings"`.
+//! Positions in the script are stored as *label + offset* rather than raw op
+//! indices, so a save still lands in the right place after the script is
+//! edited above that label. If the spot no longer matches what the save was
+//! waiting for, the story re-runs from there instead of getting stuck.
+
+use quillstone_script::{Fit, Op, Program, Value, Vars};
+
+use crate::{step, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
+
+/// How many rollback steps a save keeps (so rollback and the backlog work after loading).
+pub const SAVE_HISTORY: usize = 100;
+
+const MAGIC: &str = "quillstone-session 1";
+
+impl Session<'_> {
+    /// The session as save-file text.
+    pub fn save(&self) -> String {
+        let mut out = format!("{MAGIC}\n");
+        let start = self.history.len().saturating_sub(SAVE_HISTORY);
+        for (state, input) in &self.history[start..] {
+            write_state(&mut out, state, self.program);
+            match input {
+                Input::Advance => out.push_str("input advance\n"),
+                Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
+            }
+        }
+        write_state(&mut out, &self.state, self.program);
+        out
+    }
+}
+
+impl<'p> Session<'p> {
+    /// Restore a session from [`Session::save`] text. Returns the session and the
+    /// commands that draw its screen (as after a rollback).
+    pub fn load(program: &'p Program, text: &str) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        let mut lines = text.lines().enumerate().map(|(n, l)| (n + 1, l)).filter(|(_, l)| !l.trim().is_empty());
+        match lines.next() {
+            Some((_, l)) if l.trim() == MAGIC => {}
+            _ => return Err("not a Quillstone save (or from a newer version)".into()),
+        }
+        let mut states: Vec<(State, Option<Input>)> = Vec::new();
+        while let Some((n, line)) = lines.next() {
+            let words = tokens(line).map_err(|e| format!("line {n}: {e}"))?;
+            match words.first().map(String::as_str) {
+                Some("state") => states.push((read_state(&mut lines, program)?, None)),
+                Some("input") => {
+                    let last = states.last_mut().ok_or(format!("line {n}: input before any state"))?;
+                    last.1 = Some(match (words.get(1).map(String::as_str), words.get(2)) {
+                        (Some("advance"), _) => Input::Advance,
+                        (Some("choose"), Some(i)) => Input::Choose(num(i, n)?),
+                        _ => return Err(format!("line {n}: bad input record")),
+                    });
+                }
+                _ => return Err(format!("line {n}: unexpected `{line}`")),
+            }
+        }
+        let (mut state, _) = states.pop().ok_or("the save has no state")?;
+        let mut history = Vec::with_capacity(states.len());
+        for (s, input) in states {
+            history.push((s, input.ok_or("a history entry is missing its input")?));
+        }
+
+        // If the script changed so much that a saved spot is no longer what the
+        // save was waiting at, the old history can't be trusted: keep only the
+        // present, re-run from its position.
+        let mut cmds = None;
+        if !consistent(&state, program) || history.iter().any(|(s, _)| !consistent(s, program)) {
+            history.clear();
+            if !consistent(&state, program) {
+                // Keep the scene, drop what belonged to the line being waited on.
+                state.pending = None;
+                state.line = None;
+                state.finished = false;
+                state.inline.clear();
+                state.voice = None;
+                let mut redraw = state.redraw();
+                redraw.extend(step(&mut state, program, None));
+                cmds = Some(redraw);
+            }
+        }
+        let cmds = cmds.unwrap_or_else(|| state.redraw());
+        let session = Session { program, state, history, persistent: Vars::new(), persistent_changed: false };
+        Ok((session, cmds))
+    }
+}
+
+/// The auto-voice file name (without folder or extension) for the line at `pc`:
+/// its label and a short form of its [`line_id`], like `rooftop-1a2b3c4d`, so a
+/// recording stays with its line when other lines are edited. Lines before the
+/// first label use `start`.
+pub fn voice_name(program: &Program, pc: usize) -> Option<String> {
+    let id = line_id(program, pc)?;
+    let (label, _) = anchor(program, pc);
+    let label = if label.is_empty() { "start" } else { label };
+    Some(format!("{label}-{:08x}", id as u32))
+}
+
+/// Whether the op at the state's position is the one it is waiting at.
+fn consistent(state: &State, program: &Program) -> bool {
+    let op = program.ops.get(state.pc);
+    match &state.pending {
+        None => state.finished,
+        Some(Cmd::Say { .. }) => matches!(op, Some(Op::Say { .. })),
+        Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. })),
+        Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
+        Some(Cmd::ShowChoices { .. }) => matches!(op, Some(Op::Choice { .. })),
+        Some(_) => false,
+    }
+}
+
+// ---- positions as label + offset ---------------------------------------------------
+
+/// A stable identity for the line at `pc` (`None` if it isn't a line): a hash
+/// of its label, speaker and script text. Editing elsewhere in the script, or
+/// moving the line within its label, doesn't change it; editing the line does.
+/// Used to remember which lines the player has read (for skip mode).
+pub fn line_id(program: &Program, pc: usize) -> Option<u64> {
+    let Some(Op::Say { speaker, text, .. }) = program.ops.get(pc) else { return None };
+    let (label, _) = anchor(program, pc);
+    // FNV-1a: tiny, and stable across Rust versions (unlike `DefaultHasher`).
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for part in [label, "\0", speaker.as_deref().unwrap_or(""), "\0", text] {
+        for byte in part.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(hash)
+}
+
+/// The label at or before `pc` (`""` = the start of the script) and the distance from it.
+fn anchor(program: &Program, pc: usize) -> (&str, usize) {
+    program
+        .labels
+        .iter()
+        .filter(|(_, &at)| at <= pc)
+        .max_by_key(|(_, &at)| at)
+        .map(|(name, &at)| (name.as_str(), pc - at))
+        .unwrap_or(("", pc))
+}
+
+fn resolve(program: &Program, label: &str, offset: usize) -> Result<usize, String> {
+    let base = if label.is_empty() {
+        0
+    } else {
+        *program.labels.get(label).ok_or(format!("the script no longer has the label `{label}`"))?
+    };
+    Ok((base + offset).min(program.ops.len()))
+}
+
+// ---- writing ---------------------------------------------------------------------------
+
+/// `var "name" int 3` (also used by the persistent data file).
+pub(crate) fn var_record(name: &str, value: &Value) -> String {
+    match value {
+        Value::Int(n) => format!("var {} int {n}", q(name)),
+        Value::Bool(b) => format!("var {} bool {b}", q(name)),
+        Value::Str(t) => format!("var {} text {}", q(name), q(t)),
+    }
+}
+
+fn q(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn color(c: Option<[f32; 3]>) -> String {
+    match c {
+        Some([r, g, b]) => format!("{r},{g},{b}"),
+        None => "-".into(),
+    }
+}
+
+fn write_state(out: &mut String, s: &State, program: &Program) {
+    let mut w = |line: String| {
+        out.push_str(&line);
+        out.push('\n');
+    };
+    w("state".into());
+    let (label, offset) = anchor(program, s.pc);
+    w(format!("at {} {offset}", q(label)));
+    for &ret in &s.stack {
+        let (label, offset) = anchor(program, ret);
+        w(format!("stack {} {offset}", q(label)));
+    }
+    for (name, value) in &s.vars {
+        w(var_record(name, value));
+    }
+    if let Some(bg) = &s.background {
+        w(format!("bg {}", q(bg)));
+    }
+    for sp in &s.sprites {
+        w(format!("sprite {} {} {} {}", q(&sp.id), q(&sp.src), sp.x, sp.scale));
+    }
+    if s.camera != Camera::default() {
+        w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
+    }
+    if let Some(m) = &s.music {
+        w(format!("music {} {} {}", q(&m.src), m.looped, m.volume));
+    }
+    for (src, alt) in &s.inline {
+        w(format!("inline {} {}", q(src), q(alt)));
+    }
+    if let Some(v) = &s.voice {
+        w(format!("voice {}", q(v)));
+    }
+    if let Some(l) = &s.line {
+        let speaker = l.speaker.as_deref().map_or("-".into(), q);
+        w(format!("line {speaker} {} {}", color(l.color), q(&l.text)));
+    }
+    match &s.pending {
+        Some(Cmd::Say { .. }) => w("pending say".into()),
+        Some(Cmd::Wait { seconds }) => w(format!("pending wait {seconds}")),
+        Some(Cmd::PlayVideo { src, fit, looped, skippable }) => {
+            let fit = match fit {
+                Fit::Contain => "contain",
+                Fit::Cover => "cover",
+                Fit::Stretch => "stretch",
+            };
+            w(format!("pending video {} {fit} {looped} {skippable}", q(src)));
+        }
+        Some(Cmd::ShowChoices { options }) => {
+            let opts: Vec<String> = options.iter().map(|o| q(o)).collect();
+            w(format!("pending choices {}", opts.join(" ")));
+        }
+        _ => {}
+    }
+    if s.finished {
+        w("finished".into());
+    }
+    w("end".into());
+}
+
+// ---- reading -----------------------------------------------------------------------------
+
+/// The name and value of a `var` record's words (see [`var_record`]).
+pub(crate) fn read_var(t: &[String]) -> Result<(String, Value), String> {
+    let (Some(name), Some(kind), Some(v)) = (t.get(1), t.get(2), t.get(3)) else {
+        return Err("a `var` record is too short".into());
+    };
+    let bad = || format!("`{v}` is not a {kind}");
+    let value = match kind.as_str() {
+        "int" => Value::Int(v.parse().map_err(|_| bad())?),
+        "bool" => Value::Bool(v.parse().map_err(|_| bad())?),
+        "text" => Value::Str(v.clone()),
+        other => return Err(format!("unknown value type `{other}`")),
+    };
+    Ok((name.clone(), value))
+}
+
+/// Split a record into words and unquoted strings.
+pub(crate) fn tokens(line: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut chars = line.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+        } else if c == '"' {
+            chars.next();
+            let mut s = String::new();
+            loop {
+                match chars.next() {
+                    Some('"') => break,
+                    Some('\\') => s.push(match chars.next() {
+                        Some('n') => '\n',
+                        Some('r') => '\r',
+                        Some('t') => '\t',
+                        Some(other) => other,
+                        None => return Err("unfinished escape".into()),
+                    }),
+                    Some(c) => s.push(c),
+                    None => return Err("unclosed quote".into()),
+                }
+            }
+            out.push(s);
+        } else {
+            let mut s = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                s.push(c);
+                chars.next();
+            }
+            out.push(s);
+        }
+    }
+    Ok(out)
+}
+
+fn num<T: std::str::FromStr>(s: &str, line: usize) -> Result<T, String> {
+    s.parse().map_err(|_| format!("line {line}: `{s}` is not a number"))
+}
+
+fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &Program) -> Result<State, String> {
+    let mut s = State::new(program); // starts from the script's defaults, so new variables exist
+    let mut saw_at = false;
+    for (n, line) in lines.by_ref() {
+        let t = tokens(line).map_err(|e| format!("line {n}: {e}"))?;
+        let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: `{line}` is too short"));
+        let f = |i: usize| -> Result<f32, String> { num(arg(i)?, n) };
+        let b = |i: usize| -> Result<bool, String> { num(arg(i)?, n) };
+        match arg(0)? {
+            "end" if saw_at => return Ok(s),
+            "end" => return Err(format!("line {n}: state without a position")),
+            "at" => {
+                s.pc = resolve(program, arg(1)?, num(arg(2)?, n)?)?;
+                saw_at = true;
+            }
+            "stack" => s.stack.push(resolve(program, arg(1)?, num(arg(2)?, n)?)?),
+            "var" => {
+                let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;
+                s.vars.insert(name, value);
+            }
+            "bg" => s.background = Some(arg(1)?.to_string()),
+            "sprite" => s.sprites.push(SpriteState {
+                id: arg(1)?.to_string(),
+                src: arg(2)?.to_string(),
+                x: f(3)?,
+                scale: f(4)?,
+            }),
+            "camera" => s.camera = Camera { zoom: f(1)?, x: f(2)?, y: f(3)? },
+            "music" => s.music = Some(MusicState { src: arg(1)?.to_string(), looped: b(2)?, volume: f(3)? }),
+            "inline" => s.inline.push((arg(1)?.to_string(), arg(2)?.to_string())),
+            "voice" => s.voice = Some(arg(1)?.to_string()),
+            "line" => {
+                let speaker = match (arg(1)?, line.split_whitespace().nth(1)) {
+                    ("-", Some("-")) => None, // an unquoted dash is "no speaker"
+                    (name, _) => Some(name.to_string()),
+                };
+                let color = match arg(2)? {
+                    "-" => None,
+                    c => {
+                        let parts: Vec<f32> = c.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
+                        let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{c}`")) };
+                        Some([r, g, b])
+                    }
+                };
+                s.line = Some(Line { speaker, color, text: arg(3)?.to_string() });
+            }
+            "pending" => {
+                s.pending = Some(match arg(1)? {
+                    "say" => {
+                        let l = s.line.as_ref().ok_or(format!("line {n}: pending say without a line"))?;
+                        Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone() }
+                    }
+                    "wait" => Cmd::Wait { seconds: f(2)? },
+                    "video" => Cmd::PlayVideo {
+                        src: arg(2)?.to_string(),
+                        fit: match arg(3)? {
+                            "cover" => Fit::Cover,
+                            "stretch" => Fit::Stretch,
+                            _ => Fit::Contain,
+                        },
+                        looped: b(4)?,
+                        skippable: b(5)?,
+                    },
+                    "choices" => Cmd::ShowChoices { options: t[2..].to_vec() },
+                    other => return Err(format!("line {n}: unknown pending `{other}`")),
+                });
+            }
+            "finished" => s.finished = true,
+            other => return Err(format!("line {n}: unknown record `{other}`")),
+        }
+    }
+    Err("the save ends in the middle of a state".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quillstone_script::parse;
+
+    const SCENE: &str = "\
+---
+vars: { name: \"Mi ka\", n: 0, ok: false }
+---
+::character{id=mika name=Mika color=#ffd98c sprites=m_{pose}.png}
+# start
+::bg{src=bg.png}
+::music{src=calm.ogg volume=0.5}
+::show{mika happy at=left}
+**Mika:** Hello {name}.
+![a scarf](scarf.png)
+::voice{src=v.ogg}
+Narration with \"quotes\" and a \\\\ backslash.
+::call{to=sub}
+::end
+# sub
+::set{n+=2, ok=true}
+::choice
+- [Yes](#yes)
+- [No](#no)
+::
+# yes
+**Mika:** Yes.
+::end
+# no
+**Mika:** No.
+";
+
+    fn play<'p>(p: &'p Program, inputs: &[Input]) -> Session<'p> {
+        let (mut game, _) = Session::start(p);
+        for i in inputs {
+            game.input(*i);
+        }
+        game
+    }
+
+    #[test]
+    fn a_session_round_trips_exactly() {
+        let p = parse(SCENE).unwrap();
+        for inputs in [&[][..], &[Input::Advance][..], &[Input::Advance, Input::Advance][..]] {
+            let game = play(&p, inputs);
+            let (loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+            assert_eq!(loaded.state(), game.state(), "after {} inputs", inputs.len());
+            assert_eq!(loaded.history, game.history);
+            assert_eq!(cmds, game.state().redraw());
+        }
+    }
+
+    #[test]
+    fn the_saved_state_has_everything_in_it() {
+        let p = parse(SCENE).unwrap();
+        let game = play(&p, &[Input::Advance, Input::Advance]); // at the choice, inside the call
+        let s = game.state();
+        assert!(matches!(s.pending, Some(Cmd::ShowChoices { .. })));
+        assert_eq!(s.stack.len(), 1);
+        let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+        let l = loaded.state();
+        assert_eq!(l.vars["n"], Value::Int(2));
+        assert_eq!(l.vars["name"], Value::Str("Mi ka".into()));
+        assert_eq!(l.sprites, s.sprites);
+        assert_eq!(l.music, s.music);
+        assert_eq!(l.line.as_ref().unwrap().text, "Narration with \"quotes\" and a \\\\ backslash.");
+    }
+
+    #[test]
+    fn a_loaded_session_plays_on_and_rolls_back() {
+        let p = parse(SCENE).unwrap();
+        let game = play(&p, &[Input::Advance, Input::Advance]);
+        let (mut loaded, _) = Session::load(&p, &game.save()).unwrap();
+        let cmds = loaded.input(Input::Choose(0));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Say { text, .. } if text == "Yes.")));
+        loaded.rollback();
+        loaded.rollback();
+        assert!(loaded.state().inline.len() == 1, "rolled back into the saved history");
+        assert_eq!(loaded.backlog().len(), 2);
+    }
+
+    #[test]
+    fn only_recent_history_is_kept() {
+        let src: String = (0..150).map(|i| format!("**A:** line {i}\n")).collect();
+        let p = parse(&src).unwrap();
+        let game = play(&p, &[Input::Advance; 140]);
+        let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.history.len(), SAVE_HISTORY);
+        assert_eq!(loaded.state(), game.state());
+    }
+
+    #[test]
+    fn a_finished_story_round_trips() {
+        let p = parse("**A:** only\n").unwrap();
+        let game = play(&p, &[Input::Advance]);
+        assert!(game.state().finished);
+        let (loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+        assert!(loaded.state().finished);
+        assert_eq!(cmds.last(), Some(&Cmd::Finished));
+    }
+
+    #[test]
+    fn edits_above_the_label_keep_the_save_in_place() {
+        let before = parse("# a\n**A:** one\n# b\n**A:** two\n**A:** three\n").unwrap();
+        let game = play(&before, &[Input::Advance, Input::Advance]); // on "three"
+        let after = parse("# a\n**A:** new line\n**A:** one\n# b\n**A:** two\n**A:** three\n").unwrap();
+        let (loaded, _) = Session::load(&after, &game.save()).unwrap();
+        assert_eq!(loaded.state().line.as_ref().unwrap().text, "three");
+        assert_eq!(loaded.state().pc, 3);
+        assert_eq!(loaded.history.len(), 2, "history still matches, so it is kept");
+    }
+
+    #[test]
+    fn a_save_that_no_longer_matches_restarts_from_its_spot() {
+        let before = parse("# a\n**A:** one\n::choice\n- [x](#a)\n::\n").unwrap();
+        let game = play(&before, &[Input::Advance]); // at the choice (offset 1 from `a`)
+        let after = parse("# a\n**A:** one\n**A:** inserted\n::choice\n- [x](#a)\n::\n").unwrap();
+        let (loaded, cmds) = Session::load(&after, &game.save()).unwrap();
+        assert!(loaded.history.is_empty());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Say { text, .. } if text == "inserted")));
+        assert!(matches!(loaded.state().pending, Some(Cmd::Say { .. })), "waiting again, not stuck");
+    }
+
+    #[test]
+    fn new_variables_get_their_defaults() {
+        let before = parse("**A:** hi\n").unwrap();
+        let game = play(&before, &[]);
+        let after = parse("---\nvars: { added: 7 }\n---\n**A:** hi\n").unwrap();
+        let (loaded, _) = Session::load(&after, &game.save()).unwrap();
+        assert_eq!(loaded.state().vars["added"], Value::Int(7));
+    }
+
+    #[test]
+    fn broken_saves_are_errors_not_panics() {
+        let p = parse(SCENE).unwrap();
+        let good = play(&p, &[Input::Advance]).save();
+        assert!(Session::load(&p, "").is_err());
+        assert!(Session::load(&p, "hello\n").is_err());
+        assert!(Session::load(&p, &good[..good.len() / 2]).is_err());
+        assert!(Session::load(&p, &good.replace("at \"start\"", "at \"gone\"")).is_err());
+        assert!(Session::load(&p, &good.replace("\"bg.png\"", "\"bg.png")).is_err());
+        let removed = parse("**A:** nothing here\n").unwrap();
+        assert!(Session::load(&removed, &good).is_err(), "its label is gone");
+    }
+
+    #[test]
+    fn the_camera_and_sprite_sizes_are_saved() {
+        let p = parse("::show{src=s.png id=s}\n::move{s scale=1.5 time=0}\n::camera{zoom=2 x=0.25 time=0}\n**A:** hi\n").unwrap();
+        let (game, _) = Session::start(&p);
+        let (loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.state().camera, Camera { zoom: 2.0, x: 0.25, y: 0.5 });
+        assert_eq!(loaded.state().sprites[0].scale, 1.5);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Camera { time, .. } if *time == 0.0)));
+    }
+
+    #[test]
+    fn line_ids_follow_the_line_not_its_position() {
+        let before = parse("# a\n**A:** one\n**A:** two\n# b\n**A:** one\n::wait{time=1}\n").unwrap();
+        let ids: Vec<Option<u64>> = (0..4).map(|pc| line_id(&before, pc)).collect();
+        assert!(ids[0].is_some() && ids[0] != ids[1]);
+        assert_ne!(ids[0], ids[2], "the same text under another label is another line");
+        assert_eq!(ids[3], None, "a wait is not a line");
+        let after = parse("# a\n**A:** new\n**A:** one\n**A:** two\n# b\n**A:** one\n").unwrap();
+        assert_eq!(line_id(&after, 1), ids[0]);
+        assert_eq!(line_id(&after, 3), ids[2]);
+        let reworded = parse("# a\n**A:** one!\n").unwrap();
+        assert_ne!(line_id(&reworded, 0), ids[0]);
+    }
+
+    #[test]
+    fn the_demo_saves_and_loads_at_every_step() {
+        let program = parse(include_str!("../../../examples/demo.quill.md")).unwrap();
+        let (mut game, _) = Session::start(&program);
+        for _ in 0..40 {
+            let (loaded, _) = Session::load(&program, &game.save()).unwrap();
+            assert_eq!(loaded.state(), game.state());
+            if game.state().finished {
+                break;
+            }
+            match game.state().pending {
+                Some(Cmd::ShowChoices { .. }) => game.input(Input::Choose(0)),
+                _ => game.input(Input::Advance),
+            };
+        }
+        assert!(game.state().finished);
+    }
+}

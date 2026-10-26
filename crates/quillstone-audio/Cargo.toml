@@ -1,0 +1,11 @@
+[package]
+name = "quillstone-audio"
+description = "Music, sound effect and voice logic for Quillstone (backend-neutral)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quillstone-runtime.workspace = true
+
+[dev-dependencies]
+quillstone-script.workspace = true

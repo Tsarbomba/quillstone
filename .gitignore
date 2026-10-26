@@ -1,0 +1,22 @@
+# Build output
+/target
+/player/target
+
+# Slim FFmpeg build (tools/build-ffmpeg.sh)
+/ffmpeg-slim
+/ffmpeg-slim-build
+
+# Files the player writes while you test
+error.txt
+persistent.txt
+saves/
+
+# Packaged games (quillstone package)
+/dist
+
+# Editors and OS clutter
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+[package]
+name = "quillstone-ui"
+description = "Game shell for Quillstone: input routing, settings, backlog and screens (GPU-free)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quillstone-script.workspace = true
+quillstone-runtime.workspace = true
+quillstone-render.workspace = true
+quillstone-audio.workspace = true
+quillstone-video.workspace = true

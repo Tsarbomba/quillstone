@@ -1,0 +1,31 @@
+//! Quillstone rendering, minus the GPU.
+//!
+//! Everything here is plain data and maths, so it is testable without a window:
+//!
+//! - [`layout`]: the fixed 1920x1080 virtual screen, letterboxing, and how an
+//!   image or video frame is fitted into a rectangle (`contain` / `cover` / `stretch`).
+//! - [`view`]: what is on screen. It consumes runtime [`Cmd`](quillstone_runtime::Cmd)s,
+//!   animates backgrounds and the typewriter text, and produces a [`Draw`] list.
+//! - [`batch`]: converts a draw list into clip-space [`Quad`]s for a window size.
+//! - [`theme`]: colours, font, sizes and images of a game, from its theme file.
+//! - [`pixels`]: prepares decoded images for upload (alpha bleeding, mipmaps).
+//!
+//! The GPU backend (in `quillstone-player`: winit + wgpu) only has to upload
+//! those quads and draw them, which keeps it small and keeps video frames just
+//! another textured quad.
+
+pub mod batch;
+pub mod layout;
+pub mod pixels;
+pub mod theme;
+pub mod view;
+
+pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
+pub use layout::{
+    clip, letterbox, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
+};
+pub use theme::Theme;
+pub use view::{
+    Align, Background, Dialogue, Draw, InlineImage, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
+    TEXTBOX,
+};
