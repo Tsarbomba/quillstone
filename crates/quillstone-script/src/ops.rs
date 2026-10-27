@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
+use std::path::{Component, Path};
 
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -357,6 +358,17 @@ pub enum AssetKind {
     Audio,
 }
 
+/// A relative path that stays inside the folder it's relative to.
+/// `\` is refused on every system: on Windows it is a separator, so
+/// `assets\..\..\x.png` would climb out there even though it is one name elsewhere.
+/// `:` is refused too, since Windows reads `C:x.png` as a drive; `//host/share` is already a root.
+pub fn is_inside(path: &str) -> bool {
+    let p = Path::new(path);
+    !path.is_empty()
+        && !path.contains(['\\', ':'])
+        && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 /// Guess what kind of asset a path is from its extension.
 pub fn kind_from_path(path: &str) -> AssetKind {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -452,6 +464,18 @@ impl Op {
 
 #[cfg(test)]
 mod tests {
+    use crate::is_inside;
+
+    #[test]
+    fn only_paths_inside_the_game_folder_are_inside() {
+        assert!(is_inside("assets/bg.png") && is_inside("./theme.txt") && is_inside("story.quill.md"));
+        assert!(!is_inside("../shared/bg.png") && !is_inside("assets/../../x.png"));
+        assert!(!is_inside("/home/me/bg.png") && !is_inside(""));
+        assert!(!is_inside("assets\\..\\..\\x.png") && !is_inside("assets\\bg.png"), "backslashes, on any system");
+        assert!(!is_inside("C:\\art\\bg.png") && !is_inside("C:/x.png") && !is_inside("C:x.png"), "drives, on any system");
+        assert!(!is_inside("//host/share/x.png") && !is_inside("\\\\host\\share\\x.png"), "UNC, on any system");
+    }
+
     #[test]
     fn images_ahead_follow_every_branch_nearest_first() {
         let p = crate::parse(

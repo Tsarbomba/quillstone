@@ -78,7 +78,12 @@ fn check(path: &Path) -> Result<(), String> {
     let mut missing = 0;
     for (idx, kind, asset) in program.assets() {
         let file = root.join(asset);
-        if !file.exists() {
+        if !quillstone_script::is_inside(asset) {
+            // Saves refuse such paths (a shared save must not reach outside the game), so the game would break.
+            missing += 1;
+            let at = program.lines[idx];
+            eprintln!("{}:{at}: error: `{asset}` is outside the script's folder (keep assets beside or below it)", path.display());
+        } else if !file.exists() {
             missing += 1;
             eprintln!("{}:{}: error: missing asset `{asset}`", path.display(), program.lines[idx]);
         } else if let Some(why) = unplayable(&file, kind) {

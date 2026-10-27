@@ -13,9 +13,9 @@
 //! The player finds `game/` by itself when double-clicked.
 
 use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use quillstone_script::Program;
+use quillstone_script::{is_inside, Program};
 
 /// FFmpeg's libraries the player loads (avfilter and avdevice are never needed).
 const FFMPEG_LIBS: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
@@ -105,16 +105,6 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     Ok(())
 }
 
-/// A relative path that stays inside the folder it's relative to.
-/// `\` is refused on every system: on Windows it is a separator, so
-/// `assets\..\..\x.png` would climb out there even though it is one name elsewhere.
-fn is_inside(path: &str) -> bool {
-    let p = Path::new(path);
-    !path.is_empty()
-        && !path.contains('\\')
-        && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
-}
-
 /// The executable's name: the game's title without characters file systems dislike.
 fn exe_name(title: Option<&str>) -> String {
     let clean: String = title
@@ -184,16 +174,6 @@ fn copy(from: &Path, to: &Path) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_paths_inside_the_game_folder_are_packaged() {
-        assert!(is_inside("assets/bg.png") && is_inside("./theme.txt") && is_inside("story.quill.md"));
-        assert!(!is_inside("../shared/bg.png") && !is_inside("assets/../../x.png"));
-        assert!(!is_inside("/home/me/bg.png") && !is_inside(""));
-        assert!(!is_inside("assets\\..\\..\\x.png") && !is_inside("assets\\bg.png"), "backslashes, on any system");
-        #[cfg(windows)]
-        assert!(!is_inside("C:\\art\\bg.png"));
-    }
 
     #[test]
     fn the_exe_is_named_after_the_title() {

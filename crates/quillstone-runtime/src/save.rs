@@ -8,7 +8,7 @@
 //! matches what the save was waiting for, the story re-runs from there instead
 //! of getting stuck.
 
-use quillstone_script::{Fit, Op, Program, Value, Vars};
+use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
 
 use crate::{step, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
 
@@ -346,6 +346,11 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
         let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: `{line}` is too short"));
         let f = |i: usize| -> Result<f32, String> { num(arg(i)?, n) };
         let b = |i: usize| -> Result<bool, String> { num(arg(i)?, n) };
+        // Saves are shared between players, so a path in one must not reach outside the game folder.
+        let path = |i: usize| -> Result<String, String> {
+            let p = arg(i)?;
+            if is_inside(p) { Ok(p.to_string()) } else { Err(format!("line {n}: unsafe file path `{p}`")) }
+        };
         match arg(0)? {
             "end" if saw_at => return Ok(s),
             "end" => return Err(format!("line {n}: state without a position")),
@@ -358,17 +363,17 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;
                 s.vars.insert(name, value);
             }
-            "bg" => s.background = Some(arg(1)?.to_string()),
+            "bg" => s.background = Some(path(1)?),
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
-                src: arg(2)?.to_string(),
+                src: path(2)?,
                 x: f(3)?,
                 scale: f(4)?,
             }),
             "camera" => s.camera = Camera { zoom: f(1)?, x: f(2)?, y: f(3)? },
-            "music" => s.music = Some(MusicState { src: arg(1)?.to_string(), looped: b(2)?, volume: f(3)? }),
-            "inline" => s.inline.push((arg(1)?.to_string(), arg(2)?.to_string())),
-            "voice" => s.voice = Some(arg(1)?.to_string()),
+            "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: f(3)? }),
+            "inline" => s.inline.push((path(1)?, arg(2)?.to_string())),
+            "voice" => s.voice = Some(path(1)?),
             "line" => {
                 let speaker = match (arg(1)?, line.split_whitespace().nth(1)) {
                     ("-", Some("-")) => None, // an unquoted dash is "no speaker"
@@ -392,7 +397,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     }
                     "wait" => Cmd::Wait { seconds: f(2)? },
                     "video" => Cmd::PlayVideo {
-                        src: arg(2)?.to_string(),
+                        src: path(2)?,
                         fit: match arg(3)? {
                             "cover" => Fit::Cover,
                             "stretch" => Fit::Stretch,
@@ -554,6 +559,24 @@ Narration with \"quotes\" and a \\\\ backslash.
         assert!(Session::load(&p, &good[..good.len() / 2]).is_err());
         assert!(Session::load(&p, &good.replace("\"bg.png\"", "\"bg.png")).is_err());
         assert!(Session::load(&p, "quillstone-session 1\nstate\nat \"gone\" 1\nend\n").is_err(), "old save, label gone");
+    }
+
+    #[test]
+    fn a_save_cannot_point_outside_the_game_folder() {
+        let p = parse(SCENE).unwrap();
+        let good = play(&p, &[Input::Advance]).save();
+        let vp = parse("::video{src=c.webm}\n**A:** y\n").unwrap();
+        let video = play(&vp, &[]).save();
+        assert!(good.contains("\"calm.ogg\"") && video.contains("pending video \"c.webm\""));
+        for bad in ["\\\\host\\share\\x.png", "../../x.png", "/etc/passwd", "C:/x.png"] {
+            let bad = q(bad);
+            for (prog, save, from) in [(&p, &good, "\"bg.png\""), (&p, &good, "\"calm.ogg\""), (&vp, &video, "\"c.webm\"")] {
+                let e = Session::load(prog, &save.replace(from, &bad)).err().expect(&bad);
+                assert!(e.contains("unsafe file path"), "{e}");
+            }
+        }
+        let fine = good.replace("\"bg.png\"", "\"assets/bg.png\"");
+        assert_eq!(Session::load(&p, &fine).unwrap().0.state().background.as_deref(), Some("assets/bg.png"));
     }
 
     #[test]

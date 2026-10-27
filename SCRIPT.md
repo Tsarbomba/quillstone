@@ -41,7 +41,8 @@ She looks away.
 - **`<!-- comments -->`** may span several lines and are ignored. Inside a
   `::choice` block they must fit on one line.
 - **Commands** are one line: `::name{key=value key="text with spaces" flag}`.
-  Times are in seconds. Paths are relative to the script file.
+  Times are in seconds. Paths are relative to the script file and must stay in its
+  folder or below it (no `..`, no drive letters), with `/` between folders.
 
 ## Variables
 
