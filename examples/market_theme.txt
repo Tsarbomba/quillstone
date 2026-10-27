@@ -1,0 +1,28 @@
+# The market demo's look: warm browns and copper instead of the default dark purple.
+# The inventory and the shop share the inventory_* keys; see SCRIPT.md ("Themes").
+text_color = #f6e7cf
+accent_color = #f2b35c
+name_color = #f2b35c
+dim_color = #f6e7cf99
+panel_color = #1a0f08d0
+button_color = #3a2416d9
+button_hover_color = #8a5530f0
+overlay_color = #120905f2
+textbox_image = assets/gui/textbox.png
+
+inventory_panel = assets/gui/market_panel.png
+inventory_panel_rect = 160, 70, 1600, 940
+inventory_columns = 4
+inventory_cell_size = 270, 210
+inventory_cell_gap = 24
+inventory_icon_size = 104
+inventory_cell = #4a3020
+inventory_cell_hover = #7a4a2a
+inventory_cell_owned = #2f4a2f
+inventory_cell_disabled = #2a221cb0
+inventory_title = Your pack
+shop_title = Night market
+shop_currency = Gold
+inventory_name_color = #f6e7cf
+inventory_price_color = #f2b35c
+inventory_text_color = #e6d3b3

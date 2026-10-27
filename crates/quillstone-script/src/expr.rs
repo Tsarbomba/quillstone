@@ -2,7 +2,8 @@
 //!
 //! Grammar (lowest to highest precedence):
 //! `or` / `||`, `and` / `&&`, `not` / `!`, comparison (`== != < <= > >=`, and a lone
-//! `=` also means equality), then literals, variables, `seen(label)` and `( ... )`.
+//! `=` also means equality) or `list has item` (the same level; the left side is
+//! a list variable, the right a text, variable or parenthesised expression), then literals, variables, `seen(label)` and `( ... )`.
 //! Literals: whole numbers, `true` / `false`, and "text" or 'text'.
 //! `seen(label)` is how many times the story has passed that label (0: never);
 //! it reads the hidden variable `seen:label`, which the runtime counts up.
@@ -212,6 +213,13 @@ impl Parser {
 
     fn comparison(&mut self) -> Result<Expr, String> {
         let left = self.primary()?;
+        if self.peek() == Some(&Tok::Ident("has".into())) {
+            self.pos += 1;
+            return match left {
+                Expr::Var(name) if !name.starts_with(SEEN) => Ok(Expr::Has(name, Box::new(self.primary()?))),
+                _ => Err("the left side of `has` must be a list variable, like `inventory has \"key\"`".into()),
+            };
+        }
         if let Some(Tok::Cmp(op)) = self.peek().cloned() {
             self.pos += 1;
             let right = self.primary()?;
@@ -266,6 +274,32 @@ pub fn parse_value(s: &str) -> Result<Value, String> {
         Expr::Lit(v) => Ok(v),
         _ => Err(format!("`{}` must be a number, true/false, or \"text\" in quotes", s.trim())),
     }
+}
+
+/// Parse a list literal from the front matter: `[]`, `[map, torch]`, `["magic key", lamp]`.
+/// Items are text, quoted or bare; repeats are dropped.
+pub fn parse_list(s: &str) -> Result<Value, String> {
+    let inner = s
+        .trim()
+        .strip_prefix('[')
+        .and_then(|r| r.strip_suffix(']'))
+        .ok_or_else(|| format!("`{}` is not a list (expected `[]` or `[map, torch]`)", s.trim()))?;
+    let mut items: Vec<String> = Vec::new();
+    for raw in split_top_level(inner, ',').into_iter().map(str::trim) {
+        if raw.is_empty() && inner.trim().is_empty() {
+            break;
+        }
+        let quoted = raw.len() >= 2 && (raw.starts_with('"') && raw.ends_with('"') || raw.starts_with('\'') && raw.ends_with('\''));
+        let item = if quoted { &raw[1..raw.len() - 1] } else { raw };
+        let stray: &[char] = if quoted { &[raw.as_bytes()[0] as char] } else { &['"', '\'', '[', ']'] };
+        if item.is_empty() || item.contains(stray) {
+            return Err(format!("bad list item `{raw}` in `{}` (items are text: `map` or `\"magic key\"`)", s.trim()));
+        }
+        if !items.iter().any(|i| i == item) {
+            items.push(item.to_string());
+        }
+    }
+    Ok(Value::List(items))
 }
 
 /// Parse an assignment: `trust+=1`, `trust-=1`, `met=true`, `name = "Alex"`, `gold -= price`.
@@ -430,5 +464,72 @@ mod tests {
     fn identifiers() {
         assert!(is_ident("trust") && is_ident("_x1") && is_ident("é"));
         assert!(!is_ident("") && !is_ident("1x") && !is_ident("a-b"));
+    }
+
+    // ---- list variables ----
+
+    fn list(items: &[&str]) -> Value {
+        Value::List(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn has_asks_whether_a_list_holds_an_item() {
+        let e = parse_expr("inventory has \"key\"").unwrap();
+        assert_eq!(e, Expr::Has("inventory".into(), Box::new(Expr::Lit(Value::Str("key".into())))));
+        let v = [("inventory", list(&["map", "key"])), ("item", Value::Str("map".into())), ("n", Value::Int(1))];
+        assert!(eval("inventory has 'key'", &v) && eval("inventory has item", &v));
+        assert!(!eval("inventory has 'lamp'", &v));
+        assert!(!eval("inventory has n", &v), "only text can be in a list");
+        assert!(!eval("n has 'key'", &v) && !eval("nothing has 'key'", &v), "a non-list never has anything");
+        assert!(eval("inventory has (item)", &v));
+    }
+
+    #[test]
+    fn has_binds_tighter_than_not_and_or() {
+        let v = [("inv", list(&["a"])), ("b", Value::Bool(false))];
+        assert!(eval("not inv has 'z'", &v));
+        assert!(!eval("not inv has 'a'", &v));
+        assert!(eval("inv has 'a' and not inv has 'z'", &v));
+        assert!(eval("b or inv has 'a'", &v));
+        assert!(!eval("b and inv has 'a' or inv has 'z'", &v));
+        assert!(eval("not (inv has 'z' or b)", &v));
+        assert!(eval("seen has 'x' or true", &[]), "`seen` and `has` stay usable as plain names");
+        assert_eq!(parse_expr("has").unwrap(), Expr::Var("has".into()));
+    }
+
+    #[test]
+    fn has_errors() {
+        assert!(parse_expr("3 has 'a'").unwrap_err().contains("left side of `has`"));
+        assert!(parse_expr("'a' has 'a'").unwrap_err().contains("left side of `has`"));
+        assert!(parse_expr("seen(x) has 'a'").unwrap_err().contains("left side of `has`"));
+        assert!(parse_expr("(a) has 'a'").is_ok(), "parentheses just group a variable");
+        assert!(parse_expr("a has").unwrap_err().contains("ends too early"));
+        assert!(parse_expr("a has 'x' 'y'").unwrap_err().contains("unexpected"));
+    }
+
+    #[test]
+    fn has_counts_as_a_read_of_the_list() {
+        let mut names = Vec::new();
+        let e = parse_expr("inv has item").unwrap();
+        e.vars_read(&mut names);
+        assert_eq!(names, ["inv", "item"]);
+    }
+
+    #[test]
+    fn list_literals() {
+        assert_eq!(parse_list("[]").unwrap(), list(&[]));
+        assert_eq!(parse_list("[ ]").unwrap(), list(&[]));
+        assert_eq!(parse_list("[map, torch]").unwrap(), list(&["map", "torch"]));
+        assert_eq!(parse_list("[\"magic key\", 'a, b', map, map]").unwrap(), list(&["magic key", "a, b", "map"]));
+        for bad in ["map", "[a,,b]", "[a,]", "[\"\"]", "[a\"b]", "[[a]]"] {
+            assert!(parse_list(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn effects_on_lists_parse_like_any_other() {
+        let e = parse_effect("inventory += \"key\"").unwrap();
+        assert_eq!((e.var.as_str(), e.op), ("inventory", AssignOp::Add));
+        assert_eq!(parse_effect("inventory -= item").unwrap().value, Expr::Var("item".into()));
     }
 }

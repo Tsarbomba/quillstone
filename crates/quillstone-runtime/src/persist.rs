@@ -101,6 +101,11 @@ impl<'p> Session<'p> {
     pub(crate) fn overlay(&mut self) {
         for name in &self.program.persistent {
             if let Some(value) = self.persistent.get(name) {
+                // a kept value of another type (the script changed) is dropped
+                let list = |v: Option<&Value>| matches!(v, Some(Value::List(_)));
+                if list(Some(value)) != list(self.program.vars.get(name)) {
+                    continue;
+                }
                 self.state.vars.insert(name.clone(), value.clone());
             }
         }
@@ -178,5 +183,36 @@ mod tests {
         let vars = read_persistent(&text);
         assert_eq!(vars.keys().collect::<Vec<_>>(), ["a", "c"]);
         assert!(read_persistent("something else\nvar \"a\" int 1\n").is_empty());
+    }
+
+    // ---- list variables ----
+
+    const COLLECT: &str = "---\npersistent: { seen_items: [], other: 0 }\nvars: { bag: [] }\n---\n# a\n::set{seen_items += \"a b\", seen_items += 'say \"hi\"', seen_items += \"x, y\"}\n::set{bag += \"k\"}\nHi.\n::end\n";
+
+    #[test]
+    fn a_persistent_list_is_kept_across_playthroughs() {
+        let p = parse(COLLECT).unwrap();
+        let (s, _) = Session::start(&p);
+        let want = Value::List(vec!["a b".into(), "say \"hi\"".into(), "x, y".into()]);
+        assert_eq!(s.persistent()["seen_items"], want);
+        assert!(!s.persistent().contains_key("bag"), "ordinary lists are not kept");
+        let text = write_persistent(s.persistent());
+        let kept = read_persistent(&text);
+        assert_eq!(kept["seen_items"], want);
+        let (next, _) = Session::start_with(&p, kept);
+        assert_eq!(next.state().vars["seen_items"], want, "the next playthrough starts with them");
+        assert_eq!(next.state().vars["bag"], Value::List(vec!["k".into()]));
+    }
+
+    #[test]
+    fn an_empty_persistent_list_and_a_changed_type_are_safe() {
+        let p = parse(COLLECT).unwrap();
+        let kept = read_persistent(&write_persistent(&[("seen_items".to_string(), Value::List(vec![]))].into_iter().collect()));
+        assert_eq!(kept["seen_items"], Value::List(vec![]));
+        // the script now declares a number where the file kept a list: the number stays
+        let mut odd = Vars::new();
+        odd.insert("other".into(), Value::List(vec!["x".into()]));
+        let (s, _) = Session::start_with(&p, odd);
+        assert_eq!(s.state().vars["other"], Value::Int(0));
     }
 }

@@ -34,8 +34,11 @@ pub enum QuickButton {
     QuickSave,
     QuickLoad,
     Settings,
+    /// The inventory; only offered by games that have one, left of Back.
+    Items,
 }
 
+/// The buttons every game has. A game with an inventory also gets [`QuickButton::Items`].
 pub const QUICK_BUTTONS: [QuickButton; 9] = [
     QuickButton::Back,
     QuickButton::History,
@@ -63,11 +66,25 @@ pub fn quick_button_rect(b: QuickButton) -> Rect {
     quick_rect(QUICK_BUTTONS.iter().position(|q| *q == b).unwrap_or(0))
 }
 
-pub fn quick_at(x: f32, y: f32) -> Option<QuickButton> {
+/// The Items button: one place left of the first button, so no other button moves.
+pub fn quick_items_rect() -> Rect {
+    let first = quick_rect(0);
+    Rect::new(first.x - QUICK_GAP - QUICK_W, first.y, QUICK_W, first.h)
+}
+
+/// The quick menu button at a point. `inventory`: whether the game offers Items.
+pub fn quick_at(x: f32, y: f32, inventory: bool) -> Option<QuickButton> {
+    if inventory && quick_items_rect().contains(x, y) {
+        return Some(QuickButton::Items);
+    }
     (0..QUICK_BUTTONS.len()).find(|&i| quick_rect(i).contains(x, y)).map(|i| QUICK_BUTTONS[i])
 }
 
-pub fn draw_quick(out: &mut Vec<Draw>, theme: &Theme, hover: Option<QuickButton>, auto: bool, skipping: bool) {
+pub fn draw_quick(out: &mut Vec<Draw>, theme: &Theme, hover: Option<QuickButton>, auto: bool, skipping: bool, inventory: bool) {
+    if inventory {
+        let color = if hover == Some(QuickButton::Items) { theme.text_color } else { theme.dim_color };
+        text(out, "Items", quick_items_rect(), 24.0, color, Align::Center);
+    }
     for (i, b) in QUICK_BUTTONS.iter().enumerate() {
         let label = match b {
             QuickButton::Back => "Back",
@@ -79,6 +96,7 @@ pub fn draw_quick(out: &mut Vec<Draw>, theme: &Theme, hover: Option<QuickButton>
             QuickButton::QuickSave => "Q.Save",
             QuickButton::QuickLoad => "Q.Load",
             QuickButton::Settings => "Settings",
+            QuickButton::Items => "Items",
         };
         let on = (*b == QuickButton::Auto && auto) || (*b == QuickButton::Skip && skipping);
         let color = if on {
@@ -577,12 +595,18 @@ mod tests {
             let r = quick_rect(i);
             assert!(r.y >= TEXTBOX.y + TEXTBOX.h && r.y + r.h <= VIRTUAL.h);
             let (x, y) = centre(r);
-            assert_eq!(quick_at(x, y), Some(*b));
+            assert_eq!(quick_at(x, y, false), Some(*b));
+            assert_eq!(quick_at(x, y, true), Some(*b), "Items doesn't move the others");
         }
+        let items = quick_items_rect();
+        let (x, y) = centre(items);
+        assert_eq!(quick_at(x, y, true), Some(QuickButton::Items));
+        assert_eq!(quick_at(x, y, false), None, "only games with an inventory have the button");
+        assert!(items.x >= TEXTBOX.x && items.x + items.w <= quick_rect(0).x, "Items fits under the textbox, left of Back");
         let last = quick_rect(QUICK_BUTTONS.len() - 1);
         assert!((last.x + QUICK_W - (TEXTBOX.x + TEXTBOX.w)).abs() < 1e-3);
         assert!(quick_rect(0).x >= TEXTBOX.x, "all buttons fit under the textbox");
-        assert_eq!(quick_at(10.0, 10.0), None);
+        assert_eq!(quick_at(10.0, 10.0, true), None);
     }
 
     #[test]

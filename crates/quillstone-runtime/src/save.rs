@@ -10,7 +10,7 @@
 
 use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
 
-use crate::{choice_cmd, step, visible_options, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
+use crate::{rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
 
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
@@ -27,6 +27,7 @@ impl Session<'_> {
             match input {
                 Input::Advance => out.push_str("input advance\n"),
                 Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
+                Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
             }
         }
         write_state(&mut out, &self.state, self.program);
@@ -53,6 +54,7 @@ impl<'p> Session<'p> {
                     last.1 = Some(match (words.get(1).map(String::as_str), words.get(2)) {
                         (Some("advance"), _) => Input::Advance,
                         (Some("choose"), Some(i)) => Input::Choose(num(i, n)?),
+                        (Some("buy"), Some(i)) => Input::Buy(num(i, n)?),
                         _ => return Err(format!("line {n}: bad input record")),
                     });
                 }
@@ -109,6 +111,8 @@ fn consistent(state: &State, program: &Program) -> bool {
         Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. })),
         Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
         Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
+        Some(Cmd::ShowInventory) => matches!(op, Some(Op::Inventory)),
+        Some(Cmd::ShowShop { .. }) => matches!(op, Some(Op::Shop { .. })),
         Some(_) => false,
     }
 }
@@ -191,6 +195,11 @@ pub(crate) fn var_record(name: &str, value: &Value) -> String {
         Value::Int(n) => format!("var {} int {n}", q(name)),
         Value::Bool(b) => format!("var {} bool {b}", q(name)),
         Value::Str(t) => format!("var {} text {}", q(name), q(t)),
+        // `var "inventory" list "map" "magic key"`: one quoted word per item, in order
+        Value::List(items) => {
+            let words: String = items.iter().map(|i| format!(" {}", q(i))).collect();
+            format!("var {} list{words}", q(name))
+        }
     }
 }
 
@@ -271,6 +280,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         }
         // The regions themselves come from the script when the save is read.
         Some(Cmd::ShowHotspots { .. }) => w("pending hotspots".into()),
+        // Likewise the inventory and the shop (prices, what is owned) are read from the script.
+        Some(Cmd::ShowInventory) => w("pending inventory".into()),
+        Some(Cmd::ShowShop { .. }) => w("pending shop".into()),
         _ => {}
     }
     if s.finished {
@@ -283,7 +295,19 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
 
 /// The name and value of a `var` record's words (see [`var_record`]).
 pub(crate) fn read_var(t: &[String]) -> Result<(String, Value), String> {
-    let (Some(name), Some(kind), Some(v)) = (t.get(1), t.get(2), t.get(3)) else {
+    let (Some(name), Some(kind)) = (t.get(1), t.get(2)) else {
+        return Err("a `var` record is too short".into());
+    };
+    if kind == "list" {
+        let mut items: Vec<String> = Vec::new();
+        for item in &t[3..] {
+            if !item.is_empty() && !items.contains(item) {
+                items.push(item.clone());
+            }
+        }
+        return Ok((name.clone(), Value::List(items)));
+    }
+    let Some(v) = t.get(3) else {
         return Err("a `var` record is too short".into());
     };
     let bad = || format!("`{v}` is not a {kind}");
@@ -355,11 +379,15 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
         };
         match arg(0)? {
             "end" if saw_at => {
-                if matches!(s.pending, Some(Cmd::ShowHotspots { .. })) {
-                    let Some(Op::Choice { options }) = program.ops.get(s.pc) else {
-                        return Err(format!("line {n}: pending hotspots, but the script has none there"));
-                    };
-                    s.pending = Some(choice_cmd(options, &visible_options(options, &s.vars), &s.vars));
+                // A save whose script changed so the op is gone is dealt with by the caller
+                // (`consistent`): the placeholder stays and the story re-runs from the spot.
+                let rebuilt = match (&s.pending, program.ops.get(s.pc)) {
+                    (Some(Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
+                    (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => rebuild_pending(program, op, &s.vars),
+                    _ => None,
+                };
+                if rebuilt.is_some() {
+                    s.pending = rebuilt;
                 }
                 return Ok(s);
             }
@@ -419,6 +447,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "choices" => Cmd::ShowChoices { options: t[2..].to_vec() },
                     // Rebuilt from the script at `end`, once the variables are known.
                     "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
+                    "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },
+                    "inventory" => Cmd::ShowInventory,
                     other => return Err(format!("line {n}: unknown pending `{other}`")),
                 });
             }
@@ -664,5 +694,48 @@ Narration with \"quotes\" and a \\\\ backslash.
             };
         }
         assert!(game.state().finished);
+    }
+
+    // ---- list variables ----
+
+    fn awkward() -> Vec<String> {
+        ["a b", "say \"hi\"", "x, y", "back\\slash", "two\nlines\ttab", "ünï ✓", "  padded  ", "{inventory}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_list_round_trips_through_a_var_record() {
+        for items in [vec![], vec!["one".to_string()], awkward()] {
+            let rec = var_record("inv", &Value::List(items.clone()));
+            assert!(!rec.contains('\n'), "one line per record");
+            let t = tokens(&rec).unwrap();
+            assert_eq!(read_var(&t).unwrap(), ("inv".to_string(), Value::List(items)));
+        }
+        assert_eq!(var_record("inv", &Value::List(vec![])), "var \"inv\" list");
+        // a hand-edited record with repeats or empty words still reads as a set
+        let t = tokens("var \"inv\" list \"a\" \"a\" \"\" \"b\"").unwrap();
+        assert_eq!(read_var(&t).unwrap().1, Value::List(vec!["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn a_session_keeps_its_list_in_a_save() {
+        let src = "---\nvars: { inv: [], n: 1 }\n---\n# a\n**A:** one\n::set{inv += \"map\"}\n::choice\n- [Take](#b){inv += \"key\"}\n::\n# b\n**A:** two\n";
+        let p = parse(src).unwrap();
+        let mut game = play(&p, &[Input::Advance]); // at the choice, holding the map
+        game.state.vars.insert("inv".into(), Value::List(awkward()));
+        let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.state().vars["inv"], Value::List(awkward()));
+        assert_eq!(loaded.state(), game.state());
+        // history keeps earlier lists, so rolling back after loading restores them too
+        let mut game = play(&p, &[Input::Advance, Input::Choose(0)]);
+        assert_eq!(game.state().vars["inv"], Value::List(vec!["map".into(), "key".into()]));
+        let (mut loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.state().vars["inv"], game.state().vars["inv"]);
+        loaded.rollback().unwrap();
+        game.rollback().unwrap();
+        assert_eq!(loaded.state().vars["inv"], Value::List(vec!["map".into()]));
+        assert_eq!(loaded.state(), game.state());
     }
 }

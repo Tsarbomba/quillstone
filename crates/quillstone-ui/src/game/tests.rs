@@ -1270,3 +1270,417 @@ fn skip_and_auto_stop_at_hotspots() {
     assert!(!g.skipping(), "skip stops at the hotspots");
     assert_eq!(g.view().hotspots.len(), 3, "back at the map, having skipped the read line");
 }
+
+// ---- the inventory and shops ------------------------------------------------------------------------
+
+const BAG: &str = "---\ninventory: bag\nvars: { bag: [key, lamp] }\n---\n::item{id=key name=\"Brass key\" icon=key.png price=15 text=\"Opens the tower.\"}\n::item{id=lamp name=\"Oil lamp\" text=\"Burns for hours.\"}\n**A:** one\n**A:** two\n";
+
+fn drawn_texts(g: &Game) -> Vec<String> {
+    g.draw_list(&|_| Some(quillstone_render::Size::new(64.0, 64.0)))
+        .into_iter()
+        .filter_map(|d| match d {
+            quillstone_render::Draw::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn cell(g: &Game, i: usize) -> Option<(f32, f32)> {
+    centre(crate::bag::cell_rect(g.theme(), i))
+}
+
+fn click_cell(g: &mut Game, i: usize) {
+    let at = cell(g, i);
+    click_at(g, at);
+}
+
+fn click_bag(g: &mut Game, rect: fn(&quillstone_render::Theme) -> Rect) {
+    let at = centre(rect(g.theme()));
+    click_at(g, at);
+}
+
+#[test]
+fn the_items_button_and_the_i_key_exist_only_in_games_with_an_inventory() {
+    let with = parse(BAG).unwrap();
+    let g = new_game(&with, instant());
+    assert!(g.has_inventory() && drawn_texts(&g).iter().any(|t| t == "Items"));
+    let without = parse(THREE).unwrap();
+    let mut g = new_game(&without, instant());
+    assert!(!g.has_inventory() && !drawn_texts(&g).iter().any(|t| t == "Items"));
+    key(&mut g, Key::Char('i'));
+    assert_eq!(g.screen(), Screen::Story, "I does nothing without an inventory");
+    assert_eq!(line(&g), "one");
+    // where the button would be, a click is an ordinary click on the story
+    click_at(&mut g, centre(crate::screens::quick_items_rect()));
+    assert_eq!(g.screen(), Screen::Story);
+    assert_eq!(line(&g), "two");
+}
+
+#[test]
+fn the_quick_menu_button_and_i_open_the_inventory_and_four_things_close_it() {
+    let p = parse(BAG).unwrap();
+    let mut g = new_game(&p, instant());
+    click_at(&mut g, centre(crate::screens::quick_items_rect()));
+    assert_eq!(g.screen(), Screen::Inventory);
+    assert_eq!(line(&g), "one", "opening it doesn't advance the story");
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story);
+    for closer in [0, 1, 2, 3] {
+        key(&mut g, Key::Char('I'));
+        assert_eq!(g.screen(), Screen::Inventory, "I opens it");
+        match closer {
+            0 => key(&mut g, Key::Char('i')),
+            1 => g.handle(Event::Press(Button::Right)),
+            2 => click_bag(&mut g, crate::bag::close_rect),
+            _ => key(&mut g, Key::Escape),
+        }
+        assert_eq!(g.screen(), Screen::Story, "closer {closer}");
+    }
+    assert_eq!(line(&g), "one", "the story never moved");
+    assert!(g.state().pending.is_some() && !g.state().finished);
+}
+
+#[test]
+fn the_story_is_paused_while_the_inventory_is_over_it() {
+    let p = parse(&format!("{}\n::wait{{time=1}}\n**A:** after\n", BAG.replace("**A:** two\n", ""))).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // past "one": the wait
+    assert!(matches!(g.state().pending, Some(Cmd::Wait { .. })));
+    key(&mut g, Key::Char('i'));
+    g.tick(5.0, false);
+    assert!(matches!(g.state().pending, Some(Cmd::Wait { .. })), "the wait doesn't run out under the inventory");
+    assert!(g.media_paused());
+    key(&mut g, Key::Escape);
+    g.tick(5.0, false);
+    assert_eq!(line(&g), "after");
+}
+
+#[test]
+fn the_inventory_lists_the_items_and_describes_the_hovered_or_focused_one() {
+    let p = parse(BAG).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Items".to_string()) && texts.contains(&"Brass key".to_string()) && texts.contains(&"Oil lamp".to_string()));
+    assert!(!texts.iter().any(|t| t.contains("Opens the tower")), "no description until one is pointed at");
+    g.handle(Event::CursorMoved(cell(&g, 0)));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Opens the tower.".to_string()) && texts.contains(&"Price: 15".to_string()), "{texts:?}");
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Burns for hours.".to_string()) && !texts.iter().any(|t| t.starts_with("Price")), "{texts:?}");
+    // the keyboard does the same
+    g.handle(Event::CursorMoved(None));
+    key(&mut g, Key::Right);
+    assert!(drawn_texts(&g).contains(&"Opens the tower.".to_string()));
+    key(&mut g, Key::Right);
+    assert!(drawn_texts(&g).contains(&"Burns for hours.".to_string()));
+    key(&mut g, Key::Right);
+    assert!(drawn_texts(&g).contains(&"Burns for hours.".to_string()), "stops at the last item");
+    key(&mut g, Key::Left);
+    assert!(drawn_texts(&g).contains(&"Opens the tower.".to_string()));
+    // view-only: clicking an item or pressing Enter changes nothing
+    click_cell(&mut g, 1);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.screen(), Screen::Inventory);
+    assert_eq!(g.state().vars["bag"], quillstone_script::Value::List(vec!["key".into(), "lamp".into()]));
+}
+
+#[test]
+fn an_empty_inventory_says_so_and_an_undeclared_item_shows_by_its_id() {
+    let p = parse("---\ninventory: bag\nvars: { bag: [] }\n---\n**A:** one\n::set{bag += \"mystery\"}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"Nothing here yet.".to_string()));
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"mystery".to_string()));
+}
+
+#[test]
+fn more_items_than_fit_are_paged_by_wheel_keys_and_arrows() {
+    let items: Vec<String> = (1..=12).map(|i| format!("i{i}")).collect();
+    let p = parse(&format!("---\ninventory: bag\nvars: {{ bag: [{}] }}\n---\n**A:** one\n", items.join(", "))).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    let per = crate::bag::per_page(g.theme());
+    assert_eq!(per, 10);
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"i10".to_string()) && !texts.contains(&"i11".to_string()) && texts.contains(&"Page 1 of 2".to_string()));
+    g.handle(Event::Wheel(-1.0));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"i11".to_string()) && texts.contains(&"i12".to_string()) && !texts.contains(&"i1".to_string()) && texts.contains(&"Page 2 of 2".to_string()));
+    g.handle(Event::Wheel(-1.0));
+    assert!(drawn_texts(&g).contains(&"Page 2 of 2".to_string()), "stops at the last page");
+    g.handle(Event::Wheel(1.0));
+    assert!(drawn_texts(&g).contains(&"Page 1 of 2".to_string()));
+    key(&mut g, Key::PageDown);
+    assert!(drawn_texts(&g).contains(&"i11".to_string()));
+    key(&mut g, Key::PageUp);
+    click_bag(&mut g, crate::bag::next_rect);
+    assert!(drawn_texts(&g).contains(&"i12".to_string()));
+    click_bag(&mut g, crate::bag::prev_rect);
+    assert!(drawn_texts(&g).contains(&"i1".to_string()));
+    // arrows walk off the end of a page onto the next one
+    for _ in 0..per {
+        key(&mut g, Key::Right);
+    }
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Page 1 of 2".to_string()), "ten presses leave the focus on i10: {texts:?}");
+    key(&mut g, Key::Right);
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Page 2 of 2".to_string()) && texts.contains(&"i11".to_string()), "{texts:?}");
+    key(&mut g, Key::Up);
+    assert!(drawn_texts(&g).contains(&"Page 1 of 2".to_string()), "up from the first cell of page two goes back");
+}
+
+const SCRIPTED: &str = "---\ninventory: bag\nvars: { bag: [key] }\n---\n::item{id=key name=\"Brass key\" text=\"Opens it.\"}\n**A:** one\n::inventory\n**A:** two\n::inventory\n**A:** three\n";
+
+#[test]
+fn the_inventory_command_opens_the_screen_and_the_story_waits_for_it_to_close() {
+    let p = parse(SCRIPTED).unwrap();
+    for closer in 0..4 {
+        let mut g = new_game(&p, instant());
+        key(&mut g, Key::Space);
+        assert_eq!(g.screen(), Screen::Inventory, "the script opened it");
+        assert!(matches!(g.state().pending, Some(Cmd::ShowInventory)));
+        g.tick(9.0, false);
+        assert_eq!(g.screen(), Screen::Inventory, "it stays until the player closes it");
+        match closer {
+            0 => key(&mut g, Key::Char('i')),
+            1 => g.handle(Event::Press(Button::Right)),
+            2 => click_bag(&mut g, crate::bag::close_rect),
+            _ => key(&mut g, Key::Escape),
+        }
+        assert_eq!(g.screen(), Screen::Story, "closer {closer}");
+        assert_eq!(line(&g), "two", "the story carried on");
+    }
+}
+
+#[test]
+fn a_script_inventory_survives_save_load_rollback_and_a_reload() {
+    let p = parse(SCRIPTED).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Inventory);
+    g.quick_save();
+    key(&mut g, Key::Escape);
+    assert_eq!(line(&g), "two");
+    // loading puts the screen back
+    g.quick_load();
+    key(&mut g, Key::Char('y'));
+    assert_eq!(g.screen(), Screen::Inventory, "the save was made at the inventory");
+    assert!(drawn_texts(&g).contains(&"Brass key".to_string()));
+    // hot reload keeps it open
+    g.reload(&p).unwrap();
+    assert_eq!(g.screen(), Screen::Inventory);
+    // closing then going back lands on it again
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Backspace);
+    assert_eq!(g.screen(), Screen::Inventory);
+    key(&mut g, Key::Char('i'));
+    assert_eq!(line(&g), "two");
+    // a reload that removes the inventory command lets the story go on
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Inventory, "the second `::inventory`");
+    let edited = parse(&SCRIPTED.replace("::inventory\n**A:** three", "**A:** three")).unwrap();
+    g.reload(&edited).unwrap();
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+const SHOPPING: &str = "---\ninventory: bag\nvars: { gold: 40, bag: [] }\n---\n::item{id=key name=\"Brass key\" price=15 text=\"Opens it.\"}\n::item{id=lamp name=\"Oil lamp\" price=30 text=\"Bright.\"}\n::item{id=map price=5}\n# a\n**A:** Welcome.\n::shop{pay=gold into=bag}\n- key\n- lamp\n- map\n::\n**A:** Bye.\n";
+
+#[test]
+fn a_shop_shows_prices_money_and_states_and_stops_the_story() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Shop);
+    let texts = drawn_texts(&g);
+    for want in ["Shop", "Gold: 40", "Brass key", "15 gold", "Oil lamp", "30 gold", "map", "5 gold", "Leave"] {
+        assert!(texts.contains(&want.to_string()), "{want} in {texts:?}");
+    }
+    g.tick(9.0, false);
+    assert_eq!(g.screen(), Screen::Shop);
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Bright.".to_string()) && texts.contains(&"Price: 30 gold".to_string()), "{texts:?}");
+}
+
+#[test]
+fn clicking_buys_at_once_and_the_screen_stays_open_and_refreshes() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    click_cell(&mut g, 0);
+    assert_eq!(g.screen(), Screen::Shop);
+    assert_eq!(notice(&g).as_deref(), Some("Bought Brass key"));
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Gold: 25".to_string()) && texts.contains(&"Owned".to_string()), "{texts:?}");
+    assert!(!texts.contains(&"15 gold".to_string()), "an owned item shows no price");
+    // owned: nothing happens, with a notice
+    click_cell(&mut g, 0);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25));
+    assert_eq!(notice(&g).as_deref(), Some("Already owned"));
+    // too dear: nothing happens, with a notice
+    click_cell(&mut g, 1);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25));
+    assert_eq!(notice(&g).as_deref(), Some("Not enough gold"));
+    assert_eq!(g.state().vars["bag"], quillstone_script::Value::List(vec!["key".into()]));
+    // and a cheap one goes through
+    click_cell(&mut g, 2);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(20));
+    assert_eq!(notice(&g).as_deref(), Some("Bought map"));
+    assert!(drawn_texts(&g).contains(&"Gold: 20".to_string()));
+}
+
+#[test]
+fn the_keyboard_buys_the_focused_item_and_the_focus_stays_put() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(40), "nothing focused yet");
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Left);
+    key(&mut g, Key::Left);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25));
+    key(&mut g, Key::Enter);
+    assert_eq!(notice(&g).as_deref(), Some("Already owned"));
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Space);
+    assert_eq!(notice(&g).as_deref(), Some("Not enough gold"));
+}
+
+#[test]
+fn leaving_by_button_escape_or_right_click_continues_after_the_block() {
+    let p = parse(SHOPPING).unwrap();
+    for leave in 0..3 {
+        let mut g = new_game(&p, instant());
+        key(&mut g, Key::Space);
+        click_cell(&mut g, 0);
+        match leave {
+            0 => click_bag(&mut g, crate::bag::close_rect),
+            1 => key(&mut g, Key::Escape),
+            _ => g.handle(Event::Press(Button::Right)),
+        }
+        assert_eq!(g.screen(), Screen::Story, "leave {leave}");
+        assert_eq!(line(&g), "Bye.");
+        assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25), "what was bought stays bought");
+        key(&mut g, Key::Char('h'));
+        let entries = g.backlog.clone();
+        assert!(entries.iter().all(|e| matches!(e, quillstone_runtime::Logged::Line(_))), "{entries:?}");
+    }
+}
+
+#[test]
+fn a_shop_is_a_checkpoint_stops_skipping_and_a_purchase_is_not() {
+    let p = parse(SHOPPING).unwrap();
+    let mut first = new_game(&p, instant());
+    key(&mut first, Key::Space);
+    first.autosave();
+    let mut g = reread(&p, &first, instant());
+    assert!(!has_file(&g, "auto-1.save"));
+    key(&mut g, Key::Tab);
+    run(&mut g, 20);
+    assert!(!g.skipping(), "skip stopped at the shop");
+    assert_eq!(g.screen(), Screen::Shop);
+    assert!(has_file(&g, "auto-1.save"), "arriving at the shop saved");
+    click_cell(&mut g, 0);
+    assert!(!has_file(&g, "auto-2.save"), "a purchase doesn't save again");
+}
+
+#[test]
+fn a_shop_survives_save_load_rollback_and_hot_reload() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    click_cell(&mut g, 0);
+    g.quick_save();
+    click_cell(&mut g, 2);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(20));
+    g.quick_load();
+    key(&mut g, Key::Char('y'));
+    assert_eq!(g.screen(), Screen::Shop);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25), "back at the quick save");
+    assert!(drawn_texts(&g).contains(&"Owned".to_string()));
+    // a reload keeps the shop, page and purchases
+    g.reload(&p).unwrap();
+    assert_eq!(g.screen(), Screen::Shop);
+    assert!(drawn_texts(&g).contains(&"Gold: 25".to_string()));
+    // leaving, then rolling back, lands in the shop again with the purchase kept
+    key(&mut g, Key::Escape);
+    assert_eq!(line(&g), "Bye.");
+    g.handle(Event::Wheel(1.0));
+    assert_eq!(g.screen(), Screen::Shop);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25));
+    // a reload that no longer has the shop there lets the story go on
+    let edited = parse(&SHOPPING.replace("::shop{pay=gold into=bag}\n- key\n- lamp\n- map\n::\n", "")).unwrap();
+    g.reload(&edited).unwrap();
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
+fn a_theme_currency_and_titles_show_in_the_screens() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    let (theme, problems) = quillstone_render::Theme::parse("shop_title = Night market\nshop_currency = Crowns\n");
+    assert!(problems.is_empty());
+    g.set_theme(theme);
+    key(&mut g, Key::Space);
+    let texts = drawn_texts(&g);
+    for want in ["Night market", "Crowns: 40", "15 Crowns"] {
+        assert!(texts.contains(&want.to_string()), "{want} in {texts:?}");
+    }
+    click_cell(&mut g, 1);
+    assert_eq!(notice(&g).as_deref(), Some("Bought Oil lamp"));
+    click_cell(&mut g, 0);
+    assert_eq!(notice(&g).as_deref(), Some("Not enough Crowns"));
+}
+
+#[test]
+fn the_market_demo_can_be_played_through_the_screens() {
+    let p = parse(include_str!("../../../../examples/market.quill.md")).unwrap();
+    let (theme, problems) = quillstone_render::Theme::parse(include_str!("../../../../examples/market_theme.txt"));
+    assert!(problems.is_empty(), "{problems:?}");
+    let mut g = new_game(&p, instant());
+    g.set_theme(theme);
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"Nothing here yet.".to_string()), "an empty pack at the start");
+    key(&mut g, Key::Char('i'));
+    assert_eq!(g.screen(), Screen::Story);
+    key(&mut g, Key::Space); // the opening line
+    key(&mut g, Key::Char('1')); // greet the stallholder (polite)
+    key(&mut g, Key::Space); // past the stallholder's line, into the shop
+    assert_eq!(g.screen(), Screen::Shop);
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Night market".to_string()) && texts.contains(&"Gold: 40".to_string()));
+    assert!(texts.contains(&"Lucky charm".to_string()) && texts.contains(&"18 Gold".to_string()), "polite customers see the charm, cheaper: {texts:?}");
+    click_cell(&mut g, 3); // the charm: 18
+    click_cell(&mut g, 0); // the key: 15, leaves 7
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(7));
+    click_cell(&mut g, 1); // the lamp, 12: too dear
+    assert_eq!(notice(&g).as_deref(), Some("Not enough Gold"));
+    click_cell(&mut g, 0); // the key again: owned
+    assert_eq!(notice(&g).as_deref(), Some("Already owned"));
+    key(&mut g, Key::Escape); // leave
+    assert_eq!(g.screen(), Screen::Story);
+    key(&mut g, Key::Space); // "You have 7 gold left..." -> the script's own ::inventory
+    assert_eq!(g.screen(), Screen::Inventory);
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Your pack".to_string()) && texts.contains(&"Brass key".to_string()) && texts.contains(&"Lucky charm".to_string()));
+    assert!(!texts.contains(&"Oil lamp".to_string()));
+    key(&mut g, Key::Char('i'));
+    assert_eq!(g.screen(), Screen::Story);
+    assert!(line(&g).contains("brass key turns"), "{}", line(&g));
+    key(&mut g, Key::Space);
+    assert!(line(&g).contains("charm is warm"), "no lamp bought: {}", line(&g));
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Char('1')); // climb the tower: only offered with the key
+    key(&mut g, Key::Space);
+    assert!(line(&g).contains("worth the gold"));
+}

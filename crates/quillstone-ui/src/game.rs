@@ -15,9 +15,11 @@ use crate::screens::*;
 use crate::settings::Settings;
 use crate::slots::{Page, SlotInfo, Storage};
 
+mod bag;
 mod extras;
 mod saves;
 mod skip;
+use bag::Bag;
 use extras::Extras;
 use saves::{Confirm, Then};
 pub use skip::{SkipMode, SKIP_DELAY};
@@ -89,6 +91,11 @@ pub enum Screen {
     Load,
     /// The main menu's Extras: gallery and music room.
     Extras,
+    /// The items the game's inventory list holds (the quick menu's Items, the `I`
+    /// key, or `::inventory`, which keeps the story waiting).
+    Inventory,
+    /// A `::shop`: the story waits here, buying changes it, leaving moves on.
+    Shop,
 }
 
 /// Extra auto-forward time per character, on top of the delay setting.
@@ -154,6 +161,8 @@ pub struct Game<'p> {
     choice_focus: Option<usize>,
     /// The save slot the keyboard is on, on the slot screens.
     slot_focus: Option<usize>,
+    /// The inventory or shop screen.
+    bag: Bag,
 }
 
 impl<'p> Game<'p> {
@@ -199,6 +208,7 @@ impl<'p> Game<'p> {
             voice_files: std::collections::HashMap::new(),
             choice_focus: None,
             slot_focus: None,
+            bag: Bag::default(),
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -291,6 +301,7 @@ impl<'p> Game<'p> {
             self.session = session;
         }
         self.choice_focus = None;
+        self.bag_resync();
         match self.screen {
             Screen::Extras if self.has_extras() => self.open_extras(),
             Screen::Extras => self.screen = Screen::MainMenu,
@@ -379,6 +390,7 @@ impl<'p> Game<'p> {
             Screen::Backlog => self.backlog_event(event),
             Screen::Save | Screen::Load => self.slots_event(event),
             Screen::Extras => self.extras_event(event),
+            Screen::Inventory | Screen::Shop => self.bag_event(event),
         }
     }
 
@@ -451,8 +463,9 @@ impl<'p> Game<'p> {
             out
         };
         if self.in_story && self.quick_menu_visible() {
-            let hover = self.cursor.filter(|_| story).and_then(|(x, y)| quick_at(x, y));
-            draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some());
+            let inventory = self.has_inventory();
+            let hover = self.cursor.filter(|_| story).and_then(|(x, y)| quick_at(x, y, inventory));
+            draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some(), inventory);
         }
         if self.skip.is_some() && story {
             draw_skip_indicator(&mut out, theme);
@@ -473,6 +486,7 @@ impl<'p> Game<'p> {
                 draw_slots(&mut out, theme, &view, image_size);
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
+            Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
         }
         if let Some(confirm) = &self.confirm {
             let hover = self.cursor.and_then(|(x, y)| confirm_at(x, y));
@@ -491,7 +505,10 @@ impl<'p> Game<'p> {
         if !self.in_story {
             return Vec::new();
         }
-        self.program.images_ahead(self.session.state().pc, AHEAD)
+        let mut out = self.program.images_ahead(self.session.state().pc, AHEAD);
+        // Item pictures are small and the inventory can open any time.
+        out.extend(self.program.item_icons().map(|(_, icon)| icon));
+        out
     }
 
     // ---- video ---------------------------------------------------------------------------
@@ -573,7 +590,8 @@ impl<'p> Game<'p> {
             event,
             Event::Press(Button::Left) | Event::Key(Key::Space | Key::Enter | Key::Right)
         );
-        let on_quick_menu = self.cursor.is_some_and(|(x, y)| quick_at(x, y).is_some()) && self.quick_menu_visible();
+        let inventory = self.has_inventory();
+        let on_quick_menu = self.cursor.is_some_and(|(x, y)| quick_at(x, y, inventory).is_some()) && self.quick_menu_visible();
         if self.skip.is_some() && interrupts && !(on_quick_menu && event == Event::Press(Button::Left)) {
             return self.stop_skip();
         }
@@ -625,6 +643,7 @@ impl<'p> Game<'p> {
                 Key::Char('a' | 'A') => self.toggle_auto(),
                 Key::Char('s' | 'S') => self.open_slots(Screen::Save),
                 Key::Char('l' | 'L') => self.open_slots(Screen::Load),
+                Key::Char('i' | 'I') => self.open_inventory_overlay(),
                 Key::F5 => self.quick_save(),
                 Key::F9 => self.quick_load(),
                 Key::Tab => self.start_skip(SkipMode::Toggled),
@@ -641,7 +660,8 @@ impl<'p> Game<'p> {
     }
 
     fn story_click(&mut self) {
-        let quick = self.cursor.filter(|_| self.quick_menu_visible()).and_then(|(x, y)| quick_at(x, y));
+        let inventory = self.has_inventory();
+        let quick = self.cursor.filter(|_| self.quick_menu_visible()).and_then(|(x, y)| quick_at(x, y, inventory));
         if let Some(button) = quick {
             return match button {
                 QuickButton::Back => self.rollback(),
@@ -653,6 +673,7 @@ impl<'p> Game<'p> {
                 QuickButton::QuickSave => self.quick_save(),
                 QuickButton::QuickLoad => self.quick_load(),
                 QuickButton::Settings => self.open_settings(),
+                QuickButton::Items => self.open_inventory_overlay(),
             };
         }
         if self.view.choices.is_empty() && self.view.hotspots.is_empty() {
@@ -700,6 +721,7 @@ impl<'p> Game<'p> {
             self.notify(format!("The story was stopped: {reason}"));
         }
         self.view.apply(cmds);
+        self.bag_arrived(cmds);
         let mut actions = self.mixer.apply(cmds);
         if self.skip.is_some() {
             // Skipping through dozens of lines a second: don't play their sounds.
@@ -746,7 +768,9 @@ impl<'p> Game<'p> {
         if self.skip.is_some() {
             self.skip_arrived();
         }
-        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
+        // Arriving at a choice or a shop is a checkpoint (a purchase, which shows the shop again, is not).
+        let arrived = cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. }));
+        if arrived && !matches!(input, Input::Buy(_)) {
             self.autosave();
         }
     }

@@ -31,9 +31,9 @@ She looks away.
 ````
 
 - **Front matter** (optional, between `---` lines): `title:` (also shown on the
-  main menu), `theme:` (a theme file, see [Themes](#themes)), `vars:`, and
-  `persistent:`, `gallery:` and `music_room:` (see
-  [Kept across playthroughs](#kept-across-playthroughs)).
+  main menu), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
+  `inventory:` (see [Inventory](#inventory)), and `persistent:`, `gallery:` and
+  `music_room:` (see [Kept across playthroughs](#kept-across-playthroughs)).
 - **Headings** (`#` to `######`) are *labels*: places to jump to. `# The Roof` is
   the label `the-roof` (lowercase, words joined by dashes).
 - **`**Name:** text`** is dialogue. Any other prose is narration. Consecutive
@@ -49,11 +49,58 @@ She looks away.
 Values are whole numbers, `true`/`false`, or `"text"`. Declare starting values in
 `vars:`; any other variable springs into existence at `0` when first read.
 Names are letters, digits and `_`, but not `true`, `false`, `and`, `or` or `not`.
+Lists of items (an inventory) have their own [section](#list-variables).
 
 - `::set{trust+=1, met=true, name="Alex"}` sets one or more (`=`, `+=`, `-=`;
   `+=` on text appends). The right-hand side may be another variable: `gold -= price`.
 - `{name}` inside a line or choice text is replaced by the variable's value.
   `\{` writes a literal brace; an unknown `{name}` is left as written.
+
+## List variables
+
+A list holds a set of items, such as an inventory. Declare it in `vars:` (or
+`persistent:`) with `[]` or a starting list; items are text, in quotes if they
+have spaces or commas:
+
+````markdown
+---
+vars: { gold: 30, inventory: [], pack: [map, "magic key"] }
+---
+
+# shop
+Your bag holds: {inventory}.
+::choice
+- [Buy the key (15 gold)](#shop){gold -= 15, inventory += "key", if gold >= 15 and not inventory has "key"}
+- [Sell the map](#shop){gold += 5, inventory -= "map", if inventory has "map"}
+- [Leave](#leave)
+::
+# leave
+::if{inventory has "key"}
+The key turns in the lock.
+::endif
+````
+
+- `inventory += "key"` adds an item (nothing happens if it is already there);
+  `inventory -= "key"` removes it (nothing happens if it isn't). The right side
+  may be a text variable: `inventory += found`. A list has no duplicates and
+  remembers the order items were added in.
+- `inventory has "key"` is true if the list holds that item. The left side must
+  be a list variable; the right side is a text, a variable, or a parenthesised
+  expression. `has` binds tighter than `not`, `and` and `or`:
+  `not inventory has "key" and gold >= 15`.
+- `{inventory}` shows the items joined with `, ` (an empty list shows nothing).
+  A bare `inventory` in a condition means "is not empty". `==` and `!=` between
+  two lists compare their items, ignoring order.
+- Lists change only with `+=` and `-=` of text. `inventory = "x"`, adding a
+  number, and `has` on a variable that isn't a declared list are errors that
+  `quillstone check` reports with their line. (A computed value that isn't text
+  is ignored at run time.) In `::jump{if=...}` write quotes inside as
+  `if="inventory has 'key'"`.
+- Rollback, saves and `persistent:` lists work like any variable.
+  `quillstone test` warns about an item tested with `has` that nothing ever adds
+  (`inventory has "kye"`). It plays every combination of items the script can
+  add, so a shop with a dozen independent items makes the test very large; it
+  stops at its situation limit and says so.
 
 ## Text tags
 
@@ -238,6 +285,98 @@ object to find, a point-and-click scene.
   `hidden`; `quillstone test` follows
   every region like a choice option.
 
+## Items
+
+Items give the things in a list variable a name, a picture and a description for
+the [inventory](#inventory) and [shop](#shop) screens. Declare them before they are
+used, like characters:
+
+````markdown
+::item{id=key name="Brass key" icon=assets/gui/key.png price=15 text="Opens the clock tower."}
+::item{id=map}
+````
+
+- `id` is the text stored in list variables (`inventory += "key"`): letters, digits,
+  `_` and `-`. Declaring an id twice is an error.
+- `name` is what the screens show (the id if left out). `text` is the description
+  shown when the item is hovered or selected.
+- `icon` is a picture (PNG, JPEG or WebP) drawn above the name. `price` is a whole
+  number, 0 or more: what a shop asks unless its line says otherwise.
+- A list may hold an id that was never declared: the screens show it under its id
+  with no picture. `quillstone check` warns about a `+= "x"` or `has "x"` on the
+  inventory list that names no item (usually a typo) and checks the icons.
+
+## Inventory
+
+````markdown
+---
+inventory: pack
+vars: { pack: [] }
+---
+::set{pack += "key"}
+You pick up a brass key.
+::inventory
+````
+
+- `inventory: pack` in the front matter names the list variable the inventory shows;
+  it must be declared as a list in `vars:` (or `persistent:`). The game then has an
+  **Items** button in the quick menu, and the **I** key opens the screen (a game
+  without `inventory:` has neither).
+- The screen shows the items in the list, in the order they were added, as a grid of
+  cells with the item's picture and name. Pointing at an item (or moving to it with
+  the arrow keys) shows its description, and its price if it has one, in a box under
+  the grid. With more items than fit, the mouse wheel, Page Up/Down and the arrow keys turn
+  pages. It is view-only; to let an item do something, offer a choice with
+  `if pack has "key"`.
+- Opened by the player, it sits over the story, which waits: a `::wait` doesn't run
+  out and nothing is skipped. Esc, a right click, the I key or the Close button closes it.
+- `::inventory` opens the same screen from the script. The story waits until the player
+  closes it and then carries on. Rollback, saves and hot reload work with it like with
+  any other waiting step, and `quillstone test` treats it as one click.
+
+## Shop
+
+````markdown
+---
+inventory: pack
+vars: { gold: 40, pack: [], polite: false }
+---
+::item{id=key name="Brass key" price=15}
+::item{id=charm name="Lucky charm" price=20}
+
+::shop{pay=gold into=pack}
+- key
+- charm{price=18, if polite}
+::
+````
+
+- `pay` is the whole-number variable that pays; `into` is the list that receives what
+  is bought. Both are required, `pay` must not be declared as anything but a number and
+  `into` must be a list declared in `vars:`.
+- Each line is `- id`, naming a declared item, with optional settings in braces:
+  `price=18` replaces the item's price and `if condition` offers the item only while
+  the condition is true. A line needs a price from one place or the other. An item may
+  appear once per shop.
+- The story waits at the shop, which shows every offered item with its picture, name
+  and price, and how much the player has. The Leave button, Esc or a right click
+  ends the block and the story continues after it. If no item is on offer the block
+  is skipped.
+- An item the player can buy is bought by clicking it, or by moving to it with the
+  arrow keys and pressing Enter or Space: the price is taken from `pay`, the item is
+  added to `into`, a notice says "Bought Brass key", and the shop stays open with the
+  new money. An item already in the list is marked **Owned** and can't be bought again;
+  an item that costs more than the player has is greyed out and a click only says
+  "Not enough gold". Money can never go below zero.
+- Purchases are ordinary variable changes, so rollback, saves, hot reload and
+  `persistent:` variables work with them. A shop is an auto save point like a choice
+  and stops skip and auto-forward; what the player buys isn't added to the history.
+- `quillstone test` follows every purchase the player can afford, and leaving, as
+  branches. Money only goes down and each item is bought once, so a shop you can come
+  back to is still finite. It warns about an item whose `if` is never true and a `pay`
+  variable nothing sets.
+- The look of the inventory and the shop comes from the theme file (see below). The
+  demo `examples/market.quill.md` with `examples/market_theme.txt` uses all of it.
+
 ## Kept across playthroughs
 
 ````markdown
@@ -307,6 +446,40 @@ menu_music = assets/audio/menu.ogg
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).
+
+### The inventory and shop screens
+
+One grid layout serves both screens, so they share the `inventory_` keys. Without
+any of them the screens look like the other built-in ones. Positions and sizes are in
+the 1920x1080 virtual screen.
+
+```text
+inventory_background = assets/gui/bag.png   # full-screen picture (else the screen is dimmed)
+shop_background = assets/gui/stall.png      # the shop's own background, if different
+inventory_panel = assets/gui/panel.png      # stretched over the panel, under the grid
+inventory_panel_rect = 160, 70, 1600, 940   # x, y, width, height of the panel (default 210, 90, 1500, 900)
+inventory_columns = 4                       # cells per row (1 to 12; fewer if they don't fit)
+inventory_cell_size = 270, 210              # width, height (or one number for a square); 48 to 600
+inventory_cell_gap = 24
+inventory_icon_size = 104                   # the icon is drawn in a square this big
+inventory_cell = #4a3020                    # a cell: a colour #rrggbb[aa] ...
+inventory_cell_hover = assets/gui/hover.png # ... or a picture, stretched over the cell
+inventory_cell_owned = #2f4a2f              # an owned item in a shop
+inventory_cell_disabled = #2a221cb0         # an item the player can't afford
+inventory_title = Your pack                 # default "Items"
+shop_title = Night market                   # default "Shop"
+shop_currency = Gold                        # what the shop calls its money (default: the pay variable's name)
+inventory_description_rect = 300, 760, 1300, 170   # where the hovered item is described
+inventory_name_color = #f6e7cf              # item names (default text_color)
+inventory_price_color = #f2b35c             # prices and the money line (default accent_color)
+inventory_text_color = #e6d3b3              # descriptions (default text_color)
+```
+
+The panel rect holds the title, the grid, the description box and the buttons, laid
+out from its top left, so a bigger panel or cells that don't fit it give fewer rows
+and more pages rather than overflowing. `quillstone check` validates the pictures
+and the colours; a line that can't be read is reported with its line number and
+ignored.
 
 ## Not (yet) in the language
 

@@ -6,11 +6,15 @@ use std::fmt;
 use std::path::{Component, Path};
 
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
+///
+/// `List` is a set of non-empty texts (no duplicates) that remembers the order
+/// items were added in. Lists exist only where the front matter declares them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Int(i64),
     Bool(bool),
     Str(String),
+    List(Vec<String>),
 }
 
 impl Value {
@@ -20,6 +24,7 @@ impl Value {
             Value::Int(n) => *n != 0,
             Value::Bool(b) => *b,
             Value::Str(s) => !s.is_empty(),
+            Value::List(items) => !items.is_empty(),
         }
     }
 
@@ -27,7 +32,7 @@ impl Value {
         match self {
             Value::Int(n) => Some(*n),
             Value::Bool(b) => Some(*b as i64),
-            Value::Str(_) => None,
+            Value::Str(_) | Value::List(_) => None,
         }
     }
 }
@@ -38,6 +43,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => f.write_str(s),
+            Value::List(items) => f.write_str(&items.join(", ")),
         }
     }
 }
@@ -84,6 +90,8 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Cmp(Box<Expr>, Cmp, Box<Expr>),
+    /// `inventory has "key"`: the list variable holds that text.
+    Has(String, Box<Expr>),
 }
 
 /// A condition is just an expression that is tested for truthiness.
@@ -98,6 +106,10 @@ impl Expr {
             Expr::And(a, b) => Value::Bool(a.eval(vars).truthy() && b.eval(vars).truthy()),
             Expr::Or(a, b) => Value::Bool(a.eval(vars).truthy() || b.eval(vars).truthy()),
             Expr::Cmp(a, op, b) => Value::Bool(compare(&a.eval(vars), *op, &b.eval(vars))),
+            Expr::Has(name, item) => Value::Bool(match (vars.get(name), item.eval(vars)) {
+                (Some(Value::List(items)), Value::Str(s)) => items.contains(&s),
+                _ => false,
+            }),
         }
     }
 
@@ -115,13 +127,44 @@ impl Expr {
                 a.vars_read(out);
                 b.vars_read(out);
             }
+            Expr::Has(name, item) => {
+                out.push(name);
+                item.vars_read(out);
+            }
         }
     }
+
+    /// Every `list has item` test inside the expression, as `(list variable, item expression)`.
+    pub fn has_tests<'a>(&'a self, out: &mut Vec<(&'a str, &'a Expr)>) {
+        match self {
+            Expr::Lit(_) | Expr::Var(_) => {}
+            Expr::Not(e) => e.has_tests(out),
+            Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) => {
+                a.has_tests(out);
+                b.has_tests(out);
+            }
+            Expr::Has(name, item) => {
+                out.push((name, item));
+                item.has_tests(out);
+            }
+        }
+    }
+}
+
+/// Lists are sets: the same items in any order are equal.
+fn same_items(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x))
 }
 
 fn compare(a: &Value, op: Cmp, b: &Value) -> bool {
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => op.holds(x.cmp(y)),
+        // sets are equal or not; they have no order
+        (Value::List(x), Value::List(y)) => match op {
+            Cmp::Eq => same_items(x, y),
+            Cmp::Ne => !same_items(x, y),
+            _ => false,
+        },
         _ => match (a.as_int(), b.as_int()) {
             (Some(x), Some(y)) => op.holds(x.cmp(&y)),
             // text vs number: never equal, never ordered
@@ -148,12 +191,25 @@ pub struct Effect {
 impl Effect {
     pub fn apply(&self, vars: &mut Vars) {
         let rhs = self.value.eval(vars);
+        // A list changes only by `+=` / `-=` of text; anything else leaves it alone.
+        if let Some(Value::List(items)) = vars.get_mut(&self.var) {
+            match (self.op, rhs) {
+                (AssignOp::Add, Value::Str(s)) if !s.is_empty() && !items.contains(&s) => items.push(s),
+                (AssignOp::Sub, Value::Str(s)) => items.retain(|i| *i != s),
+                _ => {}
+            }
+            return;
+        }
         match self.op {
             AssignOp::Set => {
-                vars.insert(self.var.clone(), rhs);
+                // lists only come from the front matter, never from an assignment
+                if !matches!(rhs, Value::List(_)) {
+                    vars.insert(self.var.clone(), rhs);
+                }
             }
             AssignOp::Add => {
                 let new = match (vars.get(&self.var), &rhs) {
+                    (_, Value::List(_)) => None,
                     // appending text builds a string (an unset variable counts as empty)
                     (Some(Value::Str(s)), r) => Some(Value::Str(format!("{s}{r}"))),
                     (None, Value::Str(s)) => Some(Value::Str(s.clone())),
@@ -192,6 +248,33 @@ pub struct Character {
     pub sprites: Option<String>,
 }
 
+/// An item declared with `::item`. Its `id` is the text a list variable holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub id: String,
+    /// Shown in the inventory and shop; the id when not given.
+    pub name: String,
+    /// A picture (png, jpg or webp) for the grid.
+    pub icon: Option<String>,
+    /// What a shop asks, unless its line says otherwise.
+    pub price: Option<i64>,
+    /// The description shown when the item is hovered or selected.
+    pub text: String,
+    /// Source line (1-based) of the declaration.
+    pub line: usize,
+}
+
+/// One line of a `::shop` block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShopEntry {
+    /// The id of a declared item.
+    pub item: String,
+    /// The item's price, or the line's own `price=`.
+    pub price: i64,
+    /// The item is only offered while this is true.
+    pub cond: Option<Cond>,
+}
+
 /// A fully compiled script: a flat list of ops with all jumps resolved to indices.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
@@ -201,6 +284,10 @@ pub struct Program {
     /// Initial variable values from the front matter.
     pub vars: Vars,
     pub characters: BTreeMap<String, Character>,
+    /// Items declared with `::item`, by id.
+    pub items: BTreeMap<String, Item>,
+    /// The list variable the inventory screen shows (front matter `inventory:`).
+    pub inventory: Option<String>,
     pub ops: Vec<Op>,
     /// Source line (1-based) of each op; parallel to `ops`. Used for error messages.
     pub lines: Vec<usize>,
@@ -251,6 +338,49 @@ impl Program {
                 Op::Choice { options } => queue.extend(options.iter().map(|o| o.target)),
                 Op::Return | Op::End => {}
                 _ => queue.push_back(at + 1),
+            }
+        }
+        out
+    }
+
+    /// The icon of every declared item, as `(source line, path)`.
+    pub fn item_icons(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.items.values().filter_map(|i| Some((i.line, i.icon.as_deref()?)))
+    }
+
+    /// Literal item texts that name no `::item`, where the inventory list is
+    /// changed with `+=` or tested with `has`: `(op index, text)`. Empty when the
+    /// game has no inventory or declares no items.
+    pub fn unknown_items(&self) -> Vec<(usize, String)> {
+        let (Some(list), false) = (&self.inventory, self.items.is_empty()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (at, op) in self.ops.iter().enumerate() {
+            let effects: Vec<&Effect> = match op {
+                Op::Set(e) => vec![e],
+                Op::Choice { options } => options.iter().flat_map(|o| &o.effects).collect(),
+                _ => Vec::new(),
+            };
+            let mut texts: Vec<&str> = effects
+                .into_iter()
+                .filter(|e| e.var == *list && e.op != AssignOp::Set)
+                .filter_map(|e| match &e.value {
+                    Expr::Lit(Value::Str(s)) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let mut tests = Vec::new();
+            for e in op.exprs() {
+                e.has_tests(&mut tests);
+            }
+            for (name, item) in tests {
+                if let (true, Expr::Lit(Value::Str(s))) = (name == list, item) {
+                    texts.push(s);
+                }
+            }
+            for t in texts {
+                if !self.items.contains_key(t) && !out.iter().any(|(a, x)| *a == at && x == t) {
+                    out.push((at, t.to_string()));
+                }
             }
         }
         out
@@ -438,6 +568,11 @@ pub enum Op {
     /// Waits for the player to pick an option (or, when the options have an
     /// `area`, to click a region of the screen).
     Choice { options: Vec<ChoiceOption> },
+    /// The inventory screen; waits until the player closes it.
+    Inventory,
+    /// A shop: items for sale, paid with the int variable `pay`, bought into the
+    /// list `into`. Waits until the player leaves.
+    Shop { pay: String, into: String, stock: Vec<ShopEntry> },
     Jump { target: usize, cond: Option<Cond> },
     /// Jump to a label and come back at the next op after `::return`.
     Call { target: usize },
@@ -453,6 +588,7 @@ impl Op {
         match self {
             Op::Jump { cond: Some(c), .. } => vec![c],
             Op::Set(e) => vec![&e.value],
+            Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
             Op::Choice { options } => options
                 .iter()
                 .flat_map(|o| o.cond.iter().chain(o.effects.iter().map(|e| &e.value)))
@@ -617,5 +753,70 @@ mod tests {
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);
+    }
+
+    // ---- list variables ----
+
+    fn list(items: &[&str]) -> Value {
+        Value::List(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn text(s: &str) -> Expr {
+        Expr::Lit(Value::Str(s.into()))
+    }
+
+    fn change(v: &mut Vars, var: &str, op: AssignOp, value: Expr) {
+        Effect { var: var.into(), op, value }.apply(v);
+    }
+
+    #[test]
+    fn lists_are_sets_that_keep_their_order() {
+        let mut v = vars(&[("inv", list(&[]))]);
+        for item in ["map", "torch", "map", "key", "torch"] {
+            change(&mut v, "inv", AssignOp::Add, text(item));
+        }
+        assert_eq!(v["inv"], list(&["map", "torch", "key"]));
+        change(&mut v, "inv", AssignOp::Sub, text("torch"));
+        change(&mut v, "inv", AssignOp::Sub, text("absent"));
+        assert_eq!(v["inv"], list(&["map", "key"]));
+        change(&mut v, "inv", AssignOp::Add, text("torch"));
+        assert_eq!(v["inv"], list(&["map", "key", "torch"]), "re-added at the end");
+        assert_eq!(v["inv"].to_string(), "map, key, torch");
+        assert_eq!(list(&[]).to_string(), "");
+        assert!(v["inv"].truthy() && !list(&[]).truthy());
+    }
+
+    #[test]
+    fn a_list_ignores_everything_but_adding_and_removing_text() {
+        let mut v = vars(&[("inv", list(&["a"])), ("n", Value::Int(2)), ("t", Value::Str("b".into()))]);
+        change(&mut v, "inv", AssignOp::Set, text("x"));
+        change(&mut v, "inv", AssignOp::Set, Expr::Lit(Value::Int(0)));
+        change(&mut v, "inv", AssignOp::Add, Expr::Lit(Value::Int(1)));
+        change(&mut v, "inv", AssignOp::Add, Expr::Var("n".into()));
+        change(&mut v, "inv", AssignOp::Sub, Expr::Lit(Value::Int(1)));
+        change(&mut v, "inv", AssignOp::Add, text(""));
+        assert_eq!(v["inv"], list(&["a"]));
+        change(&mut v, "inv", AssignOp::Add, Expr::Var("t".into()));
+        assert_eq!(v["inv"], list(&["a", "b"]), "a text variable works");
+    }
+
+    #[test]
+    fn lists_never_leak_into_other_variables() {
+        let mut v = vars(&[("inv", list(&["a"])), ("n", Value::Int(2)), ("t", Value::Str("x".into()))]);
+        change(&mut v, "copy", AssignOp::Set, Expr::Var("inv".into()));
+        change(&mut v, "n", AssignOp::Add, Expr::Var("inv".into()));
+        change(&mut v, "t", AssignOp::Add, Expr::Var("inv".into()));
+        assert!(!v.contains_key("copy"));
+        assert_eq!((&v["n"], &v["t"]), (&Value::Int(2), &Value::Str("x".into())));
+    }
+
+    #[test]
+    fn lists_compare_as_sets() {
+        let v = vars(&[("a", list(&["x", "y"])), ("b", list(&["y", "x"])), ("c", list(&["x"])), ("n", Value::Int(0))]);
+        let cmp = |l: &str, op, r: &str| Expr::Cmp(var(l), op, var(r)).test(&v);
+        assert!(cmp("a", Cmp::Eq, "b") && !cmp("a", Cmp::Ne, "b"));
+        assert!(!cmp("a", Cmp::Eq, "c") && cmp("a", Cmp::Ne, "c"));
+        assert!(!cmp("a", Cmp::Lt, "c") && !cmp("a", Cmp::Ge, "c") && !cmp("a", Cmp::Le, "b"), "no ordering");
+        assert!(!cmp("a", Cmp::Eq, "n") && cmp("a", Cmp::Ne, "n"));
     }
 }

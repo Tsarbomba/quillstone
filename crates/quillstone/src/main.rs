@@ -91,6 +91,26 @@ fn check(path: &Path) -> Result<(), String> {
             eprintln!("{}:{}: error: `{asset}` won't play in a shipped game: {why}", path.display(), program.lines[idx]);
         }
     }
+    for (line, icon) in program.item_icons() {
+        let file = root.join(icon);
+        if !quillstone_script::is_inside(icon) {
+            missing += 1;
+            eprintln!("{}:{line}: error: `{icon}` is outside the script's folder (keep assets beside or below it)", path.display());
+        } else if !file.exists() {
+            missing += 1;
+            eprintln!("{}:{line}: error: missing item icon `{icon}`", path.display());
+        } else if let Some(why) = unplayable(&file, AssetKind::Image) {
+            missing += 1;
+            eprintln!("{}:{line}: error: `{icon}` won't show in a shipped game: {why}", path.display());
+        }
+    }
+    for (pc, text) in program.unknown_items() {
+        eprintln!(
+            "{}:{}: warning: \"{text}\" is not a declared `::item` (it will show in the inventory under that name, with no picture; a typo?)",
+            path.display(),
+            program.lines[pc]
+        );
+    }
     if let Some(theme_path) = &program.theme {
         missing += check_theme(&root.join(theme_path), root);
     }
@@ -350,7 +370,7 @@ fn test(path: &Path, limit: usize) -> Result<(), String> {
         ),
     };
     if report.partial {
-        println!("stopped after {} situations (variables keep changing, e.g. a counter that grows in a loop),", report.situations);
+        println!("stopped after {} situations (variables keep changing, e.g. a counter that grows in a loop, or a list with many items),", report.situations);
         println!("so this is only part of the story; raise --limit to explore more. Found {endings}.");
     } else {
         println!("played every branch: {} situations, {endings}", report.situations);
@@ -446,7 +466,10 @@ fn run(path: &Path) -> Result<(), String> {
     let mut lines = stdin.lock().lines();
     while !session.state().finished {
         let choosing = matches!(session.state().pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }));
-        let prompt = if choosing {
+        let shopping = matches!(session.state().pending, Some(Cmd::ShowShop { .. }));
+        let prompt = if shopping {
+            "buy (number), [enter]=leave, b=back, q=quit> "
+        } else if choosing {
             "choose (number, b=back, q=quit)> "
         } else {
             "[enter]=next, b=back, q=quit> "
@@ -465,6 +488,11 @@ fn run(path: &Path) -> Result<(), String> {
                     continue;
                 }
             },
+            "" if shopping => session.input(Input::Advance),
+            _ if shopping => match line.parse::<usize>() {
+                Ok(n) if n >= 1 => session.input(Input::Buy(n - 1)),
+                _ => Vec::new(),
+            },
             _ if choosing => match line.parse::<usize>() {
                 Ok(n) if n >= 1 => session.input(Input::Choose(n - 1)),
                 _ => Vec::new(),
@@ -475,6 +503,12 @@ fn run(path: &Path) -> Result<(), String> {
             println!("(not valid here)");
         }
         print_cmds(&cmds);
+        if cmds.contains(&Cmd::ShowInventory) {
+            println!("\n  Items:");
+            for item in quillstone_runtime::inventory_items(&program, &session.state().vars) {
+                println!("  - {}{}", item.name, if item.text.is_empty() { String::new() } else { format!(": {}", item.text) });
+            }
+        }
     }
     Ok(())
 }
@@ -511,6 +545,14 @@ fn print_cmds(cmds: &[Cmd]) {
                     println!("  {}. {}  [region {x:.0}%,{y:.0}% {w:.0}%x{h:.0}%]", i + 1, plain(&s.label));
                 }
             }
+            Cmd::ShowInventory => println!("\n[inventory]"),
+            Cmd::ShowShop { pay, money, items } => {
+                println!("\n[shop] you have {money} {pay}");
+                for (i, s) in items.iter().enumerate() {
+                    let state = if s.owned { "  (owned)" } else if s.price > *money { "  (too dear)" } else { "" };
+                    println!("  {}. {} - {} {pay}{state}", i + 1, s.item.name, s.price);
+                }
+            }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
         }
@@ -544,5 +586,44 @@ mod tests {
             let p = parse(&format!("# a\n::hotspots\n{fine}\n::\n")).unwrap();
             assert!(hidden_hotspots(&p).is_empty(), "{fine}");
         }
+    }
+
+    /// A script in a fresh folder, with the files `(name, bytes)` beside it.
+    fn checked(script: &str, files: &[(&str, &[u8])]) -> Result<(), String> {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("quillstone-check-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        std::fs::write(dir.join("s.quill.md"), script).unwrap();
+        let result = check(&dir.join("s.quill.md"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        result
+    }
+
+    #[test]
+    fn check_looks_at_item_icons_and_the_inventory_theme_images() {
+        const KEY: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+        let script = "---\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=key icon=assets/key.png}\nHi.\n";
+        assert!(checked(script, &[("assets/key.png", KEY)]).is_ok());
+        let err = checked(script, &[]).unwrap_err();
+        assert!(err.contains("1 problem"), "{err}");
+        let err = checked(script, &[("assets/key.png", b"not a picture")]).unwrap_err();
+        assert!(err.contains("1 problem"), "{err}");
+        let themed = script.replace("inventory: bag", "inventory: bag\ntheme: t.txt");
+        let theme = "inventory_panel = assets/panel.png\ninventory_cell = #112233\ninventory_cell_hover = assets/hover.png\ninventory_columns = 0\n";
+        let err = checked(&themed, &[("assets/key.png", KEY), ("t.txt", theme.as_bytes())]).unwrap_err();
+        assert!(err.contains("3 problem"), "two missing images and a bad line: {err}");
+        let theme = "inventory_panel = assets/key.png\ninventory_cell = #112233\ninventory_cell_hover = assets/key.png\n";
+        assert!(checked(&themed, &[("assets/key.png", KEY), ("t.txt", theme.as_bytes())]).is_ok());
+    }
+
+    #[test]
+    fn the_market_demo_passes_check() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        check(&root.join("market.quill.md")).unwrap();
     }
 }

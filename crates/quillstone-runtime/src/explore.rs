@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Expr, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{step_traced, visible_options, Cmd, Input, State};
+use crate::{offered_stock, step_traced, visible_options, Cmd, Input, State};
 
 /// Something the tester found, at a script line.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +51,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         queue: VecDeque::new(),
         ran: vec![false; program.ops.len()],
         offered: HashSet::new(),
+        shop_offered: HashSet::new(),
         reported: HashSet::new(),
         endings: BTreeSet::new(),
         report: Report::default(),
@@ -77,6 +78,21 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 };
                 labels.into_iter().enumerate().map(|(i, text)| (Input::Choose(i), Some(text))).collect()
             }
+            Some(Cmd::ShowShop { items, .. }) => {
+                if let Some(Op::Shop { stock, .. }) = program.ops.get(state.pc) {
+                    x.shop_offered.extend(offered_stock(stock, &state.vars).into_iter().map(|i| (state.pc, i)));
+                }
+                // Each purchase the player can make, and walking out. Money only goes down and
+                // an item is bought once, so a shop that loops back to itself runs out.
+                let mut inputs: Vec<(Input, Option<String>)> = items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !s.owned && s.price <= money_of(&state))
+                    .map(|(i, s)| (Input::Buy(i), Some(format!("buy {}", s.item.name))))
+                    .collect();
+                inputs.push((Input::Advance, Some("leave the shop".to_string())));
+                inputs
+            }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
         };
@@ -87,6 +103,14 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         }
     }
     x.finish()
+}
+
+/// The money a shop at the state's position asks for.
+fn money_of(state: &State) -> i64 {
+    match state.pending {
+        Some(Cmd::ShowShop { money, .. }) => money,
+        _ => 0,
+    }
 }
 
 struct Node {
@@ -112,6 +136,8 @@ struct Explorer<'p> {
     ran: Vec<bool>,
     /// (choice op, option index) pairs that were ever on offer.
     offered: HashSet<(usize, usize)>,
+    /// (shop op, stock line) pairs that were ever on offer.
+    shop_offered: HashSet<(usize, usize)>,
     /// (line, kind) already reported, to say each thing once.
     reported: HashSet<(usize, &'static str)>,
     endings: BTreeSet<usize>,
@@ -135,7 +161,14 @@ impl Explorer<'_> {
                 }
             }
         }
-        let key = (state.pc, state.stack.clone(), state.vars.clone(), state.finished);
+        // Lists are sets: the same items in another order are the same situation.
+        let mut vars = state.vars.clone();
+        for v in vars.values_mut() {
+            if let Value::List(items) = v {
+                items.sort();
+            }
+        }
+        let key = (state.pc, state.stack.clone(), vars, state.finished);
         if let Some(&id) = self.index.get(&key) {
             return Some(id);
         }
@@ -197,6 +230,7 @@ impl Explorer<'_> {
             self.never_offered();
         }
         self.unset_variables();
+        self.unadded_items();
         let mut r = self.report;
         r.situations = self.nodes.len();
         r.endings = self.endings.into_iter().collect();
@@ -273,6 +307,15 @@ impl Explorer<'_> {
     fn never_offered(&mut self) {
         let program = self.program;
         for (at, op) in program.ops.iter().enumerate() {
+            if let Op::Shop { stock, .. } = op {
+                for (i, entry) in stock.iter().enumerate() {
+                    if self.ran[at] && entry.cond.is_some() && !self.shop_offered.contains(&(at, i)) {
+                        let name = program.items.get(&entry.item).map_or(entry.item.as_str(), |i| i.name.as_str());
+                        let msg = format!("\"{}\" is never offered in this shop: its condition is never true here", short(name));
+                        self.report.warnings.push(Finding { line: self.line(at), message: msg, path: None });
+                    }
+                }
+            }
             let Op::Choice { options } = op else { continue };
             if !self.ran[at] {
                 continue;
@@ -301,6 +344,13 @@ impl Explorer<'_> {
                     read.extend(names(|out| cond.vars_read(out)).into_iter().map(|n| (at, n, false)));
                 }
                 Op::Say { text, .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
+                Op::Shop { pay, into, stock } => {
+                    set.insert(into);
+                    read.push((at, pay, false));
+                    for c in stock.iter().filter_map(|s| s.cond.as_ref()) {
+                        read.extend(names(|out| c.vars_read(out)).into_iter().map(|n| (at, n, false)));
+                    }
+                }
                 Op::Choice { options } => {
                     for o in options {
                         set.extend(o.effects.iter().map(|e| e.var.as_str()));
@@ -327,6 +377,27 @@ impl Explorer<'_> {
                 format!("`{name}` is never set anywhere, so it is always 0 (a typo?)")
             };
             self.report.warnings.push(Finding { line: self.line(at), message, path: None });
+        }
+    }
+
+    /// `list has "item"` where no `+=` adds that literal text: usually a typo. Lists
+    /// that something adds to with a computed value are skipped (not knowable).
+    fn unadded_items(&mut self) {
+        let program = self.program;
+        let added = added_items(program);
+        let mut told = HashSet::new();
+        for (at, op) in program.ops.iter().enumerate() {
+            let mut tests = Vec::new();
+            for e in op.exprs() {
+                e.has_tests(&mut tests);
+            }
+            for (list, item) in tests {
+                let (Some(Some(known)), Expr::Lit(Value::Str(text))) = (added.get(list), item) else { continue };
+                if !known.contains(text) && told.insert((list, text)) {
+                    let message = format!("`{list} has \"{text}\"` can never be true: nothing adds \"{text}\" to `{list}` (a typo?)");
+                    self.report.warnings.push(Finding { line: self.line(at), message, path: None });
+                }
+            }
         }
     }
 
@@ -393,6 +464,7 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
                 tested(caps, a);
                 tested(caps, b);
             }
+            Expr::Has(_, item) => uncapped(caps, item),
             Expr::Cmp(a, _, b) => match (&**a, &**b) {
                 (Expr::Var(v), Expr::Lit(x)) | (Expr::Lit(x), Expr::Var(v)) if v.starts_with(SEEN) => {
                     raise(caps, v, Some(x.as_int().unwrap_or(0).max(0) + 1));
@@ -428,6 +500,52 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
     caps
 }
 
+/// For each declared list variable, the items that can ever be in it (its starting
+/// items and every literal text added with `+=`), or `None` if some `+=` adds
+/// something computed.
+fn added_items(program: &Program) -> HashMap<&str, Option<Vec<String>>> {
+    let mut out: HashMap<&str, Option<Vec<String>>> = HashMap::new();
+    for (name, v) in &program.vars {
+        if let Value::List(items) = v {
+            out.insert(name, Some(items.clone()));
+        }
+    }
+    // a shop adds what it sells to its list
+    for op in &program.ops {
+        let Op::Shop { into, stock, .. } = op else { continue };
+        if let Some(Some(items)) = out.get_mut(into.as_str()) {
+            for s in stock {
+                if !items.contains(&s.item) {
+                    items.push(s.item.clone());
+                }
+            }
+        }
+    }
+    for e in all_effects(program) {
+        let Some(slot) = out.get_mut(e.var.as_str()) else { continue };
+        if e.op != quillstone_script::AssignOp::Add {
+            continue;
+        }
+        match (&e.value, slot.as_mut()) {
+            (Expr::Lit(Value::Str(s)), Some(items)) => {
+                if !items.contains(s) {
+                    items.push(s.clone());
+                }
+            }
+            _ => *slot = None,
+        }
+    }
+    out
+}
+
+fn all_effects(program: &Program) -> impl Iterator<Item = &quillstone_script::Effect> {
+    program.ops.iter().flat_map(|op| match op {
+        Op::Set(e) => vec![e],
+        Op::Choice { options } => options.iter().flat_map(|o| &o.effects).collect(),
+        _ => Vec::new(),
+    })
+}
+
 /// The starting points: a first playthrough, then each combination of values the
 /// script assigns its persistent variables (as a later playthrough could have
 /// left them), described for messages. At most 64 in all.
@@ -445,6 +563,13 @@ fn playthroughs(program: &Program) -> Vec<(Option<String>, Vars)> {
                 if !values.contains(v) {
                     values.push(v.clone());
                 }
+            }
+        }
+        // a later playthrough may have collected every item the script ever adds
+        if let Some(Some(all)) = added_items(program).remove(name.as_str()) {
+            let full = Value::List(all);
+            if !values.contains(&full) {
+                values.push(full);
             }
         }
         choices.push((name, values));
@@ -597,6 +722,53 @@ mod tests {
         assert!(r.situations >= 4, "the hub is visited with and without each pick: {}", r.situations);
     }
 
+    const SHOPPING: &str = "---\ninventory: bag\nvars: { gold: 40, bag: [], met: false }\n---\n::item{id=key price=15}\n::item{id=lamp price=30}\n::item{id=map price=5}\n# hub\n::shop{pay=gold into=bag}\n- key\n- lamp\n- map{if met}\n::\n::if{bag has \"key\"}\nKey.\n::endif\n::choice\n- [Back to the shop](#hub)\n- [Go](#out)\n::\n# out\nBye.\n::end\n";
+
+    #[test]
+    fn the_market_demo_is_clean() {
+        let r = test(include_str!("../../../examples/market.quill.md"));
+        assert!(r.errors.is_empty() && r.warnings.is_empty() && !r.partial, "{:#?}", (r.errors, r.warnings));
+        assert_eq!(r.endings.len(), 2);
+    }
+
+    #[test]
+    fn a_shop_hub_is_finite_and_every_purchase_and_leaving_are_branches() {
+        let r = test(SHOPPING);
+        assert!(!r.partial && r.errors.is_empty(), "{r:?}");
+        // 40 gold buys the key, or the lamp, not both: three bags (none, key, lamp), each at the
+        // shop and after it
+        assert!(r.situations >= 6 && r.situations < 40, "{}", r.situations);
+        assert_eq!(r.endings.len(), 1);
+        let w = messages(&r.warnings);
+        assert!(w.iter().any(|m| m.contains("\"map\" is never offered in this shop")), "{w:?}");
+    }
+
+    #[test]
+    fn a_shop_that_can_be_bought_out_forever_still_terminates() {
+        // 100 gold, three items of 10, and a way back: money only goes down, items are bought once
+        let src = "---\nvars: { gold: 100, bag: [] }\n---\n::item{id=a price=10}\n::item{id=b price=10}\n::item{id=c price=10}\n# hub\n::shop{pay=gold into=bag}\n- a\n- b\n- c\n::\n::choice\n- [Again](#hub)\n- [Done](#out)\n::\n# out\nBye.\n";
+        let r = explore(&parse(src).unwrap(), 10_000);
+        assert!(!r.partial && r.errors.is_empty(), "{r:?}");
+        assert!(r.situations <= 40, "{}", r.situations);
+    }
+
+    #[test]
+    fn items_a_shop_sells_count_as_added_and_a_misspelt_one_is_still_caught() {
+        let src = "---\nvars: { gold: 9, bag: [] }\n---\n::item{id=key price=1}\n::shop{pay=gold into=bag}\n- key\n::\n::if{bag has \"key\" and bag has \"kye\"}\nx\n::endif\n";
+        let w = messages(&test(src).warnings);
+        assert!(w.iter().any(|m| m.contains("`bag has \"kye\"` can never be true")), "{w:?}");
+        assert!(!w.iter().any(|m| m.contains("\"key\"")), "{w:?}");
+    }
+
+    #[test]
+    fn a_pay_variable_nothing_sets_is_flagged_and_an_inventory_screen_is_one_advance() {
+        let src = "---\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=a price=1}\n::shop{pay=goldd into=bag}\n- a\n::\n::inventory\nEnd.\n";
+        let r = test(src);
+        let w = messages(&r.warnings);
+        assert!(w.iter().any(|m| m.contains("`goldd` is never set")), "{w:?}");
+        assert!(r.errors.is_empty() && !r.partial && r.endings.len() == 1, "{r:?}");
+    }
+
     #[test]
     fn empty_choices_and_stray_returns_are_warned_about() {
         let src = "# a\n::choice\n- [Only if](#a){if never}\n::\n::return\n";
@@ -639,5 +811,82 @@ mod tests {
         let r = explore(&parse(src).unwrap(), 50);
         assert!(r.partial && r.situations == 50);
         assert!(r.errors.is_empty(), "no 'stuck' guesses from a partial run: {:?}", messages(&r.errors));
+    }
+
+    // ---- list variables ----
+
+    const SHOP: &str = "---\nvars: { gold: 20, inv: [] }\n---\n# hub\n::choice\n- [Key](#hub){gold -= 10, inv += \"key\", if gold >= 10 and not inv has \"key\"}\n- [Lamp](#hub){gold -= 10, inv += \"lamp\", if gold >= 10 and not inv has \"lamp\"}\n- [Leave](#bye)\n::\n# bye\nBye.\n";
+
+    #[test]
+    fn a_shop_hub_with_buy_options_terminates() {
+        let r = test(SHOP);
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert!(!r.partial);
+    }
+
+    #[test]
+    fn lists_with_the_same_items_in_another_order_are_one_situation() {
+        // key-then-lamp and lamp-then-key hold the same set and the same gold
+        let src = "---\nvars: { inv: [] }\n---\n# hub\n::choice\n- [A](#hub){inv += \"a\", if not inv has \"a\"}\n- [B](#hub){inv += \"b\", if not inv has \"b\"}\n- [Leave](#bye)\n::\n# bye\nBye.\n";
+        let r = test(src);
+        // {}, {a}, {b}, {a,b} at the hub, then the same four waiting at "Bye." and finished: 12
+        // (without set-equality {a,b} and {b,a} would be two situations each time)
+        assert_eq!(r.situations, 12, "{:?}", messages(&r.warnings));
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn more_items_mean_more_situations_but_the_limit_still_stops_the_search() {
+        let mut src = String::from("---\nvars: { inv: [] }\n---\n# hub\n::choice\n");
+        for i in 0..12 {
+            src.push_str(&format!("- [Item {i}](#hub){{inv += \"i{i}\", if not inv has \"i{i}\"}}\n"));
+        }
+        src.push_str("- [Leave](#bye)\n::\n# bye\nBye.\n");
+        let r = explore(&parse(&src).unwrap(), 500);
+        assert!(r.partial && r.situations == 500, "2^12 subsets stop at the limit");
+    }
+
+    #[test]
+    fn an_item_tested_but_never_added_is_a_likely_typo() {
+        let src = "---\nvars: { inv: [start] }\n---\n# a\n::set{inv += \"key\"}\n::if{inv has \"kye\"}\nHm.\n::endif\n::if{inv has \"key\" and inv has \"start\"}\nOk.\n::endif\n::choice\n- [Go](#a){if inv has \"kye\"}\n- [Done](#z)\n::\n# z\nEnd.\n";
+        let r = test(src);
+        let w = messages(&r.warnings);
+        assert_eq!(w.iter().filter(|m| m.contains("\"kye\"")).count(), 1, "once per item: {w:?}");
+        assert!(w.iter().any(|m| m.starts_with("6: `inv has \"kye\"` can never be true")), "{w:?}");
+        assert!(!w.iter().any(|m| m.contains("\"key\"") || m.contains("\"start\"")), "{w:?}");
+    }
+
+    #[test]
+    fn a_computed_add_silences_the_typo_check() {
+        let src = "---\nvars: { inv: [], pick: \"x\" }\n---\n# a\n::set{inv += pick}\n::if{inv has \"anything\"}\nHm.\n::endif\n";
+        let r = test(src);
+        assert!(!messages(&r.warnings).iter().any(|m| m.contains("never be true")), "{:?}", messages(&r.warnings));
+    }
+
+    #[test]
+    fn list_variables_count_as_set_and_read() {
+        // read by `has` and shown in text, set only by `+=`: no "never set" warnings
+        let src = "---\nvars: { inv: [] }\n---\n# a\n::set{inv += \"a\"}\nBag {inv}.\n::if{inv has \"a\"}\nYes.\n::endif\n";
+        let r = test(src);
+        assert!(r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+    }
+
+    #[test]
+    fn persistent_lists_are_also_tried_full() {
+        let src = "---\npersistent: { got: [] }\n---\n# a\n::set{got += \"x\"}\n::if{got has \"y\"}\nH.\n::endif\n";
+        let p = parse(src).unwrap();
+        let starts = playthroughs(&p);
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[1].1["got"], Value::List(vec!["x".into()]));
+        assert!(starts[1].0.as_deref().unwrap().contains("got = x"));
+        let big = format!("---\npersistent: {{ {} }}\n---\nHi.\n", (0..10).map(|i| format!("l{i}: []")).collect::<Vec<_>>().join(", "));
+        assert!(playthroughs(&parse(&big).unwrap()).len() <= 64);
+    }
+
+    #[test]
+    fn the_shop_demo_is_clean() {
+        let r = test(include_str!("../../../examples/shop.quill.md"));
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
+        assert!(!r.partial && r.endings.len() == 1);
     }
 }

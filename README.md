@@ -6,7 +6,7 @@ markdown, and seamless video playback is a first-class feature.
 
 **What it does:** characters and sprites with fades, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
-conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables and `call`/`return`, bold/italic/colour text, full
+conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables and list variables, items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery and music
 room, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
@@ -104,6 +104,7 @@ double-click the exe. If it can't start, the reason is also written to
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
 | Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, Main menu, Quit |
+| I | the inventory, in games that have one (Esc, right-click or I closes it) |
 | F11 | fullscreen |
 | Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
 
@@ -117,7 +118,7 @@ around. Building on Linux needs libudev's development files for this
 The game opens at a main menu (Start, Continue, Load, Extras when the game has a
 gallery or music room, Settings, Quit) and
 returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
-Q.Save, Q.Load, Settings) does the same with the mouse. The game saves automatically
+Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same with the mouse. The game saves automatically
 whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
 Linux: `~/.local/share/quillstone/<game>/`).
@@ -191,7 +192,9 @@ is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
 
 See [SCRIPT.md](SCRIPT.md) for every command, conditions, variables and flow control,
 and `examples/demo.quill.md` for a script that uses them all (`examples/hotspots.quill.md`
-shows hotspots: a map, a collectible and an exit).
+shows hotspots: a map, a collectible and an exit; `examples/shop.quill.md` shows a list
+variable as an inventory in a shop; `examples/market.quill.md` and `examples/market_theme.txt`
+show items, the built-in inventory and shop screens, and a theme that restyles them).
 
 ## Layout
 

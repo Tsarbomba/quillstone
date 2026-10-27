@@ -210,9 +210,9 @@ impl Game<'_> {
                 self.session = session;
                 // A fresh view: nothing of the old scene (line, fades) may linger.
                 self.fresh_view();
-                self.show(&cmds);
                 self.in_story = true;
                 self.screen = Screen::Story;
+                self.show(&cmds); // may open the screen the save was waiting at
                 self.auto = false;
                 self.notify("Loaded");
             }

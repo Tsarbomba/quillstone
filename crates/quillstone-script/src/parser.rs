@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use crate::expr::{is_ident, is_keyword, parse_effect, parse_expr, parse_value, split_top_level};
+use crate::expr::{is_ident, is_keyword, parse_effect, parse_expr, parse_list, parse_value, split_top_level};
 use crate::ops::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
 }
 
 const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, sfx, voice, wait, video, \
-                        choice, hotspots, jump, call, return, set, if, elif, else, endif, end";
+                        choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -258,6 +258,7 @@ impl Parser {
     // ---- front matter -------------------------------------------------
 
     fn front_matter(&mut self, lines: &[&str]) {
+        let mut inventory: Option<(usize, String)> = None;
         for (idx, raw) in lines.iter().enumerate() {
             let line = idx + 2; // line 1 is the opening `---`
             let t = raw.trim();
@@ -276,11 +277,25 @@ impl Parser {
                 "vars" => self.front_vars(line, val, false),
                 "persistent" => self.front_vars(line, val, true),
                 "gallery" | "music_room" => self.front_list(line, key, val),
+                "inventory" => match unquote(val) {
+                    name if is_ident(name) => inventory = Some((line, name.to_string())),
+                    _ => self.err(line, "`inventory` names a list variable, like `inventory: bag`"),
+                },
                 "voice" => match unquote(val).trim_end_matches(['/', '\\']) {
                     "" => self.err(line, "`voice` needs a folder, like `voice: voice`"),
                     folder => self.program.voice_folder = Some(folder.to_string()),
                 },
                 other => self.err(line, format!("unknown front matter key `{other}`")),
+            }
+        }
+        // `vars:` may come after it, so the list is checked once everything is read.
+        if let Some((line, name)) = inventory {
+            match self.program.vars.get(&name) {
+                Some(Value::List(_)) => self.program.inventory = Some(name),
+                _ => self.err(
+                    line,
+                    format!("`inventory: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"),
+                ),
             }
         }
     }
@@ -297,7 +312,7 @@ impl Parser {
                 Some((name, _)) if is_keyword(name.trim()) => {
                     self.err(line, format!("`{}` is a keyword and can't be a variable name", name.trim()))
                 }
-                Some((name, v)) if is_ident(name.trim()) => match parse_value(v.trim()) {
+                Some((name, v)) if is_ident(name.trim()) => match if v.trim().starts_with('[') { parse_list(v) } else { parse_value(v.trim()) } {
                     Ok(value) => {
                         let name = name.trim().to_string();
                         let both = self.program.persistent.contains(&name) != persistent;
@@ -326,6 +341,40 @@ impl Parser {
             if !list.iter().any(|p| p == item) {
                 list.push(item.to_string());
             }
+        }
+    }
+
+    // ---- list variables ---------------------------------------------------
+
+    /// `has` needs a list variable declared in the front matter.
+    fn check_expr(&self, e: &Expr) -> Result<(), String> {
+        let mut tests = Vec::new();
+        e.has_tests(&mut tests);
+        for (name, _) in tests {
+            match self.program.vars.get(name) {
+                Some(Value::List(_)) => {}
+                Some(_) => return Err(format!("`{name} has ...`: `{name}` is not a list")),
+                None => {
+                    let msg = format!("`{name} has ...`: `{name}` is not a list (declare it in the front matter: `vars: {{ {name}: [] }}`)");
+                    return Err(msg);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A declared list changes only by `+=` / `-=` of text.
+    fn check_effect(&self, e: &Effect) -> Result<(), String> {
+        self.check_expr(&e.value)?;
+        if !matches!(self.program.vars.get(&e.var), Some(Value::List(_))) {
+            return Ok(());
+        }
+        let var = &e.var;
+        match (e.op, &e.value) {
+            (AssignOp::Set, _) => Err(format!("`{var}` is a list: change it with `{var} += \"item\"` or `{var} -= \"item\"`, not `=`")),
+            (_, Expr::Lit(Value::Str(s))) if !s.is_empty() => Ok(()),
+            (_, Expr::Lit(_)) => Err(format!("`{var}` is a list: `+=` and `-=` take a non-empty text, like `{var} += \"key\"`")),
+            _ => Ok(()), // a variable or other expression: only text works, anything else is ignored
         }
     }
 
@@ -385,7 +434,7 @@ impl Parser {
         let line = i + 1;
         let body = &lines[i].trim()[2..];
         if body.trim().is_empty() {
-            self.err(line, "stray `::` (it only closes a `::choice` or `::hotspots` block)");
+            self.err(line, "stray `::` (it only closes a `::choice`, `::hotspots` or `::shop` block)");
             return i;
         }
         let name_len = body
@@ -409,6 +458,11 @@ impl Parser {
         match name {
             "choice" => return self.choice(lines, i, inner, false),
             "hotspots" => return self.choice(lines, i, inner, true),
+            "shop" => return self.shop(lines, i, inner),
+            "item" => {
+                self.item(line, inner);
+                return i;
+            }
             "set" => {
                 let parts: Vec<&str> =
                     split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()).collect();
@@ -416,7 +470,7 @@ impl Parser {
                     self.err(line, "`::set` needs an assignment like `{trust+=1}`");
                 }
                 for part in parts {
-                    match parse_effect(part) {
+                    match parse_effect(part).and_then(|e| self.check_effect(&e).map(|()| e)) {
                         Ok(e) => self.push(Op::Set(e), line),
                         Err(m) => self.err(line, m),
                     }
@@ -435,13 +489,18 @@ impl Parser {
                 self.elif(line, inner);
                 return i;
             }
-            "else" | "endif" | "return" => {
+            "else" | "endif" | "return" | "inventory" => {
                 if !inner.is_empty() {
                     self.err(line, format!("`::{name}` takes no attributes"));
                 }
                 match name {
                     "else" => self.else_branch(line),
                     "endif" => self.endif(line),
+                    "inventory" if self.program.inventory.is_none() => self.err(
+                        line,
+                        "`::inventory` needs a list to show: add `inventory: <list variable>` to the front matter",
+                    ),
+                    "inventory" => self.push(Op::Inventory, line),
                     _ => self.push(Op::Return, line),
                 }
                 return i;
@@ -622,7 +681,7 @@ impl Parser {
                 }
                 let cond = match a.value("if") {
                     None => None,
-                    Some(c) => match parse_expr(&c) {
+                    Some(c) => match parse_expr(&c).and_then(|e| self.check_expr(&e).map(|()| e)) {
                         Ok(c) => Some(c),
                         Err(m) => {
                             self.err(line, m);
@@ -752,6 +811,163 @@ impl Parser {
         self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites });
     }
 
+    /// `::item{id=key name="Brass key" icon=assets/key.png price=15 text="..."}`
+    fn item(&mut self, line: usize, inner: &str) {
+        let mut a = match Attrs::parse(inner) {
+            Ok(a) => a,
+            Err(m) => return self.err(line, m),
+        };
+        let (id, name, icon) = (a.value("id"), a.value("name"), a.value("icon"));
+        let (price, text) = (a.value("price"), a.value("text"));
+        if let Some(extra) = a.leftover(&[]) {
+            let msg = format!("unknown attribute `{extra}` for `::item` (it takes: id, name, icon, price, text)");
+            return self.err(line, msg);
+        }
+        let Some(id) = id else { return self.err(line, "`::item` needs `id=...`") };
+        if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return self.err(line, format!("item id `{id}` must be letters, digits, `_` and `-`"));
+        }
+        if self.program.items.contains_key(&id) {
+            return self.err(line, format!("item `{id}` is declared twice"));
+        }
+        let icon = match icon.map(|i| check_image_path(&i, "icon", "an item icon")).transpose() {
+            Ok(i) => i,
+            Err(m) => return self.err(line, m),
+        };
+        let price = match price.map(|p| parse_price(&p)).transpose() {
+            Ok(p) => p,
+            Err(m) => return self.err(line, m),
+        };
+        let name = name.filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
+        let item = Item { id: id.clone(), name, icon, price, text: text.unwrap_or_default(), line };
+        self.program.items.insert(id, item);
+    }
+
+    /// `::shop{pay=gold into=inventory}` and its `- key{price=20, if met}` lines.
+    fn shop(&mut self, lines: &[&str], start: usize, inner: &str) -> usize {
+        let line = start + 1;
+        let mut a = match Attrs::parse(inner) {
+            Ok(a) => a,
+            Err(m) => {
+                self.err(line, m);
+                Attrs(Vec::new())
+            }
+        };
+        let (pay, into) = (a.value("pay"), a.value("into"));
+        if let Some(extra) = a.leftover(&[]) {
+            self.err(line, format!("unknown attribute `{extra}` for `::shop` (it takes: pay, into)"));
+        }
+        let pay = match pay {
+            Some(p) if is_ident(&p) && !is_keyword(&p) => match self.program.vars.get(&p) {
+                None | Some(Value::Int(_)) => Some(p),
+                Some(_) => {
+                    self.err(line, format!("`pay={p}`: `{p}` must be a whole-number variable"));
+                    None
+                }
+            },
+            Some(p) => {
+                self.err(line, format!("`pay={p}` must name a variable"));
+                None
+            }
+            None => {
+                self.err(line, "`::shop` needs `pay=` (the number variable that pays, like `pay=gold`)");
+                None
+            }
+        };
+        let into = match into {
+            Some(l) if matches!(self.program.vars.get(&l), Some(Value::List(_))) => Some(l),
+            Some(l) => {
+                let msg = format!("`into={l}`: `{l}` is not a list (declare it in the front matter: `vars: {{ {l}: [] }}`)");
+                self.err(line, msg);
+                None
+            }
+            None => {
+                self.err(line, "`::shop` needs `into=` (the list that receives what is bought, like `into=inventory`)");
+                None
+            }
+        };
+
+        let mut stock: Vec<ShopEntry> = Vec::new();
+        let mut lines_seen = 0;
+        let mut j = start + 1;
+        let mut closed = false;
+        while j < lines.len() {
+            let t = lines[j].trim();
+            if t == "::" {
+                closed = true;
+                break;
+            }
+            if t.starts_with("<!--") {
+                if !t.ends_with("-->") {
+                    self.err(j + 1, "a comment inside `::shop` must open and close on one line");
+                }
+            } else if !t.is_empty() {
+                lines_seen += 1;
+                match self.shop_entry(t) {
+                    Ok(e) if stock.iter().any(|s| s.item == e.item) => {
+                        self.err(j + 1, format!("`{}` is in this shop twice", e.item));
+                    }
+                    Ok(e) => stock.push(e),
+                    Err(m) => self.err(j + 1, m),
+                }
+            }
+            j += 1;
+        }
+        if !closed {
+            self.err(line, "`::shop` is never closed with a line containing only `::`");
+        }
+        if lines_seen == 0 {
+            self.err(line, "`::shop` has no items");
+        } else if stock.is_empty() {
+            // every line was already reported
+        } else if let (Some(pay), Some(into)) = (pay, into) {
+            self.push(Op::Shop { pay, into, stock }, line);
+        }
+        j
+    }
+
+    /// Parse `- key` or `- key{price=20, if met}`.
+    fn shop_entry(&mut self, t: &str) -> Result<ShopEntry, String> {
+        let t = t
+            .strip_prefix("- ")
+            .or_else(|| t.strip_prefix("* "))
+            .ok_or("shop lines must start with `- `")?
+            .trim();
+        let end = t.find(|c: char| c == '{' || c.is_whitespace()).unwrap_or(t.len());
+        let (key, tail) = (&t[..end], t[end..].trim());
+        let Some(item) = self.program.items.get(key) else {
+            return Err(format!("unknown item `{key}` (declare it first with `::item{{id={key}}}`)"));
+        };
+        let mut price = item.price;
+        let mut cond = None;
+        if !tail.is_empty() {
+            let inner = tail
+                .strip_prefix('{')
+                .and_then(|x| x.strip_suffix('}'))
+                .ok_or_else(|| format!("unexpected `{tail}` after the item (settings go in `{{...}}`)"))?;
+            let mut inner = inner.to_string();
+            if let Some(p) = take_attr(&mut inner, "price") {
+                price = Some(parse_price(&p)?);
+            }
+            for part in split_top_level(&inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
+                let cond_text =
+                    part.strip_prefix("if").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace));
+                match cond_text {
+                    Some(c) => {
+                        let e = parse_expr(c)?;
+                        self.check_expr(&e)?;
+                        cond = Some(e);
+                    }
+                    None => return Err(format!("unexpected `{part}` (a shop line takes `price=` and `if condition`)")),
+                }
+            }
+        }
+        let price = price.ok_or_else(|| {
+            format!("`{key}` has no price: give the item a `price=` or write `- {key}{{price=10}}`")
+        })?;
+        Ok(ShopEntry { item: key.to_string(), price, cond })
+    }
+
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
         match a.value(key) {
             Some(v) if !v.is_empty() => Some(v),
@@ -826,7 +1042,7 @@ impl Parser {
     // ---- if / elif / else / endif ---------------------------------------
 
     fn condition(&mut self, line: usize, text: &str) -> Expr {
-        match parse_expr(text) {
+        match parse_expr(text).and_then(|e| self.check_expr(&e).map(|()| e)) {
             Ok(e) => e,
             Err(m) => {
                 self.err(line, m);
@@ -1004,7 +1220,9 @@ impl Parser {
                     .strip_prefix("if")
                     .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace));
                 if let Some(c) = cond_text {
-                    cond = Some(parse_expr(c)?);
+                    let e = parse_expr(c)?;
+                    self.check_expr(&e)?;
+                    cond = Some(e);
                 } else if item == "once" {
                     once = true;
                 } else if item == "hidden" {
@@ -1013,7 +1231,9 @@ impl Parser {
                     }
                     hidden = true;
                 } else {
-                    effects.push(parse_effect(item)?);
+                    let e = parse_effect(item)?;
+                    self.check_effect(&e)?;
+                    effects.push(e);
                 }
             }
         }
@@ -1083,11 +1303,25 @@ fn parse_rect(s: &str) -> Result<[f32; 4], String> {
 }
 
 fn check_hotspot_image(path: &str) -> Result<String, String> {
+    check_image_path(path, "image", "a hotspot image")
+}
+
+/// `path` must name a .png, .jpg or .webp file (`key` and `what` are for the message).
+fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String> {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !path.contains('.') || !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
-        return Err(format!("bad `image={path}` (a hotspot image must be a .png, .jpg or .webp file)"));
+        return Err(format!("bad `{key}={path}` ({what} must be a .png, .jpg or .webp file)"));
     }
     Ok(path.to_string())
+}
+
+/// A price: a whole number, 0 or more.
+fn parse_price(s: &str) -> Result<i64, String> {
+    s.trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|p| *p >= 0)
+        .ok_or_else(|| format!("bad `price={s}` (a price is a whole number, 0 or more)"))
 }
 
 /// `0.3` or `30%` as 0..1.
@@ -1720,6 +1954,119 @@ mod tests {
         assert_eq!(p.images_ahead(0, 10), ["assets/key.png"]);
     }
 
+    const ITEMS: &str = "---\ntitle: T\ninventory: bag\nvars: { gold: 40, bag: [], met: false, name: \"x\" }\n---\n::item{id=key name=\"Brass key\" icon=assets/key.png price=15 text=\"Opens the clock tower.\"}\n::item{id=map}\n";
+
+    #[test]
+    fn items_have_a_name_an_icon_a_price_and_a_text() {
+        let p = ok(&format!("{ITEMS}# a\nHi.\n"));
+        let key = &p.items["key"];
+        assert_eq!(
+            (key.name.as_str(), key.icon.as_deref(), key.price, key.text.as_str(), key.line),
+            ("Brass key", Some("assets/key.png"), Some(15), "Opens the clock tower.", 6)
+        );
+        let map = &p.items["map"];
+        assert_eq!((map.name.as_str(), map.icon.as_deref(), map.price, map.text.as_str()), ("map", None, None, ""));
+        assert_eq!(p.inventory.as_deref(), Some("bag"));
+        assert_eq!(p.item_icons().collect::<Vec<_>>(), [(6, "assets/key.png")]);
+    }
+
+    #[test]
+    fn the_market_demo_parses_with_items_a_shop_and_an_inventory_call() {
+        let p = ok(include_str!("../../../examples/market.quill.md"));
+        assert_eq!(p.items.len(), 4);
+        assert_eq!(p.inventory.as_deref(), Some("pack"));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Shop { stock, .. } if stock.len() == 4 && stock[3].cond.is_some() && stock[3].price == 18)));
+        assert!(p.ops.contains(&Op::Inventory));
+        assert_eq!(p.item_icons().count(), 4);
+        assert!(p.unknown_items().is_empty());
+    }
+
+    #[test]
+    fn the_inventory_front_matter_may_come_before_vars_and_needs_a_list() {
+        assert!(ok("---\ninventory: bag\nvars: { bag: [] }\n---\n").inventory.is_some());
+        let e = |src: &str, line: usize, needle: &str| {
+            let errors = errs(src);
+            assert!(errors.iter().any(|e| e.line == line && e.message.contains(needle)), "{src:?}: {errors:?}");
+        };
+        e("---\ninventory: bag\n---\n", 2, "must name a list");
+        e("---\ninventory: bag\nvars: { bag: 3 }\n---\n", 2, "must name a list");
+        e("---\ninventory: two words\n---\n", 2, "names a list variable");
+    }
+
+    #[test]
+    fn the_inventory_command_needs_an_inventory() {
+        let p = ok("---\ninventory: bag\nvars: { bag: [] }\n---\n::inventory\n");
+        assert_eq!(p.ops[0], Op::Inventory);
+        let errors = errs("::inventory\n");
+        assert!(errors.iter().any(|e| e.line == 1 && e.message.contains("`inventory: <list variable>`")), "{errors:?}");
+        let errors = errs("---\ninventory: bag\nvars: { bag: [] }\n---\n::inventory{x}\n");
+        assert!(errors.iter().any(|e| e.line == 5 && e.message.contains("takes no attributes")), "{errors:?}");
+    }
+
+    #[test]
+    fn item_errors_name_the_line() {
+        let e = |src: &str, line: usize, needle: &str| {
+            let errors = errs(src);
+            assert!(errors.iter().any(|e| e.line == line && e.message.contains(needle)), "{src:?}: {errors:?}");
+        };
+        e("::item{name=x}\n", 1, "needs `id=");
+        e("::item{id=\"a b\"}\n", 1, "must be letters");
+        e("::item{id=a}\n::item{id=a}\n", 2, "declared twice");
+        e("::item{id=a price=-3}\n", 1, "bad `price=-3`");
+        e("::item{id=a price=1.5}\n", 1, "bad `price=1.5`");
+        e("::item{id=a price=cheap}\n", 1, "bad `price=cheap`");
+        e("::item{id=a icon=a.gif}\n", 1, "bad `icon=a.gif`");
+        e("::item{id=a icon=a}\n", 1, "bad `icon=a`");
+        e("::item{id=a colour=red}\n", 1, "unknown attribute `colour`");
+    }
+
+    const SHOP: &str = "---\nvars: { gold: 40, bag: [], met: false, name: \"x\" }\n---\n::item{id=key price=15}\n::item{id=lamp price=8}\n::item{id=free}\n# a\n";
+
+    #[test]
+    fn a_shop_lists_items_with_optional_price_and_condition() {
+        let p = ok(&format!("{SHOP}::shop{{pay=gold into=bag}}\n- key\n- lamp{{price=20, if met}}\n* free{{price=0}}\n::\nDone.\n"));
+        let Op::Shop { pay, into, stock } = &p.ops[0] else { panic!("not a shop: {:?}", p.ops[0]) };
+        assert_eq!((pay.as_str(), into.as_str()), ("gold", "bag"));
+        let seen: Vec<(&str, i64, bool)> = stock.iter().map(|s| (s.item.as_str(), s.price, s.cond.is_some())).collect();
+        assert_eq!(seen, [("key", 15, false), ("lamp", 20, true), ("free", 0, false)]);
+        assert_eq!(p.lines[0], 8);
+        assert!(matches!(p.ops[1], Op::Say { .. }));
+    }
+
+    #[test]
+    fn shop_errors_name_the_line() {
+        let e = |body: &str, line: usize, needle: &str| {
+            let src = format!("{SHOP}{body}");
+            let errors = errs(&src);
+            assert!(errors.iter().any(|e| e.line == line && e.message.contains(needle)), "{body:?}: {errors:?}");
+        };
+        e("::shop{pay=gold into=bag}\n- nope\n::\n", 9, "unknown item `nope`");
+        e("::shop{pay=gold into=bag}\n- free\n::\n", 9, "`free` has no price");
+        e("::shop{pay=gold into=bag}\n- key{price=-1}\n::\n", 9, "bad `price=-1`");
+        e("::shop{pay=gold into=bag}\n- key{price=x}\n::\n", 9, "bad `price=x`");
+        e("::shop{pay=gold into=bag}\n- key{bogus}\n::\n", 9, "unexpected `bogus`");
+        e("::shop{pay=gold into=bag}\n- key{if nosuch has \"x\"}\n::\n", 9, "not a list");
+        e("::shop{pay=gold into=bag}\n- key\n- key\n::\n", 10, "in this shop twice");
+        e("::shop{pay=gold into=bag}\nkey\n::\n", 9, "must start with `- `");
+        e("::shop{pay=gold into=bag}\n::\n", 8, "has no items");
+        e("::shop{pay=gold into=bag}\n- key\n", 8, "never closed");
+        e("::shop{pay=name into=bag}\n- key\n::\n", 8, "must be a whole-number variable");
+        e("::shop{pay=gold into=gold}\n- key\n::\n", 8, "is not a list");
+        e("::shop{pay=gold into=nolist}\n- key\n::\n", 8, "is not a list");
+        e("::shop{pay=gold}\n- key\n::\n", 8, "needs `into=");
+        e("::shop{into=bag}\n- key\n::\n", 8, "needs `pay=");
+        e("::shop{pay=gold into=bag extra=1}\n- key\n::\n", 8, "unknown attribute `extra`");
+    }
+
+    #[test]
+    fn items_that_nothing_declares_are_found_in_the_inventory_list_only() {
+        let p = ok(&format!(
+            "{ITEMS}# a\n::set{{bag += \"key\"}}\n::set{{bag += \"kye\"}}\n::set{{other += \"zzz\"}}\n::if{{bag has \"lamp\"}}\nx\n::endif\n"
+        ));
+        let found: Vec<String> = p.unknown_items().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(found, ["kye", "lamp"]);
+    }
+
     #[test]
     fn hidden_is_a_bare_hotspot_option() {
         let p = ok("# a\n::hotspots\n- [Key](#a){rect=0,0,0.1,0.1, hidden, once, found=true}\n- [Door](#a){rect=0.5,0.5,0.1,0.1}\n::\n");
@@ -1849,5 +2196,56 @@ mod tests {
         assert_eq!(parse_position("center").unwrap(), 0.5);
         assert_eq!(parse_position("50%").unwrap(), 0.5);
         assert!(parse_position("150%").is_err() && parse_position("-1").is_err());
+    }
+
+    // ---- list variables ----
+
+    fn list(items: &[&str]) -> Value {
+        Value::List(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn lists_are_declared_in_vars_and_persistent() {
+        let p = ok("---\nvars: { gold: 30, inventory: [], bag: [map, \"magic key\", map], note: \"a, b\" }\npersistent: { seen_items: [] }\n---\nHi.\n");
+        assert_eq!(p.vars["inventory"], list(&[]));
+        assert_eq!(p.vars["bag"], list(&["map", "magic key"]));
+        assert_eq!(p.vars["gold"], Value::Int(30));
+        assert_eq!(p.vars["note"], Value::Str("a, b".into()));
+        assert_eq!(p.vars["seen_items"], list(&[]));
+        assert!(p.persistent.contains("seen_items"));
+        assert!(has_err("---\nvars: { inv: [a,,b] }\n---\nHi.\n", "bad list item"));
+    }
+
+    #[test]
+    fn has_and_list_effects_compile() {
+        let src = "---\nvars: { inv: [] }\n---\n::set{inv += \"key\", inv -= 'old'}\n::if{inv has \"key\" and not inv has \"x\"}\nYes.\n::endif\n::jump{to=a if=\"inv has 'key'\"}\n# a\n::choice\n- [Buy](#a){inv += \"gem\", if not inv has \"gem\"}\n::\n";
+        let p = ok(src);
+        let Op::Set(e) = &p.ops[0] else { panic!() };
+        assert_eq!((e.var.as_str(), e.op, &e.value), ("inv", AssignOp::Add, &Expr::Lit(Value::Str("key".into()))));
+        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options } => Some(options), _ => None }).unwrap();
+        assert_eq!(options[0].effects[0].op, AssignOp::Add);
+        let has = |s: &str| Expr::Has("inv".into(), Box::new(Expr::Lit(Value::Str(s.into()))));
+        assert_eq!(options[0].cond, Some(Expr::Not(Box::new(has("gem")))));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Jump { cond: Some(c), .. } if *c == has("key"))));
+    }
+
+    #[test]
+    fn list_mistakes_are_errors_with_line_numbers() {
+        let head = "---\nvars: { inv: [], gold: 5 }\n---\n";
+        let line = |tail: &str, needle: &str| {
+            let e = errs(&format!("{head}{tail}"));
+            let hit = e.iter().find(|e| e.message.contains(needle));
+            assert!(hit.is_some(), "{tail:?}: {e:?}");
+            hit.unwrap().line
+        };
+        assert_eq!(line("Hi.\n::set{inv = \"x\"}\n", "not `=`"), 5);
+        assert_eq!(line("Hi.\n::set{inv += 3}\n", "non-empty text"), 5);
+        assert_eq!(line("::set{inv -= true}\n", "non-empty text"), 4);
+        assert_eq!(line("::set{inv += \"\"}\n", "non-empty text"), 4);
+        assert_eq!(line("# a\n::choice\n- [x](#a){inv += \"k\"}\n- [y](#a){inv = 1}\n::\n", "not `=`"), 7);
+        assert_eq!(line("::if{gold has \"x\"}\nHi.\n::endif\n", "not a list"), 4);
+        assert_eq!(line("::if{nothing has \"x\"}\nHi.\n::endif\n", "declare it"), 4);
+        assert_eq!(line("# a\n::jump{to=a if=\"gold has 'x'\"}\n", "not a list"), 5);
+        assert_eq!(line("# a\n::choice\n- [x](#a){if gold has \"x\"}\n::\n", "not a list"), 6);
     }
 }

@@ -12,6 +12,7 @@
 //! The player (`player/`) only translates window events into [`Event`]s and
 //! carries out what comes back, so all of this is unit-tested here.
 
+pub mod bag;
 pub mod extras;
 pub mod game;
 pub mod screens;

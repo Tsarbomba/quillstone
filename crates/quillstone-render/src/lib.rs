@@ -26,7 +26,7 @@ pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
 pub use layout::{
     clip, estimate_lines, letterbox, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
 };
-pub use theme::Theme;
+pub use theme::{CellStyle, Theme};
 pub use view::{
     Align, Background, Dialogue, Draw, InlineImage, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,

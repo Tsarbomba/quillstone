@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{ChoiceOption, Ease, Fit, Op, Program, Value, Vars, Wipe};
+use quillstone_script::{AssignOp, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
 mod persist;
@@ -54,6 +54,13 @@ pub enum Cmd {
     /// (from a `::hotspots` block). Like choices: only the regions currently
     /// available are listed, and the index refers to this list.
     ShowHotspots { spots: Vec<Spot> },
+    /// Show the inventory screen (from `::inventory`) and wait for [`Input::Advance`]
+    /// when the player closes it. What it lists is [`inventory_items`].
+    ShowInventory,
+    /// Show a shop and wait. [`Input::Buy`] buys the item at that index of
+    /// `items` (the list now on offer) and shows the shop again with the new
+    /// money and what is owned; [`Input::Advance`] leaves.
+    ShowShop { pay: String, money: i64, items: Vec<ShopItem> },
     /// The story was stopped by a safety valve (a mistake in the script), and
     /// [`Cmd::Finished`] follows. Says what happened, for the author.
     Stopped { reason: String },
@@ -73,10 +80,34 @@ pub struct Spot {
     pub hidden: bool,
 }
 
+/// An item as the inventory and shop screens show it (see `::item`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemInfo {
+    pub id: String,
+    /// The item's name; the id for an item that was never declared.
+    pub name: String,
+    pub icon: Option<String>,
+    pub text: String,
+    /// The price the item was declared with, if any.
+    pub price: Option<i64>,
+}
+
+/// One item on offer in a shop (see [`Cmd::ShowShop`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShopItem {
+    pub item: ItemInfo,
+    /// What it costs here (the shop line's own price, or the item's).
+    pub price: i64,
+    /// Already in the player's list: it can't be bought again.
+    pub owned: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Advance,
     Choose(usize),
+    /// Buy the item at this index of the shop's offered list.
+    Buy(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,6 +254,77 @@ fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
         .collect()
 }
 
+/// The item `id` as the screens show it. An id that no `::item` declares still
+/// shows, under its own name and without a picture, so nothing in a list is lost.
+pub fn item_info(program: &Program, id: &str) -> ItemInfo {
+    match program.items.get(id) {
+        Some(i) => ItemInfo { id: id.to_string(), name: i.name.clone(), icon: i.icon.clone(), text: i.text.clone(), price: i.price },
+        None => ItemInfo { id: id.to_string(), name: id.to_string(), icon: None, text: String::new(), price: None },
+    }
+}
+
+/// What the inventory screen lists: the items in the game's inventory list, in
+/// the order they were added. Empty when the game has no inventory.
+pub fn inventory_items(program: &Program, vars: &Vars) -> Vec<ItemInfo> {
+    let Some(Value::List(held)) = program.inventory.as_ref().and_then(|name| vars.get(name)) else {
+        return Vec::new();
+    };
+    held.iter().map(|id| item_info(program, id)).collect()
+}
+
+/// Indices of the shop lines currently on offer (their condition, if any, is true).
+fn offered_stock(stock: &[ShopEntry], vars: &Vars) -> Vec<usize> {
+    let on = |c: &Option<Cond>| c.as_ref().is_none_or(|c| c.test(vars));
+    stock.iter().enumerate().filter(|(_, s)| on(&s.cond)).map(|(i, _)| i).collect()
+}
+
+fn money(vars: &Vars, pay: &str) -> i64 {
+    vars.get(pay).and_then(Value::as_int).unwrap_or(0)
+}
+
+fn shop_cmd(program: &Program, pay: &str, into: &str, stock: &[ShopEntry], vars: &Vars) -> Cmd {
+    let held: &[String] = match vars.get(into) {
+        Some(Value::List(items)) => items,
+        _ => &[],
+    };
+    let items = offered_stock(stock, vars)
+        .into_iter()
+        .map(|i| {
+            let s = &stock[i];
+            ShopItem { item: item_info(program, &s.item), price: s.price, owned: held.contains(&s.item) }
+        })
+        .collect();
+    Cmd::ShowShop { pay: pay.to_string(), money: money(vars, pay), items }
+}
+
+/// Buy the `index`th offered item of the shop at `state.pc`: pay and add it to the
+/// list. `false` (and nothing changes) if it is owned, costs more than the player
+/// has, or isn't there, so money can never go below zero.
+fn buy(state: &mut State, program: &Program, index: usize) -> bool {
+    let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return false };
+    let offered = offered_stock(stock, &state.vars);
+    let Some(entry) = offered.get(index).map(|&i| &stock[i]) else { return false };
+    let owned = matches!(state.vars.get(into), Some(Value::List(items)) if items.contains(&entry.item));
+    if owned || entry.price < 0 || entry.price > money(&state.vars, pay) {
+        return false;
+    }
+    let lit = |v| Expr::Lit(v);
+    Effect { var: pay.clone(), op: AssignOp::Sub, value: lit(Value::Int(entry.price)) }.apply(&mut state.vars);
+    Effect { var: into.clone(), op: AssignOp::Add, value: lit(Value::Str(entry.item.clone())) }.apply(&mut state.vars);
+    true
+}
+
+/// The command a waiting op shows, for ops whose screen is built from the script
+/// and the variables (used to rebuild it when a save is read).
+pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option<Cmd> {
+    match op {
+        Op::Choice { options } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
+        Op::Inventory => Some(Cmd::ShowInventory),
+        Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
+        _ => None,
+    }
+}
+
 /// What a choice op shows for the options at `visible`: buttons, or regions for a `::hotspots` block.
 fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
     if options.iter().any(|o| o.area.is_some()) {
@@ -296,8 +398,24 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
 
     if let Some(pending) = state.pending.clone() {
         match (pending, input) {
-            (Cmd::Say { .. } | Cmd::PlayVideo { .. } | Cmd::Wait { .. }, Some(Input::Advance)) => {
+            (
+                Cmd::Say { .. }
+                | Cmd::PlayVideo { .. }
+                | Cmd::Wait { .. }
+                | Cmd::ShowInventory
+                | Cmd::ShowShop { .. },
+                Some(Input::Advance),
+            ) => {
                 state.pc += 1;
+            }
+            (Cmd::ShowShop { .. }, Some(Input::Buy(i))) => {
+                // Stays at the shop: a purchase is a state change, and the screen is shown afresh.
+                if !buy(state, program, i) {
+                    return Vec::new();
+                }
+                let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return Vec::new() };
+                let cmd = shop_cmd(program, pay, into, stock, &state.vars);
+                return block(state, &mut Vec::new(), cmd);
             }
             (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
                 let Some(Op::Choice { options: all }) = program.ops.get(state.pc) else {
@@ -356,6 +474,15 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                     continue;
                 }
                 return block(state, &mut out, choice_cmd(options, &visible, &state.vars));
+            }
+            Op::Inventory => return block(state, &mut out, Cmd::ShowInventory),
+            Op::Shop { pay, into, stock } => {
+                if offered_stock(stock, &state.vars).is_empty() {
+                    state.pc += 1; // nothing on offer: carry on past the block
+                    continue;
+                }
+                let cmd = shop_cmd(program, pay, into, stock, &state.vars);
+                return block(state, &mut out, cmd);
             }
             Op::Image { src, alt } => {
                 state.inline.push((src.clone(), alt.clone()));
@@ -1250,6 +1377,176 @@ vars: { trust: 0 }
         assert!(end.contains(&Cmd::Finished));
     }
 
+    // ---- items, the inventory and shops ---------------------------------------
+
+    const SHOP: &str = "---\ninventory: bag\nvars: { gold: 40, bag: [], met: false }\n---\n::item{id=key name=\"Brass key\" icon=key.png price=15 text=\"Opens it.\"}\n::item{id=lamp price=30}\n::item{id=map price=5}\n# shop\n**A:** Welcome.\n::shop{pay=gold into=bag}\n- key\n- lamp\n- map{price=2, if met}\n::\n**A:** Bye.\n::inventory\n**A:** Done.\n";
+
+    fn shop_of(cmds: &[Cmd]) -> Option<(String, i64, Vec<ShopItem>)> {
+        cmds.iter().find_map(|c| match c {
+            Cmd::ShowShop { pay, money, items } => Some((pay.clone(), *money, items.clone())),
+            _ => None,
+        })
+    }
+
+    fn names(items: &[ShopItem]) -> Vec<(&str, i64, bool)> {
+        items.iter().map(|i| (i.item.name.as_str(), i.price, i.owned)).collect()
+    }
+
+    fn at_shop() -> (Program, Vec<Cmd>) {
+        let p = parse(SHOP).unwrap();
+        let cmds = {
+            let (mut game, _) = Session::start(&p);
+            game.input(Input::Advance)
+        };
+        (p, cmds)
+    }
+
+    #[test]
+    fn a_shop_waits_and_lists_what_is_on_offer_with_prices_and_ownership() {
+        let (_, cmds) = at_shop();
+        let (pay, money, items) = shop_of(&cmds).expect("a shop");
+        assert_eq!((pay.as_str(), money), ("gold", 40));
+        assert_eq!(names(&items), [("Brass key", 15, false), ("lamp", 30, false)], "the map needs `met`");
+        assert_eq!(items[0].item.icon.as_deref(), Some("key.png"));
+        assert_eq!(items[0].item.text, "Opens it.");
+    }
+
+    #[test]
+    fn buying_pays_adds_the_item_and_shows_the_shop_again() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        let again = game.input(Input::Buy(0));
+        let (_, money, items) = shop_of(&again).expect("the shop is shown again");
+        assert_eq!(money, 25);
+        assert_eq!(names(&items), [("Brass key", 15, true), ("lamp", 30, false)]);
+        assert_eq!(game.state().vars["gold"], int(25));
+        assert_eq!(game.state().vars["bag"], Value::List(vec!["key".into()]));
+        assert!(matches!(game.state().pending, Some(Cmd::ShowShop { .. })), "still waiting at the shop");
+        assert_eq!(again.len(), 1, "only the shop is redrawn");
+    }
+
+    #[test]
+    fn what_is_owned_or_unaffordable_cannot_be_bought_and_money_never_goes_negative() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        assert!(game.input(Input::Buy(0)).len() == 1);
+        assert!(game.input(Input::Buy(0)).is_empty(), "owned: a list is a set");
+        assert!(game.input(Input::Buy(1)).is_empty(), "the lamp costs 30 and 25 are left");
+        assert!(game.input(Input::Buy(7)).is_empty(), "no such item");
+        assert_eq!(game.state().vars["gold"], int(25));
+        assert_eq!(game.state().vars["bag"], Value::List(vec!["key".into()]));
+        // exactly enough money is enough
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Buy(0));
+        game.state.vars.insert("gold".into(), int(30));
+        assert!(!game.input(Input::Buy(1)).is_empty());
+        assert_eq!(game.state().vars["gold"], int(0));
+    }
+
+    #[test]
+    fn a_condition_that_becomes_true_adds_the_item_at_its_own_price_and_indices_follow_the_list() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.state.vars.insert("met".into(), Value::Bool(true));
+        let again = game.input(Input::Buy(2)); // the map, third in the offered list: 2 gold
+        assert_eq!(game.state().vars["gold"], int(38));
+        assert_eq!(names(&shop_of(&again).unwrap().2)[2], ("map", 2, true));
+    }
+
+    #[test]
+    fn leaving_continues_after_the_block_and_the_inventory_waits_for_advance() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Buy(0));
+        assert_eq!(lines(&game.input(Input::Advance)), vec!["Bye."]);
+        let inv = game.input(Input::Advance);
+        assert_eq!(inv, vec![Cmd::ShowInventory]);
+        assert!(game.input(Input::Choose(0)).is_empty() && game.input(Input::Buy(0)).is_empty());
+        assert_eq!(lines(&game.input(Input::Advance)), vec!["Done."]);
+    }
+
+    #[test]
+    fn a_shop_with_nothing_on_offer_is_skipped() {
+        let src = "---\nvars: { gold: 1, bag: [], never: false }\n---\n::item{id=a price=1}\n::shop{pay=gold into=bag}\n- a{if never}\n::\n**A:** past it\n";
+        assert_eq!(lines(&run_to_end(src, &[])), vec!["past it"]);
+    }
+
+    #[test]
+    fn rolling_back_takes_a_purchase_back_and_roll_forward_redoes_it() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Buy(0));
+        game.input(Input::Buy(1)); // refused: too dear
+        let back = game.rollback().expect("one step back");
+        assert_eq!(game.state().vars["gold"], int(40), "the purchase is undone");
+        assert_eq!(game.state().vars["bag"], Value::List(Vec::new()));
+        assert_eq!(names(&shop_of(&back).unwrap().2), [("Brass key", 15, false), ("lamp", 30, false)]);
+        let fwd = game.roll_forward().expect("and forward again");
+        assert_eq!(game.state().vars["gold"], int(25));
+        assert_eq!(names(&shop_of(&fwd).unwrap().2)[0], ("Brass key", 15, true));
+        assert!(game.backlog().iter().all(|l| !matches!(l, Logged::Choice(_))), "a purchase isn't dialogue");
+    }
+
+    #[test]
+    fn a_shop_and_the_inventory_survive_a_save_and_load() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Buy(0));
+        let text = game.save();
+        assert!(text.contains("pending shop") && text.contains("input buy 0"));
+        let (mut loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded.state(), game.state());
+        assert_eq!(cmds, game.state().redraw());
+        assert_eq!(names(&shop_of(&cmds).unwrap().2)[0], ("Brass key", 15, true));
+        loaded.input(Input::Buy(1)); // too dear, nothing changes
+        assert_eq!(loaded.state().vars["gold"], int(25));
+        assert!(loaded.rollback().is_some(), "the purchase is still in the loaded history");
+        assert_eq!(loaded.state().vars["gold"], int(40));
+        // and the inventory
+        loaded.input(Input::Advance);
+        loaded.input(Input::Advance);
+        let (back, cmds) = Session::load(&p, &loaded.save()).unwrap();
+        assert_eq!(cmds.last(), Some(&Cmd::ShowInventory));
+        assert!(loaded.save().contains("pending inventory") && back.state().pending == Some(Cmd::ShowInventory));
+    }
+
+    #[test]
+    fn a_shop_save_whose_script_changed_underneath_still_loads() {
+        let p = parse(SHOP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Buy(0));
+        let text = game.save();
+        // the key got a new price and the lamp was dropped: the screen is rebuilt from the new script
+        let edited = SHOP.replace("price=15", "price=10").replace("- lamp\n", "");
+        let p2 = parse(&edited).unwrap();
+        let (_, cmds) = Session::load(&p2, &text).unwrap();
+        assert_eq!(names(&shop_of(&cmds).unwrap().2), [("Brass key", 10, true)]);
+    }
+
+    #[test]
+    fn the_inventory_lists_what_the_list_holds_and_unknown_items_show_by_id() {
+        let p = parse(SHOP).unwrap();
+        let mut vars = p.vars.clone();
+        assert!(inventory_items(&p, &vars).is_empty());
+        vars.insert("bag".into(), Value::List(vec!["lamp".into(), "mystery".into(), "key".into()]));
+        let shown: Vec<(String, Option<String>)> =
+            inventory_items(&p, &vars).into_iter().map(|i| (i.name, i.icon)).collect();
+        assert_eq!(
+            shown,
+            [("lamp".into(), None), ("mystery".into(), None), ("Brass key".into(), Some("key.png".into()))]
+        );
+        let no_inventory = parse("---\nvars: { bag: [x] }\n---\n").unwrap();
+        assert!(inventory_items(&no_inventory, &no_inventory.vars).is_empty());
+    }
+
     // ---- the demo ----------------------------------------------------------
 
     #[test]
@@ -1292,5 +1589,132 @@ vars: { trust: 0 }
         let city = play(&[3, 0]);
         assert!(city.contains(&"The city hums below, a thousand windows still awake.".to_string()));
         assert!(city.contains(&"Thank you for being honest.".to_string()) && city.contains(&lights));
+    }
+
+    // ---- list variables ----
+
+    fn list(items: &[&str]) -> Value {
+        Value::List(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    const BAG: &str = "\
+---
+vars: { inventory: [], item: \"lamp\" }
+---
+# start
+Bag: [{inventory}]
+::choice
+- [Take map](#next){inventory += \"map\"}
+- [Take key twice](#next){inventory += \"key\", inventory += 'key'}
+::
+# next
+Now: [{inventory}]
+::set{inventory += item}
+::set{inventory += \"map\"}
+Then: [{inventory}]
+::set{inventory -= \"map\"}
+::set{inventory -= \"never had it\"}
+::if{inventory has \"lamp\" and not inventory has \"map\"}
+Lamp, no map.
+::endif
+After: [{inventory}]
+";
+
+    #[test]
+    fn a_list_variable_adds_removes_and_shows_in_order() {
+        let p = parse(BAG).unwrap();
+        let (mut s, first) = Session::start(&p);
+        assert_eq!(lines(&first), ["Bag: []"], "an empty list shows nothing");
+        s.input(Input::Advance);
+        let now = s.input(Input::Choose(1));
+        assert_eq!(lines(&now), ["Now: [key]"], "adding twice adds once");
+        let then = s.input(Input::Advance);
+        assert_eq!(lines(&then), ["Then: [key, lamp, map]"], "insertion order; a text variable works");
+        let after = s.input(Input::Advance);
+        assert_eq!(lines(&after), ["Lamp, no map."]);
+        assert_eq!(lines(&s.input(Input::Advance)), ["After: [key, lamp]"]);
+        assert_eq!(s.state().vars["inventory"], list(&["key", "lamp"]));
+    }
+
+    #[test]
+    fn rollback_restores_a_list() {
+        let p = parse(BAG).unwrap();
+        let (mut s, _) = Session::start(&p);
+        s.input(Input::Advance);
+        s.input(Input::Choose(0));
+        s.input(Input::Advance);
+        assert_eq!(s.state().vars["inventory"], list(&["map", "lamp"]));
+        s.rollback().unwrap();
+        assert_eq!(s.state().vars["inventory"], list(&["map"]));
+        s.rollback().unwrap();
+        assert_eq!(s.state().vars["inventory"], list(&[]), "back at the choice");
+        s.input(Input::Choose(1));
+        assert_eq!(s.state().vars["inventory"], list(&["key"]), "a different branch starts from the restored list");
+    }
+
+    #[test]
+    fn a_list_is_part_of_the_state_that_clones_independently() {
+        let p = parse(BAG).unwrap();
+        let (mut s, _) = Session::start(&p);
+        s.input(Input::Advance);
+        let mut a = s.state().clone();
+        let b = s.state().clone();
+        step(&mut a, &p, Some(Input::Choose(0)));
+        assert_eq!(b.vars["inventory"], list(&[]));
+        assert_eq!(a.vars["inventory"], list(&["map"]));
+    }
+
+    /// Press Advance until a menu is up; the lines passed on the way and the menu.
+    fn to_menu(game: &mut Session, mut cmds: Vec<Cmd>) -> (Vec<String>, Vec<String>) {
+        let mut said = Vec::new();
+        for _ in 0..20 {
+            said.extend(lines(&cmds));
+            if let Some(options) = cmds.iter().find_map(|c| match c {
+                Cmd::ShowChoices { options } => Some(options.clone()),
+                _ => None,
+            }) {
+                return (said, options);
+            }
+            cmds = game.input(Input::Advance);
+        }
+        panic!("no menu after {said:?}");
+    }
+
+    #[test]
+    fn the_shop_demo_sells_each_item_once() {
+        let p = parse(include_str!("../../../examples/shop.quill.md")).unwrap();
+        let (mut game, first) = Session::start(&p);
+        let (said, menu) = to_menu(&mut game, first);
+        assert_eq!(said[1..], ["You have 30 gold.", "Your bag is empty."]);
+        assert_eq!(menu, ["Buy the brass key (15 gold)", "Buy the lamp (10 gold)", "Buy the old map (10 gold)", "Leave the shop"]);
+        let bought = game.input(Input::Choose(0)); // the key
+        let (said, menu) = to_menu(&mut game, bought);
+        assert_eq!(said, ["\"A fine choice,\" says the keeper.", "You have 15 gold.", "Your bag holds: key."]);
+        assert_eq!(menu, ["Buy the lamp (10 gold)", "Buy the old map (10 gold)", "Leave the shop"], "no second key");
+        let bought = game.input(Input::Choose(1)); // the map
+        let (said, menu) = to_menu(&mut game, bought);
+        assert_eq!(said[1..], ["You have 5 gold.", "Your bag holds: key, map."]);
+        assert_eq!(menu, ["Sell the map back (5 gold)", "Leave the shop"], "too poor for the lamp");
+        let sold = game.input(Input::Choose(0));
+        let (said, menu) = to_menu(&mut game, sold);
+        assert_eq!(said[1..], ["You have 10 gold.", "Your bag holds: key."]);
+        assert_eq!(menu, ["Buy the lamp (10 gold)", "Buy the old map (10 gold)", "Leave the shop"]);
+        let mut end = game.input(Input::Choose(2));
+        let mut said = lines(&end);
+        while !game.state().finished {
+            end = game.input(Input::Advance);
+            said.extend(lines(&end));
+        }
+        assert!(said[0].starts_with("Outside, the key turns"), "{said:?}");
+        assert_eq!(said.len(), 1, "no lamp and map line");
+    }
+
+    #[test]
+    fn leaving_the_shop_empty_handed_changes_the_text() {
+        let p = parse(include_str!("../../../examples/shop.quill.md")).unwrap();
+        let (mut game, first) = Session::start(&p);
+        to_menu(&mut game, first);
+        let end = game.input(Input::Choose(3));
+        assert!(lines(&end)[0].starts_with("Outside, the old gate is locked"));
     }
 }
