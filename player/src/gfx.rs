@@ -64,18 +64,34 @@ impl Gfx {
         );
         let surface = instance.create_surface(window.clone()).expect("failed to create surface");
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .expect("no suitable GPU adapter found");
+        // A real GPU if there is one, else the system's software renderer (virtual
+        // machines, remote desktops, very old drivers).
+        let request = |force_fallback_adapter| {
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                force_fallback_adapter,
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            }))
+        };
+        let adapter = request(false).or_else(|_| request(true)).unwrap_or_else(|e| {
+            panic!(
+                "This game needs graphics support (DirectX 12, Vulkan or Metal; OpenGL on older systems), \
+                 and none was found ({e}). Updating the graphics driver usually fixes this."
+            )
+        });
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("quillstone"),
-            ..Default::default()
-        }))
-        .expect("failed to create GPU device");
+        // The usual limits (8192-pixel images), or what an older GPU can do.
+        let device = |required_limits| {
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("quillstone"),
+                required_limits,
+                ..Default::default()
+            }))
+        };
+        let (device, queue) = device(wgpu::Limits::default())
+            .or_else(|_| device(wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())))
+            .unwrap_or_else(|e| panic!("The graphics driver refused to start ({e}). Updating it usually fixes this."));
 
         let size = window.inner_size();
         let mut config = surface
@@ -247,17 +263,39 @@ impl Gfx {
 
     pub fn render(&mut self, frame: &Frame) {
         // 1. Rasterize any text we haven't seen, and forget text no longer shown.
+        // A forgotten texture of the right size is rewritten instead of making a
+        // new one: a typing line changes every character, at the same size.
         let text_keys: Vec<String> = frame.texts.iter().map(|t| t.key()).collect();
-        for (job, key) in frame.texts.iter().zip(&text_keys) {
-            if !self.texts.contains_key(key) {
-                if let Some(bitmap) = self.text_renderer.rasterize(job) {
-                    let tex = self.make_texture(bitmap.width, bitmap.height, &bitmap.rgba);
-                    self.texts.insert(key.clone(), tex);
-                }
-            }
-        }
         let live: HashSet<&String> = text_keys.iter().collect();
-        self.texts.retain(|k, _| live.contains(k));
+        let mut spare: Vec<GpuTexture> = Vec::new();
+        self.texts.retain(|k, tex| {
+            let keep = live.contains(k);
+            if !keep {
+                spare.push(GpuTexture { bind_group: tex.bind_group.clone(), texture: tex.texture.clone() });
+            }
+            keep
+        });
+        for (job, key) in frame.texts.iter().zip(&text_keys) {
+            if self.texts.contains_key(key) {
+                continue;
+            }
+            let Some(bitmap) = self.text_renderer.rasterize(job) else { continue };
+            let (width, height) = (bitmap.width, bitmap.height);
+            let tex = match spare.iter().position(|t| t.texture.width() == width && t.texture.height() == height) {
+                Some(i) => {
+                    let tex = spare.swap_remove(i);
+                    self.queue.write_texture(
+                        tex.texture.as_image_copy(),
+                        &bitmap.rgba,
+                        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
+                        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    );
+                    tex
+                }
+                None => self.make_texture(width, height, &bitmap.rgba),
+            };
+            self.texts.insert(key.clone(), tex);
+        }
 
         // 2. Build vertices for the quads we can actually draw.
         let mut vertices: Vec<Vertex> = Vec::with_capacity(frame.quads.len() * VERTS_PER_QUAD);

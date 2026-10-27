@@ -25,6 +25,8 @@ pub const SPRITE_HEIGHT: f32 = 940.0;
 const CHOICE_W: f32 = 1000.0;
 const CHOICE_H: f32 = 96.0;
 const CHOICE_GAP: f32 = 28.0;
+/// Space kept free above the first and below the last choice button.
+const CHOICE_MARGIN: f32 = 24.0;
 
 
 /// Typewriter speed unless changed with [`View::with_speed`].
@@ -452,6 +454,7 @@ impl View {
                     });
                 }
                 Cmd::Finished => self.finished = true,
+                Cmd::Stopped { .. } => {} // for the author; the game shows it as a notice
                 // Audio is not the view's business.
                 Cmd::PlayMusic { .. } | Cmd::StopMusic { .. } | Cmd::PlaySfx { .. } | Cmd::PlayVoice { .. } => {}
             }
@@ -539,6 +542,13 @@ impl View {
                 d.reveal_all();
             }
         }
+    }
+
+    /// Whether time matters even when nothing on screen moves: a `::wait`
+    /// counting down, or a typewriter that is still typing (or paused at `{w=}`).
+    /// Visible animations show up as a changing draw list anyway.
+    pub fn busy(&self) -> bool {
+        self.wait.is_some() || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
     }
 
     /// `true` exactly once when a `::wait` has run out: send `Input::Advance`.
@@ -655,7 +665,7 @@ impl View {
             }
             let pad = 40.0;
             let inner_w = TEXTBOX.w - 2.0 * pad;
-            let body_y = match &d.speaker {
+            let has_name = match &d.speaker {
                 Some(name) => {
                     let color = d.color.map(|[r, g, b]| [r, g, b, 1.0]).unwrap_or(theme.name_color);
                     out.push(Draw::Text {
@@ -667,15 +677,15 @@ impl View {
                         color,
                         align: Align::Left,
                     });
-                    TEXTBOX.y + 80.0
+                    true
                 }
-                None => TEXTBOX.y + 36.0,
+                None => false,
             };
             out.push(Draw::Text {
                 text: d.text.clone(),
                 runs: d.runs.clone(),
                 visible_chars: d.visible_chars(),
-                rect: Rect::new(TEXTBOX.x + pad, body_y, inner_w, TEXTBOX.y + TEXTBOX.h - body_y - 20.0),
+                rect: dialogue_body(has_name),
                 size: theme.text_size,
                 color: theme.text_color,
                 align: Align::Left,
@@ -691,7 +701,7 @@ impl View {
                 runs,
                 visible_chars: usize::MAX,
                 rect,
-                size: theme.text_size,
+                size: theme.text_size.min(rect.h * 0.5), // fits buttons squeezed by many options
                 color: theme.text_color,
                 align: Align::Center,
             });
@@ -715,16 +725,33 @@ impl View {
 }
 
 /// Button rectangles for `count` choices, stacked and centred above the textbox.
+/// Where a line's words go in the textbox: below the name plate if there is one.
+pub fn dialogue_body(with_speaker: bool) -> Rect {
+    let pad = 40.0;
+    let top = TEXTBOX.y + if with_speaker { 80.0 } else { 36.0 };
+    Rect::new(TEXTBOX.x + pad, top, TEXTBOX.w - 2.0 * pad, TEXTBOX.y + TEXTBOX.h - top - 20.0)
+}
+
+/// About how many textbox lines `text` (tags removed) takes at `size` px, and how
+/// many fit. A line that doesn't fit is drawn smaller by the player.
+pub fn dialogue_lines(text: &str, with_speaker: bool, size: f32) -> (usize, usize) {
+    let body = dialogue_body(with_speaker);
+    let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
+    (crate::estimate_lines(text, size, body.w), (body.h / line_h).floor() as usize)
+}
+
 pub fn choice_rects(count: usize) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
     }
-    let total = count as f32 * CHOICE_H + (count - 1) as f32 * CHOICE_GAP;
-    let top = ((TEXTBOX.y - total) / 2.0).max(40.0);
+    // Many options: buttons and gaps shrink together so all of them stay above the textbox.
+    let room = TEXTBOX.y - 2.0 * CHOICE_MARGIN;
+    let full = count as f32 * CHOICE_H + (count - 1) as f32 * CHOICE_GAP;
+    let k = (room / full).min(1.0);
+    let (h, gap) = (CHOICE_H * k, CHOICE_GAP * k);
+    let top = (TEXTBOX.y - full * k) / 2.0;
     let x = (VIRTUAL.w - CHOICE_W) / 2.0;
-    (0..count)
-        .map(|i| Rect::new(x, top + i as f32 * (CHOICE_H + CHOICE_GAP), CHOICE_W, CHOICE_H))
-        .collect()
+    (0..count).map(|i| Rect::new(x, top + i as f32 * (h + gap), CHOICE_W, h)).collect()
 }
 
 fn push_image(
@@ -1233,6 +1260,13 @@ mod tests {
         assert!(rects[0].y < rects[1].y);
         assert_eq!(rects[0].x, (VIRTUAL.w - CHOICE_W) / 2.0);
         assert!(rects[1].y + rects[1].h < TEXTBOX.y); // both sit above the textbox
+        assert_eq!(rects[0].h, CHOICE_H, "few options keep the full size");
+        for n in [6, 7, 9, 15] {
+            let rects = choice_rects(n);
+            let last = rects[n - 1];
+            assert!(rects[0].y >= CHOICE_MARGIN - 0.01 && last.y + last.h <= TEXTBOX.y - CHOICE_MARGIN + 0.01, "{n} fit");
+            assert!(rects.windows(2).all(|w| w[0].y + w[0].h < w[1].y), "{n} don't overlap");
+        }
 
         let mut v = View::new();
         v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()] }]);

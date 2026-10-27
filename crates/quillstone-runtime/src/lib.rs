@@ -50,6 +50,9 @@ pub enum Cmd {
     /// Show choices and wait for [`Input::Choose`]. Only the options currently
     /// available are listed; the index refers to this list.
     ShowChoices { options: Vec<String> },
+    /// The story was stopped by a safety valve (a mistake in the script), and
+    /// [`Cmd::Finished`] follows. Says what happened, for the author.
+    Stopped { reason: String },
     Finished,
 }
 
@@ -216,8 +219,8 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
     while let Some(pos) = rest.find(['{', '\\']) {
         out.push_str(&rest[..pos]);
         rest = &rest[pos..];
-        if let Some(escaped) = rest.strip_prefix("\\{") {
-            out.push_str("\\{");
+        if let Some(escaped) = rest.strip_prefix("\\{").or_else(|| rest.strip_prefix("\\\\")) {
+            out.push_str(&rest[..2]); // an escape: left for the text tags to read
             rest = escaped;
         } else if rest.starts_with('{') {
             match rest.find('}') {
@@ -285,7 +288,12 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
     }
 
     let mut out = Vec::new();
-    for _ in 0..MAX_SILENT_OPS {
+    for n in 0..=MAX_SILENT_OPS {
+        if n == MAX_SILENT_OPS {
+            let reason = format!("the story ran {MAX_SILENT_OPS} steps without showing anything (an endless loop?)");
+            out.push(Cmd::Stopped { reason });
+            break;
+        }
         let Some(op) = program.ops.get(state.pc) else { break };
         ran(state.pc);
         // Passing a label that some `seen(label)` asks about.
@@ -328,13 +336,15 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
             }
             Op::Show { id, src, at, scale, fade } => {
                 let existing = state.sprites.iter().position(|s| s.id == *id);
+                // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, scale: *scale };
+                let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, scale };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, scale: *scale, fade: *fade });
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, scale, fade: *fade });
                 state.pc += 1;
             }
             Op::Hide { id, fade } => {
@@ -396,6 +406,8 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
             }
             Op::Call { target } => {
                 if state.stack.len() >= MAX_CALL_DEPTH {
+                    let reason = format!("`::call` nested more than {MAX_CALL_DEPTH} deep (a call that never returns?)");
+                    out.push(Cmd::Stopped { reason });
                     break;
                 }
                 state.stack.push(state.pc + 1);
@@ -586,7 +598,8 @@ vars: { trust: 0 }
     fn endless_silent_loop_is_stopped() {
         let p = parse("# a\n::set{n+=1}\n::jump{to=a}\n").unwrap();
         let mut s = State::new(&p);
-        assert_eq!(step(&mut s, &p, None), vec![Cmd::Finished]);
+        let cmds = step(&mut s, &p, None);
+        assert!(matches!(&cmds[..], [Cmd::Stopped { reason }, Cmd::Finished] if reason.contains("endless loop")));
         assert!(s.finished);
     }
 
@@ -765,7 +778,7 @@ vars: { trust: 0 }
     #[test]
     fn runaway_recursion_is_stopped() {
         let cmds = run_to_end("# a\n::call{to=a}\n", &[]);
-        assert_eq!(cmds, vec![Cmd::Finished]);
+        assert!(matches!(&cmds[..], [Cmd::Stopped { reason }, Cmd::Finished] if reason.contains("256 deep")));
     }
 
     // ---- scene: sprites, music, inline images, voice ------------------------
@@ -822,6 +835,16 @@ vars: { trust: 0 }
         assert!(redraw.contains(&Cmd::Camera { camera, time: 0.0, ease: Ease::Linear }), "rollback restores the view");
         assert!(!redraw.iter().any(|c| matches!(c, Cmd::Shake { .. })), "a shake is a moment, not a state");
         assert!(redraw.iter().any(|c| matches!(c, Cmd::ShowSprite { scale, .. } if *scale == 1.2)));
+    }
+
+    #[test]
+    fn a_new_pose_keeps_the_size_too() {
+        let src = "::show{src=a.png id=s}\n::move{s scale=1.4 time=0}\n::show{src=b.png id=s}\n**A:** big\n::show{src=c.png id=s scale=0.5}\n**A:** small\n";
+        let p = parse(src).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { src, scale, .. } if src == "b.png" && *scale == 1.4)));
+        let cmds = game.input(Input::Advance);
+        assert!(matches!(&cmds[0], Cmd::ShowSprite { scale, .. } if *scale == 0.5), "unless told otherwise");
     }
 
     #[test]
@@ -913,6 +936,7 @@ vars: { trust: 0 }
         assert_eq!(interpolate("{a}{a}", &vars), "11");
         assert_eq!(interpolate("{ a }", &vars), "1");
         assert_eq!(interpolate("back\\slash", &vars), "back\\slash");
+        assert_eq!(interpolate("\\\\{a}", &vars), "\\\\1", "an escaped backslash, then the value");
         assert_eq!(interpolate("\\{a}", &vars), "\\{a}", "the escape is the markup's to resolve");
         assert_eq!(quillstone_script::markup::plain(&interpolate("\\{a} {a}", &vars)), "{a} 1");
         assert_eq!(interpolate("é{a}é", &vars), "é1é");

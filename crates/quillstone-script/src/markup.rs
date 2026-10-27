@@ -3,7 +3,7 @@
 //! - `**bold**` and `*italic*` (as in Markdown; `***both***`)
 //! - `{color=#ff8080}...{/color}` (they nest)
 //! - `{w=0.5}`: the typewriter pauses there for half a second
-//! - `\*`, `\{` and `\\` write the character itself
+//! - `\*`, `\{` and `\\` write the character itself; any other `\` is shown as is
 //!
 //! `{name}` is variable interpolation (done by the runtime before this); a brace
 //! pair holding just a name is left as written. Lines are checked when the script
@@ -60,7 +60,8 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
-            '\\' if i + 1 < chars.len() => {
+            // Only `\\`, `\*` and `\{` are escapes; any other backslash is shown (`C:\temp`).
+            '\\' if matches!(chars.get(i + 1), Some('\\' | '*' | '{')) => {
                 out.text.push(chars[i + 1]);
                 shown += 1;
                 i += 2;
@@ -226,5 +227,7 @@ mod tests {
         }
         assert_eq!(rich("**open").text, "**open", "shown as written, not lost");
         assert_eq!(parse_markup("a { b").unwrap().text, "a { b", "a lone brace is just a brace");
+        assert_eq!(parse_markup("Path is C:\\temp\\new.").unwrap().text, "Path is C:\\temp\\new.", "other backslashes stay");
+        assert_eq!(parse_markup("ends with \\").unwrap().text, "ends with \\");
     }
 }

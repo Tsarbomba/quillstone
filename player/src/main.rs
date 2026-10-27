@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use quillstone_render::pixels::Level;
 use quillstone_render::{build_frame, letterbox, to_virtual, Size, Theme};
@@ -33,7 +33,7 @@ use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
@@ -68,7 +68,19 @@ struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     last_frame: Instant,
+    /// The last frame's draw list, and whether it settled: the same as the one
+    /// before and nothing timed going on. A settled game isn't redrawn until an
+    /// input arrives (or now and then, just in case), so a still screen costs
+    /// no CPU or GPU.
+    last_draws: Vec<quillstone_render::Draw>,
+    settled: bool,
+    /// An input arrived since the last frame.
+    dirty: bool,
 }
+
+/// How often a settled screen is drawn anyway, and how often gamepads are polled meanwhile.
+const SETTLED_REDRAW: Duration = Duration::from_millis(250);
+const GAMEPAD_POLL: Duration = Duration::from_millis(16);
 
 fn main() {
     // A crash in a double-clicked game would vanish with its console: keep the message.
@@ -148,6 +160,9 @@ fn main() {
         window: None,
         gfx: None,
         last_frame: Instant::now(),
+        last_draws: Vec::new(),
+        settled: false,
+        dirty: true,
     };
     app.play_audio();
 
@@ -234,9 +249,6 @@ fn game_id(name: &str) -> String {
     }
 }
 
-/// The per-user folder for this game's settings (and, later, saves).
-/// Windows: %APPDATA%\Quillstone\<id>; macOS: ~/Library/Application Support/Quillstone/<id>;
-/// elsewhere: $XDG_CONFIG_HOME (or ~/.config)/quillstone/<id>.
 fn exe_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
 }
@@ -271,6 +283,9 @@ fn fatal(message: String) -> ! {
     exit(1);
 }
 
+/// The per-user folder for this game's settings and saves.
+/// Windows: %APPDATA%\Quillstone\<id>; macOS: ~/Library/Application Support/Quillstone/<id>;
+/// elsewhere: $XDG_DATA_HOME (or ~/.local/share)/quillstone/<id>.
 fn data_dir(id: &str) -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let base = if cfg!(windows) {
@@ -278,7 +293,7 @@ fn data_dir(id: &str) -> Option<PathBuf> {
     } else if cfg!(target_os = "macos") {
         env("HOME")?.join("Library/Application Support/Quillstone")
     } else {
-        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|h| h.join(".config")))?.join("quillstone")
+        env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local/share")))?.join("quillstone")
     };
     Some(base.join(id))
 }
@@ -350,6 +365,7 @@ impl App {
             }
             Err(e) => self.game.show_notice(format!("Not reloaded: {e}")),
         }
+        self.videos.retry_failed();
         self.watch = reload::Watch::new(&self.script_path, program, &self.root);
     }
 
@@ -392,6 +408,7 @@ impl App {
         });
         if minimized {
             self.last_frame = Instant::now(); // don't let the typewriter jump on restore
+            self.settled = true; // nothing to show: look again now and then, don't spin
             return;
         }
         if self.gfx.is_none() {
@@ -415,6 +432,8 @@ impl App {
         let sizes = &self.image_sizes;
         let draws = self.game.draw_list(&|src: &str| sizes.get(src).copied());
         gfx.render(&build_frame(&draws, Size::new(w as f32, h as f32)));
+        self.settled = draws == self.last_draws && !self.game.needs_ticks();
+        self.last_draws = draws;
     }
 
     /// Keep the playing clips in line with the story, put new frames on the GPU
@@ -512,6 +531,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.dirty = true; // input, resize, focus...: draw again
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.game.autosave();
@@ -548,7 +570,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0, // touchpads: ~40 px a notch
                 };
                 if dy != 0.0 {
                     self.game.handle(Event::Wheel(dy));
@@ -577,14 +599,23 @@ impl ApplicationHandler for App {
         }
         let pad = self.gamepads.poll();
         if !pad.is_empty() {
+            self.dirty = true;
             for event in pad {
                 self.game.handle(event);
             }
             self.pump(event_loop);
         }
-        // Keep animating (typewriter, fades); the surface's vsync paces this.
-        if let Some(window) = &self.window {
+        let Some(window) = &self.window else { return };
+        let next_anyway = self.last_frame + SETTLED_REDRAW;
+        if self.dirty || !self.settled || Instant::now() >= next_anyway {
+            // Keep animating (typewriter, fades); the surface's vsync paces this.
+            self.dirty = false;
             window.request_redraw();
+            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            // Settled: sleep until an input, the next look, or the next gamepad poll.
+            let wake = if self.gamepads.any_connected() { next_anyway.min(Instant::now() + GAMEPAD_POLL) } else { next_anyway };
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
     }
 }

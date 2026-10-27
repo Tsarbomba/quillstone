@@ -38,7 +38,8 @@ She looks away.
   the label `the-roof` (lowercase, words joined by dashes).
 - **`**Name:** text`** is dialogue. Any other prose is narration. Consecutive
   lines join into one paragraph; a blank line, a new `**Name:**` or a command ends it.
-- **`<!-- comments -->`** may span several lines and are ignored.
+- **`<!-- comments -->`** may span several lines and are ignored. Inside a
+  `::choice` block they must fit on one line.
 - **Commands** are one line: `::name{key=value key="text with spaces" flag}`.
   Times are in seconds. Paths are relative to the script file.
 
@@ -46,6 +47,7 @@ She looks away.
 
 Values are whole numbers, `true`/`false`, or `"text"`. Declare starting values in
 `vars:`; any other variable springs into existence at `0` when first read.
+Names are letters, digits and `_`, but not `true`, `false`, `and`, `or` or `not`.
 
 - `::set{trust+=1, met=true, name="Alex"}` sets one or more (`=`, `+=`, `-=`;
   `+=` on text appends). The right-hand side may be another variable: `gold -= price`.
@@ -61,7 +63,7 @@ Inside lines and choice texts:
 | `**bold**`, `*italic*`, `***both***` | bold, italic, bold italic |
 | `{color=#ff8080}words{/color}` | words in that colour (`#rrggbb` or `#rgb`; they nest) |
 | `Well...{w=0.5} no.` | the typing pauses for half a second there (up to 10; a click skips it) |
-| `\*`, `\{`, `\\` | a literal `*`, `{` or `\` |
+| `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
 A `{` with no `}` after it is just a brace, and an unknown `{name}` is left as
 written. Mistakes (an unclosed `**`, an unknown tag like `{size=40}`) are errors
@@ -89,7 +91,7 @@ Rollback and saves keep the counts; they belong to one playthrough.
 | `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped). |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
-| `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new. |
+| `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
 | `::show{src=assets/ghost.png id=ghost at=center}` | A sprite that isn't a character. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
 | `::move{mika at=right time=0.8}` | Slide a sprite. |
@@ -112,7 +114,7 @@ them; a shake is a moment and isn't replayed.
 | `::music{stop fade=2}` | Stop it. |
 | `::sfx{src=door.ogg volume=0.5}` | One-shot sound effect. |
 | `::voice{src=line1.ogg}` | Voice clip for the **next** line; stops when the player advances. |
-| `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. |
+| `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
 | `::wait{time=1.5}` | Pause; a click skips it. |
 
 ### Auto-voice
@@ -142,6 +144,9 @@ How sound behaves:
 - Rollback keeps the music going if the earlier moment had the same track, and
   switches or stops it otherwise. A voiced line's clip plays again when you roll
   back to it. Sound effects are never replayed by rollback.
+
+Image formats: **PNG**, **JPEG** or **WebP**, at most 8192 pixels on a side;
+`quillstone check` refuses anything else.
 
 Video formats: **WebM** (`.webm`) with VP9 (recommended) or VP8 video and Opus
 or Vorbis sound. These are royalty-free and they are what a shipped game can
@@ -178,7 +183,8 @@ is really playing, so a file that can't be decoded never traps the player.
 
 - A choice option is `- [text](#label){effects, if condition}`. The braces are
   optional; an option with an `if` is only offered while it is true. If no option
-  is on offer, the story carries on past the block.
+  is on offer, the story carries on past the block. Many options shrink to fit
+  above the textbox; keys 1-9 pick the first nine.
 - `once` makes an option go away after it has been picked: `- [Ask about the
   scarf](#scarf){once}`. A menu that jumps back to itself then offers fewer and
   fewer questions, and when all of them are `once` and used up, the story carries

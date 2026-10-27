@@ -119,7 +119,8 @@ gallery or music room, Settings, Quit) and
 returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
 Q.Save, Q.Load, Settings) does the same with the mouse. The game saves automatically
 whenever a choice comes up and when you quit. Settings and saves are kept per
-user (Windows: `%APPDATA%\Quillstone\<game>\`).
+user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
+Linux: `~/.local/share/quillstone/<game>/`).
 Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.
 

@@ -6,7 +6,7 @@
 //!   avcodec-62.dll ...    FFmpeg's libraries (video), found next to the player or in --libs
 //!   licenses/FFmpeg.txt   FFmpeg is LGPL: say so and where its source is
 //!   game/
-//!     story.quill.md      the script, under its own name (the save folder can depend on it)
+//!     story.quill.md      the script, under its own name (the only one, so the player finds it)
 //!     theme.txt, assets/  only the files the script and theme use
 //! ```
 //!
@@ -61,6 +61,9 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         }
     }
     for f in &files {
+        if f.contains('\\') {
+            return Err(format!("can't package `{f}`: write `/` between folders, which works on every system"));
+        }
         if !is_inside(f) {
             return Err(format!("can't package `{f}`: it is outside the script's folder (keep assets beside or below the script)"));
         }
@@ -72,7 +75,7 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         bytes += copy(&root.join(f), &game.join(f))?;
     }
 
-    let name = opts.name.map(String::from).unwrap_or_else(|| exe_name(program.title.as_deref()));
+    let name = exe_name(opts.name.or(program.title.as_deref()));
     let ext = opts.player.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     bytes += copy(opts.player, &opts.out.join(format!("{name}{ext}")))?;
 
@@ -103,9 +106,13 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
 }
 
 /// A relative path that stays inside the folder it's relative to.
+/// `\` is refused on every system: on Windows it is a separator, so
+/// `assets\..\..\x.png` would climb out there even though it is one name elsewhere.
 fn is_inside(path: &str) -> bool {
     let p = Path::new(path);
-    !path.is_empty() && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    !path.is_empty()
+        && !path.contains('\\')
+        && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 /// The executable's name: the game's title without characters file systems dislike.
@@ -183,6 +190,7 @@ mod tests {
         assert!(is_inside("assets/bg.png") && is_inside("./theme.txt") && is_inside("story.quill.md"));
         assert!(!is_inside("../shared/bg.png") && !is_inside("assets/../../x.png"));
         assert!(!is_inside("/home/me/bg.png") && !is_inside(""));
+        assert!(!is_inside("assets\\..\\..\\x.png") && !is_inside("assets\\bg.png"), "backslashes, on any system");
         #[cfg(windows)]
         assert!(!is_inside("C:\\art\\bg.png"));
     }
@@ -193,6 +201,7 @@ mod tests {
         assert_eq!(exe_name(Some("What? A/B: test*")), "What AB test");
         assert_eq!(exe_name(Some("...")), "game");
         assert_eq!(exe_name(None), "game");
+        assert_eq!(exe_name(Some("../../evil")), "evil", "--name can't leave the output folder");
     }
 
     #[test]

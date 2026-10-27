@@ -3,8 +3,10 @@
 //! The format is line-based: one record per line, words and `"quoted strings"`.
 //! Positions in the script are stored as *label + offset* rather than raw op
 //! indices, so a save still lands in the right place after the script is
-//! edited above that label. If the spot no longer matches what the save was
-//! waiting for, the story re-runs from there instead of getting stuck.
+//! edited above that label. If the label was renamed or removed, the save finds
+//! its line by its words, or else uses the raw position. If the spot no longer
+//! matches what the save was waiting for, the story re-runs from there instead
+//! of getting stuck.
 
 use quillstone_script::{Fit, Op, Program, Value, Vars};
 
@@ -120,15 +122,23 @@ fn consistent(state: &State, program: &Program) -> bool {
 pub fn line_id(program: &Program, pc: usize) -> Option<u64> {
     let Some(Op::Say { speaker, text, .. }) = program.ops.get(pc) else { return None };
     let (label, _) = anchor(program, pc);
-    // FNV-1a: tiny, and stable across Rust versions (unlike `DefaultHasher`).
+    Some(fnv(&[label, "\0", speaker.as_deref().unwrap_or(""), "\0", text]))
+}
+
+/// Like [`line_id`] but without the label: finds a line again after its label was renamed.
+fn words_id(program: &Program, pc: usize) -> Option<u64> {
+    let Some(Op::Say { speaker, text, .. }) = program.ops.get(pc) else { return None };
+    Some(fnv(&[speaker.as_deref().unwrap_or(""), "\0", text]))
+}
+
+/// FNV-1a: tiny, and stable across Rust versions (unlike `DefaultHasher`).
+fn fnv(parts: &[&str]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for part in [label, "\0", speaker.as_deref().unwrap_or(""), "\0", text] {
-        for byte in part.bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
+    for byte in parts.iter().flat_map(|p| p.bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
     }
-    Some(hash)
+    hash
 }
 
 /// The label at or before `pc` (`""` = the start of the script) and the distance from it.
@@ -142,13 +152,35 @@ fn anchor(program: &Program, pc: usize) -> (&str, usize) {
         .unwrap_or(("", pc))
 }
 
-fn resolve(program: &Program, label: &str, offset: usize) -> Result<usize, String> {
-    let base = if label.is_empty() {
-        0
-    } else {
-        *program.labels.get(label).ok_or(format!("the script no longer has the label `{label}`"))?
-    };
-    Ok((base + offset).min(program.ops.len()))
+/// A saved position: `"label" offset [pc [words]]`. The raw `pc` and the line's
+/// [`words_id`] are fallbacks for when the label is gone (older saves lack them).
+fn resolve(program: &Program, args: &[String], line: usize) -> Result<usize, String> {
+    let arg = |i: usize| args.get(i).ok_or(format!("line {line}: a position needs a label and an offset"));
+    let label: &str = arg(0)?;
+    let offset: usize = num(arg(1)?, line)?;
+    let base = if label.is_empty() { Some(0) } else { program.labels.get(label).copied() };
+    if let Some(base) = base {
+        return Ok((base + offset).min(program.ops.len()));
+    }
+    // The label was renamed or removed: look for the line itself, then fall back
+    // to where it was (right if nothing above it changed).
+    let words = args.get(3).and_then(|w| u64::from_str_radix(w, 16).ok());
+    let mut matches = (0..program.ops.len()).filter(|&pc| words.is_some() && words_id(program, pc) == words);
+    if let (Some(pc), None) = (matches.next(), matches.next()) {
+        return Ok(pc);
+    }
+    match args.get(2) {
+        Some(pc) => Ok(num::<usize>(pc, line)?.min(program.ops.len())),
+        None => Err(format!("the script no longer has the label `{label}`")),
+    }
+}
+
+fn position(program: &Program, pc: usize) -> String {
+    let (label, offset) = anchor(program, pc);
+    match words_id(program, pc) {
+        Some(words) => format!("{} {offset} {pc} {words:016x}", q(label)),
+        None => format!("{} {offset} {pc}", q(label)),
+    }
 }
 
 // ---- writing ---------------------------------------------------------------------------
@@ -192,11 +224,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         out.push('\n');
     };
     w("state".into());
-    let (label, offset) = anchor(program, s.pc);
-    w(format!("at {} {offset}", q(label)));
+    w(format!("at {}", position(program, s.pc)));
     for &ret in &s.stack {
-        let (label, offset) = anchor(program, ret);
-        w(format!("stack {} {offset}", q(label)));
+        w(format!("stack {}", position(program, ret)));
     }
     for (name, value) in &s.vars {
         w(var_record(name, value));
@@ -319,10 +349,10 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "end" if saw_at => return Ok(s),
             "end" => return Err(format!("line {n}: state without a position")),
             "at" => {
-                s.pc = resolve(program, arg(1)?, num(arg(2)?, n)?)?;
+                s.pc = resolve(program, &t[1..], n)?;
                 saw_at = true;
             }
-            "stack" => s.stack.push(resolve(program, arg(1)?, num(arg(2)?, n)?)?),
+            "stack" => s.stack.push(resolve(program, &t[1..], n)?),
             "var" => {
                 let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;
                 s.vars.insert(name, value);
@@ -521,10 +551,41 @@ Narration with \"quotes\" and a \\\\ backslash.
         assert!(Session::load(&p, "").is_err());
         assert!(Session::load(&p, "hello\n").is_err());
         assert!(Session::load(&p, &good[..good.len() / 2]).is_err());
-        assert!(Session::load(&p, &good.replace("at \"start\"", "at \"gone\"")).is_err());
         assert!(Session::load(&p, &good.replace("\"bg.png\"", "\"bg.png")).is_err());
-        let removed = parse("**A:** nothing here\n").unwrap();
-        assert!(Session::load(&removed, &good).is_err(), "its label is gone");
+        assert!(Session::load(&p, "quillstone-session 1\nstate\nat \"gone\" 1\nend\n").is_err(), "old save, label gone");
+    }
+
+    #[test]
+    fn a_renamed_label_finds_the_line_by_its_words() {
+        let before = parse("# intro\n**A:** one\n**A:** two\n# next\n**A:** three\n").unwrap();
+        let game = play(&before, &[Input::Advance]); // on "two"
+        // Renamed, and a line added above it: the raw position is now wrong, the words aren't.
+        let after = parse("# prologue\n**A:** zero\n**A:** one\n**A:** two\n# next\n**A:** three\n").unwrap();
+        let (loaded, _) = Session::load(&after, &game.save()).unwrap();
+        assert_eq!(loaded.state().line.as_ref().unwrap().text, "two");
+        assert_eq!(loaded.history.len(), 1, "the history still fits too");
+    }
+
+    #[test]
+    fn a_removed_label_falls_back_to_the_old_position() {
+        let before = parse("# intro\n**A:** one\n**A:** two\n").unwrap();
+        let game = play(&before, &[Input::Advance]); // on "two"
+        // Label gone and the line reworded: only the raw position still points at it.
+        let after = parse("**A:** one\n**A:** two, reworded\n").unwrap();
+        let (loaded, _) = Session::load(&after, &game.save()).unwrap();
+        assert_eq!(loaded.state().pc, 1);
+        assert!(matches!(loaded.state().pending, Some(Cmd::Say { .. })), "loads, waiting at that line");
+    }
+
+    #[test]
+    fn call_stacks_survive_a_renamed_label() {
+        let src = |l: &str| format!("# {l}\n::call{{to=sub}}\n**A:** back\n::end\n# sub\n**A:** inside\n::return\n");
+        let before = parse(&src("main")).unwrap();
+        let game = play(&before, &[]); // inside the call
+        let after = parse(&src("story")).unwrap();
+        let (mut loaded, _) = Session::load(&after, &game.save()).unwrap();
+        let cmds = loaded.input(Input::Advance);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Say { text, .. } if text == "back")), "returns to the right spot");
     }
 
     #[test]

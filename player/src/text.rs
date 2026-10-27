@@ -37,6 +37,8 @@ mod stub {
 #[cfg(feature = "text")]
 mod real {
     use super::*;
+    use std::collections::HashMap;
+
     use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
     use quillstone_render::Align;
 
@@ -45,7 +47,13 @@ mod real {
         swash: SwashCache,
         /// The theme font's family name, if one was loaded; else system fonts.
         family: Option<String>,
+        /// Shaped text by [`TextJob::layout_key`], so a line typing out is shaped
+        /// once rather than once per character.
+        layouts: HashMap<String, Buffer>,
     }
+
+    /// Layouts kept before the cache starts afresh (a screen shows a few dozen texts).
+    const MAX_LAYOUTS: usize = 128;
 
     impl TextRenderer {
         /// `files`: `.ttf` / `.otf` contents to use for all text, regular first, then
@@ -64,7 +72,7 @@ mod real {
                     None => eprintln!("warning: one of the theme's font files isn't a font cosmic-text can read"),
                 }
             }
-            TextRenderer { fonts, swash: SwashCache::new(), family }
+            TextRenderer { fonts, swash: SwashCache::new(), family, layouts: HashMap::new() }
         }
 
         pub fn rasterize(&mut self, job: &TextJob) -> Option<Bitmap> {
@@ -72,10 +80,36 @@ mod real {
             let height = job.rect.h.max(1.0) as u32;
             // cosmic-text panics on a zero line height, so never go below 1px.
             let size_px = job.size_px.max(1.0);
-            let line_height = (size_px * 1.35).round().max(1.0);
-            let metrics = Metrics::new(size_px, line_height);
+            let layout_key = job.layout_key();
+            let buffer = match self.layouts.remove(&layout_key) {
+                Some(buffer) => buffer,
+                None => self.shape_to_fit(job, width, height, size_px),
+            };
+            let bitmap = self.draw(job, &buffer, width, height);
+            if self.layouts.len() >= MAX_LAYOUTS {
+                self.layouts.clear();
+            }
+            self.layouts.insert(layout_key, buffer);
+            Some(bitmap)
+        }
 
-            // Lay out the *whole* text so wrapping never changes while it types out.
+        /// Shape at `size_px`, or smaller if the text is too tall for its box
+        /// (down to 60%; past that it is cut off at the bottom).
+        fn shape_to_fit(&mut self, job: &TextJob, width: u32, height: u32, size_px: f32) -> Buffer {
+            let mut size = size_px;
+            loop {
+                let line_height = (size * 1.35).round().max(1.0);
+                let buffer = self.shape(job, width, Metrics::new(size, line_height));
+                let tall = buffer.layout_runs().count() as f32 * line_height;
+                if tall <= height as f32 || size <= size_px * 0.6 {
+                    return buffer;
+                }
+                size = (size * 0.9).max(size_px * 0.6);
+            }
+        }
+
+        /// Lay out the *whole* text so wrapping never changes while it types out.
+        fn shape(&mut self, job: &TextJob, width: u32, metrics: Metrics) -> Buffer {
             let mut buffer = Buffer::new(&mut self.fonts, metrics);
             {
                 let mut b = buffer.borrow_with(&mut self.fonts);
@@ -107,7 +141,12 @@ mod real {
             // Without this, `layout_runs()` below is empty: set_text only marks the
             // text dirty, and shaping/layout happens here.
             buffer.shape_until_scroll(&mut self.fonts, false);
+            buffer
+        }
 
+        /// The typed part of a shaped text, in its colours.
+        fn draw(&mut self, job: &TextJob, buffer: &Buffer, width: u32, height: u32) -> Bitmap {
+            let line_height = buffer.metrics().line_height;
             // Glyphs that start at or after this byte offset are not typed yet.
             let byte_limit = job
                 .text
@@ -177,7 +216,7 @@ mod real {
                     rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
                 }
             }
-            Some(Bitmap { width, height, rgba })
+            Bitmap { width, height, rgba }
         }
     }
 }

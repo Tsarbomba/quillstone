@@ -60,7 +60,9 @@ pub enum Event {
     CursorMoved(Option<(f32, f32)>),
     Press(Button),
     Release(Button),
-    /// Mouse wheel; positive is up (away from the player).
+    /// Mouse wheel in notches (lines); positive is up (away from the player).
+    /// Fractions add up, so touchpads can send many small steps: about 40 px of
+    /// pixel scrolling is one notch.
     Wheel(f32),
     Key(Key),
     /// A key was let go (only [`Key::Ctrl`] matters).
@@ -109,6 +111,8 @@ pub struct Game<'p> {
     cursor: Option<(f32, f32)>,
     /// The settings row whose slider is being dragged.
     dragging: Option<usize>,
+    /// Wheel movement not yet a whole notch (see [`Event::Wheel`]).
+    wheel: f32,
     /// The settings row the keyboard is on.
     focus: usize,
     /// Settings as they were when the settings screen opened.
@@ -169,6 +173,7 @@ impl<'p> Game<'p> {
             auto_elapsed: 0.0,
             cursor: None,
             dragging: None,
+            wheel: 0.0,
             focus: 0,
             backlog: Vec::new(),
             backlog_scroll: 0,
@@ -212,6 +217,7 @@ impl<'p> Game<'p> {
 
     /// Leave the story (or start up) at the main menu.
     fn go_to_menu(&mut self) {
+        self.save_read(); // the lines since the last choice (often the ending)
         self.stop_skip();
         self.auto = false;
         self.in_story = false;
@@ -342,6 +348,24 @@ impl<'p> Game<'p> {
         if let Event::CursorMoved(p) = event {
             self.cursor = p;
         }
+        if let Event::Wheel(dy) = event {
+            // One step per whole notch; turning the other way starts afresh.
+            if dy.signum() != self.wheel.signum() {
+                self.wheel = 0.0;
+            }
+            self.wheel += dy;
+            let notches = self.wheel.trunc();
+            self.wheel -= notches;
+            for _ in 0..notches.abs() as usize {
+                self.route(Event::Wheel(notches.signum()));
+            }
+            return;
+        }
+        self.route(event);
+    }
+
+    /// Send an event to the screen it is for.
+    fn route(&mut self, event: Event) {
         if self.confirm.is_some() {
             return self.confirm_event(event);
         }
@@ -388,6 +412,18 @@ impl<'p> Game<'p> {
         if self.auto_elapsed >= self.settings.auto_delay + chars as f32 * AUTO_PER_CHAR {
             self.advance();
         }
+    }
+
+    /// Whether [`Game::tick`] must keep being called even if the screen looks
+    /// the same: timers (waits, auto-forward, skip, notices), typing, or video.
+    /// When this is false and the draw list doesn't change, a frontend may stop
+    /// drawing until the next input.
+    pub fn needs_ticks(&self) -> bool {
+        self.notice.is_some()
+            || self.auto
+            || self.skip.is_some()
+            || (self.screen == Screen::Story && self.view.busy())
+            || !self.wanted_videos().is_empty()
     }
 
     /// Everything to draw this frame, back to front. See [`View::draw_list`].
@@ -504,7 +540,10 @@ impl<'p> Game<'p> {
             Some(MenuButton::Load) => self.open_slots(Screen::Load),
             Some(MenuButton::Extras) => self.open_extras(),
             Some(MenuButton::Settings) => self.open_settings(),
-            Some(MenuButton::Quit) => self.requests.push(Request::Quit),
+            Some(MenuButton::Quit) => {
+                self.save_read();
+                self.requests.push(Request::Quit);
+            }
             None => {}
         }
     }
@@ -622,6 +661,9 @@ impl<'p> Game<'p> {
             self.video_generation += 1;
             self.cutscene_playing = false;
         }
+        if let Some(Cmd::Stopped { reason }) = cmds.iter().find(|c| matches!(c, Cmd::Stopped { .. })) {
+            self.notify(format!("The story was stopped: {reason}"));
+        }
         self.view.apply(cmds);
         let mut actions = self.mixer.apply(cmds);
         if self.skip.is_some() {
@@ -733,7 +775,8 @@ impl<'p> Game<'p> {
                     if self.in_story {
                         self.ask("Quit the game?", Then::Quit);
                     } else {
-                        self.requests.push(Request::Quit); // nothing to lose at the main menu
+                        self.save_read();
+                        self.requests.push(Request::Quit); // nothing else to lose at the main menu
                     }
                 }
                 None => {}

@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::{Align, Draw, Rect, Size, Theme, TEXTBOX, VIRTUAL};
+use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, TEXTBOX, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
 
@@ -417,44 +417,6 @@ pub fn draw_backlog(out: &mut Vec<Draw>, theme: &Theme, entries: &[Logged], scro
     }
 }
 
-/// A cautious guess at how many lines `text` wraps to at `size` px in `width` px.
-///
-/// The real wrapping happens in the backend's text engine, which this crate can't
-/// see; over-guessing only leaves a little extra space between entries.
-pub fn estimate_lines(text: &str, size: f32, width: f32) -> usize {
-    let char_w = |c: char| if is_wide(c) { size } else { size * 0.55 };
-    let space = size * 0.3;
-    let mut lines = 0;
-    for paragraph in text.split('\n') {
-        let mut line = 0.0f32;
-        let mut count = 1;
-        for word in paragraph.split_whitespace() {
-            let w: f32 = word.chars().map(char_w).sum();
-            if line > 0.0 && line + space + w > width {
-                count += 1;
-                line = 0.0;
-            }
-            if line > 0.0 {
-                line += space;
-            }
-            line += w;
-            while line > width {
-                // a word longer than a line (or CJK text without spaces) breaks anywhere
-                count += 1;
-                line -= width;
-            }
-        }
-        lines += count;
-    }
-    lines.max(1)
-}
-
-fn is_wide(c: char) -> bool {
-    matches!(c as u32,
-        0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
-        | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
-}
-
 // ---- save / load slots ---------------------------------------------------------------
 
 /// What a point on a slot screen is over.
@@ -702,18 +664,6 @@ mod tests {
         assert_eq!(row_value(&s, Row::TextSpeed), "Instant");
         assert_eq!(row_slider(&s, Row::Fullscreen), None);
         assert_eq!(row_value(&s, Row::Fullscreen), "Off");
-    }
-
-    #[test]
-    fn line_estimates() {
-        assert_eq!(estimate_lines("", 32.0, 1000.0), 1);
-        assert_eq!(estimate_lines("short", 32.0, 1000.0), 1);
-        assert_eq!(estimate_lines("a\nb\nc", 32.0, 1000.0), 3);
-        let long = "word ".repeat(200);
-        let n = estimate_lines(&long, 32.0, 1260.0);
-        assert!((10..=16).contains(&n), "{n}");
-        // CJK has no spaces and wide glyphs: about width/size characters per line
-        assert_eq!(estimate_lines(&"字".repeat(80), 32.0, 1280.0), 2);
     }
 
     fn line(t: &str) -> Logged {

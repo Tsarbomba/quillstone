@@ -124,6 +124,15 @@ impl Gamepads {
     pub fn poll(&mut self) -> Vec<Event> {
         Vec::new()
     }
+
+    /// Whether a pad is plugged in (then it is polled often, even when the screen is still).
+    pub fn any_connected(&self) -> bool {
+        #[cfg(feature = "gamepad")]
+        if let Some(gilrs) = &self.gilrs {
+            return gilrs.gamepads().next().is_some();
+        }
+        false
+    }
 }
 
 #[cfg(test)]

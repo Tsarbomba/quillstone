@@ -334,10 +334,15 @@ mod tests {
 
         storage.write(&slot.file_name(), "garbage").unwrap();
         assert!(read_slot(&storage, &p, slot).unwrap().scene.is_none());
-        // A save whose label the script no longer has can't be placed.
+        // An old save (no fallback position) whose label the script no longer has can't be placed.
         let labelled = parse("# chapter-two\n**Mika:** Hi.\n").unwrap();
         let (session, _) = Session::start(&labelled);
-        storage.write(&slot.file_name(), &SaveFile::new(&session, storage.now()).to_text()).unwrap();
+        let text = SaveFile::new(&session, storage.now()).to_text();
+        let old: Vec<String> = text
+            .lines()
+            .map(|l| if l.starts_with("at ") { l.split(' ').take(3).collect::<Vec<_>>().join(" ") } else { l.to_string() })
+            .collect();
+        storage.write(&slot.file_name(), &old.join("\n")).unwrap();
         let info = read_slot(&storage, &p, slot).unwrap();
         assert!(info.scene.is_none());
         assert_eq!(info.preview, "This save doesn't fit the current script");

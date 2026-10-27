@@ -51,10 +51,13 @@ impl TextJob {
     /// mean identical pixels.
     pub fn key(&self) -> String {
         let [r, g, b, a] = self.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-        let mut key = format!(
-            "{}|{}|{}x{}|{:.2}|{r},{g},{b},{a}|{:?}",
-            self.text, self.visible_chars, self.rect.w, self.rect.h, self.size_px, self.align
-        );
+        format!("{}|{}|{r},{g},{b},{a}", self.layout_key(), self.visible_chars)
+    }
+
+    /// Identifies the layout (where every glyph goes), which doesn't depend on
+    /// how much is typed or on the colour: a backend can shape once per line.
+    pub fn layout_key(&self) -> String {
+        let mut key = format!("{}|{}x{}|{:.2}|{:?}", self.text, self.rect.w, self.rect.h, self.size_px, self.align);
         for run in &self.runs {
             key.push_str(&format!("|{}-{}:{:?}", run.start, run.end, run.style));
         }

@@ -37,6 +37,39 @@ const CHOICE: &str = "**A:** pick\n::choice\n- [Left](#l)\n- [Right](#r)\n::\n# 
 // ---- the story ----------------------------------------------------------------
 
 #[test]
+fn a_touchpad_swipe_rolls_back_by_notches_not_by_events() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "three");
+    for _ in 0..8 {
+        g.handle(Event::Wheel(0.15)); // 1.2 notches in eight small steps
+    }
+    assert_eq!(line(&g), "two", "one step back, not eight");
+    g.handle(Event::Wheel(-0.5)); // the other way: the leftover 0.2 is dropped
+    g.handle(Event::Wheel(0.9));
+    assert_eq!(line(&g), "two");
+    g.handle(Event::Wheel(0.1));
+    assert_eq!(line(&g), "one");
+}
+
+#[test]
+fn a_still_screen_needs_no_ticks_but_timers_and_typing_do() {
+    let p = parse("**A:** one\n::wait{time=2}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, Settings { text_speed: 30.0, ..Settings::default() });
+    assert!(g.needs_ticks(), "typing");
+    key(&mut g, Key::Space); // finish typing
+    assert!(!g.needs_ticks(), "a finished line just waits for the player");
+    key(&mut g, Key::Space);
+    assert!(g.needs_ticks(), "a wait counts down");
+    key(&mut g, Key::Space); // skip the wait
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Char('a'));
+    assert!(g.needs_ticks(), "auto-forward counts down");
+}
+
+#[test]
 fn clicks_and_keys_advance_and_go_back() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
@@ -508,6 +541,19 @@ fn lines_count_as_read_once_left_and_the_record_is_kept() {
 }
 
 #[test]
+fn the_ending_is_remembered_as_read_without_another_choice() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    for _ in 0..3 {
+        key(&mut g, Key::Space); // read all three; the story ends
+    }
+    key(&mut g, Key::Space); // back to the main menu
+    assert_eq!(g.screen(), Screen::MainMenu);
+    let fresh = reread(&p, &g, instant());
+    assert!(fresh.current_line_read(), "no choice came after, yet the record was written");
+}
+
+#[test]
 fn skip_runs_through_read_lines_and_waits_then_stops_at_the_first_unread_one() {
     let p = parse(LONG).unwrap();
     let mut first = new_game(&p, instant());
@@ -965,9 +1011,9 @@ fn an_edited_script_takes_over_at_the_same_spot() {
     key(&mut g, Key::Backspace);
     assert_eq!(line(&g), "one", "rollback still works across the reload");
 
-    let broken = parse("# elsewhere\n**A:** the label we were in is gone\n").unwrap();
-    assert!(g.reload(&broken).is_err());
-    assert_eq!(line(&g), "one", "the old script keeps running");
+    let renamed = parse("# opening\n**A:** a new opening\n# start\n**A:** one\n**A:** two\n").unwrap();
+    g.reload(&renamed).unwrap();
+    assert_eq!(line(&g), "one", "the label we were in was renamed: found by its words");
     key(&mut g, Key::Space);
     assert_eq!(line(&g), "two");
 }

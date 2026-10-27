@@ -300,7 +300,8 @@ pub struct Wanted {
 pub struct Videos {
     open: OpenFn,
     clips: HashMap<String, (u64, Clip)>,
-    /// Files that couldn't be opened, and why (reported once, not retried).
+    /// Files that couldn't be opened, and why (reported once, not retried
+    /// until [`Videos::retry_failed`]).
     failed: HashMap<String, String>,
     new_errors: Vec<(String, String)>,
 }
@@ -329,6 +330,12 @@ impl Videos {
                 }
             }
         }
+    }
+
+    /// Try the files that failed again (after a hot reload: they may be fixed now).
+    pub fn retry_failed(&mut self) {
+        self.failed.clear();
+        self.clips.retain(|_, (_, clip)| clip.error().is_none());
     }
 
     /// Advance every clip's clock.
@@ -569,6 +576,10 @@ mod tests {
         v.advance(SEC);
         assert_eq!(v.take_errors().len(), 1);
         assert!(!v.playing("broken.webm"));
+
+        v.retry_failed(); // after a hot reload
+        v.sync(&[want("missing.webm", 0)]);
+        assert_eq!(v.take_errors().len(), 1, "tried again");
     }
 
     #[test]

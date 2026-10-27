@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use crate::expr::{is_ident, parse_effect, parse_expr, parse_value, split_top_level};
+use crate::expr::{is_ident, is_keyword, parse_effect, parse_expr, parse_value, split_top_level};
 use crate::ops::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +40,28 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
     p.finish()
 }
 
-const COMMANDS: &str = "character, bg, show, hide, move, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, sfx, voice, wait, video, \
                         choice, jump, call, return, set, if, elif, else, endif, end";
+
+/// The attributes each command takes (for error messages).
+fn known_attrs(command: &str) -> &'static [&'static str] {
+    match command {
+        "bg" => &["src", "fade", "wipe"],
+        "show" => &["src", "id", "at", "scale", "fade"],
+        "hide" => &["all", "fade"],
+        "move" => &["at", "scale", "time", "ease"],
+        "shake" => &["time", "strength"],
+        "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
+        "music" => &["src", "fade", "loop", "volume", "stop"],
+        "sfx" => &["src", "volume"],
+        "voice" => &["src"],
+        "wait" => &["time"],
+        "video" => &["src", "fit", "loop", "skippable"],
+        "jump" => &["to", "if"],
+        "call" => &["to"],
+        _ => &[],
+    }
+}
 
 #[derive(Default)]
 struct Parser {
@@ -274,6 +294,9 @@ impl Parser {
         };
         for part in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
             match part.split_once(':') {
+                Some((name, _)) if is_keyword(name.trim()) => {
+                    self.err(line, format!("`{}` is a keyword and can't be a variable name", name.trim()))
+                }
                 Some((name, v)) if is_ident(name.trim()) => match parse_value(v.trim()) {
                     Ok(value) => {
                         let name = name.trim().to_string();
@@ -433,8 +456,12 @@ impl Parser {
             }
         };
         let built = self.build_op(line, name, &mut attrs);
-        if let Some(extra) = attrs.leftover() {
-            self.err(line, format!("unknown attribute `{extra}` for `::{name}`"));
+        // When building stopped at an error, attributes after it were never read:
+        // only report those that are wrong, not merely unread.
+        let known = known_attrs(name);
+        if let Some(extra) = attrs.leftover(if built.is_some() { &[] } else { known }) {
+            let hint = if known.is_empty() { String::new() } else { format!(" (it takes: {})", known.join(", ")) };
+            self.err(line, format!("unknown attribute `{extra}` for `::{name}`{hint}"));
         }
         if let Some((op, label)) = built {
             if let Some(label) = label {
@@ -471,6 +498,7 @@ impl Parser {
             "hide" => {
                 let all = a.flag("all");
                 let bare = a.take_bare();
+                self.extra_words(line, "hide", &bare, if all { 0 } else { 1 })?;
                 let fade = self.fade(line, a)?;
                 let id = match (all, bare.first()) {
                     (true, _) => None,
@@ -484,6 +512,7 @@ impl Parser {
             }
             "move" => {
                 let bare = a.take_bare();
+                self.extra_words(line, "move", &bare, 1)?;
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
                     self.err(line, "`::move` needs a sprite, like `::move{mika at=left time=0.5}`");
                     return None;
@@ -574,7 +603,8 @@ impl Parser {
                     },
                 };
                 let looped = a.flag("loop");
-                let skippable = a.flag("skippable");
+                // A looping video never ends by itself, so the player must be able to skip it.
+                let skippable = a.flag("skippable") || looped;
                 Some((Op::Video { src, fit, looped, skippable }, None))
             }
             "jump" | "call" => {
@@ -614,6 +644,7 @@ impl Parser {
         let src_attr = a.value("src");
         let id_attr = a.value("id");
 
+        self.extra_words(line, "show", &bare, if src_attr.is_some() { 1 } else { 2 })?;
         let (id, src) = match src_attr {
             Some(src) => {
                 let id = id_attr.or_else(|| bare.first().cloned()).unwrap_or_else(|| src.clone());
@@ -648,18 +679,26 @@ impl Parser {
                 }
             },
         };
-        let scale = match a.value("scale") {
-            None => 1.0,
-            Some(v) => match v.parse::<f32>() {
-                Ok(s) if s.is_finite() && s > 0.0 => s,
-                _ => {
-                    self.err(line, format!("`scale={v}` must be a number above 0"));
-                    return None;
-                }
-            },
-        };
+        let scale = self.number(line, a, "scale", 0.05..=10.0)?;
         let fade = self.fade(line, a)?;
         Some((Op::Show { id, src, at, scale, fade }, None))
+    }
+
+    /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
+    fn extra_words(&mut self, line: usize, command: &str, bare: &[String], allowed: usize) -> Option<()> {
+        match bare.get(allowed) {
+            None => Some(()),
+            Some(extra) => {
+                let what = match (command, allowed) {
+                    ("show", 2) => "a character and a pose",
+                    ("show", _) => "one sprite name (with `src=`)",
+                    (_, 0) => "no sprite name with `all`",
+                    _ => "one sprite name",
+                };
+                self.err(line, format!("unexpected `{extra}`: `::{command}` takes {what}"));
+                None
+            }
+        }
     }
 
     /// Resolve a name used in `::hide` / `::move` to the sprite id (characters are lowercase).
@@ -682,7 +721,7 @@ impl Parser {
         let name = a.value("name");
         let color = a.value("color");
         let sprites = a.value("sprites");
-        if let Some(extra) = a.leftover() {
+        if let Some(extra) = a.leftover(&[]) {
             self.err(line, format!("unknown attribute `{extra}` for `::character`"));
         }
         let Some(id) = id else {
@@ -879,7 +918,11 @@ impl Parser {
                 closed = true;
                 break;
             }
-            if !t.is_empty() {
+            if t.starts_with("<!--") {
+                if !t.ends_with("-->") {
+                    self.err(j + 1, "a comment inside `::choice` must open and close on one line");
+                }
+            } else if !t.is_empty() {
                 match self.option(t) {
                     Ok((opt, label)) => {
                         options.push(opt);
@@ -1151,8 +1194,9 @@ impl Attrs {
         bare
     }
 
-    fn leftover(&self) -> Option<&str> {
-        self.0.first().map(|(k, _)| k.as_str())
+    /// The first attribute nobody took, other than those in `ignore`.
+    fn leftover(&self, ignore: &[&str]) -> Option<&str> {
+        self.0.iter().map(|(k, _)| k.as_str()).find(|k| !ignore.contains(k))
     }
 }
 
@@ -1265,6 +1309,21 @@ mod tests {
     }
 
     #[test]
+    fn comments_inside_choices() {
+        let p = ok("::choice\n<!-- the kind one -->\n- [Yes](#a)\n- [No](#a)\n::\n# a\n");
+        assert!(matches!(&p.ops[0], Op::Choice { options, .. } if options.len() == 2));
+        assert!(has_err("::choice\n<!-- open\n- [Yes](#a)\n::\n# a\n", "on one line"));
+    }
+
+    #[test]
+    fn keywords_are_not_variable_names() {
+        assert!(has_err("::set{true=1}\n", "keyword"));
+        assert!(has_err("::set{and=1}\n", "keyword"));
+        assert!(has_err("---\nvars: { not: 1 }\n---\n", "keyword"));
+        ok("::set{seen=1, android=2}\n");
+    }
+
+    #[test]
     fn multi_line_comments_are_ignored_too() {
         let p = ok("<!-- first line\n**A:** not dialogue\n  last line -->\n**A:** real\n");
         assert_eq!(p.ops, vec![say(Some("A"), "real"), Op::End]);
@@ -1348,12 +1407,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy at=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), scale: 0.9, fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), scale: Some(0.9), fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, scale: 1.0, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, scale: None, fade: 0.0 }
         );
     }
 
@@ -1362,7 +1421,7 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost at=0.3}\n::show{src=art/x.png at=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), scale: 1.0, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), scale: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, at: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
@@ -1382,13 +1441,42 @@ mod tests {
         assert!(has_err("::character{id=a}\n::show{a}\n", "no `sprites="));
         assert!(has_err("::show\n", "needs a character"));
         assert!(has_err("::show{src=a.png at=sideways}\n", "bad position"));
-        assert!(has_err("::show{src=a.png scale=0}\n", "above 0"));
+        assert!(has_err("::show{src=a.png scale=0}\n", "from 0.05 to 10"));
+        assert!(has_err("::show{src=a.png scale=100000}\n", "from 0.05 to 10"));
         assert!(has_err("::hide\n", "needs a sprite"));
         assert!(has_err("::move{a}\n", "needs `at="));
         assert!(has_err("::character{name=x}\n", "needs `id="));
         assert!(has_err("::character{id=a color=red}\n", "bad colour"));
         assert!(has_err("::character{id=a}\n::character{id=A}\n", "declared twice"));
         assert!(has_err("::character{id=\"a b\"}\n", "letters, digits"));
+    }
+
+    #[test]
+    fn extra_words_are_errors() {
+        let chars = "::character{id=mika sprites=m_{pose}.png}\n";
+        assert!(has_err(&format!("{chars}::show{{mika happy sad}}\n"), "unexpected `sad`"));
+        assert!(has_err("::show{a b src=x.png}\n", "unexpected `b`"));
+        assert!(has_err("::hide{a b}\n", "unexpected `b`"));
+        assert!(has_err("::hide{all a}\n", "no sprite name with `all`"));
+        assert!(has_err("::move{a b at=left}\n", "unexpected `b`"));
+        ok(&format!("{chars}::show{{mika happy}}\n::show{{a src=x.png}}\n::hide{{mika}}\n"));
+    }
+
+    #[test]
+    fn one_mistake_gives_one_error() {
+        let e = errs("::bg{src=a.png fade=abc wipe=left}\n");
+        assert_eq!(e.len(), 1, "the unread `wipe` isn't reported: {e:?}");
+        let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
+        assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
+        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, fade, wipe)"));
+        assert!(has_err("::frobnicate\n", "shake, camera"));
+    }
+
+    #[test]
+    fn a_looping_video_can_always_be_skipped() {
+        let p = ok("::video{src=a.webm loop}\n::video{src=b.webm}\n");
+        assert!(matches!(p.ops[0], Op::Video { looped: true, skippable: true, .. }));
+        assert!(matches!(p.ops[1], Op::Video { looped: false, skippable: false, .. }));
     }
 
     // ---- variables ---------------------------------------------------------

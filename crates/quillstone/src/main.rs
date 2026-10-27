@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
-use quillstone_script::{kind_from_path, parse, AssetKind, Program};
+use quillstone_script::{kind_from_path, parse, AssetKind, Op, Program};
 
 mod package;
 
@@ -92,12 +92,37 @@ fn check(path: &Path) -> Result<(), String> {
         missing += check_theme(&root.join(theme_path), root);
     }
     missing += check_extras(&program, path, root);
+    check_line_lengths(&program, path, root);
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
         return Err(format!("{missing} problem(s) (paths are relative to the script's folder)"));
     }
     println!("ok: {} ops, {} labels{voiced}", program.ops.len(), program.labels.len());
     Ok(())
+}
+
+/// Warn about lines clearly too long for the textbox. The player shrinks text that
+/// doesn't fit, so this is a warning; the estimate errs long, so only clear cases count.
+fn check_line_lengths(program: &Program, path: &Path, root: &Path) {
+    let theme = program
+        .theme
+        .as_ref()
+        .and_then(|t| std::fs::read_to_string(root.join(t)).ok())
+        .map(|text| quillstone_render::Theme::parse(&text).0)
+        .unwrap_or_default();
+    for (pc, op) in program.ops.iter().enumerate() {
+        let Op::Say { speaker, text, .. } = op else { continue };
+        let words = plain(text);
+        let (lines, fit) = quillstone_render::view::dialogue_lines(&words, speaker.is_some(), theme.text_size);
+        if lines > fit + 1 {
+            eprintln!(
+                "{}:{}: warning: this line takes about {lines} lines and the textbox fits {fit}; it will be shown \
+                 smaller, or cut off if very long (split it into two lines?)",
+                path.display(),
+                program.lines[pc]
+            );
+        }
+    }
 }
 
 /// Every line's auto-voice name, in script order: (op index, name).
@@ -231,8 +256,13 @@ fn unplayable(file: &Path, used_as: AssetKind) -> Option<String> {
         AssetKind::Image => kind_from_path(&file.to_string_lossy()),
         other => other,
     };
+    let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     if kind == AssetKind::Image {
-        return None;
+        // The whole file: JPEG metadata before the size can be long.
+        return match std::fs::read(file) {
+            Err(e) => Some(format!("cannot read it: {e}")),
+            Ok(data) => quillstone_render::image_probe::unshowable_image(&data, &ext),
+        };
     }
     let mut head = Vec::new();
     let read = std::fs::File::open(file)
@@ -245,7 +275,6 @@ fn unplayable(file: &Path, used_as: AssetKind) -> Option<String> {
             format!("{why} (convert with e.g. `ffmpeg -i in.mp4 -c:v libvpx-vp9 -crf 32 -b:v 0 -c:a libopus out.webm`)")
         })
     } else {
-        let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         unplayable_sound(&head, &ext)
     }
 }
@@ -420,6 +449,7 @@ fn print_cmds(cmds: &[Cmd]) {
                 }
             }
             Cmd::Finished => println!("\n— the end —"),
+            Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
         }
     }
 }

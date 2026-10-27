@@ -56,6 +56,11 @@ pub fn is_ident(s: &str) -> bool {
     }
 }
 
+/// Words expressions give a meaning of their own, so they can't name a variable.
+pub fn is_keyword(s: &str) -> bool {
+    matches!(s, "true" | "false" | "and" | "or" | "not")
+}
+
 fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = s.chars().collect();
     let at = |i: usize| chars.get(i).copied();
@@ -271,6 +276,9 @@ pub fn parse_effect(s: &str) -> Result<Effect, String> {
     let var = &s[..var_len];
     if !is_ident(var) {
         return Err(bad());
+    }
+    if is_keyword(var) {
+        return Err(format!("`{var}` is a keyword and can't be a variable name"));
     }
     let rest = s[var_len..].trim_start();
     let (op, len) = if rest.starts_with("+=") {
