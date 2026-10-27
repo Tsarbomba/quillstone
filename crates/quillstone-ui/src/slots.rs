@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use quillstone_render::{clip, Draw, Rect, Size, View, VIRTUAL};
-use quillstone_runtime::{Session, State};
+use quillstone_runtime::{quote, tokens, Session, State};
 use quillstone_script::Program;
 
 /// The current time, as the frontend knows it.
@@ -169,35 +169,10 @@ pub fn preview(state: &State) -> String {
     }
 }
 
-fn quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
+/// One quoted string, as [`quote`] writes it.
 fn unquote(s: &str) -> Option<String> {
-    let inner = s.trim().strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::new();
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            out.push(match chars.next()? {
-                'n' => '\n',
-                other => other,
-            });
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
+    let mut words = tokens(s).ok()?;
+    (words.len() == 1).then(|| words.remove(0))
 }
 
 /// A filled slot as the save/load screens show it.
@@ -254,14 +229,13 @@ pub fn newest_slot(storage: &dyn Storage, page: Page) -> Option<Slot> {
         .map(|(_, slot)| slot)
 }
 
-/// The newest save on any page (for the main menu's Continue).
-pub fn newest_save(storage: &dyn Storage) -> Option<Slot> {
+/// The newest save on any page and its `seq` (for the main menu's Continue).
+pub fn newest_save(storage: &dyn Storage) -> Option<(u64, Slot)> {
     pages()
         .into_iter()
         .flat_map(|page| (0..SLOTS_PER_PAGE).map(move |index| Slot { page, index }))
         .filter_map(|slot| Some((SaveFile::parse(&storage.read(&slot.file_name())?)?.seq, slot)))
         .max_by_key(|(seq, _)| *seq)
-        .map(|(_, slot)| slot)
 }
 
 /// The pictures of a saved scene (background, sprites, inline images), scaled

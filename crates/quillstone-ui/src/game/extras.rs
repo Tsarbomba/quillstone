@@ -42,11 +42,13 @@ impl Game<'_> {
 
     /// Write the persistent data if the story changed it.
     pub(super) fn save_persistent(&mut self) {
-        if !self.session.take_persistent_changed() {
+        self.persistent_dirty |= self.session.take_persistent_changed();
+        if !self.persistent_dirty {
             return;
         }
-        if let Err(e) = self.storage.write(PERSISTENT_FILE, &write_persistent(self.session.persistent())) {
-            self.notify(format!("Could not save what was unlocked: {e}"));
+        match self.storage.write(PERSISTENT_FILE, &write_persistent(self.session.persistent())) {
+            Ok(()) => self.persistent_dirty = false,
+            Err(e) => self.notify(format!("Could not save what was unlocked: {e}")),
         }
     }
 

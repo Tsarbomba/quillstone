@@ -14,7 +14,7 @@ mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
 pub use persist::{read_persistent, write_persistent, UNLOCKED};
-pub use save::{line_id, voice_name, SAVE_HISTORY};
+pub use save::{line_id, q as quote, tokens, voice_name, SAVE_HISTORY};
 
 /// Something the frontend should do.
 #[derive(Debug, Clone, PartialEq)]

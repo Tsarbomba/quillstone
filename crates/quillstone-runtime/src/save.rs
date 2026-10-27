@@ -194,7 +194,8 @@ pub(crate) fn var_record(name: &str, value: &Value) -> String {
     }
 }
 
-fn q(s: &str) -> String {
+/// A `"quoted string"` with backslash escapes, as [`tokens`] reads it back.
+pub fn q(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -294,7 +295,7 @@ pub(crate) fn read_var(t: &[String]) -> Result<(String, Value), String> {
 }
 
 /// Split a record into words and unquoted strings.
-pub(crate) fn tokens(line: &str) -> Result<Vec<String>, String> {
+pub fn tokens(line: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let mut chars = line.chars().peekable();
     while let Some(&c) = chars.peek() {

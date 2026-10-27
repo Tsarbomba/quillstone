@@ -1,7 +1,5 @@
-//! Quillstone command line: `check`, `test`, `dump`, a text-mode `run`, and `package`.
-//!
-//! The windowed player will live here later; `run` already drives the real
-//! runtime, so scripts can be tried before any rendering exists.
+//! Quillstone command line: `check`, `test`, `voices`, `dump`, a text-mode `run`, and `package`.
+//! The windowed player is its own crate, in `player/`.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};

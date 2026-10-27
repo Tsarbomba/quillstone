@@ -14,6 +14,7 @@ mod audio;
 #[cfg(feature = "audio")]
 mod ffaudio;
 mod gamepad;
+mod images;
 mod reload;
 mod gfx;
 mod text;
@@ -25,7 +26,6 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use quillstone_render::pixels::Level;
 use quillstone_render::{build_frame, letterbox, to_virtual, Size, Theme};
 use quillstone_script::{parse, AssetKind, Op, Program};
 use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp};
@@ -40,12 +40,6 @@ use winit::window::{Fullscreen, Window, WindowId};
 use audio::Audio;
 use gfx::Gfx;
 
-/// A decoded image (as its mip chain) waiting for the GPU to exist.
-struct PendingImage {
-    key: String,
-    chain: Vec<Level>,
-}
-
 struct App {
     title: String,
     game: Game<'static>,
@@ -58,7 +52,8 @@ struct App {
     settings_file: Option<PathBuf>,
     /// `None` when there is no sound device (or the `audio` feature is off).
     audio: Option<Audio>,
-    pending_images: Vec<PendingImage>,
+    /// Images on the GPU come and go as the story needs them (see `images.rs`).
+    images: images::Images,
     image_sizes: HashMap<String, Size>,
     /// The theme's font files (regular first), handed to the text renderer when the GPU exists.
     fonts: Vec<Vec<u8>>,
@@ -76,7 +71,16 @@ struct App {
     settled: bool,
     /// An input arrived since the last frame.
     dirty: bool,
+    /// The screen needs images still being decoded: the previous frame stays up, the
+    /// game's clock stands still and story input is ignored (see `redraw`).
+    holding: bool,
+    /// When the current wait for images began, and what the last shown frame used.
+    hold_since: Option<Instant>,
+    last_asked: Vec<String>,
 }
+
+/// The longest a frame is held back for images still loading.
+const HOLD_MAX: Duration = Duration::from_secs(1);
 
 /// How often a settled screen is drawn anyway, and how often gamepads are polled meanwhile.
 const SETTLED_REDRAW: Duration = Duration::from_millis(250);
@@ -87,6 +91,10 @@ fn main() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default_hook(info);
+        // A decoder panic is caught and only fails that image: not a crash.
+        if std::thread::current().name() == Some(images::DECODER) {
+            return;
+        }
         if let Some(dir) = exe_dir() {
             let _ = std::fs::write(dir.join("error.txt"), format!("the game crashed: {info}\n"));
         }
@@ -117,9 +125,6 @@ fn main() {
         .into_iter()
         .filter_map(|f| std::fs::read(root.join(f)).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
         .collect();
-
-    let mut image_sizes = HashMap::new();
-    let pending_images = load_images(program, &theme, &root, &mut image_sizes);
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("game").trim_end_matches(".quill");
     let dir = data_dir(&game_id(program.title.as_deref().unwrap_or(stem)));
@@ -152,8 +157,8 @@ fn main() {
         root: root.clone(),
         settings_file,
         audio,
-        pending_images,
-        image_sizes,
+        images: images::Images::new(root.clone()),
+        image_sizes: HashMap::new(),
         fonts,
         videos: Videos::new(video::opener(&root)),
         uploaded: HashMap::new(),
@@ -163,36 +168,14 @@ fn main() {
         last_draws: Vec::new(),
         settled: false,
         dirty: true,
+        holding: false,
+        hold_since: None,
+        last_asked: Vec::new(),
     };
     app.play_audio();
 
     let event_loop = EventLoop::new().expect("failed to create the event loop");
     event_loop.run_app(&mut app).expect("event loop error");
-}
-
-/// Decode every image the script and theme use that isn't in `sizes` yet, up
-/// front so nothing hitches mid-story (fine for small games; a real asset loader
-/// would stream them on a background thread). Their sizes go into `sizes`.
-fn load_images(program: &Program, theme: &Theme, root: &Path, sizes: &mut HashMap<String, Size>) -> Vec<PendingImage> {
-    let mut pending = Vec::new();
-    let script_images = program.assets().filter(|(_, kind, _)| *kind == AssetKind::Image).map(|(_, _, a)| a);
-    let gallery = program.extra_assets().filter(|(kind, _)| *kind == AssetKind::Image).map(|(_, a)| a);
-    for asset in script_images.chain(gallery).chain(theme.images()) {
-        if sizes.contains_key(asset) {
-            continue;
-        }
-        match image::open(root.join(asset)) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
-                let (width, height) = rgba.dimensions();
-                sizes.insert(asset.to_string(), Size::new(width as f32, height as f32));
-                let chain = gfx::prepare_image(width, height, rgba.into_raw());
-                pending.push(PendingImage { key: asset.to_string(), chain });
-            }
-            Err(e) => eprintln!("warning: cannot load image {asset}: {e}"),
-        }
-    }
-    pending
 }
 
 /// Auto-voice: the sound files in the script's `voice:` folder, by name without
@@ -352,11 +335,6 @@ impl App {
         // Each version lives as long as the app (a few kilobytes per edit, while developing).
         let program: &'static Program = Box::leak(Box::new(program));
         let theme = load_theme(program, &self.root);
-        let images = load_images(program, &theme, &self.root, &mut self.image_sizes);
-        match &mut self.gfx {
-            Some(gfx) => images.into_iter().for_each(|i| gfx.add_image(i.key, &i.chain)),
-            None => self.pending_images.extend(images),
-        }
         match self.game.reload(program) {
             Ok(()) => {
                 self.game.set_theme(theme);
@@ -366,6 +344,7 @@ impl App {
             Err(e) => self.game.show_notice(format!("Not reloaded: {e}")),
         }
         self.videos.retry_failed();
+        self.images.retry_failed();
         self.watch = reload::Watch::new(&self.script_path, program, &self.root);
     }
 
@@ -393,6 +372,7 @@ impl App {
                     if let Some(file) = &self.settings_file {
                         if let Err(e) = write_file(file, &self.game.settings().to_text()) {
                             eprintln!("warning: cannot save settings to {}: {e}", file.display());
+                            self.game.show_notice(format!("Could not save settings: {e}"));
                         }
                     }
                 }
@@ -416,7 +396,8 @@ impl App {
         }
 
         let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
+        // While holding for images the game's clock stands still, so a loaded scene starts its fades whole.
+        let dt = if self.holding { 0.0 } else { now.duration_since(self.last_frame).as_secs_f32().min(0.1) };
         self.last_frame = now;
         if let Some(audio) = &mut self.audio {
             if audio.update() {
@@ -429,11 +410,44 @@ impl App {
 
         let Some(gfx) = self.gfx.as_mut() else { return };
         let (w, h) = gfx.size();
+        // Every image the screen asks the size of is one it wants drawn: load what isn't yet.
         let sizes = &self.image_sizes;
-        let draws = self.game.draw_list(&|src: &str| sizes.get(src).copied());
+        let asked = std::cell::RefCell::new(Vec::new());
+        let draws = self.game.draw_list(&|src: &str| {
+            asked.borrow_mut().push(src.to_string());
+            sizes.get(src).copied()
+        });
+        self.images.next_frame();
+        let asked = asked.into_inner();
+        let is_image = |s: &&str| quillstone_script::kind_from_path(s) == AssetKind::Image;
+        for src in asked.iter().map(String::as_str).filter(is_image) {
+            self.images.want(src, true);
+        }
+        for src in self.game.upcoming_images().into_iter().filter(is_image) {
+            self.images.want(src, false);
+        }
+        // Wait for the pictures the screen asked for, but not longer than a slow disk may take.
+        if asked.iter().any(|s| self.images.is_pending(s)) {
+            let since = *self.hold_since.get_or_insert(now);
+            self.holding = now.duration_since(since) < HOLD_MAX;
+        } else {
+            self.hold_since = None;
+            self.holding = false;
+        }
+        if self.holding {
+            for src in self.last_asked.iter().map(String::as_str).filter(is_image) {
+                self.images.want(src, true); // still on screen: keep them loaded
+            }
+            gfx.render(&build_frame(&self.last_draws, Size::new(w as f32, h as f32)));
+            self.images.update(gfx, &mut self.image_sizes);
+            self.settled = false;
+            return;
+        }
         gfx.render(&build_frame(&draws, Size::new(w as f32, h as f32)));
-        self.settled = draws == self.last_draws && !self.game.needs_ticks();
+        self.images.update(gfx, &mut self.image_sizes);
+        self.settled = draws == self.last_draws && !self.game.needs_ticks() && !self.images.busy();
         self.last_draws = draws;
+        self.last_asked = asked;
     }
 
     /// Keep the playing clips in line with the story, put new frames on the GPU
@@ -520,11 +534,7 @@ impl ApplicationHandler for App {
             .with_fullscreen(fullscreen(self.game.settings().fullscreen));
         let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
 
-        let mut gfx = Gfx::new(event_loop, window.clone(), std::mem::take(&mut self.fonts));
-        for image in self.pending_images.drain(..) {
-            gfx.add_image(image.key, &image.chain);
-        }
-        self.gfx = Some(gfx);
+        self.gfx = Some(Gfx::new(event_loop, window.clone(), std::mem::take(&mut self.fonts)));
         self.last_frame = Instant::now();
         window.request_redraw();
         self.window = Some(window);
@@ -562,26 +572,28 @@ impl ApplicationHandler for App {
                     MouseButton::Right => Button::Right,
                     _ => return,
                 };
-                self.game.handle(match state {
-                    ElementState::Pressed => Event::Press(button),
-                    ElementState::Released => Event::Release(button),
-                });
+                match state {
+                    ElementState::Pressed if !self.holding => self.game.handle(Event::Press(button)),
+                    ElementState::Pressed => {}
+                    ElementState::Released => self.game.handle(Event::Release(button)),
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0, // touchpads: ~40 px a notch
                 };
-                if dy != 0.0 {
+                if dy != 0.0 && !self.holding {
                     self.game.handle(Event::Wheel(dy));
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, repeat, .. }, .. } => {
                 if let Some(key) = map_key(&logical_key, repeat) {
-                    self.game.handle(match state {
-                        ElementState::Pressed => Event::Key(key),
-                        ElementState::Released => Event::KeyReleased(key),
-                    });
+                    match state {
+                        ElementState::Pressed if !self.holding => self.game.handle(Event::Key(key)),
+                        ElementState::Pressed => {} // a line the player hasn't seen must not be skipped
+                        ElementState::Released => self.game.handle(Event::KeyReleased(key)),
+                    }
                 }
             }
             // A Ctrl held while switching away would never be seen let go.
@@ -601,7 +613,9 @@ impl ApplicationHandler for App {
         if !pad.is_empty() {
             self.dirty = true;
             for event in pad {
-                self.game.handle(event);
+                if !self.holding || matches!(event, Event::Release(_) | Event::KeyReleased(_)) {
+                    self.game.handle(event);
+                }
             }
             self.pump(event_loop);
         }

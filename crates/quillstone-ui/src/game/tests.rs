@@ -1028,3 +1028,58 @@ fn reloading_at_the_menu_just_swaps_the_script() {
     g.start_story();
     assert_eq!(line(&g), "brand new");
 }
+
+/// Storage the test can still reach after handing it to the game, and make fail.
+#[derive(Clone, Default)]
+struct Shared {
+    mem: std::rc::Rc<std::cell::RefCell<crate::MemoryStorage>>,
+    fail: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Storage for Shared {
+    fn read(&self, name: &str) -> Option<String> {
+        self.mem.borrow().read(name)
+    }
+
+    fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {
+        if self.fail.get() {
+            return Err("disk busy".into());
+        }
+        self.mem.borrow_mut().write(name, contents)
+    }
+
+    fn now(&self) -> crate::Timestamp {
+        self.mem.borrow().now()
+    }
+}
+
+#[test]
+fn an_unlock_that_could_not_be_written_is_written_later() {
+    // Nothing after the unlock changes what is kept, so only a retry writes it.
+    let p = parse("---\ngallery: [cg.png]\n---\n**A:** one\n::bg{src=cg.png}\n**A:** two\n**A:** three\n").unwrap();
+    let storage = Shared::default();
+    let mut g = Game::new(&p, instant(), Box::new(storage.clone()));
+    g.start_story();
+    storage.fail.set(true);
+    key(&mut g, Key::Space); // shows cg.png: unlocked, but the write fails
+    assert!(notice(&g).is_some_and(|n| n.contains("Could not save what was unlocked")));
+    storage.fail.set(false);
+    g.autosave(); // the player closes the window right away
+    let kept = storage.read("persistent.txt").expect("written once the disk works again");
+    assert!(kept.contains("unlocked:cg.png"), "{kept}");
+}
+
+#[test]
+fn a_clock_set_back_doesnt_make_new_saves_look_old() {
+    let p = parse("**A:** one\n**A:** two\n").unwrap();
+    let storage = Shared::default();
+    storage.mem.borrow().clock.set(10_000_000);
+    let mut g = Game::new(&p, instant(), Box::new(storage.clone()));
+    g.start_story();
+    key(&mut g, Key::F5);
+    storage.mem.borrow().clock.set(0); // the PC's clock jumps back
+    key(&mut g, Key::Space);
+    key(&mut g, Key::F5);
+    let second = crate::slots::Slot { page: crate::slots::Page::Quick, index: 1 };
+    assert_eq!(crate::slots::newest_save(&storage).map(|(_, s)| s), Some(second), "Continue picks the latest save");
+}

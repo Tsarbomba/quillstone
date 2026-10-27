@@ -30,6 +30,7 @@ impl Game<'_> {
     /// when the window is closed, too.
     pub fn autosave(&mut self) {
         self.save_read();
+        self.save_persistent(); // a write that failed earlier gets its last chance
         if self.in_story && self.session.can_rollback() && !self.session.state().finished {
             let slot = next_rotating_slot(&*self.storage, Page::Auto);
             self.save_to(slot);
@@ -180,9 +181,12 @@ impl Game<'_> {
 
     /// Write the game to `slot`. `false` (with a notice) if it couldn't be written.
     pub(super) fn save_to(&mut self, slot: Slot) -> bool {
-        let file = SaveFile::new(&self.session, self.storage.now());
+        let mut file = SaveFile::new(&self.session, self.storage.now());
+        // A clock set back must not make this save look older than the last one.
+        file.seq = file.seq.max(self.newest_save.map_or(0, |(seq, _)| seq.saturating_add(1)));
         match self.storage.write(&slot.file_name(), &file.to_text()) {
             Ok(()) => {
+                self.newest_save = Some((file.seq, slot));
                 if matches!(self.screen, Screen::Save | Screen::Load) {
                     self.refresh_slots();
                 }

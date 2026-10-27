@@ -134,12 +134,14 @@ pub struct Game<'p> {
     /// Lines read in any playthrough (see `skip.rs`), and whether it needs writing.
     read: std::collections::HashSet<u64>,
     read_dirty: bool,
+    /// What is kept across playthroughs changed and isn't written yet.
+    persistent_dirty: bool,
     /// Whether a story is running (false at the main menu; overlays return here).
     in_story: bool,
     /// The main-menu button the keyboard is on.
     menu_focus: Option<usize>,
-    /// The newest save, for the main menu's Continue.
-    newest_save: Option<crate::slots::Slot>,
+    /// The newest save and its `seq`, for the main menu's Continue and to order new saves.
+    newest_save: Option<(u64, crate::slots::Slot)>,
     /// Counts cutscenes started, so the same file shown again starts over.
     video_generation: u64,
     /// Whether the frontend is really playing the cutscene (it may have no decoder).
@@ -187,6 +189,7 @@ impl<'p> Game<'p> {
             skip_elapsed: 0.0,
             read,
             read_dirty: false,
+            persistent_dirty: false,
             in_story: false,
             menu_focus: None,
             newest_save: None,
@@ -477,6 +480,16 @@ impl<'p> Game<'p> {
         out
     }
 
+    /// Images the story may show soon, nearest first, to load before they are needed
+    /// (what is on screen now the frontend sees in the draw list).
+    pub fn upcoming_images(&self) -> Vec<&'p str> {
+        const AHEAD: usize = 40; // ops: a few lines' worth on every branch
+        if !self.in_story {
+            return Vec::new();
+        }
+        self.program.images_ahead(self.session.state().pc, AHEAD)
+    }
+
     // ---- video ---------------------------------------------------------------------------
 
     /// The videos that should be playing now: the cutscene, a video background
@@ -533,7 +546,7 @@ impl<'p> Game<'p> {
         match pick {
             Some(MenuButton::Start) => self.start_story(),
             Some(MenuButton::Continue) => {
-                if let Some(slot) = self.newest_save {
+                if let Some((_, slot)) = self.newest_save {
                     self.load_from(slot);
                 }
             }

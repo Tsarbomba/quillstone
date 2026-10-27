@@ -1,7 +1,7 @@
 //! The compiled form of a Quillstone script.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
@@ -227,6 +227,34 @@ impl Program {
         gallery.chain(self.music_room.iter().map(|p| (AssetKind::Audio, p.as_str())))
     }
 
+    /// The images the story may show within `steps` ops of `pc`, nearest first,
+    /// following jumps, calls and every choice (for loading them before they're needed).
+    pub fn images_ahead(&self, pc: usize, steps: usize) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([pc]);
+        while let Some(at) = queue.pop_front() {
+            if seen.len() >= steps || !seen.insert(at) {
+                continue;
+            }
+            let Some(op) = self.ops.get(at) else { continue };
+            if let Some((AssetKind::Image, src)) = op.asset() {
+                if !out.contains(&src) {
+                    out.push(src);
+                }
+            }
+            match op {
+                Op::Jump { target, cond: None } => queue.push_back(*target),
+                Op::Jump { target, .. } => queue.extend([*target, at + 1]),
+                Op::Call { target } => queue.extend([*target, at + 1]),
+                Op::Choice { options } => queue.extend(options.iter().map(|o| o.target)),
+                Op::Return | Op::End => {}
+                _ => queue.push_back(at + 1),
+            }
+        }
+        out
+    }
+
     /// Every asset the script references, as `(op index, kind, path)`.
     pub fn assets(&self) -> impl Iterator<Item = (usize, AssetKind, &str)> {
         self.ops
@@ -424,6 +452,17 @@ impl Op {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn images_ahead_follow_every_branch_nearest_first() {
+        let p = crate::parse(
+            "::bg{src=a.png}\nHi.\n::choice\n- [Left](#left)\n- [Right](#right)\n::\n# left\n::bg{src=l.png}\nL.\n::end\n# right\n::show{x src=r.png}\nR.\n::bg{src=far.png}\n",
+        )
+        .unwrap();
+        assert_eq!(p.images_ahead(0, 100), ["a.png", "l.png", "r.png", "far.png"]);
+        assert!(!p.images_ahead(0, 6).contains(&"far.png"), "only so far ahead");
+        assert_eq!(p.images_ahead(p.labels["left"], 100), ["l.png"], "the past isn't loaded");
+    }
+
     #[test]
     fn easing_curves_start_at_0_end_at_1_and_keep_their_shape() {
         for e in [Ease::Linear, Ease::In, Ease::Out, Ease::InOut] {

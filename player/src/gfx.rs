@@ -218,17 +218,23 @@ impl Gfx {
     }
 
     /// Upload a decoded image under the script's path. `chain` is its mip chain
-    /// from [`prepare_image`], largest level first.
-    pub fn add_image(&mut self, key: String, chain: &[Level]) {
-        let Some(base) = chain.first() else { return };
+    /// from [`prepare_image`], largest level first. `false` if the GPU can't hold it.
+    pub fn add_image(&mut self, key: String, chain: &[Level]) -> bool {
+        let Some(base) = chain.first() else { return false };
         let max = self.device.limits().max_texture_dimension_2d;
         if base.width > max || base.height > max {
             eprintln!("warning: image {key} is {}x{}; this GPU allows at most {max}x{max}", base.width, base.height);
-            return;
+            return false;
         }
         let levels: Vec<&[u8]> = chain.iter().map(|l| l.rgba.as_slice()).collect();
         let tex = upload_texture(&self.device, &self.queue, &self.bind_layout, &self.sampler, base.width, base.height, &levels);
         self.images.insert(key, tex);
+        true
+    }
+
+    /// Free an image's texture (it is loaded again if it is wanted again).
+    pub fn remove_image(&mut self, key: &str) {
+        self.images.remove(key);
     }
 
     /// Show a video frame (RGBA8) under `key`, as if it were an image. The
