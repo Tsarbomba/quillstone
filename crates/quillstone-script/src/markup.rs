@@ -3,6 +3,8 @@
 //! - `**bold**` and `*italic*` (as in Markdown; `***both***`)
 //! - `{color=#ff8080}...{/color}` (they nest)
 //! - `{w=0.5}`: the typewriter pauses there for half a second
+//! - `{size=+10}`, `{size=-8}`, `{size=24}`...`{/size}`: relative or absolute text size (they nest)
+//! - `{nw}` at the very end: the story goes on by itself once the line is typed
 //! - `\*`, `\{` and `\\` write the character itself; any other `\` is shown as is
 //!
 //! `{name}` is variable interpolation (done by the runtime before this); a brace
@@ -11,12 +13,47 @@
 
 use crate::expr::is_ident;
 
+/// A `{size=...}` tag: pixels on the 1920x1080 screen, or a change from the surrounding size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextSize {
+    Absolute(i32),
+    Relative(i32),
+}
+
+/// Smallest and largest text size, in pixels (also the limit of a relative one).
+pub const MIN_SIZE: i32 = 8;
+pub const MAX_SIZE: i32 = 200;
+
+impl TextSize {
+    /// The size in pixels when the surrounding text is `base` pixels.
+    pub fn resolve(self, base: f32) -> f32 {
+        let px = match self {
+            TextSize::Absolute(n) => n as f32,
+            TextSize::Relative(d) => base + d as f32,
+        };
+        px.clamp(MIN_SIZE as f32, MAX_SIZE as f32)
+    }
+
+    /// `self` written inside text already sized `outer`.
+    fn within(self, outer: Option<TextSize>) -> TextSize {
+        match (self, outer) {
+            (TextSize::Relative(d), Some(TextSize::Relative(c))) => TextSize::Relative((c + d).clamp(-MAX_SIZE, MAX_SIZE)),
+            (TextSize::Relative(d), Some(TextSize::Absolute(c))) => {
+                TextSize::Absolute((c + d).clamp(MIN_SIZE, MAX_SIZE))
+            }
+            (size, _) => size,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Style {
     pub bold: bool,
     pub italic: bool,
     /// sRGB, 0..1; `None` is the text's normal colour.
     pub color: Option<[f32; 3]>,
+    /// `None` is the text's normal size.
+    pub size: Option<TextSize>,
 }
 
 /// A stretch of [`Rich::text`] (byte range) in one style.
@@ -36,6 +73,8 @@ pub struct Rich {
     pub runs: Vec<TextRun>,
     /// Typewriter pauses: (characters shown when it pauses, seconds).
     pub pauses: Vec<(usize, f32)>,
+    /// The line ended in `{nw}`: the story goes on once it is typed.
+    pub no_wait: bool,
 }
 
 /// Longest `{w=...}` pause, in seconds.
@@ -47,6 +86,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let mut out = Rich::default();
     let mut style = Style::default();
     let mut colors: Vec<Option<[f32; 3]>> = Vec::new();
+    let mut sizes: Vec<Option<TextSize>> = Vec::new();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut run_start = 0;
     let mut shown = 0; // characters in out.text
@@ -94,6 +134,20 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     colors.push(style.color);
                     close_run(out.text.len(), style);
                     style.color = Some(color);
+                } else if tag == "/size" {
+                    let previous = sizes.pop().ok_or("`{/size}` without a `{size=...}` before it")?;
+                    close_run(out.text.len(), style);
+                    style.size = previous;
+                } else if let Some(value) = tag.strip_prefix("size=") {
+                    let size = parse_size(value.trim())?;
+                    sizes.push(style.size);
+                    close_run(out.text.len(), style);
+                    style.size = Some(size.within(style.size));
+                } else if tag == "nw" {
+                    if chars[close + 1..].iter().any(|c| !c.is_whitespace()) {
+                        return Err("`{nw}` must be the last thing in the line".into());
+                    }
+                    out.no_wait = true;
                 } else if let Some(value) = tag.strip_prefix("w=") {
                     let seconds: f32 = value.trim().parse().map_err(|_| format!("`{{w={value}}}` needs a number of seconds"))?;
                     if !(seconds > 0.0 && seconds <= MAX_PAUSE) {
@@ -105,7 +159,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     out.text.push_str(&format!("{{{inner}}}"));
                     shown += inner.chars().count() + 2;
                 } else {
-                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{w=0.5}}`)"));
+                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{w=0.5}}`, `{{nw}}`)"));
                 }
                 i = close + 1;
             }
@@ -125,6 +179,9 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     if !colors.is_empty() {
         return Err("`{color=...}` is never closed with `{/color}`".into());
     }
+    if !sizes.is_empty() {
+        return Err("`{size=...}` is never closed with `{/size}`".into());
+    }
     close_run(out.text.len(), style);
     if runs.iter().any(|r| r.style != Style::default()) {
         out.runs = runs;
@@ -132,9 +189,32 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     Ok(out)
 }
 
+/// `+10`, `-8` (relative) or `24` (absolute pixels).
+fn parse_size(v: &str) -> Result<TextSize, String> {
+    let n: i32 = v.parse().map_err(|_| format!("`{{size={v}}}` needs a whole number: `+10`, `-8` or `24`"))?;
+    if v.starts_with('+') || v.starts_with('-') {
+        if n.abs() > MAX_SIZE {
+            return Err(format!("`{{size={v}}}`: a size change is at most {MAX_SIZE} either way"));
+        }
+        Ok(TextSize::Relative(n))
+    } else if (MIN_SIZE..=MAX_SIZE).contains(&n) {
+        Ok(TextSize::Absolute(n))
+    } else {
+        Err(format!("`{{size={v}}}`: a text size is from {MIN_SIZE} to {MAX_SIZE} pixels"))
+    }
+}
+
 /// Whether tagged text is well formed (for the script parser).
 pub fn check_markup(src: &str) -> Result<(), String> {
     parse_markup(src).map(|_| ())
+}
+
+/// Like [`check_markup`] for a choice option, where `{nw}` makes no sense.
+pub fn check_option_markup(src: &str) -> Result<(), String> {
+    match parse_markup(src)? {
+        Rich { no_wait: true, .. } => Err("`{nw}` only works at the end of a dialogue line, not in a choice".into()),
+        _ => Ok(()),
+    }
 }
 
 /// Tagged text for display. Text that isn't well formed (it can't come from a
@@ -166,6 +246,10 @@ mod tests {
 
     fn styles(r: &Rich) -> Vec<(&str, bool, bool, Option<[f32; 3]>)> {
         r.runs.iter().map(|run| (&r.text[run.start..run.end], run.style.bold, run.style.italic, run.style.color)).collect()
+    }
+
+    fn sizes(r: &Rich) -> Vec<(&str, Option<TextSize>)> {
+        r.runs.iter().map(|run| (&r.text[run.start..run.end], run.style.size)).collect()
     }
 
     #[test]
@@ -202,6 +286,42 @@ mod tests {
     }
 
     #[test]
+    fn sizes_are_relative_or_absolute_and_nest() {
+        let r = parse_markup("a {size=+10}b {size=+4}c{/size} d{/size} e {size=24}f {size=-6}g{/size}{/size}").unwrap();
+        assert_eq!(r.text, "a b c d e f g");
+        use TextSize::*;
+        assert_eq!(
+            sizes(&r),
+            [("a ", None), ("b ", Some(Relative(10))), ("c", Some(Relative(14))), (" d", Some(Relative(10))),
+             (" e ", None), ("f ", Some(Absolute(24))), ("g", Some(Absolute(18)))]
+        );
+        assert_eq!(Relative(14).resolve(38.0), 52.0);
+        assert_eq!(Relative(-100).resolve(38.0), 8.0, "never below the minimum");
+        assert_eq!(Absolute(24).resolve(38.0), 24.0);
+        assert_eq!(Relative(900).resolve(38.0), 200.0);
+        // sizes mix with the other tags
+        let r = parse_markup("{size=+10}**{color=#f00}x{/color}**{/size}").unwrap();
+        assert_eq!(r.runs.len(), 1);
+        let s = r.runs[0].style;
+        assert!(s.bold && s.color.is_some() && s.size == Some(Relative(10)));
+        assert_eq!(plain("a{size=+10}b{/size}"), "ab");
+    }
+
+    #[test]
+    fn nw_must_end_the_line() {
+        let r = parse_markup("Hold on.{nw}").unwrap();
+        assert_eq!((r.text.as_str(), r.no_wait), ("Hold on.", true));
+        assert!(parse_markup("Trailing space ok {nw} ").unwrap().no_wait);
+        assert!(!parse_markup("Plain.").unwrap().no_wait);
+        assert!(parse_markup("Well...{w=1}{nw}").unwrap().no_wait);
+        assert_eq!(parse_markup("a {nw} b").unwrap_err(), "`{nw}` must be the last thing in the line");
+        assert_eq!(plain("Gone.{nw}"), "Gone.");
+        assert!(check_option_markup("Pick{nw}").is_err());
+        assert!(check_option_markup("Pick {size=+4}me{/size}").is_ok());
+        assert!(!parse_markup(&escape("{nw}")).unwrap().no_wait, "a value can't smuggle one in");
+    }
+
+    #[test]
     fn escapes_and_unknown_names_are_literal() {
         let r = parse_markup("2 \\* 3 = 6, \\{braces}, back\\\\slash, {nobody}").unwrap();
         assert_eq!(r.text, "2 * 3 = 6, {braces}, back\\slash, {nobody}");
@@ -220,7 +340,16 @@ mod tests {
             ("{color=red}x{/color}", "bad colour"),
             ("{w=fast}", "number of seconds"),
             ("{w=0}", "more than 0"),
-            ("{size=40}big", "unknown text tag"),
+            ("{size=big}x{/size}", "whole number"),
+            ("{size=7}x{/size}", "from 8 to 200"),
+            ("{size=201}x{/size}", "from 8 to 200"),
+            ("{size=+201}x{/size}", "at most 200"),
+            ("{size=24}open", "never closed"),
+            ("{/size}", "without a `{size"),
+            ("{nw}more", "last thing"),
+            ("{nw}{/size}", "last thing"),
+            ("{size=}x{/size}", "whole number"),
+            ("{huge=40}big", "unknown text tag"),
         ] {
             let e = parse_markup(src).unwrap_err();
             assert!(e.contains(needle), "{src}: {e}");

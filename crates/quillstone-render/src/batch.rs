@@ -42,6 +42,8 @@ pub struct TextJob {
     /// Pixel-aligned destination in the window; also the texture size.
     pub rect: Rect,
     pub size_px: f32,
+    /// Window pixels per virtual pixel, for sizes that are given in virtual ones.
+    pub scale: f32,
     pub color: [f32; 4],
     pub align: Align,
 }
@@ -54,10 +56,19 @@ impl TextJob {
         format!("{}|{}|{r},{g},{b},{a}", self.layout_key(), self.visible_chars)
     }
 
+    /// The size in window pixels of one of this job's runs: the text size, or the
+    /// run's `{size=...}` applied to it (within 8 to 200 virtual pixels).
+    pub fn run_size_px(&self, run: &TextRun) -> f32 {
+        match run.style.size {
+            Some(size) if self.scale > 0.0 => size.resolve(self.size_px / self.scale) * self.scale,
+            _ => self.size_px,
+        }
+    }
+
     /// Identifies the layout (where every glyph goes), which doesn't depend on
     /// how much is typed or on the colour: a backend can shape once per line.
     pub fn layout_key(&self) -> String {
-        let mut key = format!("{}|{}x{}|{:.2}|{:?}", self.text, self.rect.w, self.rect.h, self.size_px, self.align);
+        let mut key = format!("{}|{}x{}|{:.2}@{:.4}|{:?}", self.text, self.rect.w, self.rect.h, self.size_px, self.scale, self.align);
         for run in &self.runs {
             key.push_str(&format!("|{}-{}:{:?}", run.start, run.end, run.style));
         }
@@ -118,6 +129,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                     visible_chars: visible,
                     rect,
                     size_px: size * scale,
+                    scale,
                     color: *color,
                     align: *align,
                 });
@@ -252,6 +264,38 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);
+    }
+
+    #[test]
+    fn size_runs_reach_the_job_and_its_cache_key() {
+        use quillstone_script::markup::{rich, TextSize};
+        let r = rich("a {size=+14}b{/size} {size=24}c{/size}");
+        let draw = |runs: Vec<TextRun>| Draw::Text {
+            text: r.text.clone(),
+            runs,
+            visible_chars: usize::MAX,
+            rect: screen(),
+            size: 38.0,
+            color: [1.0; 4],
+            align: Align::Left,
+        };
+        let big = build_frame(&[draw(r.runs.clone())], Size::new(1920.0, 1080.0));
+        let job = &big.texts[0];
+        let sizes: Vec<f32> = job.runs.iter().map(|run| job.run_size_px(run)).collect();
+        assert_eq!(sizes, [38.0, 52.0, 38.0, 24.0]);
+        assert_eq!(job.runs[1].style.size, Some(TextSize::Relative(14)));
+        // half-size window: everything is halved, sizes follow
+        let half = build_frame(&[draw(r.runs.clone())], Size::new(960.0, 540.0));
+        let sizes: Vec<f32> = half.texts[0].runs.iter().map(|run| half.texts[0].run_size_px(run)).collect();
+        assert_eq!(sizes, [19.0, 26.0, 19.0, 12.0]);
+        // a different size is a different picture, so a different key
+        let mut other = r.runs.clone();
+        other[1].style.size = Some(TextSize::Relative(15));
+        let b = build_frame(&[draw(other)], Size::new(1920.0, 1080.0));
+        assert_ne!(job.key(), b.texts[0].key());
+        assert_ne!(job.layout_key(), b.texts[0].layout_key());
+        let plain = build_frame(&[draw(Vec::new())], Size::new(1920.0, 1080.0));
+        assert_ne!(job.layout_key(), plain.texts[0].layout_key());
     }
 
     #[test]

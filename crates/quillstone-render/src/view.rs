@@ -118,12 +118,17 @@ pub struct SpriteView {
     pub previous_src: Option<String>,
     /// Target position, 0..1 across the screen (the sprite's centre).
     pub x: f32,
+    /// Target height of the bottom edge, as a fraction of the screen height.
+    pub y: f32,
+    /// Drawing order among sprites (higher is in front).
+    pub z: i32,
     /// Target size.
     pub scale: f32,
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
     from_x: f32,
+    from_y: f32,
     from_scale: f32,
     move_time: f32,
     move_elapsed: f32,
@@ -131,17 +136,20 @@ pub struct SpriteView {
 }
 
 impl SpriteView {
-    fn new(id: &str, src: &str, x: f32, scale: f32, fade: f32) -> SpriteView {
+    fn new(id: &str, src: &str, x: f32, y: f32, z: i32, scale: f32, fade: f32) -> SpriteView {
         SpriteView {
             id: id.to_string(),
             src: src.to_string(),
             previous_src: None,
             x,
+            y,
+            z,
             scale,
             hiding: false,
             fade,
             elapsed: 0.0,
             from_x: x,
+            from_y: y,
             from_scale: scale,
             move_time: 0.0,
             move_elapsed: 0.0,
@@ -178,6 +186,11 @@ impl SpriteView {
         self.from_x + (self.x - self.from_x) * self.move_progress()
     }
 
+    /// Where the bottom edge is right now (sliding towards `y` while a move runs).
+    pub fn current_y(&self) -> f32 {
+        self.from_y + (self.y - self.from_y) * self.move_progress()
+    }
+
     fn tick(&mut self, dt: f32) {
         self.elapsed += dt;
         if self.move_time > 0.0 {
@@ -185,6 +198,7 @@ impl SpriteView {
             if self.move_elapsed >= self.move_time {
                 self.move_time = 0.0;
                 self.from_x = self.x;
+                self.from_y = self.y;
                 self.from_scale = self.scale;
             }
         }
@@ -227,14 +241,16 @@ pub struct Dialogue {
     hold: f32,
     total: usize,
     revealed: f32,
+    /// The line ends in `{nw}`: the story goes on by itself once it is typed.
+    pub auto_advance: bool,
 }
 
 impl Dialogue {
     fn new(speaker: Option<String>, color: Option<[f32; 3]>, tagged: &str, instant: bool) -> Dialogue {
-        let Rich { text, runs, pauses } = rich(tagged);
+        let Rich { text, runs, pauses, no_wait } = rich(tagged);
         let total = text.chars().count();
         let revealed = if instant { total as f32 } else { 0.0 };
-        Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed }
+        Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed, auto_advance: no_wait }
     }
 
     /// Type on for `dt` seconds at `speed` characters a second, stopping at pauses.
@@ -423,11 +439,13 @@ impl View {
                     self.shake = None;
                 }
                 Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
-                Cmd::ShowSprite { id, src, x, scale, fade } => self.show_sprite(id, src, *x, *scale, *fade),
+                Cmd::ShowSprite { id, src, x, y, z, scale, fade } => self.show_sprite(id, src, (*x, *y), *z, *scale, *fade),
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
-                Cmd::MoveSprite { id, x, scale, time, ease } => {
+                Cmd::MoveSprite { id, x, y, scale, time, ease } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
                         s.from_x = s.current_x();
+                        s.from_y = s.current_y();
+                        s.y = *y;
                         s.from_scale = s.current_scale();
                         s.x = *x;
                         s.scale = *scale;
@@ -492,12 +510,12 @@ impl View {
         self.camera.current()
     }
 
-    fn show_sprite(&mut self, id: &str, src: &str, x: f32, scale: f32, fade: f32) {
+    fn show_sprite(&mut self, id: &str, src: &str, (x, y): (f32, f32), z: i32, scale: f32, fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
             Some(s) => {
-                let here = s.current_x();
+                let (here, here_y) = (s.current_x(), s.current_y());
                 if s.src != src {
                     let old = std::mem::replace(&mut s.src, src.to_string());
                     s.previous_src = if fade > 0.0 { Some(old) } else { None };
@@ -505,12 +523,15 @@ impl View {
                     s.fade = fade;
                 }
                 s.from_x = here;
+                s.from_y = here_y;
                 s.x = x;
+                s.y = y;
+                s.z = z;
                 s.move_time = 0.0;
                 s.scale = scale;
                 s.from_scale = scale;
             }
-            None => self.sprites.push(SpriteView::new(id, src, x, scale, fade)),
+            None => self.sprites.push(SpriteView::new(id, src, x, y, z, scale, fade)),
         }
     }
 
@@ -644,12 +665,15 @@ impl View {
                 }
             }
         }
-        for s in &self.sprites {
-            let (x, scale) = (s.current_x(), s.current_scale());
+        // Back to front by z; the sort is stable, so equal z keeps the order sprites were shown in.
+        let mut order: Vec<&SpriteView> = self.sprites.iter().collect();
+        order.sort_by_key(|s| s.z);
+        for s in order {
+            let (x, y, scale) = (s.current_x(), s.current_y(), s.current_scale());
             if let Some(prev) = &s.previous_src {
-                push_sprite(&mut stage, prev, x, scale, 1.0, image_size);
+                push_sprite(&mut stage, prev, (x, y), scale, 1.0, image_size);
             }
-            push_sprite(&mut stage, &s.src, x, scale, s.alpha(), image_size);
+            push_sprite(&mut stage, &s.src, (x, y), scale, s.alpha(), image_size);
         }
         let view = self.stage_transform();
         for draw in stage {
@@ -855,7 +879,7 @@ fn push_image(
 fn push_sprite(
     out: &mut Vec<Draw>,
     src: &str,
-    x: f32,
+    (x, y): (f32, f32),
     scale: f32,
     alpha: f32,
     image_size: &dyn Fn(&str) -> Option<Size>,
@@ -868,7 +892,7 @@ fn push_sprite(
     let w = size.w / size.h * h;
     out.push(Draw::Image {
         src: src.to_string(),
-        dest: Rect::new(x * VIRTUAL.w - w / 2.0, VIRTUAL.h - h, w, h),
+        dest: Rect::new(x * VIRTUAL.w - w / 2.0, y * VIRTUAL.h - h, w, h),
         uv: Rect::new(0.0, 0.0, 1.0, 1.0),
         alpha,
     });
@@ -889,11 +913,11 @@ mod tests {
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: src.into(), x, scale: 1.0, fade }
+        Cmd::ShowSprite { id: id.into(), src: src.into(), x, y: 1.0, z: 0, scale: 1.0, fade }
     }
 
     fn slide(id: &str, x: f32, scale: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), x, scale, time, ease }
+        Cmd::MoveSprite { id: id.into(), x, y: 1.0, scale, time, ease }
     }
 
     fn images(list: &[Draw]) -> Vec<(&str, Rect, Rect)> {
@@ -1161,7 +1185,7 @@ mod tests {
     #[test]
     fn sprites_stand_on_the_bottom_edge_centred_on_x() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), x: 0.25, scale: 0.5, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), x: 0.25, y: 1.0, z: 0, scale: 0.5, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
@@ -1169,6 +1193,90 @@ mod tests {
         assert!(close(dest.y + dest.h, VIRTUAL.h)); // bottom edge
         assert!(close(dest.x + dest.w / 2.0, 0.25 * VIRTUAL.w)); // centred on x
         assert_eq!((*uv, *alpha), (Rect::new(0.0, 0.0, 1.0, 1.0), 1.0));
+    }
+
+    fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), x, y, z, scale: 1.0, fade: 0.0 }
+    }
+
+    fn drawn_order(v: &View) -> Vec<String> {
+        images(&v.draw_list(&all_1080p, None)).iter().map(|(src, _, _)| src.to_string()).collect()
+    }
+
+    #[test]
+    fn sprites_sit_where_y_puts_their_bottom_edge() {
+        let mut v = View::new();
+        v.apply(&[sprite("m", 0.5, 0.95, 0)]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        let (_, dest, uv) = images(&list)[0];
+        assert!(close(dest.y + dest.h, 0.95 * VIRTUAL.h), "bottom edge at 95% of the height");
+        assert!(close(dest.h, SPRITE_HEIGHT) && close(uv.h, 1.0));
+    }
+
+    #[test]
+    fn sprites_below_or_above_the_screen_are_clipped() {
+        let mut v = View::new();
+        v.apply(&[sprite("low", 0.5, 1.2, 0), sprite("high", 0.5, -0.1, 0)]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        let shown = images(&list);
+        // y = 1.2: the bottom 216 px of the 940 px sprite hang below the screen
+        let (_, dest, uv) = shown[0];
+        assert!(close(dest.y + dest.h, VIRTUAL.h));
+        assert!(close(uv.y, 0.0) && close(uv.h, (940.0 - 0.2 * VIRTUAL.h) / 940.0), "cut at the bottom edge: {uv:?}");
+        // y = -0.1: its bottom edge is above the screen, so nothing of it shows
+        assert_eq!(shown.len(), 1, "a sprite wholly off-screen is dropped");
+        // y = 0.5: 540 of 940 px stay above the screen's middle, the rest is cut at the top
+        v.apply(&[Cmd::ClearScene, sprite("mid", 0.5, 0.5, 0)]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        let (_, dest, uv) = images(&list)[0];
+        assert!(close(dest.y, 0.0) && close(dest.h, 540.0));
+        assert!(close(uv.y, 400.0 / 940.0), "the top 400 px are cut off: {uv:?}");
+    }
+
+    #[test]
+    fn sprites_slide_vertically_with_a_move() {
+        let mut v = View::new();
+        v.apply(&[sprite("m", 0.5, 1.0, 0), slide_y("m", 0.5, 0.8, 1.0, Ease::Linear)]);
+        assert!(close(v.sprites[0].current_y(), 1.0));
+        v.tick(0.5);
+        assert!(close(v.sprites[0].current_y(), 0.9));
+        v.tick(1.0);
+        assert!(close(v.sprites[0].current_y(), 0.8));
+        // showing it again with another y puts it there at once
+        v.apply(&[sprite("m", 0.5, 0.6, 0)]);
+        assert!(close(v.sprites[0].current_y(), 0.6));
+    }
+
+    fn slide_y(id: &str, x: f32, y: f32, time: f32, ease: Ease) -> Cmd {
+        Cmd::MoveSprite { id: id.into(), x, y, scale: 1.0, time, ease }
+    }
+
+    #[test]
+    fn higher_z_draws_in_front_and_ties_keep_show_order() {
+        let mut v = View::new();
+        v.apply(&[sprite("a", 0.3, 1.0, 0), sprite("b", 0.4, 1.0, 0), sprite("c", 0.5, 1.0, 0)]);
+        assert_eq!(drawn_order(&v), ["a.png", "b.png", "c.png"]);
+        v.apply(&[sprite("a", 0.3, 1.0, 5)]); // shown again with a higher z
+        assert_eq!(drawn_order(&v), ["b.png", "c.png", "a.png"]);
+        v.apply(&[sprite("c", 0.5, 1.0, -1)]);
+        assert_eq!(drawn_order(&v), ["c.png", "b.png", "a.png"]);
+        v.apply(&[sprite("c", 0.5, 1.0, 0)]);
+        assert_eq!(drawn_order(&v), ["b.png", "c.png", "a.png"], "equal z: the order they were shown in");
+    }
+
+    #[test]
+    fn z_orders_only_sprites_not_the_background_or_the_textbox() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[bg("bg.png", 0.0), sprite("lo", 0.5, 1.0, -100), say(Some("A"), "hi")]);
+        let list = v.draw_list(&all_1080p, None);
+        let pos = |name: &str| list.iter().position(|d| matches!(d, Draw::Image { src, .. } if src == name)).unwrap();
+        let panel = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)).unwrap();
+        assert!(pos("bg.png") < pos("lo.png") && pos("lo.png") < panel);
+        v.apply(&[sprite("hi", 0.5, 1.0, 100)]);
+        let list = v.draw_list(&all_1080p, None);
+        let pos = |name: &str| list.iter().position(|d| matches!(d, Draw::Image { src, .. } if src == name)).unwrap();
+        let panel = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)).unwrap();
+        assert!(pos("bg.png") < pos("lo.png") && pos("hi.png") < panel && pos("lo.png") < pos("hi.png"));
     }
 
     #[test]

@@ -245,7 +245,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         w(format!("bg {}", q(bg)));
     }
     for sp in &s.sprites {
-        w(format!("sprite {} {} {} {}", q(&sp.id), q(&sp.src), sp.x, sp.scale));
+        // `y` and `z` come last: saves from before they existed have only the first four.
+        w(format!("sprite {} {} {} {} {} {}", q(&sp.id), q(&sp.src), sp.x, sp.scale, sp.y, sp.z));
     }
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
@@ -407,6 +408,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 src: path(2)?,
                 x: f(3)?,
                 scale: f(4)?,
+                y: if t.len() > 5 { Some(f(5)?).filter(|y| y.is_finite()).map_or(1.0, |y| y.clamp(-0.5, 1.5)) } else { 1.0 },
+                z: if t.len() > 6 { num::<i32>(arg(6)?, n)?.clamp(-100, 100) } else { 0 },
             }),
             "camera" => s.camera = Camera { zoom: f(1)?, x: f(2)?, y: f(3)? },
             "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: f(3)? }),

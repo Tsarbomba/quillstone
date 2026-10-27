@@ -110,14 +110,24 @@ Inside lines and choice texts:
 | --- | --- |
 | `**bold**`, `*italic*`, `***both***` | bold, italic, bold italic |
 | `{color=#ff8080}words{/color}` | words in that colour (`#rrggbb` or `#rgb`; they nest) |
+| `{size=+10}big{/size}` | text 10 pixels bigger than the text around it (`{size=-8}` smaller); they nest, so `{size=+10}a{size=+4}b{/size}{/size}` makes `b` 14 bigger |
+| `{size=24}small{/size}` | text exactly 24 pixels tall (on the 1920x1080 screen; 8 to 200, as is the result of a relative size) |
 | `Well...{w=0.5} no.` | the typing pauses for half a second there (up to 10; a click skips it) |
+| `Hold on.{nw}` | "no wait": once the line has finished typing the story goes on by itself, without a click or the auto-forward delay. It must be the very last thing in a dialogue line (not a choice text) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
 A `{` with no `}` after it is just a brace, and an unknown `{name}` is left as
-written. Mistakes (an unclosed `**`, an unknown tag like `{size=40}`) are errors
-with the line number. A variable's value always shows as it is, even if it
+written. Mistakes (an unclosed `**` or `{size=..}`, a size outside 8 to 200, `{nw}`
+in the middle of a line, an unknown tag like `{huge=40}`) are errors with the line number. A variable's value always shows as it is, even if it
 contains `*` or braces. The history and save previews show the words without
-styling. For bold and italic in a theme font, give the theme its bold and
+styling or tags. A line with `{size=..}` is as tall as its biggest text, so a bigger
+word makes its line taller.
+
+With `{nw}` the line is still added to the history, and a `::choice` after it
+appears once the line is typed (the line stays above the choices). It waits while
+a menu is open, skip mode runs through it like any line, and going back never
+stops on it (it would only move on again): rollback goes to the line before.
+Use it for a line that leads straight into a choice or a scene change. For bold and italic in a theme font, give the theme its bold and
 italic files too (`font_bold`, `font_italic`, see [Themes](#themes)).
 
 ## Conditions
@@ -140,18 +150,21 @@ Rollback and saves keep the counts; they belong to one playthrough.
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
 | `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
+| `::show{mika happy y=0.9 z=2}` | `y`: where the sprite's **bottom edge** is, as a fraction of the screen height (a number or `N%`, from -0.5 to 1.5; default 1, the bottom of the screen). Less than 1 lifts the sprite, more than 1 sinks it below the screen edge; the screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{src=assets/ghost.png id=ghost at=center}` | A sprite that isn't a character. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
 | `::move{mika at=right time=0.8}` | Slide a sprite. |
-| `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `at`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
+| `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `at` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
+| `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
-Sprites stand on the bottom edge of the screen, about 940 px tall at `scale=1`
-(on a 1920x1080 screen), and the text box draws over their lower part. The
-camera and sprite sizes are part of the scene, so rollback and saves restore
+Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
+940 px tall at `scale=1` (on a 1920x1080 screen), and the text box draws over their
+lower part. The camera, sprite sizes, heights and `z` are
+part of the scene, so rollback and saves restore
 them; a shake is a moment and isn't replayed.
 
 ## Sound and video
@@ -404,7 +417,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 ## What rollback restores
 
 Going back one step restores variables, the call stack, background, sprites and
-their positions and sizes, the camera, music, the inline images and voice of the line, and the line
+their positions, heights, depths and sizes, the camera, music, the inline images and voice of the line, and the line
 itself. Sound effects are not replayed.
 
 ## Saves and edits

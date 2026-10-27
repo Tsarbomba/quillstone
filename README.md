@@ -4,9 +4,9 @@ A lightweight, fast visual novel engine in Rust: one that
 keeps what a visual novel needs and leaves out the bloat. Scripts are plain
 markdown, and seamless video playback is a first-class feature.
 
-**What it does:** characters and sprites with fades, music, sound effects,
+**What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
-conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables and list variables, items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour text, full
+conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables and list variables, items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery and music
 room, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
@@ -194,7 +194,8 @@ See [SCRIPT.md](SCRIPT.md) for every command, conditions, variables and flow con
 and `examples/demo.quill.md` for a script that uses them all (`examples/hotspots.quill.md`
 shows hotspots: a map, a collectible and an exit; `examples/shop.quill.md` shows a list
 variable as an inventory in a shop; `examples/market.quill.md` and `examples/market_theme.txt`
-show items, the built-in inventory and shop screens, and a theme that restyles them).
+show items, the built-in inventory and shop screens, and a theme that restyles them;
+`examples/staging.quill.md` shows sprite height and layering, text sizes and `{nw}`).
 
 ## Layout
 

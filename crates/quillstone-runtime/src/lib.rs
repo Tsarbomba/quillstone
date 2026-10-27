@@ -29,11 +29,13 @@ pub enum Cmd {
     /// `src` may be a video file (a looping video background). With a `wipe`,
     /// `fade` is how long the wipe takes.
     SetBackground { src: String, fade: f32, wipe: Option<Wipe> },
-    /// Show a sprite or change its pose. `x` is 0..1 across the screen.
-    ShowSprite { id: String, src: String, x: f32, scale: f32, fade: f32 },
+    /// Show a sprite or change its pose. `x` is 0..1 across the screen; `y` is
+    /// where its bottom edge is, as a fraction of the screen height (1 is the
+    /// bottom of the screen); `z` orders sprites (higher is in front).
+    ShowSprite { id: String, src: String, x: f32, y: f32, z: i32, scale: f32, fade: f32 },
     HideSprite { id: String, fade: f32 },
-    /// Animate a sprite to position `x` and size `scale` over `time` seconds.
-    MoveSprite { id: String, x: f32, scale: f32, time: f32, ease: Ease },
+    /// Animate a sprite to position `x`, `y` and size `scale` over `time` seconds.
+    MoveSprite { id: String, x: f32, y: f32, scale: f32, time: f32, ease: Ease },
     /// Shake the stage for `time` seconds by up to `strength` pixels.
     Shake { time: f32, strength: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
@@ -115,6 +117,10 @@ pub struct SpriteState {
     pub id: String,
     pub src: String,
     pub x: f32,
+    /// Where the bottom edge is, as a fraction of the screen height.
+    pub y: f32,
+    /// Drawing order among sprites: higher is in front, ties keep show order.
+    pub z: i32,
     pub scale: f32,
 }
 
@@ -202,6 +208,8 @@ impl State {
                 id: s.id.clone(),
                 src: s.src.clone(),
                 x: s.x,
+                y: s.y,
+                z: s.z,
                 scale: s.scale,
                 fade: 0.0,
             });
@@ -362,9 +370,9 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
             match rest.find('}') {
                 Some(end) => {
                     let name = rest[1..end].trim();
-                    match vars.get(name) {
+                    match vars.get(name).filter(|_| name != "nw") {
                         Some(v) => out.push_str(&quillstone_script::markup::escape(&v.to_string())),
-                        None => out.push_str(&rest[..=end]),
+                        None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` text tag
                     }
                     rest = &rest[end + 1..];
                 }
@@ -494,17 +502,19 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe });
                 state.pc += 1;
             }
-            Op::Show { id, src, at, scale, fade } => {
+            Op::Show { id, src, at, y, z, scale, fade } => {
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
                 let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, scale };
+                let y = y.or(existing.map(|i| state.sprites[i].y)).unwrap_or(1.0);
+                let z = z.or(existing.map(|i| state.sprites[i].z)).unwrap_or(0);
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, scale, fade: *fade });
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, y, z, scale, fade: *fade });
                 state.pc += 1;
             }
             Op::Hide { id, fade } => {
@@ -523,11 +533,12 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 }
                 state.pc += 1;
             }
-            Op::Move { id, at, scale, time, ease } => {
+            Op::Move { id, at, y, scale, time, ease } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
                     s.x = at.unwrap_or(s.x);
+                    s.y = y.unwrap_or(s.y);
                     s.scale = scale.unwrap_or(s.scale);
-                    out.push(Cmd::MoveSprite { id: id.clone(), x: s.x, scale: s.scale, time: *time, ease: *ease });
+                    out.push(Cmd::MoveSprite { id: id.clone(), x: s.x, y: s.y, scale: s.scale, time: *time, ease: *ease });
                 }
                 state.pc += 1;
             }
@@ -588,6 +599,16 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
     state.finished = true;
     out.push(Cmd::Finished);
     out
+}
+
+/// Whether the story leaves this waiting step without the player: a `::wait`, a
+/// video, or a line ending in `{nw}`. Rollback must not stop on one, it would run on again.
+fn moves_on_by_itself(pending: &Option<Cmd>) -> bool {
+    match pending {
+        Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. }) => true,
+        Some(Cmd::Say { text, .. }) => quillstone_script::markup::rich(text).no_wait,
+        _ => false,
+    }
 }
 
 fn block(state: &mut State, out: &mut Vec<Cmd>, cmd: Cmd) -> Vec<Cmd> {
@@ -651,8 +672,8 @@ impl<'p> Session<'p> {
 
     /// Go back one step. Returns the commands that redraw the earlier screen.
     ///
-    /// A `::wait` or `::video` is not somewhere the player can stop: it would run
-    /// out and carry the story forward again. So rollback goes past them to the
+    /// A `::wait`, `::video` or `{nw}` line is not somewhere the player can stop: it
+    /// would run out and carry the story forward again. So rollback goes past them to the
     /// screen before them (unless the very first screen is one).
     pub fn rollback(&mut self) -> Option<Vec<Cmd>> {
         let (first, input) = self.history.pop()?;
@@ -661,7 +682,7 @@ impl<'p> Session<'p> {
         }
         self.redo.push((first.clone(), input));
         self.state = first;
-        while matches!(self.state.pending, Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. })) {
+        while moves_on_by_itself(&self.state.pending) {
             match self.history.pop() {
                 Some((earlier, input)) => {
                     self.redo.push((earlier.clone(), input));
@@ -687,7 +708,7 @@ impl<'p> Session<'p> {
                     break;
                 }
             }
-            if !matches!(self.state.pending, Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. })) {
+            if !moves_on_by_itself(&self.state.pending) {
                 break;
             }
             let (state, input) = self.redo.pop()?;
@@ -1100,7 +1121,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), x: 0.28, scale: 1.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -1109,9 +1130,9 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), x: 0.28, scale: 1.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, fade: 0.0 }
         );
-        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, scale: 1.0, time: 1.0, ease: Ease::InOut });
+        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, y: 1.0, scale: 1.0, time: 1.0, ease: Ease::InOut });
         assert_eq!(game.state().sprites.len(), 1);
         assert_eq!(game.state().sprites[0].x, 0.72);
 
@@ -1125,7 +1146,7 @@ vars: { trust: 0 }
         let src = "::show{src=s.png id=s at=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.28, scale: 1.2, time: 0.5, ease: Ease::InOut }));
+        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.28, y: 1.0, scale: 1.2, time: 0.5, ease: Ease::InOut }));
         let camera = Camera { zoom: 1.5, x: 0.2, y: 0.5 };
         assert!(first.contains(&Cmd::Camera { camera, time: 3.0, ease: Ease::InOut }), "keeps the zoom it had");
         assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0 }));
@@ -1145,6 +1166,89 @@ vars: { trust: 0 }
         assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { src, scale, .. } if src == "b.png" && *scale == 1.4)));
         let cmds = game.input(Input::Advance);
         assert!(matches!(&cmds[0], Cmd::ShowSprite { scale, .. } if *scale == 0.5), "unless told otherwise");
+    }
+
+    #[test]
+    fn sprites_have_a_height_and_a_depth_that_shows_and_moves_keep() {
+        let src = "::show{src=a.png id=a y=0.9 z=2}\n::show{src=b.png id=b}\n**A:** one\n::show{src=a2.png id=a}\n::move{a y=0.7 time=0.3 ease=out}\n**A:** two\n::move{a at=left time=0}\n::show{src=a3.png id=a y=1.1 z=-4}\n**A:** three\n";
+        let p = parse(src).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "a" && *y == 0.9 && *z == 2)));
+        assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "b" && *y == 1.0 && *z == 0)), "new: bottom edge, z 0");
+        let two = game.input(Input::Advance);
+        assert!(matches!(&two[0], Cmd::ShowSprite { y, z, .. } if *y == 0.9 && *z == 2), "a new pose keeps y and z");
+        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), x: 0.5, y: 0.7, scale: 1.0, time: 0.3, ease: Ease::Out });
+        assert_eq!(game.state().sprites[0].y, 0.7);
+        let three = game.input(Input::Advance);
+        assert!(matches!(&three[0], Cmd::MoveSprite { x, y, .. } if *x == 0.28 && *y == 0.7), "an `at` move keeps y");
+        assert!(matches!(&three[1], Cmd::ShowSprite { y, z, .. } if *y == 1.1 && *z == -4), "unless told otherwise");
+
+        // rollback restores y and z, and redraw carries them
+        game.rollback();
+        let a = game.state().sprites.iter().find(|s| s.id == "a").unwrap().clone();
+        assert_eq!((a.y, a.z), (0.7, 2));
+        assert!(game.state().redraw().iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "a" && *y == 0.7 && *z == 2)));
+        game.rollback();
+        assert_eq!(game.state().sprites[0].y, 0.9);
+    }
+
+    #[test]
+    fn saves_keep_sprite_height_and_depth_and_old_saves_load_with_defaults() {
+        let p = parse("::show{src=s.png id=s y=0.85 z=7}\n::move{s scale=1.5 time=0}\n**A:** hi\n").unwrap();
+        let (game, _) = Session::start(&p);
+        let text = game.save();
+        assert!(text.contains(" 0.85 7"), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        let s = &loaded.state().sprites[0];
+        assert_eq!((s.y, s.z, s.scale), (0.85, 7, 1.5));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowSprite { y, z, .. } if *y == 0.85 && *z == 7)));
+        // a save from before y and z: the sprite record stops after the scale
+        let old: String = text
+            .lines()
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(3, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert!(old.contains("sprite s \"s.png\" 0.5 1.5\n") || old.contains("sprite \"s\" \"s.png\" 0.5 1.5\n"), "{old}");
+        let (loaded, _) = Session::load(&p, &old).unwrap();
+        let s = &loaded.state().sprites[0];
+        assert_eq!((s.y, s.z, s.scale), (1.0, 0, 1.5));
+        // hand-edited nonsense is pulled into range
+        let wild = text.replace(" 0.85 7", " 9 900");
+        let (loaded, _) = Session::load(&p, &wild).unwrap();
+        assert_eq!((loaded.state().sprites[0].y, loaded.state().sprites[0].z), (1.5, 100));
+        let nan = text.replace(" 0.85 7", " NaN 7");
+        assert_eq!(Session::load(&p, &nan).unwrap().0.state().sprites[0].y, 1.0);
+    }
+
+    #[test]
+    fn rollback_goes_past_no_wait_lines_and_roll_forward_does_too() {
+        let p = parse("**A:** one\n**A:** two{nw}\n**A:** three{nw}\n**A:** four\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // "two{nw}" would go on by itself
+        game.input(Input::Advance); // "three{nw}"
+        game.input(Input::Advance); // "four"
+        assert_eq!(game.rollback().unwrap().last(), Some(&say("A", "one")), "not onto a line that moves on");
+        assert!(!game.can_rollback());
+        let fwd = game.roll_forward().unwrap();
+        assert_eq!(fwd.last(), Some(&say("A", "four")));
+        // the backlog still has the lines that went by on their own
+        let texts: Vec<String> = game
+            .backlog()
+            .into_iter()
+            .filter_map(|l| if let Logged::Line(l) = l { Some(l.text) } else { None })
+            .collect();
+        assert_eq!(texts, ["one", "two{nw}", "three{nw}", "four"]);
+    }
+
+    #[test]
+    fn a_no_wait_line_before_a_choice_still_rolls_back_to_the_line_before() {
+        let p = parse("**A:** one\n**A:** two{nw}\n::choice\n- [Go](#x)\n::\n# x\n**A:** end\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // "two{nw}"
+        let cmds = game.input(Input::Advance); // the player (or the frontend) moves on
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. })));
+        assert_eq!(game.rollback().unwrap().last(), Some(&say("A", "one")));
     }
 
     #[test]

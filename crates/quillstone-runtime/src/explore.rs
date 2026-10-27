@@ -620,7 +620,7 @@ fn braces(text: &str) -> Vec<&str> {
         } else if let Some(after) = rest.strip_prefix('{') {
             let Some(end) = after.find('}') else { break };
             let name = after[..end].trim();
-            if is_ident(name) {
+            if is_ident(name) && name != "nw" {
                 out.push(name);
             }
             rest = &after[end + 1..];
@@ -886,6 +886,13 @@ mod tests {
     #[test]
     fn the_shop_demo_is_clean() {
         let r = test(include_str!("../../../examples/shop.quill.md"));
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
+        assert!(!r.partial && r.endings.len() == 1);
+    }
+
+    #[test]
+    fn the_staging_demo_is_clean_and_nw_is_not_a_variable() {
+        let r = test(include_str!("../../../examples/staging.quill.md"));
         assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
         assert!(!r.partial && r.endings.len() == 1);
     }

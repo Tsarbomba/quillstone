@@ -543,12 +543,15 @@ pub enum Op {
     /// `wipe`, the new picture is revealed from one side over `fade` seconds.
     Bg { src: String, fade: f32, wipe: Option<Wipe> },
     /// Show (or change the pose of) a sprite. `at` is 0..1 across the screen;
-    /// `None` keeps the current position, or centres a new sprite.
-    Show { id: String, src: String, at: Option<f32>, scale: Option<f32>, fade: f32 },
+    /// `None` keeps the current position, or centres a new sprite. `y` is where
+    /// the sprite's bottom edge is, as a fraction of the screen height (-0.5 to
+    /// 1.5; new sprites stand on the bottom edge, 1.0). `z` orders sprites (-100
+    /// to 100, default 0; higher is in front). Both keep the current value when `None`.
+    Show { id: String, src: String, at: Option<f32>, y: Option<f32>, z: Option<i32>, scale: Option<f32>, fade: f32 },
     /// Hide one sprite, or all of them when `id` is `None`.
     Hide { id: Option<String>, fade: f32 },
     /// Slide and/or resize a sprite. `None` leaves that property as it is.
-    Move { id: String, at: Option<f32>, scale: Option<f32>, time: f32, ease: Ease },
+    Move { id: String, at: Option<f32>, y: Option<f32>, scale: Option<f32>, time: f32, ease: Ease },
     /// Shake the stage (background and sprites) for `time` seconds, by up to
     /// `strength` pixels (at 1920x1080). Doesn't wait.
     Shake { time: f32, strength: f32 },
@@ -749,7 +752,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), at: None, scale: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), at: None, y: None, z: None, scale: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

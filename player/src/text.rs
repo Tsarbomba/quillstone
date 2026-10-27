@@ -100,7 +100,7 @@ mod real {
             loop {
                 let line_height = (size * 1.35).round().max(1.0);
                 let buffer = self.shape(job, width, Metrics::new(size, line_height));
-                let tall = buffer.layout_runs().count() as f32 * line_height;
+                let tall: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
                 if tall <= height as f32 || size <= size_px * 0.6 {
                     return buffer;
                 }
@@ -122,6 +122,10 @@ mod real {
                     b.set_text(&job.text, &attrs, Shaping::Advanced, None);
                 } else {
                     let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    // `{size=..}`: when any run has one, every run gets its own metrics, so a line is
+                    // as tall as its largest run (a line of smaller text alone is shorter).
+                    let sized = job.runs.iter().any(|run| run.style.size.is_some());
+                    let shrink = metrics.font_size / job.size_px.max(1.0); // when the text was made to fit its box
                     let spans = job.runs.iter().map(|run| {
                         let mut a = attrs.clone();
                         if run.style.bold {
@@ -132,6 +136,10 @@ mod real {
                         }
                         if let Some([r, g, b]) = run.style.color {
                             a = a.color(Color::rgb(byte(r), byte(g), byte(b)));
+                        }
+                        if sized {
+                            let px = (job.run_size_px(run) * shrink).max(1.0);
+                            a = a.metrics(Metrics::new(px, (px * 1.35).round().max(1.0)));
                         }
                         (&job.text[run.start..run.end], a)
                     });
@@ -146,7 +154,6 @@ mod real {
 
         /// The typed part of a shaped text, in its colours.
         fn draw(&mut self, job: &TextJob, buffer: &Buffer, width: u32, height: u32) -> Bitmap {
-            let line_height = buffer.metrics().line_height;
             // Glyphs that start at or after this byte offset are not typed yet.
             let byte_limit = job
                 .text
@@ -159,7 +166,7 @@ mod real {
             let base = Color::rgba(r, g, b, 255);
 
             let line_count = buffer.layout_runs().count();
-            let block_h = line_count as f32 * line_height;
+            let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
             let y_off = match job.align {
                 Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
                 Align::Left => 0.0,
@@ -218,5 +225,49 @@ mod real {
             }
             Bitmap { width, height, rgba }
         }
+    }
+}
+
+#[cfg(all(test, feature = "text"))]
+mod tests {
+    use super::*;
+    use quillstone_render::{build_frame, Align, Draw, Rect, Size};
+    use quillstone_script::markup::rich;
+
+    fn job(tagged: &str) -> TextJob {
+        let r = rich(tagged);
+        let draw = Draw::Text {
+            text: r.text,
+            runs: r.runs,
+            visible_chars: usize::MAX,
+            rect: Rect::new(0.0, 0.0, 1200.0, 400.0),
+            size: 40.0,
+            color: [1.0; 4],
+            align: Align::Left,
+        };
+        build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
+    }
+
+    /// Row of the lowest lit pixel: how far down the text reaches.
+    fn bottom(bitmap: &Bitmap) -> usize {
+        let rows = bitmap.rgba.chunks(bitmap.width as usize * 4);
+        rows.enumerate().filter(|(_, row)| row.chunks(4).any(|p| p[3] > 0)).map(|(y, _)| y).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_larger_run_makes_its_line_taller_and_the_text_bigger() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        let plain = renderer.rasterize(&job("Hello there friend")).unwrap();
+        if bottom(&plain) == 0 {
+            eprintln!("no fonts here: size test skipped");
+            return;
+        }
+        let big = renderer.rasterize(&job("Hello {size=+40}there{/size} friend")).unwrap();
+        let small = renderer.rasterize(&job("{size=12}Hello there friend{/size}")).unwrap();
+        let normal = renderer.rasterize(&job("Hello there friend")).unwrap();
+        let lit = |b: &Bitmap| b.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        assert!(lit(&big) > lit(&normal), "bigger letters cover more pixels");
+        assert!(lit(&small) < lit(&normal));
+        assert!(bottom(&big) > bottom(&normal), "the big word reaches lower");
     }
 }

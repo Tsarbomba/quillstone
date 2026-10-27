@@ -40,6 +40,9 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
     p.finish()
 }
 
+/// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
+const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
+
 const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
 
@@ -47,9 +50,9 @@ const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, s
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "bg" => &["src", "fade", "wipe"],
-        "show" => &["src", "id", "at", "scale", "fade"],
+        "show" => &["src", "id", "at", "y", "z", "scale", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["at", "scale", "time", "ease"],
+        "move" => &["at", "y", "scale", "time", "ease"],
         "shake" => &["time", "strength"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "music" => &["src", "fade", "loop", "volume", "stop"],
@@ -587,14 +590,15 @@ impl Parser {
                     },
                     None => None,
                 };
+                let y = self.number(line, a, "y", SPRITE_Y)?;
                 let scale = self.number(line, a, "scale", 0.05..=10.0)?;
-                if at.is_none() && scale.is_none() {
-                    self.err(line, "`::move` needs `at=...` and/or `scale=...`");
+                if at.is_none() && y.is_none() && scale.is_none() {
+                    self.err(line, "`::move` needs `at=...`, `y=...` and/or `scale=...`");
                     return None;
                 }
                 let time = self.seconds(line, a, "time", 0.5)?;
                 let ease = self.ease(line, a)?;
-                Some((Op::Move { id, at, scale, time, ease }, None))
+                Some((Op::Move { id, at, y, scale, time, ease }, None))
             }
             "shake" => {
                 let time = self.seconds(line, a, "time", 0.4)?;
@@ -739,9 +743,20 @@ impl Parser {
                 }
             },
         };
+        let y = self.number(line, a, "y", SPRITE_Y)?;
+        let z = match a.value("z") {
+            None => None,
+            Some(v) => match v.trim().parse::<i32>() {
+                Ok(z) if (-100..=100).contains(&z) => Some(z),
+                _ => {
+                    self.err(line, format!("`z={v}` must be a whole number from -100 to 100"));
+                    return None;
+                }
+            },
+        };
         let scale = self.number(line, a, "scale", 0.05..=10.0)?;
         let fade = self.fade(line, a)?;
-        Some((Op::Show { id, src, at, scale, fade }, None))
+        Some((Op::Show { id, src, at, y, z, scale, fade }, None))
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
@@ -1179,7 +1194,7 @@ impl Parser {
         if text.is_empty() {
             return Err("choice option has no text".into());
         }
-        crate::markup::check_markup(text)?;
+        crate::markup::check_option_markup(text)?;
         let after = &rest[close + 2..];
         let paren = after.find(')').ok_or("missing `)` after the label")?;
         let target = after[..paren]
@@ -1556,7 +1571,7 @@ mod tests {
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, scale: Some(1.2), time: 0.5, ease: Ease::Out });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), time: 0.5, ease: Ease::Out });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0 });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0 });
         assert_eq!(
@@ -1574,7 +1589,7 @@ mod tests {
         for (src, needle) in [
             ("::bg{src=b.png wipe=sideways fade=1}\n", "wipe=sideways"),
             ("::bg{src=b.png wipe=left}\n", "needs a duration"),
-            ("::move{mika}\n", "`at=...` and/or `scale=...`"),
+            ("::move{mika}\n", "`at=...`, `y=...` and/or `scale=...`"),
             ("::move{mika at=left ease=bouncy}\n", "ease=bouncy"),
             ("::move{mika scale=0}\n", "scale=0"),
             ("::camera{time=1}\n", "needs `zoom=`"),
@@ -1729,12 +1744,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy at=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), scale: Some(0.9), fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), y: None, z: None, scale: Some(0.9), fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, scale: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, y: None, z: None, scale: None, fade: 0.0 }
         );
     }
 
@@ -1743,9 +1758,48 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost at=0.3}\n::show{src=art/x.png at=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), scale: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), y: None, z: None, scale: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, at: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn sprite_y_and_z() {
+        let p = ok(&format!(
+            "{MIKA}::show{{mika happy y=0.8 z=3}}\n::show{{mika y=90%  z=-100}}\n::show{{mika y=-0.5 z=100}}\n::show{{mika y=150%}}\n::move{{mika y=0.9 time=0.3 ease=out}}\n::move{{mika at=left y=1.5}}\n"
+        ));
+        let show = |i: usize| match &p.ops[i] {
+            Op::Show { y, z, .. } => (*y, *z),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(show(0), (Some(0.8), Some(3)));
+        assert_eq!(show(1), (Some(0.9), Some(-100)));
+        assert_eq!(show(2), (Some(-0.5), Some(100)));
+        assert_eq!(show(3), (Some(1.5), None));
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, time: 0.3, ease: Ease::Out });
+        assert!(matches!(&p.ops[5], Op::Move { at: Some(_), y: Some(y), .. } if *y == 1.5));
+        // not given: `None`, so the sprite keeps its own
+        let q = ok(&format!("{MIKA}::show{{mika}}\n"));
+        assert!(matches!(&q.ops[0], Op::Show { y: None, z: None, .. }));
+    }
+
+    #[test]
+    fn sprite_y_and_z_errors_name_the_line() {
+        for (src, needle) in [
+            ("::show{src=a.png y=2}\n", "y=2"),
+            ("::show{src=a.png y=-0.6}\n", "y=-0.6"),
+            ("::show{src=a.png y=low}\n", "y=low"),
+            ("::show{src=a.png z=101}\n", "`z=101` must be a whole number from -100 to 100"),
+            ("::show{src=a.png z=-101}\n", "z=-101"),
+            ("::show{src=a.png z=1.5}\n", "z=1.5"),
+            ("::show{src=a.png z=front}\n", "z=front"),
+            ("::move{mika y=1.6}\n", "y=1.6"),
+            ("::move{mika y=1 z=1}\n", "`z`"),
+        ] {
+            let e = errs(&format!("\n{src}"));
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
     }
 
     #[test]
@@ -1753,8 +1807,8 @@ mod tests {
         let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika at=right time=1}}\n::move{{mika at=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), scale: None, time: 1.0, ease: Ease::InOut });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), scale: None, time: 0.5, ease: Ease::InOut });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, time: 1.0, ease: Ease::InOut });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, time: 0.5, ease: Ease::InOut });
     }
 
     #[test]
@@ -1971,6 +2025,16 @@ mod tests {
     }
 
     #[test]
+    fn the_staging_demo_uses_y_z_size_and_nw() {
+        let p = ok(include_str!("../../../examples/staging.quill.md"));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { y: Some(_), .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Show { z: Some(_), .. })));
+        let says = |f: &str| p.ops.iter().any(|op| matches!(op, Op::Say { text, .. } if text.contains(f)));
+        assert!(says("{size=+14}") && says("{size=24}") && says("{nw}"));
+        assert_eq!(p.characters.len(), 2);
+    }
+
+    #[test]
     fn the_market_demo_parses_with_items_a_shop_and_an_inventory_call() {
         let p = ok(include_str!("../../../examples/market.quill.md"));
         assert_eq!(p.items.len(), 4);
@@ -2179,7 +2243,13 @@ mod tests {
         ok("Some **bold**, *italic*, {color=#f80}colour{/color} and a pause{w=0.3}.\n::choice\n- [*Quietly*](#a)\n::\n# a\nX.\n");
         let e = errs("A line.\nAn **unclosed line.\n\nNext.\n");
         assert_eq!((e[0].line, e[0].message.contains("bold")), (1, true), "the paragraph's first line");
-        assert!(has_err("::choice\n- [{size=9}x](#a)\n::\n# a\nX.\n", "unknown text tag"));
+        assert!(has_err("::choice\n- [{bogus=9}x](#a)\n::\n# a\nX.\n", "unknown text tag"));
+        ok("Big {size=+14}words{/size}, {size=24}small{/size}.{nw}\n::choice\n- [{size=+4}Go{/size}](#a)\n::\n# a\nX.\n");
+        let e = errs("Fine.\n\nOops {size=300}x{/size}\n");
+        assert_eq!((e[0].line, e[0].message.contains("8 to 200")), (3, true));
+        let e = errs("A.\nB {nw} c\n");
+        assert_eq!((e[0].line, e[0].message.contains("last thing")), (1, true));
+        assert!(has_err("::choice\n- [Go{nw}](#a)\n::\n# a\nX.\n", "not in a choice"));
     }
 
     #[test]

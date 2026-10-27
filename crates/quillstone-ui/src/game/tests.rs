@@ -177,6 +177,150 @@ fn audio_starts_with_the_channel_volumes_then_the_music() {
 
 // ---- auto-forward ------------------------------------------------------------------------
 
+// ---- {nw}: the story goes on by itself once the line is typed ------------------------------
+
+const NW: &str = "**A:** one\n**A:** two{nw}\n**A:** three\n";
+
+#[test]
+fn a_no_wait_line_moves_on_once_typed_and_not_before() {
+    let p = parse(NW).unwrap();
+    let mut g = new_game(&p, Settings { text_speed: 10.0, ..Settings::default() });
+    key(&mut g, Key::Space); // "one" is typed at once by the press
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    assert!(g.needs_ticks());
+    g.tick(0.2, false); // 2 of 3 characters
+    assert_eq!(line(&g), "two");
+    g.tick(0.2, false); // typed: it goes on without a click or the auto delay
+    assert_eq!(line(&g), "three");
+    assert!(!g.view().dialogue.as_ref().unwrap().auto_advance);
+    g.tick(5.0, false);
+    assert_eq!(line(&g), "three", "an ordinary line still waits");
+}
+
+#[test]
+fn a_no_wait_line_with_instant_text_still_asks_for_ticks() {
+    let p = parse(NW).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    assert!(g.needs_ticks(), "nothing is typing, but the line is about to move on");
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "three");
+}
+
+#[test]
+fn a_click_on_a_no_wait_line_only_finishes_the_typing_then_it_moves_on() {
+    let p = parse(NW).unwrap();
+    let mut g = new_game(&p, Settings { text_speed: 10.0, ..Settings::default() });
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space); // completes "two"; no second press needed
+    assert_eq!(line(&g), "two");
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "three");
+}
+
+#[test]
+fn no_wait_does_not_run_under_a_menu_or_a_dialog() {
+    let p = parse(NW).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Escape); // settings
+    g.tick(10.0, false);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Char('s')); // the save screen
+    g.tick(10.0, false);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Char('h')); // history
+    g.tick(10.0, false);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Escape);
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "three");
+
+    // and a confirm dialog pauses it too
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.ask("Sure?", Then::Quit);
+    g.tick(10.0, false);
+    assert_eq!(line(&g), "two");
+}
+
+#[test]
+fn no_wait_lines_are_remembered_in_history_and_rollback_skips_them() {
+    let p = parse("**A:** one\n**A:** two{nw}\n**A:** three\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "three");
+    let log: Vec<String> = g
+        .session
+        .backlog()
+        .into_iter()
+        .filter_map(|l| if let Logged::Line(l) = l { Some(quillstone_script::markup::plain(&l.text)) } else { None })
+        .collect();
+    assert_eq!(log, ["one", "two", "three"], "the tag is not shown in the history");
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "one", "not onto the line that would move on again");
+    g.tick(1.0, false);
+    assert_eq!(line(&g), "one");
+    key(&mut g, Key::Space); // forward again: it re-types "two" and goes on
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "three");
+}
+
+#[test]
+fn a_no_wait_line_before_a_choice_shows_the_line_then_the_choices() {
+    let p = parse("**A:** hold on{nw}\n::choice\n- [Left](#l)\n- [Right](#r)\n::\n# l\n**A:** left\n# r\n**A:** right\n").unwrap();
+    let mut g = new_game(&p, Settings { text_speed: 10.0, ..Settings::default() });
+    assert_eq!(line(&g), "hold on");
+    assert!(g.view().choices.is_empty(), "the line first");
+    g.tick(0.5, false); // 7 characters take 0.7 s
+    assert!(g.view().choices.is_empty());
+    g.tick(0.3, false);
+    assert_eq!(g.view().choices.len(), 2);
+    assert_eq!(line(&g), "hold on", "the line stays under the choices");
+}
+
+#[test]
+fn skip_mode_and_auto_forward_need_nothing_special_for_no_wait() {
+    let p = parse("**A:** one\n**A:** two{nw}\n**A:** three\n**A:** four\n").unwrap();
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    key(&mut g, Key::Tab);
+    run(&mut g, 20);
+    assert_eq!(line(&g), "four", "skipped straight through, once");
+
+    let mut g = new_game(&p, Settings { auto_delay: 1.0, ..instant() });
+    key(&mut g, Key::Char('a'));
+    for _ in 0..10 {
+        g.tick(100.0, false);
+    }
+    assert_eq!(line(&g), "four");
+}
+
+#[test]
+fn the_staging_demo_plays_through() {
+    let p = parse(include_str!("../../../../examples/staging.quill.md")).unwrap();
+    let mut g = new_game(&p, instant());
+    for _ in 0..40 {
+        if !g.view().choices.is_empty() {
+            break;
+        }
+        key(&mut g, Key::Space);
+        g.tick(0.0, false); // the `{nw}` line goes on by itself
+    }
+    assert_eq!(g.view().choices.len(), 2);
+    assert_eq!(line(&g), "This line moves on by itself once it is typed, with no click...");
+    // two sprites, with Mika drawn over Ren (her z is higher by then)
+    assert!(g.view().sprites.iter().all(|s| s.y <= 1.0 && s.z >= 0));
+    key(&mut g, Key::Char('2'));
+    assert!(line(&g).contains("That's all"));
+}
+
+
 #[test]
 fn auto_forward_waits_for_the_delay_plus_reading_time() {
     let p = parse(THREE).unwrap();

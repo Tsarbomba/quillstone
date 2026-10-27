@@ -411,6 +411,10 @@ impl<'p> Game<'p> {
         if self.view.take_wait_finished() {
             self.forward(Input::Advance);
         }
+        // A line ending in `{nw}` moves the story on once it is typed (no click, no auto delay).
+        if self.no_wait_line() && self.view.dialogue.as_ref().is_some_and(|d| d.is_complete()) {
+            return self.forward(Input::Advance);
+        }
         if self.skip.is_some() {
             return self.skip_tick(dt);
         }
@@ -429,6 +433,13 @@ impl<'p> Game<'p> {
         }
     }
 
+    /// Whether the line waiting is one that ends in `{nw}`.
+    fn no_wait_line(&self) -> bool {
+        matches!(self.session.state().pending, Some(Cmd::Say { .. }))
+            && self.view.choices.is_empty()
+            && self.view.dialogue.as_ref().is_some_and(|d| d.auto_advance)
+    }
+
     /// Whether [`Game::tick`] must keep being called even if the screen looks
     /// the same: timers (waits, auto-forward, skip, notices), typing, or video.
     /// When this is false and the draw list doesn't change, a frontend may stop
@@ -437,7 +448,7 @@ impl<'p> Game<'p> {
         self.notice.is_some()
             || self.auto
             || self.skip.is_some()
-            || (self.screen == Screen::Story && self.view.busy())
+            || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line()))
             || !self.wanted_videos().is_empty()
     }
 
