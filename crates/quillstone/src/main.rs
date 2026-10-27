@@ -95,6 +95,16 @@ fn check(path: &Path) -> Result<(), String> {
         missing += check_theme(&root.join(theme_path), root);
     }
     missing += check_extras(&program, path, root);
+    for (pc, msg) in hidden_hotspots(&program) {
+        eprintln!("{}:{}: warning: {msg}", path.display(), program.lines[pc]);
+    }
+    for pc in all_hidden_hotspot_blocks(&program) {
+        eprintln!(
+            "{}:{}: warning: every region of this `::hotspots` block is `hidden`: players using only keyboard or gamepad can't pick anything here; add a visible region such as an exit",
+            path.display(),
+            program.lines[pc]
+        );
+    }
     check_line_lengths(&program, path, root);
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
@@ -102,6 +112,49 @@ fn check(path: &Path) -> Result<(), String> {
     }
     println!("ok: {} ops, {} labels{voiced}", program.ops.len(), program.labels.len());
     Ok(())
+}
+
+/// Ops of `::hotspots` blocks whose regions are all `hidden`.
+fn all_hidden_hotspot_blocks(program: &Program) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (pc, op) in program.ops.iter().enumerate() {
+        let Op::Choice { options } = op else { continue };
+        let mut areas = options.iter().filter_map(|o| o.area.as_ref()).peekable();
+        if areas.peek().is_some() && areas.all(|a| a.hidden) {
+            out.push(pc);
+        }
+    }
+    out
+}
+
+/// Hotspots that can never be clicked: an unconditional region lying completely
+/// under a later one (which is drawn and hit-tested on top). (op index, message)
+fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (pc, op) in program.ops.iter().enumerate() {
+        let Op::Choice { options } = op else { continue };
+        for (i, a) in options.iter().enumerate() {
+            let Some(ra) = a.area.as_ref().filter(|_| a.cond.is_none()).map(|a| a.rect) else { continue };
+            for b in options[i + 1..].iter().filter(|b| b.cond.is_none()) {
+                let Some(rb) = b.area.as_ref().map(|a| a.rect) else { continue };
+                let eps = 1e-4;
+                let covered = rb[0] <= ra[0] + eps
+                    && rb[1] <= ra[1] + eps
+                    && rb[0] + rb[2] >= ra[0] + ra[2] - eps
+                    && rb[1] + rb[3] >= ra[1] + ra[3] - eps;
+                if covered {
+                    let msg = format!(
+                        "the hotspot \"{}\" lies completely under \"{}\" (listed after it, so on top) and can never be clicked",
+                        plain(&a.text),
+                        plain(&b.text)
+                    );
+                    out.push((pc, msg));
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Warn about lines clearly too long for the textbox. The player shrinks text that
@@ -392,7 +445,7 @@ fn run(path: &Path) -> Result<(), String> {
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
     while !session.state().finished {
-        let choosing = matches!(session.state().pending, Some(Cmd::ShowChoices { .. }));
+        let choosing = matches!(session.state().pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }));
         let prompt = if choosing {
             "choose (number, b=back, q=quit)> "
         } else {
@@ -451,8 +504,45 @@ fn print_cmds(cmds: &[Cmd]) {
                     println!("  {}. {}", i + 1, plain(text));
                 }
             }
+            Cmd::ShowHotspots { spots } => {
+                println!();
+                for (i, s) in spots.iter().enumerate() {
+                    let [x, y, w, h] = s.rect.map(|v| v * 100.0);
+                    println!("  {}. {}  [region {x:.0}%,{y:.0}% {w:.0}%x{h:.0}%]", i + 1, plain(&s.label));
+                }
+            }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hotspots_block_with_only_hidden_regions_is_flagged() {
+        let blocks = |s: &str| all_hidden_hotspot_blocks(&parse(s).unwrap()).len();
+        assert_eq!(blocks("# a\n::hotspots\n- [x](#a){rect=0,0,0.1,0.1, hidden}\n- [y](#a){rect=0.5,0.5,0.1,0.1, hidden}\n::\n"), 1);
+        assert_eq!(blocks("# a\n::hotspots\n- [x](#a){rect=0,0,0.1,0.1, hidden}\n- [y](#a){rect=0.5,0.5,0.1,0.1}\n::\n"), 0);
+        assert_eq!(blocks("# a\n::choice\n- [x](#a)\n::\n"), 0);
+    }
+
+    #[test]
+    fn hotspots_fully_under_a_later_unconditional_one_are_reported() {
+        let src = "# a\n::hotspots\n- [Under](#a){rect=0.1,0.1,0.1,0.1}\n- [Over](#a){rect=0,0,0.5,0.5}\n- [Apart](#a){rect=0.6,0.6,0.1,0.1}\n::\n";
+        let found = hidden_hotspots(&parse(src).unwrap());
+        assert_eq!(found.len(), 1);
+        assert!(found[0].1.contains("\"Under\"") && found[0].1.contains("\"Over\""));
+        // a condition (or `once`) on either one means it may be fine
+        for fine in [
+            "- [Under](#a){rect=0.1,0.1,0.1,0.1, once}\n- [Over](#a){rect=0,0,0.5,0.5}",
+            "- [Under](#a){rect=0.1,0.1,0.1,0.1}\n- [Over](#a){rect=0,0,0.5,0.5, if x}",
+            "- [Over](#a){rect=0,0,0.5,0.5}\n- [Small](#a){rect=0.1,0.1,0.1,0.1}", // the small one is on top
+        ] {
+            let p = parse(&format!("# a\n::hotspots\n{fine}\n::\n")).unwrap();
+            assert!(hidden_hotspots(&p).is_empty(), "{fine}");
         }
     }
 }

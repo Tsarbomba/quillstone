@@ -50,10 +50,27 @@ pub enum Cmd {
     /// Show choices and wait for [`Input::Choose`]. Only the options currently
     /// available are listed; the index refers to this list.
     ShowChoices { options: Vec<String> },
+    /// Show clickable regions over the background and wait for [`Input::Choose`]
+    /// (from a `::hotspots` block). Like choices: only the regions currently
+    /// available are listed, and the index refers to this list.
+    ShowHotspots { spots: Vec<Spot> },
     /// The story was stopped by a safety valve (a mistake in the script), and
     /// [`Cmd::Finished`] follows. Says what happened, for the author.
     Stopped { reason: String },
     Finished,
+}
+
+/// One clickable region (see [`Cmd::ShowHotspots`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spot {
+    /// Shown as a tooltip while hovered.
+    pub label: String,
+    /// `x, y, w, h` as fractions (0..1) of the screen.
+    pub rect: [f32; 4],
+    /// Drawn stretched into the region.
+    pub image: Option<String>,
+    /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +223,23 @@ fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
         .collect()
 }
 
+/// What a choice op shows for the options at `visible`: buttons, or regions for a `::hotspots` block.
+fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
+    if options.iter().any(|o| o.area.is_some()) {
+        let spots = visible
+            .iter()
+            .filter_map(|&i| {
+                let o = &options[i];
+                let area = o.area.as_ref()?;
+                Some(Spot { label: interpolate(&o.text, vars), rect: area.rect, image: area.image.clone(), hidden: area.hidden })
+            })
+            .collect();
+        Cmd::ShowHotspots { spots }
+    } else {
+        Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&options[i].text, vars)).collect() }
+    }
+}
+
 /// Replace `{name}` with the variable's value. `{name}` for an unknown variable
 /// is left as written so mistakes are visible. The result is still tagged text
 /// (see `quillstone_script::markup`): values are escaped so they show exactly as
@@ -265,7 +299,7 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
             (Cmd::Say { .. } | Cmd::PlayVideo { .. } | Cmd::Wait { .. }, Some(Input::Advance)) => {
                 state.pc += 1;
             }
-            (Cmd::ShowChoices { options }, Some(Input::Choose(i))) if i < options.len() => {
+            (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
                 let Some(Op::Choice { options: all }) = program.ops.get(state.pc) else {
                     return Vec::new();
                 };
@@ -321,8 +355,7 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                     state.pc += 1; // nothing on offer: carry on past the block
                     continue;
                 }
-                let texts = visible.iter().map(|&i| interpolate(&options[i].text, &state.vars)).collect();
-                return block(state, &mut out, Cmd::ShowChoices { options: texts });
+                return block(state, &mut out, choice_cmd(options, &visible, &state.vars));
             }
             Op::Image { src, alt } => {
                 state.inline.push((src.clone(), alt.clone()));
@@ -449,6 +482,11 @@ pub struct Session<'p> {
     state: State,
     /// The state before each accepted input, and that input.
     history: Vec<(State, Input)>,
+    /// What rollback popped, newest rollback on top: each entry is a state the
+    /// player was rolled back to and the input that left it. Not saved.
+    redo: Vec<(State, Input)>,
+    /// The state the first rollback of this run started from (where redo ends).
+    redo_tip: Option<State>,
     /// Data kept across playthroughs (see `persist.rs`), and whether it changed.
     persistent: Vars,
     persistent_changed: bool,
@@ -468,11 +506,17 @@ impl<'p> Session<'p> {
         !self.history.is_empty()
     }
 
+    pub fn can_roll_forward(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     pub fn input(&mut self, input: Input) -> Vec<Cmd> {
         let before = self.state.clone();
         let cmds = step(&mut self.state, self.program, Some(input));
         if !cmds.is_empty() {
             self.history.push((before, input));
+            self.redo.clear(); // a new path: what was rolled back is gone
+            self.redo_tip = None;
         }
         self.note(&cmds);
         cmds
@@ -480,18 +524,52 @@ impl<'p> Session<'p> {
 
     /// Go back one step. Returns the commands that redraw the earlier screen.
     ///
-    /// A `::wait` is not somewhere the player can stop: it would run out and
-    /// carry the story forward again. So rollback goes past waits to the screen
-    /// before them (unless the very first screen is a wait).
+    /// A `::wait` or `::video` is not somewhere the player can stop: it would run
+    /// out and carry the story forward again. So rollback goes past them to the
+    /// screen before them (unless the very first screen is one).
     pub fn rollback(&mut self) -> Option<Vec<Cmd>> {
-        self.state = self.history.pop()?.0;
-        while matches!(self.state.pending, Some(Cmd::Wait { .. })) {
+        let (first, input) = self.history.pop()?;
+        if self.redo_tip.is_none() {
+            self.redo_tip = Some(self.state.clone());
+        }
+        self.redo.push((first.clone(), input));
+        self.state = first;
+        while matches!(self.state.pending, Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. })) {
             match self.history.pop() {
-                Some((earlier, _)) => self.state = earlier,
+                Some((earlier, input)) => {
+                    self.redo.push((earlier.clone(), input));
+                    self.state = earlier;
+                }
                 None => break,
             }
         }
         self.overlay(); // going back doesn't take back what was kept for good
+        Some(self.state.redraw())
+    }
+
+    /// Undo a rollback: go on to the screen the player rolled back from. Waits and
+    /// videos rollback went past are gone past again. `None` with nothing to redo.
+    pub fn roll_forward(&mut self) -> Option<Vec<Cmd>> {
+        let (state, input) = self.redo.pop()?;
+        self.history.push((state, input));
+        loop {
+            match self.redo.last() {
+                Some((next, _)) => self.state = next.clone(),
+                None => {
+                    self.state = self.redo_tip.take()?;
+                    break;
+                }
+            }
+            if !matches!(self.state.pending, Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. })) {
+                break;
+            }
+            let (state, input) = self.redo.pop()?;
+            self.history.push((state, input));
+        }
+        if self.redo.is_empty() {
+            self.redo_tip = None;
+        }
+        self.overlay();
         Some(self.state.redraw())
     }
 
@@ -644,6 +722,19 @@ vars: { trust: 0 }
     }
 
     #[test]
+    fn rollback_goes_past_videos_instead_of_landing_on_them() {
+        let p = parse("**A:** one\n::video{src=c.webm}\n**A:** two\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // video
+        assert!(matches!(game.state().pending, Some(Cmd::PlayVideo { .. })));
+        game.input(Input::Advance); // "two"
+        let redraw = game.rollback().unwrap();
+        assert_eq!(redraw.last(), Some(&say("A", "one")));
+        assert!(matches!(game.state().pending, Some(Cmd::Say { .. })));
+        assert!(!game.can_rollback());
+    }
+
+    #[test]
     fn a_story_that_starts_with_a_wait_can_still_roll_back_to_it() {
         let p = parse("::wait{time=1}\n**A:** one\n").unwrap();
         let (mut game, _) = Session::start(&p);
@@ -663,6 +754,88 @@ vars: { trust: 0 }
         assert_eq!(game.backlog(), vec![line("First."), Logged::Choice("Bad".into()), line("Ouch.")]);
         game.rollback();
         assert_eq!(game.backlog(), vec![line("First.")]);
+    }
+
+    #[test]
+    fn roll_forward_restores_state_and_vars() {
+        let p = parse(STORY).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Choose(0));
+        let at = game.state().clone();
+        let redraw_at = at.redraw();
+        game.rollback();
+        assert_eq!(game.state().vars["trust"], int(0));
+        assert!(game.can_roll_forward());
+        assert_eq!(game.roll_forward().unwrap(), redraw_at);
+        assert_eq!(game.state().vars["trust"], int(1));
+        assert_eq!(game.state(), &at);
+        assert!(!game.can_roll_forward());
+        assert!(game.roll_forward().is_none());
+        assert!(game.can_rollback());
+    }
+
+    #[test]
+    fn a_new_input_clears_roll_forward() {
+        let p = parse(STORY).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.rollback();
+        assert!(game.can_roll_forward());
+        game.input(Input::Advance);
+        assert!(!game.can_roll_forward());
+        assert!(game.roll_forward().is_none());
+    }
+
+    #[test]
+    fn roll_forward_comes_back_across_a_skipped_wait_and_video() {
+        let p = parse("**A:** one\n::wait{time=1}\n::video{src=c.webm}\n**A:** two\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Advance);
+        game.input(Input::Advance);
+        let at = game.state().clone();
+        game.rollback();
+        assert!(!game.can_rollback());
+        let redraw = game.roll_forward().unwrap();
+        assert_eq!(redraw.last(), Some(&say("A", "two")));
+        assert_eq!(game.state(), &at);
+        assert!(!game.can_roll_forward());
+        // and it rolls back and forward again the same way
+        game.rollback();
+        game.roll_forward();
+        assert_eq!(game.state(), &at);
+    }
+
+    #[test]
+    fn several_rollbacks_roll_forward_one_screen_at_a_time() {
+        let p = parse("**A:** one\n**A:** two\n**A:** three\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Advance);
+        game.rollback();
+        game.rollback();
+        assert_eq!(game.roll_forward().unwrap().last(), Some(&say("A", "two")));
+        assert_eq!(game.roll_forward().unwrap().last(), Some(&say("A", "three")));
+        assert!(game.roll_forward().is_none());
+    }
+
+    #[test]
+    fn the_backlog_and_saves_follow_roll_forward() {
+        let p = parse(STORY).unwrap();
+        let (mut game, _) = Session::start(&p);
+        let line = |t: &str| Logged::Line(Line { speaker: Some("A".into()), color: None, text: t.into() });
+        game.input(Input::Advance);
+        game.input(Input::Choose(1));
+        let full = game.backlog();
+        game.rollback();
+        assert_eq!(game.backlog(), vec![line("First.")]);
+        game.roll_forward();
+        assert_eq!(game.backlog(), full);
+        game.rollback();
+        let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert!(!loaded.can_roll_forward());
+        assert_eq!(loaded.state(), game.state());
     }
 
     #[test]
@@ -984,6 +1157,97 @@ vars: { trust: 0 }
         game.rollback();
         game.rollback();
         assert_eq!(options(&game.state().redraw()).unwrap(), ["Ask", "Leave"], "rolling back before the pick brings it back");
+    }
+
+    // ---- hotspots ----------------------------------------------------------
+
+    const MAP: &str = "---\nvars: { found: false }\n---\n# map\n::bg{src=map.png}\n::hotspots\n- [Library](#lib){rect=0.1,0.2,0.2,0.3, once}\n- [Key](#key){rect=0.6,0.7,0.05,0.08 image=key.png, found=true, if not found}\n- [Leave](#out){rect=0.8,0.8,0.1,0.1}\n::\n# lib\n**A:** Books.\n::jump{to=map}\n# key\n**A:** A key.\n::jump{to=map}\n# out\n**A:** Bye.\n";
+
+    fn spots(cmds: &[Cmd]) -> Option<Vec<Spot>> {
+        cmds.iter().find_map(|c| match c {
+            Cmd::ShowHotspots { spots } => Some(spots.clone()),
+            _ => None,
+        })
+    }
+
+    fn labels(s: &[Spot]) -> Vec<&str> {
+        s.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn hotspots_are_shown_with_rects_and_visible_indices() {
+        let p = parse(MAP).unwrap();
+        let (mut game, first) = Session::start(&p);
+        let all = spots(&first).unwrap();
+        assert_eq!(labels(&all), ["Library", "Key", "Leave"]);
+        assert_eq!(all[1].rect, [0.6, 0.7, 0.05, 0.08]);
+        assert_eq!(all[1].image.as_deref(), Some("key.png"));
+        assert_eq!(all[0].image, None);
+        // the key: effects apply, and it is gone when the map comes back
+        assert_eq!(lines(&game.input(Input::Choose(1))), vec!["A key."]);
+        assert_eq!(game.state().vars["found"], Value::Bool(true));
+        let back = game.input(Input::Advance);
+        assert_eq!(labels(&spots(&back).unwrap()), ["Library", "Leave"]);
+        // index 1 is now the second VISIBLE spot: Leave
+        assert_eq!(lines(&game.input(Input::Choose(1))), vec!["Bye."]);
+    }
+
+    #[test]
+    fn a_hotspot_screen_keeps_the_background_and_a_once_hotspot_goes_away() {
+        let p = parse(MAP).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert!(first.contains(&Cmd::SetBackground { src: "map.png".into(), fade: 0.0, wipe: None }));
+        game.input(Input::Choose(0));
+        let back = game.input(Input::Advance);
+        assert_eq!(labels(&spots(&back).unwrap()), ["Key", "Leave"]);
+        assert!(game.backlog().iter().all(|l| !matches!(l, Logged::Choice(_))), "a click on the map isn't dialogue");
+        game.rollback();
+        game.rollback();
+        assert_eq!(labels(&spots(&game.state().redraw()).unwrap()), ["Library", "Key", "Leave"]);
+        assert!(matches!(game.state().pending, Some(Cmd::ShowHotspots { .. })));
+    }
+
+    #[test]
+    fn hotspots_with_nothing_on_offer_are_skipped_and_bad_picks_ignored() {
+        let src = "::hotspots\n- [Secret](#x){rect=0,0,1,1, if never}\n::\n# x\n**A:** carried on\n";
+        assert_eq!(lines(&run_to_end(src, &[])), vec!["carried on"]);
+        let p = parse(MAP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert!(game.input(Input::Choose(9)).is_empty());
+        assert!(game.input(Input::Advance).is_empty(), "advance doesn't pick a region");
+    }
+
+    #[test]
+    fn hotspots_survive_a_save_and_load() {
+        let p = parse(MAP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Choose(1));
+        game.input(Input::Advance); // back at the map, key gone
+        let text = game.save();
+        assert!(text.contains("pending hotspots"));
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded.state(), game.state());
+        assert_eq!(labels(&spots(&cmds).unwrap()), ["Library", "Leave"]);
+        assert_eq!(cmds, game.state().redraw());
+    }
+
+    #[test]
+    fn the_hotspots_demo_plays_a_map_a_collectible_and_an_exit() {
+        let p = parse(include_str!("../../../examples/hotspots.quill.md")).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert!(spots(&first).is_none(), "the intro line comes first");
+        let map = game.input(Input::Advance);
+        assert_eq!(labels(&spots(&map).unwrap()), ["The rooftop", "The old bridge", "The clock tower", "A scarf in the grass", "Leave town"]);
+        game.input(Input::Choose(2)); // the tower (once)
+        let map = game.input(Input::Advance);
+        assert_eq!(labels(&spots(&map).unwrap()), ["The rooftop", "The old bridge", "A scarf in the grass", "Leave town"]);
+        let scarf = game.input(Input::Choose(2));
+        assert!(scarf.contains(&Cmd::ShowImage { src: "assets/scarf.png".into(), alt: "A scarf, left behind".into() }));
+        let map = game.input(Input::Advance);
+        assert_eq!(labels(&spots(&map).unwrap()), ["The rooftop", "The old bridge", "Leave town"]);
+        game.input(Input::Choose(2));
+        let end = game.input(Input::Advance);
+        assert!(end.contains(&Cmd::Finished));
     }
 
     // ---- the demo ----------------------------------------------------------

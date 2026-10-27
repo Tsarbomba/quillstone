@@ -6,7 +6,7 @@ markdown, and seamless video playback is a first-class feature.
 
 **What it does:** characters and sprites with fades, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
-conditions, variables and `call`/`return`, bold/italic/colour text, full
+conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables and `call`/`return`, bold/italic/colour text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery and music
 room, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
@@ -97,15 +97,15 @@ double-click the exe. If it can't start, the reason is also written to
 | --- | --- |
 | click / Space / Enter / Right | advance (the first press finishes typing the line) |
 | 1-9 or click | pick a choice |
-| Backspace / Left / wheel up | go back (rollback) |
-| H / Page Up | history (backlog); wheel or Page Up/Down to scroll, wheel down at the end or Esc to close |
+| Backspace / Left / wheel up | go back (rollback); wheel down rolls forward again |
+| H / Page Up | history (backlog); wheel or Page Up/Down to scroll, Esc to close |
 | A | auto-forward on/off (waits for the voice clip; stops at choices) |
 | Tab / hold Ctrl | skip lines already read (stops at unread lines, choices and the end; "Skip unread text" in settings skips everything up to a choice) |
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
 | Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, Main menu, Quit |
 | F11 | fullscreen |
-| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it |
+| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
 
 **Gamepads** (Xbox, PlayStation, Switch Pro, Steam Deck) work too: A advances or
 confirms, B or Start goes back (settings during the story), X rolls back, Y
@@ -190,7 +190,8 @@ is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
 ````
 
 See [SCRIPT.md](SCRIPT.md) for every command, conditions, variables and flow control,
-and `examples/demo.quill.md` for a script that uses them all.
+and `examples/demo.quill.md` for a script that uses them all (`examples/hotspots.quill.md`
+shows hotspots: a map, a collectible and an exit).
 
 ## Layout
 

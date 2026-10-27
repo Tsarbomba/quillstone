@@ -66,11 +66,16 @@ pub fn explore(program: &Program, limit: usize) -> Report {
     while let Some(id) = x.queue.pop_front() {
         let state = x.nodes[id].state.take().expect("queued once, with its state");
         let inputs: Vec<(Input, Option<String>)> = match &state.pending {
-            Some(Cmd::ShowChoices { options }) => {
+            Some(pending @ (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) => {
                 if let Some(Op::Choice { options: all }) = program.ops.get(state.pc) {
                     x.offered.extend(visible_options(all, &state.vars).into_iter().map(|i| (state.pc, i)));
                 }
-                options.iter().enumerate().map(|(i, text)| (Input::Choose(i), Some(text.clone()))).collect()
+                let labels = match pending {
+                    Cmd::ShowChoices { options } => options.clone(),
+                    Cmd::ShowHotspots { spots } => spots.iter().map(|s| s.label.clone()).collect(),
+                    _ => Vec::new(),
+                };
+                labels.into_iter().enumerate().map(|(i, text)| (Input::Choose(i), Some(text))).collect()
             }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
@@ -141,7 +146,7 @@ impl Explorer<'_> {
         let id = self.nodes.len();
         self.index.insert(key, id);
         let finished = state.finished;
-        let (pc, waiting_at_choice) = (state.pc, matches!(state.pending, Some(Cmd::ShowChoices { .. })));
+        let (pc, waiting_at_choice) = (state.pc, matches!(state.pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })));
         self.nodes.push(Node { pc, state: Some(state), parent, next: Vec::new(), stopped: finished, origin: None });
 
         // A choice that ran but didn't wait had nothing on offer. (A menu of only
@@ -580,6 +585,16 @@ mod tests {
         assert!(w.iter().any(|m| m.contains("`trsut` is never set")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("`{nmae}` isn't a variable")), "{w:?}");
         assert!(!w.iter().any(|m| m.contains("trust`") || m.contains("{x}")), "{w:?}");
+    }
+
+    #[test]
+    fn a_hotspot_hub_with_once_regions_terminates_and_reaches_its_endings() {
+        let src = "---\nvars: { got: false }\n---\n# map\n::hotspots\n- [Room](#room){rect=0,0,0.3,0.3, once}\n- [Key](#key){rect=0.5,0.5,0.1,0.1, got=true, if not got}\n- [Exit](#out){rect=0.8,0.8,0.1,0.1}\n::\n# room\nA room.\n::jump{to=map}\n# key\nA key.\n::jump{to=map}\n# out\nBye.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty(), "{r:?}");
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert_eq!(r.endings.len(), 1);
+        assert!(r.situations >= 4, "the hub is visited with and without each pick: {}", r.situations);
     }
 
     #[test]

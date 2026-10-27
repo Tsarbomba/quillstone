@@ -434,9 +434,13 @@ impl<'p> Game<'p> {
         let story = self.screen == Screen::Story;
         let theme = self.view.theme();
         let mut out = if self.in_story {
-            let hover_choice = self.cursor.filter(|_| story).and_then(|(x, y)| self.view.choice_at(x, y));
+            let at = |x: f32, y: f32| self.view.choice_at(x, y).or_else(|| self.view.hotspot_at(x, y));
+            let hover_choice = self.cursor.filter(|_| story).and_then(|(x, y)| at(x, y));
+            let pointed = hover_choice.is_some();
             let hover_choice = hover_choice.or(self.choice_focus.filter(|_| story));
-            self.view.draw_list(image_size, hover_choice)
+            // The tooltip of a hotspot follows the mouse, or sits by the region when the keyboard picked it.
+            let pointer = self.cursor.filter(|_| pointed);
+            self.view.draw_list_at(image_size, hover_choice, pointer)
         } else {
             let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
             let menu = self.screen == Screen::MainMenu;
@@ -577,10 +581,28 @@ impl<'p> Game<'p> {
             Event::Press(Button::Left) => self.story_click(),
             Event::Press(Button::Right) => self.open_settings(),
             Event::Wheel(dy) if dy > 0.0 => self.rollback(),
+            Event::Wheel(dy) if dy < 0.0 => self.roll_forward(),
             Event::Key(key) => match key {
-                Key::Space | Key::Enter if !self.view.choices.is_empty() => {
+                Key::Space | Key::Enter if !self.view.choices.is_empty() || !self.view.hotspots.is_empty() => {
                     if let Some(f) = self.choice_focus {
-                        self.choose(f);
+                        self.pick(f);
+                    }
+                }
+                // Hotspots: the arrows cycle through the regions (Backspace still goes back).
+                Key::Up | Key::Down | Key::Left | Key::Right if !self.view.hotspots.is_empty() => {
+                    // Hidden regions are skipped: focus would give them away.
+                    let shown: Vec<usize> =
+                        (0..self.view.hotspots.len()).filter(|&i| !self.view.hotspots[i].hidden).collect();
+                    let backwards = matches!(key, Key::Up | Key::Left);
+                    let next = match (self.choice_focus, backwards) {
+                        _ if shown.is_empty() => None,
+                        (None, true) => shown.last().copied(),
+                        (None, false) => shown.first().copied(),
+                        (Some(f), true) => shown.iter().rev().find(|&&i| i < f).or(shown.last()).copied(),
+                        (Some(f), false) => shown.iter().find(|&&i| i > f).or(shown.first()).copied(),
+                    };
+                    if next.is_some() {
+                        self.choice_focus = next;
                     }
                 }
                 Key::Up | Key::Down if !self.view.choices.is_empty() => {
@@ -633,11 +655,11 @@ impl<'p> Game<'p> {
                 QuickButton::Settings => self.open_settings(),
             };
         }
-        if self.view.choices.is_empty() {
+        if self.view.choices.is_empty() && self.view.hotspots.is_empty() {
             return self.advance();
         }
-        if let Some(i) = self.cursor.and_then(|(x, y)| self.view.choice_at(x, y)) {
-            self.choose(i);
+        if let Some(i) = self.cursor.and_then(|(x, y)| self.view.choice_at(x, y).or_else(|| self.view.hotspot_at(x, y))) {
+            self.pick(i);
         }
     }
 
@@ -667,7 +689,7 @@ impl<'p> Game<'p> {
     fn show(&mut self, cmds: &[Cmd]) {
         let voiced = self.with_auto_voice(cmds);
         let cmds = voiced.as_deref().unwrap_or(cmds);
-        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. })) {
+        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
             self.choice_focus = None; // new choices: nothing picked out yet
         }
         if cmds.iter().any(|c| matches!(c, Cmd::PlayVideo { .. })) {
@@ -701,8 +723,16 @@ impl<'p> Game<'p> {
         }
     }
 
+    /// Number keys: pick a choice button (hotspots can't be picked by number).
     fn choose(&mut self, index: usize) {
         if index < self.view.choices.len() {
+            self.pick(index);
+        }
+    }
+
+    /// Pick the choice or hotspot at `index` of the visible list.
+    fn pick(&mut self, index: usize) {
+        if index < self.view.choices.len() || index < self.view.hotspots.len() {
             self.choice_focus = None;
             self.forward(Input::Choose(index));
         }
@@ -716,7 +746,7 @@ impl<'p> Game<'p> {
         if self.skip.is_some() {
             self.skip_arrived();
         }
-        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. })) {
+        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
             self.autosave();
         }
     }
@@ -726,6 +756,18 @@ impl<'p> Game<'p> {
         if let Some(cmds) = self.session.rollback() {
             self.show(&cmds);
             self.auto = false; // the player went back to re-read: don't hurry them on
+        }
+    }
+
+    /// Undo a rollback (wheel down). Unlike going back it leaves auto alone.
+    fn roll_forward(&mut self) {
+        if !self.session.can_roll_forward() {
+            return;
+        }
+        self.stop_skip();
+        self.mark_current_read();
+        if let Some(cmds) = self.session.roll_forward() {
+            self.show(&cmds);
         }
     }
 
@@ -855,8 +897,6 @@ impl<'p> Game<'p> {
         let max = backlog_max_scroll(&self.backlog);
         let scroll_by = |s: usize, d: isize| (s as isize + d).clamp(0, max as isize) as usize;
         match event {
-            // Wheeling down past the newest entry goes back to the story.
-            Event::Wheel(dy) if dy < 0.0 && self.backlog_scroll == 0 => self.screen = Screen::Story,
             Event::Wheel(dy) => self.backlog_scroll = scroll_by(self.backlog_scroll, if dy > 0.0 { 1 } else { -1 }),
             Event::Key(Key::Up) => self.backlog_scroll = scroll_by(self.backlog_scroll, 1),
             Event::Key(Key::Down) => self.backlog_scroll = scroll_by(self.backlog_scroll, -1),

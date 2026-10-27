@@ -194,6 +194,50 @@ is really playing, so a file that can't be decoded never traps the player.
   with `::jump`, `::return` or `::end` when that isn't what you want.
 - `::call` can nest up to 256 deep. `::return` with nothing to return to ends the story.
 
+## Hotspots
+
+Clickable regions over the current background: a map to pick a place from, an
+object to find, a point-and-click scene.
+
+````markdown
+::bg{src=assets/map.png}
+::hotspots
+- [Library](#library){rect=0.1,0.2,0.2,0.3}
+- [Old key](#found){rect=60%,70%,5%,8% image=assets/key.png, once, found=true, if not found}
+::
+````
+
+- An entry is `- [label](#target){rect=x,y,w,h ...}`. `rect` is required: the
+  region's left, top, width and height on the screen, each a number from 0 to 1 or a
+  percentage (no spaces inside it), and it must lie inside the screen. The label
+  shows as a small tooltip next to the mouse while the region is hovered.
+- `image=assets/key.png` (PNG, JPEG or WebP) is drawn stretched into the region.
+  Without one the region is invisible until the mouse or keyboard reaches it,
+  when it is outlined.
+- `hidden` makes a region secret: no outline, tint or tooltip when the mouse is
+  over it, so a collectible can't be found by sweeping the mouse (an `image=` is
+  still drawn). Keyboard and gamepad focus skip hidden regions, so a block needs
+  at least one visible region (such as an exit) for those players.
+  Example: `- [Old key](#found){rect=60%,70%,5%,8%, hidden, once, found=true}`.
+  It is an error in a `::choice`.
+- Effects, `if condition` and `once` work as in a `::choice`, and so does the
+  `#label` it jumps to. Put the other settings after `rect` and `image`, separated
+  by commas. A region that is `once` or whose `if` is false disappears; with none
+  left the block is skipped. Where regions overlap, the one listed last is on top.
+- The block normally follows a `::bg` with no line, so the regions are the only
+  way on. A line shown just before it stays on screen. Jump back to a label that
+  sets the background and the hotspots again to make a hub (see
+  `examples/hotspots.quill.md`).
+- Mouse: click a region. Keyboard and gamepad: the arrow keys (or D-pad) move
+  between the regions and Enter or Space takes the focused one. The number keys
+  don't pick hotspots. Skip and auto-forward stop at the block, it is an auto save
+  point like a choice, and the pick isn't added to the history. Going back
+  returns to the screen before the click.
+- `quillstone check` checks the images and warns about a region that can never
+  be clicked because a later one covers it entirely, or a block whose regions are all
+  `hidden`; `quillstone test` follows
+  every region like a choice option.
+
 ## Kept across playthroughs
 
 ````markdown

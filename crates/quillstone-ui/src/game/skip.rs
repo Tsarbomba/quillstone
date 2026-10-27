@@ -129,7 +129,7 @@ impl Game<'_> {
     pub(super) fn skip_arrived(&mut self) {
         let stop = match &self.session.state().pending {
             Some(Cmd::Say { .. }) => !self.settings.skip_unread && !self.current_line_read(),
-            Some(Cmd::ShowChoices { .. }) | None => true,
+            Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) | None => true,
             Some(_) => false,
         };
         if stop {

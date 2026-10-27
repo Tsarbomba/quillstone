@@ -20,3 +20,6 @@ saves/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local launcher
+/run-player.bat

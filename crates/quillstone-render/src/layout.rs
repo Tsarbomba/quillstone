@@ -164,7 +164,7 @@ pub fn estimate_lines(text: &str, size: f32, width: f32) -> usize {
     lines.max(1)
 }
 
-fn is_wide(c: char) -> bool {
+pub(crate) fn is_wide(c: char) -> bool {
     matches!(c as u32,
         0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
         | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)

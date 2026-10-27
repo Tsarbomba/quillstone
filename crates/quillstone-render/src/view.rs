@@ -7,12 +7,12 @@
 //! What is actually in the scene lives in the runtime's `State`, and a rollback
 //! sends `Cmd::ClearScene` + the scene again, so the two never drift apart.
 
-use quillstone_runtime::{Camera, Cmd};
+use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{Ease, Fit, Wipe};
 
-use crate::layout::{clip, place, Rect, Size, VIRTUAL};
+use crate::layout::{clip, is_wide, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
@@ -22,6 +22,11 @@ pub const TEXTBOX: Rect = Rect::new(160.0, 780.0, 1600.0, 260.0);
 /// bottom edge of the screen (the textbox draws over their lower part).
 pub const SPRITE_HEIGHT: f32 = 940.0;
 
+/// Thickness of the outline around a hovered hotspot.
+const HOTSPOT_OUTLINE: f32 = 4.0;
+/// Hotspot tooltip: padding around the label, and the gap kept to the screen edge.
+const TIP_PAD: f32 = 20.0;
+const TIP_MARGIN: f32 = 8.0;
 const CHOICE_W: f32 = 1000.0;
 const CHOICE_H: f32 = 96.0;
 const CHOICE_GAP: f32 = 28.0;
@@ -329,6 +334,8 @@ pub struct View {
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
     pub choices: Vec<String>,
+    /// Clickable regions over the background (`::hotspots`), in the order the runtime lists them.
+    pub hotspots: Vec<Spot>,
     pub video: Option<VideoView>,
     pub finished: bool,
     camera: CameraMove,
@@ -354,6 +361,7 @@ impl View {
             images: Vec::new(),
             dialogue: None,
             choices: Vec::new(),
+            hotspots: Vec::new(),
             video: None,
             finished: false,
             camera: CameraMove { from: Camera::default(), to: Camera::default(), time: 0.0, elapsed: 0.0, ease: Ease::Linear },
@@ -396,6 +404,7 @@ impl View {
         // after rollback re-sends them, since the runtime tracks them.)
         self.images.clear();
         self.choices.clear();
+        self.hotspots.clear();
         self.video = None;
         self.wait = None;
         // Only the latest batch can say the story is over (matters after rollback).
@@ -443,6 +452,7 @@ impl View {
                     ));
                 }
                 Cmd::ShowChoices { options } => self.choices = options.clone(),
+                Cmd::ShowHotspots { spots } => self.hotspots = spots.clone(),
                 Cmd::Wait { seconds } => self.wait = Some(*seconds),
                 Cmd::PlayVideo { src, fit, looped, skippable } => {
                     self.dialogue = None;
@@ -570,7 +580,7 @@ impl View {
         if self.wait.is_some() {
             return true;
         }
-        if !self.choices.is_empty() {
+        if !self.choices.is_empty() || !self.hotspots.is_empty() {
             return false;
         }
         if let Some(d) = &mut self.dialogue {
@@ -587,11 +597,29 @@ impl View {
         choice_rects(self.choices.len()).iter().position(|r| r.contains(x, y))
     }
 
+    /// Which hotspot (if any) contains this virtual-space point. Later ones are
+    /// drawn on top, so they win where regions overlap.
+    pub fn hotspot_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.hotspots.iter().rposition(|s| hotspot_rect(s).contains(x, y))
+    }
+
     /// Everything to draw this frame, back to front.
     ///
     /// `image_size` reports the pixel size of a loaded image; images it doesn't
-    /// know are skipped. `hover` is the choice under the mouse, if any.
+    /// know are skipped. `hover` is the choice (or hotspot) under the mouse or
+    /// the keyboard focus, if any.
     pub fn draw_list(&self, image_size: &dyn Fn(&str) -> Option<Size>, hover: Option<usize>) -> Vec<Draw> {
+        self.draw_list_at(image_size, hover, None)
+    }
+
+    /// [`View::draw_list`] that also knows where the mouse is (virtual
+    /// coordinates), so a hovered hotspot's label can float next to it.
+    pub fn draw_list_at(
+        &self,
+        image_size: &dyn Fn(&str) -> Option<Size>,
+        hover: Option<usize>,
+        pointer: Option<(f32, f32)>,
+    ) -> Vec<Draw> {
         let mut out = Vec::new();
         let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
 
@@ -656,6 +684,26 @@ impl View {
         }
 
         let theme = &self.theme;
+        for (i, spot) in self.hotspots.iter().enumerate() {
+            let rect = hotspot_rect(spot);
+            if let Some(src) = &spot.image {
+                push_image(&mut out, src, rect, Fit::Stretch, 1.0, image_size);
+            }
+            if hover == Some(i) && !spot.hidden {
+                let [r, g, b, _] = theme.accent_color;
+                out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
+                let t = HOTSPOT_OUTLINE;
+                for bar in [
+                    Rect::new(rect.x, rect.y, rect.w, t),
+                    Rect::new(rect.x, rect.y + rect.h - t, rect.w, t),
+                    Rect::new(rect.x, rect.y, t, rect.h),
+                    Rect::new(rect.x + rect.w - t, rect.y, t, rect.h),
+                ] {
+                    out.push(Draw::Rect { rect: bar, color: theme.accent_color });
+                }
+            }
+        }
+
         if let Some(d) = &self.dialogue {
             // The theme's textbox picture if it is loaded, else a plain panel.
             let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
@@ -707,6 +755,33 @@ impl View {
             });
         }
 
+        // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
+        if let Some(spot) = hover.and_then(|i| self.hotspots.get(i)).filter(|s| !s.hidden) {
+            let Rich { text, runs, .. } = rich(&spot.label);
+            let size = (theme.text_size * 0.8).round();
+            let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
+                .min(VIRTUAL.w - 2.0 * TIP_MARGIN);
+            let h = size * 1.35 + TIP_PAD;
+            let r = hotspot_rect(spot);
+            let (ax, ay) = pointer.map_or((r.x + r.w / 2.0 - w / 2.0, r.y + r.h + 8.0), |(px, py)| (px + 24.0, py + 28.0));
+            let tip = Rect::new(
+                ax.clamp(TIP_MARGIN, VIRTUAL.w - w - TIP_MARGIN),
+                ay.clamp(TIP_MARGIN, VIRTUAL.h - h - TIP_MARGIN),
+                w,
+                h,
+            );
+            out.push(Draw::Rect { rect: tip, color: theme.panel_color });
+            out.push(Draw::Text {
+                text,
+                runs,
+                visible_chars: usize::MAX,
+                rect: tip,
+                size,
+                color: theme.text_color,
+                align: Align::Center,
+            });
+        }
+
         out
     }
 }
@@ -738,6 +813,12 @@ pub fn dialogue_lines(text: &str, with_speaker: bool, size: f32) -> (usize, usiz
     let body = dialogue_body(with_speaker);
     let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
     (crate::estimate_lines(text, size, body.w), (body.h / line_h).floor() as usize)
+}
+
+/// A hotspot's region in virtual coordinates.
+pub fn hotspot_rect(spot: &Spot) -> Rect {
+    let [x, y, w, h] = spot.rect;
+    Rect::new(x * VIRTUAL.w, y * VIRTUAL.h, w * VIRTUAL.w, h * VIRTUAL.h)
 }
 
 pub fn choice_rects(count: usize) -> Vec<Rect> {
@@ -1310,6 +1391,99 @@ mod tests {
         assert_eq!(src, "c.webm");
         assert!(close(dest.h, VIRTUAL.h) && close(dest.w, VIRTUAL.h * 4.0 / 3.0));
         assert!(!list.iter().any(|d| matches!(d, Draw::Text { .. })));
+    }
+
+    fn spot(label: &str, rect: [f32; 4], image: Option<&str>) -> Spot {
+        Spot { label: label.into(), rect, image: image.map(String::from), hidden: false }
+    }
+
+    #[test]
+    fn hotspots_are_hit_tested_in_virtual_coordinates_and_the_top_one_wins() {
+        let mut v = View::new();
+        v.apply(&[Cmd::ShowHotspots {
+            spots: vec![
+                spot("big", [0.0, 0.0, 0.5, 0.5], None),
+                spot("small", [0.1, 0.1, 0.1, 0.1], None),
+                spot("far", [0.9, 0.9, 0.1, 0.1], None),
+            ],
+        }]);
+        assert_eq!(hotspot_rect(&v.hotspots[1]), Rect::new(192.0, 108.0, 192.0, 108.0));
+        assert_eq!(v.hotspot_at(250.0, 150.0), Some(1), "later regions are on top");
+        assert_eq!(v.hotspot_at(700.0, 400.0), Some(0));
+        assert_eq!(v.hotspot_at(1900.0, 1070.0), Some(2));
+        assert_eq!(v.hotspot_at(1000.0, 1000.0), None);
+        assert!(!v.press_advance(), "advance doesn't skip over a hotspot screen");
+        v.apply(&[say(None, "next")]);
+        assert!(v.hotspots.is_empty() && v.hotspot_at(250.0, 150.0).is_none());
+    }
+
+    #[test]
+    fn hotspot_draws_images_highlight_and_a_tooltip_kept_on_screen() {
+        let mut v = View::new();
+        v.apply(&[
+            bg("bg.png", 0.0),
+            Cmd::ShowHotspots {
+                spots: vec![spot("Key", [0.5, 0.5, 0.1, 0.1], Some("key.png")), spot("Hidden", [0.0, 0.0, 0.1, 0.1], None)],
+            },
+        ]);
+        let known = |s: &str| (s == "bg.png" || s == "key.png").then_some(Size::new(1920.0, 1080.0));
+        let idle = v.draw_list(&known, None);
+        let key = Rect::new(960.0, 540.0, 192.0, 108.0);
+        assert!(matches!(&idle[1], Draw::Image { src, dest, .. } if src == "key.png" && *dest == key), "stretched into the rect");
+        assert_eq!(idle.len(), 2, "nothing else while idle: unimage'd regions are invisible");
+
+        let hot = v.draw_list_at(&known, Some(0), Some((970.0, 560.0)));
+        let outline = hot.iter().filter(|d| matches!(d, Draw::Rect { color, .. } if *color == theme().accent_color)).count();
+        assert_eq!(outline, 4, "four outline bars");
+        let tip = hot.iter().find_map(|d| match d {
+            Draw::Text { text, rect, .. } if text == "Key" => Some(*rect),
+            _ => None,
+        });
+        let tip = tip.expect("the label is drawn");
+        assert!(close(tip.x, 994.0) && close(tip.y, 588.0), "next to the cursor: {tip:?}");
+
+        // at the bottom right corner the tooltip is pushed back on screen
+        v.apply(&[Cmd::ShowHotspots { spots: vec![spot("A rather long place name", [0.9, 0.9, 0.1, 0.1], None)] }]);
+        let hot = v.draw_list_at(&all_1080p, Some(0), Some((1915.0, 1075.0)));
+        let tip = hot.iter().find_map(|d| match d {
+            Draw::Text { rect, .. } => Some(*rect),
+            _ => None,
+        });
+        let tip = tip.unwrap();
+        assert!(tip.x >= 0.0 && tip.y >= 0.0 && tip.x + tip.w <= VIRTUAL.w && tip.y + tip.h <= VIRTUAL.h, "{tip:?}");
+        // keyboard focus (no pointer): under the region, still on screen
+        let hot = v.draw_list_at(&all_1080p, Some(0), None);
+        assert!(hot.iter().any(|d| matches!(d, Draw::Text { rect, .. } if rect.y + rect.h <= VIRTUAL.h)));
+    }
+
+    #[test]
+    fn a_hidden_hotspot_shows_no_tint_outline_or_tooltip_but_keeps_its_image_and_hit_test() {
+        let mut v = View::new();
+        let mut s = spot("Scarf", [0.5, 0.5, 0.1, 0.1], Some("key.png"));
+        s.hidden = true;
+        let mut plain = spot("Nook", [0.0, 0.0, 0.1, 0.1], None);
+        plain.hidden = true;
+        v.apply(&[Cmd::ShowHotspots { spots: vec![s, plain] }]);
+        let known = |s: &str| (s == "key.png").then_some(Size::new(1920.0, 1080.0));
+        for hover in [Some(0), Some(1)] {
+            let d = v.draw_list_at(&known, hover, Some((970.0, 560.0)));
+            assert!(!d.iter().any(|d| matches!(d, Draw::Text { .. })), "no tooltip");
+            assert!(!d.iter().any(|d| matches!(d, Draw::Rect { .. })), "no tint or outline");
+        }
+        let d = v.draw_list_at(&known, Some(1), None);
+        assert!(d.iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "key.png")), "image still drawn");
+        assert_eq!(v.hotspot_at(970.0, 560.0), Some(0));
+        assert_eq!(v.hotspot_at(20.0, 20.0), Some(1));
+    }
+
+    #[test]
+    fn hotspots_draw_below_the_textbox() {
+        let mut v = View::new();
+        v.apply(&[say(None, "Look."), Cmd::ShowHotspots { spots: vec![spot("x", [0.1, 0.1, 0.1, 0.1], Some("k.png"))] }]);
+        let list = v.draw_list(&all_1080p, None);
+        let key = list.iter().position(|d| matches!(d, Draw::Image { src, .. } if src == "k.png")).unwrap();
+        let panel = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)).unwrap();
+        assert!(key < panel);
     }
 
     #[test]

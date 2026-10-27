@@ -239,8 +239,8 @@ impl Program {
                 continue;
             }
             let Some(op) = self.ops.get(at) else { continue };
-            if let Some((AssetKind::Image, src)) = op.asset() {
-                if !out.contains(&src) {
+            for (kind, src) in op.all_assets() {
+                if kind == AssetKind::Image && !out.contains(&src) {
                     out.push(src);
                 }
             }
@@ -261,7 +261,7 @@ impl Program {
         self.ops
             .iter()
             .enumerate()
-            .filter_map(|(i, op)| op.asset().map(|(kind, path)| (i, kind, path)))
+            .flat_map(|(i, op)| op.all_assets().into_iter().map(move |(kind, path)| (i, kind, path)))
     }
 }
 
@@ -387,6 +387,19 @@ pub struct ChoiceOption {
     pub effects: Vec<Effect>,
     /// The option is only offered while this is true.
     pub cond: Option<Cond>,
+    /// Set for the entries of a `::hotspots` block: where on the screen to click.
+    pub area: Option<Area>,
+}
+
+/// A clickable region of the screen (`::hotspots`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Area {
+    /// `x, y, w, h` as fractions (0..1) of the screen.
+    pub rect: [f32; 4],
+    /// Drawn stretched into the region; invisible until hovered without one.
+    pub image: Option<String>,
+    /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
+    pub hidden: bool,
 }
 
 /// One instruction of the compiled script.
@@ -422,7 +435,8 @@ pub enum Op {
     Wait { seconds: f32 },
     /// Fullscreen video clip. Waits until it ends or the player skips it.
     Video { src: String, fit: Fit, looped: bool, skippable: bool },
-    /// Waits for the player to pick an option.
+    /// Waits for the player to pick an option (or, when the options have an
+    /// `area`, to click a region of the screen).
     Choice { options: Vec<ChoiceOption> },
     Jump { target: usize, cond: Option<Cond> },
     /// Jump to a label and come back at the next op after `::return`.
@@ -444,6 +458,18 @@ impl Op {
                 .flat_map(|o| o.cond.iter().chain(o.effects.iter().map(|e| &e.value)))
                 .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// Every asset file the op needs: [`Op::asset`], or a hotspot block's images.
+    pub fn all_assets(&self) -> Vec<(AssetKind, &str)> {
+        match self {
+            Op::Choice { options } => options
+                .iter()
+                .filter_map(|o| o.area.as_ref()?.image.as_deref())
+                .map(|i| (AssetKind::Image, i))
+                .collect(),
+            _ => self.asset().into_iter().collect(),
         }
     }
 

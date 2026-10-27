@@ -41,7 +41,7 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
 }
 
 const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, sfx, voice, wait, video, \
-                        choice, jump, call, return, set, if, elif, else, endif, end";
+                        choice, hotspots, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -385,7 +385,7 @@ impl Parser {
         let line = i + 1;
         let body = &lines[i].trim()[2..];
         if body.trim().is_empty() {
-            self.err(line, "stray `::` (it only closes a `::choice` block)");
+            self.err(line, "stray `::` (it only closes a `::choice` or `::hotspots` block)");
             return i;
         }
         let name_len = body
@@ -407,7 +407,8 @@ impl Parser {
         };
 
         match name {
-            "choice" => return self.choice(lines, i, inner),
+            "choice" => return self.choice(lines, i, inner, false),
+            "hotspots" => return self.choice(lines, i, inner, true),
             "set" => {
                 let parts: Vec<&str> =
                     split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()).collect();
@@ -903,10 +904,11 @@ impl Parser {
 
     // ---- choice blocks ---------------------------------------------------
 
-    fn choice(&mut self, lines: &[&str], start: usize, inner: &str) -> usize {
+    fn choice(&mut self, lines: &[&str], start: usize, inner: &str, hot: bool) -> usize {
         let line = start + 1;
+        let name = if hot { "::hotspots" } else { "::choice" };
         if !inner.is_empty() {
-            self.err(line, "`::choice` takes no attributes");
+            self.err(line, format!("`{name}` takes no attributes"));
         }
         let mut options = Vec::new();
         let mut labels = Vec::new();
@@ -920,10 +922,10 @@ impl Parser {
             }
             if t.starts_with("<!--") {
                 if !t.ends_with("-->") {
-                    self.err(j + 1, "a comment inside `::choice` must open and close on one line");
+                    self.err(j + 1, format!("a comment inside `{name}` must open and close on one line"));
                 }
             } else if !t.is_empty() {
-                match self.option(t) {
+                match self.option(t, hot) {
                     Ok((opt, label)) => {
                         options.push(opt);
                         labels.push((label, j + 1));
@@ -934,10 +936,10 @@ impl Parser {
             j += 1;
         }
         if !closed {
-            self.err(line, "`::choice` is never closed with a line containing only `::`");
+            self.err(line, format!("`{name}` is never closed with a line containing only `::`"));
         }
         if options.is_empty() {
-            self.err(line, "`::choice` has no options");
+            self.err(line, if hot { "`::hotspots` has no regions" } else { "`::choice` has no options" });
         } else {
             let op = self.here();
             for (k, (label, ln)) in labels.into_iter().enumerate() {
@@ -949,7 +951,7 @@ impl Parser {
     }
 
     /// Parse `- [text](#label){var+=1, if met}`.
-    fn option(&mut self, t: &str) -> Result<(ChoiceOption, String), String> {
+    fn option(&mut self, t: &str, hot: bool) -> Result<(ChoiceOption, String), String> {
         let t = t
             .strip_prefix("- ")
             .or_else(|| t.strip_prefix("* "))
@@ -973,11 +975,29 @@ impl Parser {
         let mut effects = Vec::new();
         let mut cond = None;
         let mut once = false;
+        let mut area = None;
+        let mut hidden = false;
+        if hot && tail.is_empty() {
+            return Err("a hotspot needs `{rect=x,y,w,h}` after its label".into());
+        }
         if !tail.is_empty() {
             let inner = tail
                 .strip_prefix('{')
                 .and_then(|x| x.strip_suffix('}'))
                 .ok_or_else(|| format!("unexpected `{tail}` after the option (effects go in `{{...}}`)"))?;
+            let mut inner = inner.to_string();
+            if hot {
+                let rect = take_attr(&mut inner, "rect");
+                let image = take_attr(&mut inner, "image");
+                area = Some(Area {
+                    rect: parse_rect(&rect.ok_or("a hotspot needs `rect=x,y,w,h` (each 0 to 1 or a percentage)")?)?,
+                    image: image.map(|i| check_hotspot_image(&i)).transpose()?,
+                    hidden: false,
+                });
+            } else if ["rect", "image"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
+                return Err("`rect=` and `image=` only belong in a `::hotspots` block".into());
+            }
+            let inner = inner.as_str();
             for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
                 // `if <cond>`; a variable merely starting with "if" (`iffy+=1`) is an effect
                 let cond_text = item
@@ -987,10 +1007,18 @@ impl Parser {
                     cond = Some(parse_expr(c)?);
                 } else if item == "once" {
                     once = true;
+                } else if item == "hidden" {
+                    if !hot {
+                        return Err("`hidden` only belongs in a `::hotspots` block".into());
+                    }
+                    hidden = true;
                 } else {
                     effects.push(parse_effect(item)?);
                 }
             }
+        }
+        if let Some(a) = area.as_mut() {
+            a.hidden = hidden;
         }
         let target = slug(target);
         if once {
@@ -1004,12 +1032,72 @@ impl Parser {
             let var = format!("{ONCE}{target}:{text}");
             effects.push(Effect { var, op: AssignOp::Set, value: Expr::Lit(Value::Bool(true)) });
         }
-        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond };
+        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area };
         Ok((opt, target))
     }
 }
 
 // ---- free helpers --------------------------------------------------------
+
+/// Remove `key=value` (value up to whitespace or a comma, except that `rect`
+/// takes its four comma-separated numbers) from `inner` and return the value.
+fn take_attr(inner: &mut String, key: &str) -> Option<String> {
+    let needle = format!("{key}=");
+    let mut from = 0;
+    while let Some(pos) = inner[from..].find(&needle).map(|p| p + from) {
+        let boundary = inner[..pos].chars().next_back().is_none_or(|c| c.is_whitespace() || c == ',');
+        if !boundary {
+            from = pos + needle.len();
+            continue;
+        }
+        let start = pos + needle.len();
+        let len = inner[start..]
+            .find(|c: char| c.is_whitespace() || (key != "rect" && c == ','))
+            .unwrap_or(inner.len() - start);
+        let value = inner[start..start + len].trim_end_matches(',').to_string();
+        inner.replace_range(pos..start + len, "");
+        return Some(value);
+    }
+    None
+}
+
+/// `x,y,w,h`, each 0..1 or a percentage; the region must lie inside the screen.
+fn parse_rect(s: &str) -> Result<[f32; 4], String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    let bad = || format!("bad `rect={s}` (use four numbers x,y,w,h, each 0 to 1 or a percentage, no spaces)");
+    if parts.len() != 4 {
+        return Err(bad());
+    }
+    let mut r = [0.0; 4];
+    for (slot, part) in r.iter_mut().zip(&parts) {
+        *slot = parse_fraction(part).ok_or_else(bad)?;
+    }
+    let [x, y, w, h] = r;
+    if w <= 0.0 || h <= 0.0 {
+        return Err(format!("`rect={s}` has no size (width and height must be above 0)"));
+    }
+    if x + w > 1.0 + 1e-4 || y + h > 1.0 + 1e-4 {
+        return Err(format!("`rect={s}` reaches outside the screen (x+w and y+h must be at most 1)"));
+    }
+    Ok(r)
+}
+
+fn check_hotspot_image(path: &str) -> Result<String, String> {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if !path.contains('.') || !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
+        return Err(format!("bad `image={path}` (a hotspot image must be a .png, .jpg or .webp file)"));
+    }
+    Ok(path.to_string())
+}
+
+/// `0.3` or `30%` as 0..1.
+fn parse_fraction(s: &str) -> Option<f32> {
+    let (num, scale) = match s.strip_suffix('%') {
+        Some(n) => (n, 100.0),
+        None => (s, 1.0),
+    };
+    num.trim().parse::<f32>().ok().map(|v| v / scale).filter(|v| (0.0..=1.0).contains(v))
+}
 
 fn heading(t: &str) -> Option<&str> {
     let hashes = t.bytes().take_while(|b| *b == b'#').count();
@@ -1615,6 +1703,60 @@ mod tests {
     }
 
     // ---- errors ------------------------------------------------------------
+
+    #[test]
+    fn hotspots_take_a_rect_an_image_and_the_usual_option_extras() {
+        let p = ok("# map\n::hotspots\n- [Library](#map){rect=0.1,0.2,0.2,0.3}\n- [Old key](#map){rect=60%,70%,5%,8% image=assets/key.png, once, found=true, if not found}\n::\n");
+        let Op::Choice { options } = &p.ops[0] else { panic!("not a choice") };
+        let a = options[0].area.as_ref().unwrap();
+        assert_eq!((a.rect, a.image.as_deref()), ([0.1, 0.2, 0.2, 0.3], None));
+        let b = options[1].area.as_ref().unwrap();
+        assert!((b.rect[0] - 0.6).abs() < 1e-6 && (b.rect[3] - 0.08).abs() < 1e-6);
+        assert_eq!(b.image.as_deref(), Some("assets/key.png"));
+        assert!(options[1].cond.is_some());
+        assert_eq!(options[1].effects.len(), 2, "found=true and the once marker");
+        assert_eq!(options[1].target, 0);
+        assert_eq!(p.assets().map(|(_, _, a)| a).collect::<Vec<_>>(), ["assets/key.png"]);
+        assert_eq!(p.images_ahead(0, 10), ["assets/key.png"]);
+    }
+
+    #[test]
+    fn hidden_is_a_bare_hotspot_option() {
+        let p = ok("# a\n::hotspots\n- [Key](#a){rect=0,0,0.1,0.1, hidden, once, found=true}\n- [Door](#a){rect=0.5,0.5,0.1,0.1}\n::\n");
+        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        assert!(options[0].area.as_ref().unwrap().hidden);
+        assert!(!options[1].area.as_ref().unwrap().hidden);
+        assert_eq!(options[0].effects.len(), 2, "hidden is not an effect");
+        let errors = errs("# a\n::choice\n- [x](#a)\n- [y](#a){hidden}\n::\n");
+        assert!(errors.iter().any(|e| e.line == 4 && e.message.contains("`hidden` only belongs")), "{errors:?}");
+    }
+
+    #[test]
+    fn hotspot_errors_name_the_line() {
+        let e = |src: &str, needle: &str| {
+            let errors = errs(src);
+            assert!(errors.iter().any(|e| e.message.contains(needle)), "{src:?}: {errors:?}");
+            errors
+        };
+        let line3 = |s: &str| format!("# a\n::hotspots\n{s}\n::\n");
+        let errors = e(&line3("- [x](#a)"), "needs `{rect=");
+        assert_eq!(errors.iter().find(|e| e.message.contains("needs `{rect=")).unwrap().line, 3);
+        e(&line3("- [x](#a){once}"), "needs `rect=");
+        e(&line3("- [x](#a){rect=0.1,0.2,0.3}"), "bad `rect=");
+        e(&line3("- [x](#a){rect=0.1,0.2,0.3,wide}"), "bad `rect=");
+        e(&line3("- [x](#a){rect=0.9,0.2,0.3,0.1}"), "outside the screen");
+        e(&line3("- [x](#a){rect=0.1,0.2,0,0.1}"), "no size");
+        e(&line3("- [x](#a){rect=1.5,0,0.1,0.1}"), "bad `rect=");
+        e(&line3("- [x](#a){rect=0,0,1,1 image=k.gif}"), "bad `image=");
+        e(&line3("- [x](#a){rect=0,0,1,1 image=k}"), "bad `image=");
+        e(&line3("- [x](#a){rect=0,0,1,1, bogus}"), "bad assignment");
+        e("# a\n::hotspots\n::\n", "has no regions");
+        e("# a\n::choice\n- [x](#a){hidden}\n::\n", "`hidden` only belongs in a `::hotspots`");
+        e("# a\n::hotspots\n- [x](#a){rect=0,0,1,1}\n", "never closed");
+        e("# a\n::choice\n- [x](#a){rect=0,0,1,1}\n::\n", "only belong in a `::hotspots`");
+        e("# a\n::hotspots{x}\n- [x](#a){rect=0,0,1,1}\n::\n", "takes no attributes");
+        e(&line3("- [x](#nowhere){rect=0,0,1,1}"), "unknown label");
+    }
 
     #[test]
     fn reports_unknown_label_with_line_number() {

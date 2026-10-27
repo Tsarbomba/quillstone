@@ -204,8 +204,9 @@ mod tests {
         std::fs::write(src.join("assets/bg.png"), "png").unwrap();
         std::fs::write(src.join("assets/unused.png"), "nope").unwrap();
         std::fs::write(src.join("assets/box.png"), "box").unwrap();
+        std::fs::write(src.join("assets/icon.png"), "icon").unwrap();
         std::fs::write(src.join("theme.txt"), "textbox_image = assets/box.png\n").unwrap();
-        let script = "---\ntitle: Tiny Tale\ntheme: theme.txt\n---\n# start\n::bg{src=assets/bg.png}\nHello.\n";
+        let script = "---\ntitle: Tiny Tale\ntheme: theme.txt\n---\n# start\n::bg{src=assets/bg.png}\nHello.\n::hotspots\n- [Again](#start){rect=0,0,0.1,0.1 image=assets/icon.png}\n::\n";
         std::fs::write(src.join("tiny.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         for lib in ["avcodec-62.dll", "avfilter-11.dll", "avutil-60.dll"] {
@@ -224,7 +225,7 @@ mod tests {
         package(&opts, &program).unwrap();
 
         for f in ["Tiny Tale.exe", "avcodec-62.dll", "avutil-60.dll", "game/tiny.quill.md", "game/theme.txt",
-                  "game/assets/bg.png", "game/assets/box.png"] {
+                  "game/assets/bg.png", "game/assets/box.png", "game/assets/icon.png"] {
             assert!(out.join(f).is_file(), "{f}");
         }
         assert!(!out.join("avfilter-11.dll").exists() && !out.join("game/assets/unused.png").exists());

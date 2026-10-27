@@ -27,6 +27,8 @@ impl<'p> Session<'p> {
             program,
             state: State::new(program),
             history: Vec::new(),
+            redo: Vec::new(),
+            redo_tip: None,
             persistent,
             persistent_changed: false,
         };

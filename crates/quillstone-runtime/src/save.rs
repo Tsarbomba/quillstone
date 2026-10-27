@@ -10,7 +10,7 @@
 
 use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
 
-use crate::{step, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
+use crate::{choice_cmd, step, visible_options, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
 
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
@@ -84,7 +84,7 @@ impl<'p> Session<'p> {
             }
         }
         let cmds = cmds.unwrap_or_else(|| state.redraw());
-        let session = Session { program, state, history, persistent: Vars::new(), persistent_changed: false };
+        let session = Session { program, state, history, redo: Vec::new(), redo_tip: None, persistent: Vars::new(), persistent_changed: false };
         Ok((session, cmds))
     }
 }
@@ -108,7 +108,7 @@ fn consistent(state: &State, program: &Program) -> bool {
         Some(Cmd::Say { .. }) => matches!(op, Some(Op::Say { .. })),
         Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. })),
         Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
-        Some(Cmd::ShowChoices { .. }) => matches!(op, Some(Op::Choice { .. })),
+        Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
         Some(_) => false,
     }
 }
@@ -269,6 +269,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             let opts: Vec<String> = options.iter().map(|o| q(o)).collect();
             w(format!("pending choices {}", opts.join(" ")));
         }
+        // The regions themselves come from the script when the save is read.
+        Some(Cmd::ShowHotspots { .. }) => w("pending hotspots".into()),
         _ => {}
     }
     if s.finished {
@@ -352,7 +354,15 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             if is_inside(p) { Ok(p.to_string()) } else { Err(format!("line {n}: unsafe file path `{p}`")) }
         };
         match arg(0)? {
-            "end" if saw_at => return Ok(s),
+            "end" if saw_at => {
+                if matches!(s.pending, Some(Cmd::ShowHotspots { .. })) {
+                    let Some(Op::Choice { options }) = program.ops.get(s.pc) else {
+                        return Err(format!("line {n}: pending hotspots, but the script has none there"));
+                    };
+                    s.pending = Some(choice_cmd(options, &visible_options(options, &s.vars), &s.vars));
+                }
+                return Ok(s);
+            }
             "end" => return Err(format!("line {n}: state without a position")),
             "at" => {
                 s.pc = resolve(program, &t[1..], n)?;
@@ -407,6 +417,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                         skippable: b(5)?,
                     },
                     "choices" => Cmd::ShowChoices { options: t[2..].to_vec() },
+                    // Rebuilt from the script at `end`, once the variables are known.
+                    "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
                     other => return Err(format!("line {n}: unknown pending `{other}`")),
                 });
             }

@@ -55,6 +55,37 @@ fn a_touchpad_swipe_rolls_back_by_notches_not_by_events() {
 }
 
 #[test]
+fn wheel_down_rolls_forward_after_wheel_up() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    g.handle(Event::Wheel(1.0));
+    g.handle(Event::Wheel(1.0));
+    assert_eq!(line(&g), "one");
+    g.handle(Event::Wheel(-1.0));
+    assert_eq!(line(&g), "two");
+    g.handle(Event::Wheel(-1.0));
+    assert_eq!(line(&g), "three");
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
+fn wheel_down_with_nothing_to_redo_does_nothing() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.handle(Event::Wheel(-1.0));
+    assert_eq!(g.screen(), Screen::Story);
+    assert_eq!(line(&g), "two");
+    g.handle(Event::Wheel(1.0));
+    key(&mut g, Key::Space); // a new input drops the redo
+    g.handle(Event::Wheel(-1.0));
+    assert_eq!(line(&g), "two");
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
 fn a_still_screen_needs_no_ticks_but_timers_and_typing_do() {
     let p = parse("**A:** one\n::wait{time=2}\n**A:** two\n").unwrap();
     let mut g = new_game(&p, Settings { text_speed: 30.0, ..Settings::default() });
@@ -305,7 +336,9 @@ fn the_backlog_lists_what_was_read_and_scrolls() {
     g.handle(Event::Wheel(1.0));
     assert_eq!(g.backlog_scroll, 2, "clamped to the oldest entry");
     key(&mut g, Key::End);
-    g.handle(Event::Wheel(-1.0)); // wheeling down at the newest entry closes it
+    g.handle(Event::Wheel(-1.0)); // wheeling down at the newest entry stays put
+    assert_eq!(g.screen(), Screen::Backlog);
+    key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "three");
     key(&mut g, Key::PageUp);
@@ -818,15 +851,11 @@ fn unskippable_clips_ignore_clicks_but_only_while_really_playing() {
 }
 
 #[test]
-fn rolling_back_to_a_cutscene_starts_it_over_and_menus_pause_it() {
+fn rolling_back_past_a_cutscene_skips_it_and_menus_pause_it() {
     let p = parse(MOVIE).unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space);
-    let first = g.wanted_videos()[0].generation;
-    key(&mut g, Key::Space);
-    key(&mut g, Key::Backspace);
     assert_eq!(g.wanted_videos()[0].src, "clip.webm");
-    assert_ne!(g.wanted_videos()[0].generation, first, "a new start");
     assert!(!g.media_paused());
     key(&mut g, Key::Escape);
     assert!(g.media_paused());
@@ -835,6 +864,9 @@ fn rolling_back_to_a_cutscene_starts_it_over_and_menus_pause_it() {
     key(&mut g, Key::Escape);
     g.video_update(true, true);
     assert_eq!(line(&g), "after");
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "before", "rollback does not land on the cutscene");
+    assert!(g.view().video.is_none());
 }
 
 // ---- extras and persistent data --------------------------------------------------------------
@@ -1082,4 +1114,159 @@ fn a_clock_set_back_doesnt_make_new_saves_look_old() {
     key(&mut g, Key::F5);
     let second = crate::slots::Slot { page: crate::slots::Page::Quick, index: 1 };
     assert_eq!(crate::slots::newest_save(&storage).map(|(_, s)| s), Some(second), "Continue picks the latest save");
+}
+
+// ---- hotspots ----------------------------------------------------------------------------------------
+
+const MAP: &str = "---\nvars: { got: false }\n---\n# map\n::bg{src=map.png}\n::hotspots\n- [Library](#lib){rect=0.1,0.2,0.2,0.3}\n- [Key](#key){rect=0.6,0.7,0.1,0.1 image=key.png, got=true, if not got}\n- [Leave](#out){rect=0.8,0.8,0.1,0.1}\n::\n# lib\n**A:** Books.\n::jump{to=map}\n# key\n**A:** A key.\n::jump{to=map}\n# out\n**A:** Bye.\n::end\n";
+
+/// The middle of the nth hotspot as listed on screen right now.
+fn spot_centre(g: &Game, i: usize) -> Option<(f32, f32)> {
+    centre(quillstone_render::view::hotspot_rect(&g.view().hotspots[i]))
+}
+
+fn click_spot(g: &mut Game, i: usize) {
+    let at = spot_centre(g, i);
+    click_at(g, at);
+}
+
+#[test]
+fn clicking_a_hotspot_picks_it_and_clicks_elsewhere_do_nothing() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(g.view().hotspots.len(), 3, "no line needed: the map shows at once");
+    click_at(&mut g, Some((5.0, 5.0)));
+    assert_eq!(g.view().hotspots.len(), 3, "a click on nothing doesn't advance");
+    key(&mut g, Key::Char('1'));
+    assert_eq!(g.view().hotspots.len(), 3, "number keys don't apply to hotspots");
+    click_spot(&mut g, 1); // the key
+    assert_eq!(line(&g), "A key.");
+    key(&mut g, Key::Space);
+    assert_eq!(g.view().hotspots.len(), 2, "the key is gone");
+    click_spot(&mut g, 1); // "Leave" is now the second visible one
+    assert_eq!(line(&g), "Bye.");
+}
+
+#[test]
+fn hovering_a_hotspot_highlights_it_and_shows_its_label() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    let texts = |g: &Game| -> Vec<String> {
+        g.draw_list(&|_| None)
+            .into_iter()
+            .filter_map(|d| match d {
+                quillstone_render::Draw::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(texts(&g).is_empty(), "nothing to read while idle");
+    g.handle(Event::CursorMoved(spot_centre(&g, 0)));
+    assert_eq!(texts(&g), ["Library"]);
+    g.handle(Event::CursorMoved(Some((5.0, 5.0))));
+    assert!(texts(&g).is_empty());
+}
+
+#[test]
+fn the_arrow_keys_cycle_the_hotspots_and_enter_takes_the_focused_one() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Enter);
+    assert_eq!(g.view().hotspots.len(), 3, "nothing focused yet: Enter does nothing");
+    key(&mut g, Key::Down);
+    assert_eq!(g.choice_focus, Some(0));
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right);
+    assert_eq!(g.choice_focus, Some(2));
+    key(&mut g, Key::Right);
+    assert_eq!(g.choice_focus, Some(0), "wraps round");
+    key(&mut g, Key::Left);
+    assert_eq!(g.choice_focus, Some(2));
+    key(&mut g, Key::Up);
+    assert_eq!(g.choice_focus, Some(1));
+    // the focused region is highlighted like a hovered one, with its label by it
+    let drawn = g.draw_list(&|_| None);
+    assert!(drawn.iter().any(|d| matches!(d, quillstone_render::Draw::Text { text, .. } if text == "Key")));
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "A key.");
+    assert_eq!(g.choice_focus, None);
+}
+
+const HIDDEN_MAP: &str = "# map\n::bg{src=map.png}\n::hotspots\n- [Library](#lib){rect=0.1,0.2,0.2,0.3}\n- [Scarf](#scarf){rect=0.6,0.7,0.1,0.1, hidden}\n- [Leave](#out){rect=0.8,0.8,0.1,0.1}\n::\n# lib\n**A:** Books.\n::jump{to=map}\n# scarf\n**A:** A scarf.\n::jump{to=map}\n# out\n**A:** Bye.\n::end\n";
+
+#[test]
+fn a_hidden_hotspot_is_clickable_but_arrow_keys_skip_it() {
+    let p = parse(HIDDEN_MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Down);
+    assert_eq!(g.choice_focus, Some(0));
+    key(&mut g, Key::Down);
+    assert_eq!(g.choice_focus, Some(2), "skips the hidden one");
+    key(&mut g, Key::Down);
+    assert_eq!(g.choice_focus, Some(0));
+    key(&mut g, Key::Up);
+    assert_eq!(g.choice_focus, Some(2));
+    key(&mut g, Key::Up);
+    assert_eq!(g.choice_focus, Some(0));
+    click_spot(&mut g, 1);
+    assert_eq!(line(&g), "A scarf.");
+}
+
+#[test]
+fn arrow_keys_do_nothing_when_every_hotspot_is_hidden() {
+    let p = parse("# map\n::bg{src=map.png}\n::hotspots\n- [Scarf](#end){rect=0.6,0.7,0.1,0.1, hidden}\n::\n# end\n**A:** A scarf.\n::end\n").unwrap();
+    let mut g = new_game(&p, instant());
+    for k in [Key::Down, Key::Up, Key::Left, Key::Right] {
+        key(&mut g, k);
+        assert_eq!(g.choice_focus, None);
+    }
+    click_spot(&mut g, 0);
+    assert_eq!(line(&g), "A scarf.");
+}
+
+#[test]
+fn a_hotspot_screen_is_a_checkpoint_and_its_pick_is_not_in_the_backlog() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(!has_file(&g, "auto-1.save"), "the first screen is where the game started");
+    click_spot(&mut g, 0);
+    key(&mut g, Key::Space); // back at the map
+    assert!(has_file(&g, "auto-1.save"), "arriving at the map saved");
+    key(&mut g, Key::Char('h'));
+    let entries = g.backlog.clone();
+    assert!(entries.iter().all(|e| matches!(e, quillstone_runtime::Logged::Line(_))), "{entries:?}");
+    assert_eq!(entries.len(), 1);
+}
+
+#[test]
+fn the_wheel_and_backspace_roll_back_over_hotspots_without_picking() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    click_spot(&mut g, 0);
+    key(&mut g, Key::Space);
+    assert_eq!(g.view().hotspots.len(), 3);
+    g.handle(Event::Wheel(-1.0)); // nothing to roll forward to
+    assert_eq!(g.view().hotspots.len(), 3, "the wheel doesn't pick or advance");
+    g.handle(Event::Wheel(1.0)); // back to the line "Books."
+    assert_eq!(line(&g), "Books.");
+    g.handle(Event::Wheel(1.0)); // back to the map
+    assert_eq!(g.view().hotspots.len(), 3);
+    assert!(g.view().dialogue.is_some());
+    g.handle(Event::Wheel(-1.0));
+    assert_eq!(line(&g), "Books.");
+}
+
+#[test]
+fn skip_and_auto_stop_at_hotspots() {
+    let p = parse(MAP).unwrap();
+    let mut first = new_game(&p, instant());
+    click_spot(&mut first, 0);
+    key(&mut first, Key::Space);
+    first.autosave();
+    let mut g = reread(&p, &first, instant());
+    click_spot(&mut g, 0);
+    key(&mut g, Key::Tab);
+    run(&mut g, 20);
+    assert!(!g.skipping(), "skip stops at the hotspots");
+    assert_eq!(g.view().hotspots.len(), 3, "back at the map, having skipped the read line");
 }
