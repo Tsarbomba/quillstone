@@ -606,7 +606,10 @@ fn run(path: &Path) -> Result<(), String> {
     while !session.state().finished {
         let choosing = matches!(session.state().pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }));
         let shopping = matches!(session.state().pending, Some(Cmd::ShowShop { .. }));
-        let prompt = if shopping {
+        let asking = matches!(session.state().pending, Some(Cmd::AskInput { .. }));
+        let prompt = if asking {
+            "type your answer ([enter]=default, !back, !quit)> "
+        } else if shopping {
             "buy (number), [enter]=leave, b=back, q=quit> "
         } else if choosing {
             "choose (number, b=back, q=quit)> "
@@ -618,6 +621,20 @@ fn run(path: &Path) -> Result<(), String> {
 
         let Some(Ok(line)) = lines.next() else { break };
         let line = line.trim();
+        // At a text entry every line is an answer, so the commands are spelled differently.
+        let line = match (asking, line) {
+            (true, "!quit") => "q",
+            (true, "!back") => "b",
+            (true, answer) => {
+                let cmds = session.input(Input::Text(answer.to_string()));
+                if cmds.is_empty() {
+                    println!("(type something)");
+                }
+                print_cmds(&cmds);
+                continue;
+            }
+            (false, other) => other,
+        };
         let cmds = match line {
             "q" => break,
             "b" => match session.rollback() {
@@ -699,6 +716,10 @@ fn print_cmds(cmds: &[Cmd]) {
                     let state = if s.owned { "  (owned)" } else if s.price > *money { "  (too dear)" } else { "" };
                     println!("  {}. {} - {} {pay}{state}", i + 1, s.item.name, s.price);
                 }
+            }
+            Cmd::AskInput { prompt, default, max } => {
+                let default = default.as_ref().map(|d| format!(", default \"{d}\"")).unwrap_or_default();
+                println!("\n[input] {} (up to {max} characters{default})", plain(prompt));
             }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),

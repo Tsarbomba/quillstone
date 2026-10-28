@@ -55,6 +55,10 @@ pub type Vars = BTreeMap<String, Value>;
 /// (see `seen(label)` in conditions). Real variable names can't contain `:`.
 pub const SEEN: &str = "seen:";
 
+/// The most characters `::input` accepts by default, and the most it may be told to accept.
+pub const INPUT_MAX_DEFAULT: usize = 24;
+pub const INPUT_MAX_LIMIT: usize = 64;
+
 /// Hidden variables `once:<label>:<text>` remember that a `{once}` option was picked.
 pub const ONCE: &str = "once:";
 
@@ -827,6 +831,10 @@ pub enum Op {
     /// A shop: items for sale, paid with the int variable `pay`, bought into the
     /// list `into`. Waits until the player leaves.
     Shop { pay: String, into: String, stock: Vec<ShopEntry> },
+    /// Ask the player to type a text into the text variable `var`; waits for it.
+    /// `prompt` is tagged text with `{name}` interpolation (like narration). `max`
+    /// counts characters. With a `default`, confirming an empty field stores it.
+    Input { var: String, prompt: String, default: Option<String>, max: usize },
     Jump { target: usize, cond: Option<Cond> },
     /// Jump to a label and come back at the next op after `::return`. `args` are
     /// the label's parameters: each is evaluated (all of them before any is

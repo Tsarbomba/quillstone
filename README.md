@@ -6,7 +6,7 @@ markdown, and seamless video playback is a first-class feature.
 
 **What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
-conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
+conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery and music
 room, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
@@ -111,6 +111,7 @@ double-click the exe. If it can't start, the reason is also written to
 | U | hide the textbox and quick menu to see the picture; the next key press or click brings them back (and does nothing else) |
 | Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu (game default, always, on hover, hidden), Main menu, Quit |
 | I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the settings (closing them returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
+| typing | at a text input the keys type into the field (Enter or OK confirms, Backspace deletes, Esc opens the settings) and shortcut letters are off there |
 | F11 | fullscreen |
 | Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
 

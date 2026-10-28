@@ -658,8 +658,8 @@ impl View {
                 }
                 Cmd::Finished => self.finished = true,
                 Cmd::Stopped { .. } => {} // for the author; the game shows it as a notice
-                // The inventory and shop are screens of their own (see quillstone-ui).
-                Cmd::ShowInventory | Cmd::ShowShop { .. } => {}
+                // The inventory, shop and text entry are screens of their own (see quillstone-ui).
+                Cmd::ShowInventory | Cmd::ShowShop { .. } | Cmd::AskInput { .. } => {}
                 // Audio is not the view's business.
                 Cmd::PlayMusic { .. }
                 | Cmd::StopMusic { .. }

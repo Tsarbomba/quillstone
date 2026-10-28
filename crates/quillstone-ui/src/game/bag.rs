@@ -55,14 +55,14 @@ impl Game<'_> {
     fn bag_screen(&self) -> Option<Screen> {
         match self.screen {
             Screen::Inventory | Screen::Shop => Some(self.screen),
-            _ => self.under,
+            _ => self.under.filter(|s| matches!(s, Screen::Inventory | Screen::Shop)),
         }
     }
 
-    /// Another screen is about to open over the shop or inventory: remember it,
+    /// Another screen is about to open over the shop, inventory or text entry: remember it,
     /// so closing that screen comes back (page, focus and purchases kept).
     pub(super) fn cover_bag(&mut self) {
-        if matches!(self.screen, Screen::Inventory | Screen::Shop) {
+        if matches!(self.screen, Screen::Inventory | Screen::Shop | Screen::Input) {
             self.under = Some(self.screen);
         }
     }

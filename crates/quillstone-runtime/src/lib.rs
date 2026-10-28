@@ -103,6 +103,11 @@ pub enum Cmd {
     /// `items` (the list now on offer) and shows the shop again with the new
     /// money and what is owned; [`Input::Advance`] leaves.
     ShowShop { pay: String, money: i64, items: Vec<ShopItem> },
+    /// Ask the player to type a text (from `::input`) and wait for [`Input::Text`].
+    /// `prompt` is tagged text with its `{name}` values already put in (see
+    /// [`interpolate`]); `max` counts characters. With a `default`, an empty answer
+    /// stores it instead; the frontend may show it as a placeholder.
+    AskInput { prompt: String, default: Option<String>, max: usize },
     /// The story was stopped by a safety valve (a mistake in the script), and
     /// [`Cmd::Finished`] follows. Says what happened, for the author.
     Stopped { reason: String },
@@ -144,12 +149,36 @@ pub struct ShopItem {
     pub owned: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Advance,
     Choose(usize),
     /// Buy the item at this index of the shop's offered list.
     Buy(usize),
+    /// The player's answer to a [`Cmd::AskInput`], as typed: it is cleaned up (see
+    /// [`finish_input`]) and stored in the variable. An answer that is empty
+    /// after that, with no default to use, is ignored and the story keeps waiting.
+    Text(String),
+}
+
+/// Typed text without its control characters (newlines, tabs, escapes...).
+pub fn filter_typed(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// What an `::input` answer becomes: control characters dropped, spaces at both
+/// ends trimmed, cut to `max` characters (not bytes); when nothing is left, the
+/// `default` (cleaned the same way); `None` when that is empty too.
+pub fn finish_input(raw: &str, default: Option<&str>, max: usize) -> Option<String> {
+    let clean = |s: &str| {
+        let kept: String = filter_typed(s).trim().chars().take(max).collect();
+        kept.trim_end().to_string()
+    };
+    let typed = clean(raw);
+    if !typed.is_empty() {
+        return Some(typed);
+    }
+    default.map(clean).filter(|d| !d.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -438,7 +467,8 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
             state.pending = Some(Cmd::Say { speaker: speaker.clone(), color: *color, text });
         }
         (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. }))
-        | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => {
+        | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. }))
+        | (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. })) => {
             if let Some(cmd) = rebuild_pending(program, op, &state.vars) {
                 state.pending = Some(cmd);
             }
@@ -458,6 +488,9 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option
         Op::Choice { options } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
         Op::Inventory => Some(Cmd::ShowInventory),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
+        Op::Input { prompt, default, max, .. } => {
+            Some(Cmd::AskInput { prompt: interpolate(prompt, vars), default: default.clone(), max: *max })
+        }
         _ => None,
     }
 }
@@ -571,6 +604,12 @@ pub(crate) fn step_traced(
                 let cmd = shop_cmd(program, pay, into, stock, &state.vars);
                 return block(state, &mut Vec::new(), cmd);
             }
+            (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
+                let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) else { return Vec::new() };
+                let Some(answer) = finish_input(&raw, default.as_deref(), *max) else { return Vec::new() };
+                state.vars.insert(var.clone(), Value::Str(answer));
+                state.pc += 1;
+            }
             (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
                 let Some(Op::Choice { options: all }) = program.ops.get(state.pc) else {
                     return Vec::new();
@@ -641,6 +680,10 @@ pub(crate) fn step_traced(
                     continue;
                 }
                 let cmd = shop_cmd(program, pay, into, stock, &state.vars);
+                return block(state, &mut out, cmd);
+            }
+            Op::Input { prompt, default, max, .. } => {
+                let cmd = Cmd::AskInput { prompt: interpolate(prompt, &state.vars), default: default.clone(), max: *max };
                 return block(state, &mut out, cmd);
             }
             Op::Image { src, alt } => {
@@ -883,7 +926,7 @@ impl<'p> Session<'p> {
 
     pub fn input(&mut self, input: Input) -> Vec<Cmd> {
         let before = self.state.clone();
-        let cmds = step(&mut self.state, self.program, Some(input));
+        let cmds = step(&mut self.state, self.program, Some(input.clone()));
         if !cmds.is_empty() {
             self.history.push((before, input));
             if self.history.len() > MAX_HISTORY {
@@ -1233,7 +1276,7 @@ vars: { trust: 0 }
         let p = parse(src).unwrap();
         let (mut game, mut all) = Session::start(&p);
         for input in inputs {
-            all.extend(game.input(*input));
+            all.extend(game.input(input.clone()));
         }
         all
     }
@@ -1254,7 +1297,7 @@ vars: { trust: 0 }
                 "---\nvars: {{ t: {trust} }}\n---\n::if{{t > 1}}\n**X:** high\n::elif{{t > 0}}\n**X:** mid\n::else\n**X:** low\n::endif\n**X:** after\n"
             )
         };
-        let adv = [Input::Advance; 2];
+        let adv = vec![Input::Advance; 2];
         assert_eq!(lines(&run_to_end(&src(2), &adv)), vec!["high", "after"]);
         assert_eq!(lines(&run_to_end(&src(1), &adv)), vec!["mid", "after"]);
         assert_eq!(lines(&run_to_end(&src(0), &adv)), vec!["low", "after"]);
@@ -2468,3 +2511,6 @@ vars: { amount: 99 }
 
 #[cfg(test)]
 mod dice;
+
+#[cfg(test)]
+mod text_input;

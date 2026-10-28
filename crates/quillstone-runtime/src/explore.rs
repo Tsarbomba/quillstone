@@ -103,6 +103,11 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 inputs.push((Input::Advance, Some("leave the shop".to_string())));
                 inputs
             }
+            // One answer is enough: the default, or "Player". What is typed doesn't change the route.
+            Some(Cmd::AskInput { default, max, .. }) => {
+                let answer = default.clone().unwrap_or_else(|| "Player".chars().take(*max).collect());
+                vec![(Input::Text(answer), None)]
+            }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
         };
@@ -188,7 +193,7 @@ impl Explorer<'_> {
                     trace.push(pc);
                     at.set(pc);
                 };
-                step_traced(&mut state, self.program, input, &mut ran, Some(&mut draw));
+                step_traced(&mut state, self.program, input.clone(), &mut ran, Some(&mut draw));
             }
             let Some((lo, hi, pc)) = next_roll else {
                 done.push((state, trace));
@@ -425,6 +430,7 @@ impl Explorer<'_> {
                     }
                 }
                 Op::Say { text, .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
+                Op::Input { prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 Op::Shop { pay, into, stock } => {
                     set.insert(into);
                     read.push((at, pay, false));

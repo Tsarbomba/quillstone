@@ -33,7 +33,7 @@ use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timest
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -76,6 +76,8 @@ struct App {
     /// The screen needs images still being decoded: the previous frame stays up, the
     /// game's clock stands still and story input is ignored (see `redraw`).
     holding: bool,
+    /// The window's text-input method (IME) is on: only while the game wants typed text.
+    ime_on: bool,
     /// When the current wait for images began, and what the last shown frame used.
     hold_since: Option<Instant>,
     last_asked: Vec<String>,
@@ -170,6 +172,7 @@ fn main() {
         settled: false,
         dirty: true,
         holding: false,
+        ime_on: false,
         hold_since: None,
         last_asked: Vec::new(),
     };
@@ -482,8 +485,9 @@ impl App {
 }
 
 /// The game's name for a key, if it uses it. Held-down repeats only count for
-/// keys where repeating makes sense (moving through lists and sliders).
-fn map_key(key: &WinitKey, repeat: bool) -> Option<Key> {
+/// keys where repeating makes sense (moving through lists and sliders), and
+/// Backspace while the player is typing text.
+fn map_key(key: &WinitKey, repeat: bool, typing: bool) -> Option<Key> {
     let k = match key {
         WinitKey::Named(named) => match named {
             NamedKey::Space => Key::Space,
@@ -508,8 +512,22 @@ fn map_key(key: &WinitKey, repeat: bool) -> Option<Key> {
         WinitKey::Character(s) => Key::Char(s.chars().next()?),
         _ => return None,
     };
-    let repeats = matches!(k, Key::Left | Key::Right | Key::Up | Key::Down | Key::PageUp | Key::PageDown);
+    let repeats = matches!(k, Key::Left | Key::Right | Key::Up | Key::Down | Key::PageUp | Key::PageDown)
+        || (typing && k == Key::Backspace);
     (!repeat || repeats).then_some(k)
+}
+
+impl App {
+    /// Switch the window's input method on while the game asks for typed text, off otherwise.
+    fn sync_ime(&mut self) {
+        let want = self.game.wants_text();
+        if want != self.ime_on {
+            if let Some(window) = &self.window {
+                window.set_ime_allowed(want);
+            }
+            self.ime_on = want;
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -576,13 +594,28 @@ impl ApplicationHandler for App {
                     self.game.handle(Event::Wheel(dy));
                 }
             }
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, repeat, .. }, .. } => {
-                if let Some(key) = map_key(&logical_key, repeat) {
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, repeat, text, .. }, .. } => {
+                let typing = self.game.wants_text();
+                if let Some(key) = map_key(&logical_key, repeat, typing) {
                     match state {
                         ElementState::Pressed if !self.holding => self.game.handle(Event::Key(key)),
                         ElementState::Pressed => {} // a line the player hasn't seen must not be skipped
                         ElementState::Released => self.game.handle(Event::KeyReleased(key)),
                     }
+                }
+                // A text input also gets what the key types (repeats included). The game
+                // ignores letter keys there, so the same press is never both a shortcut and text;
+                // control characters (Enter, Backspace, Tab) are dropped by the game.
+                if let (true, ElementState::Pressed, Some(text)) = (typing, state, text) {
+                    if !self.holding && self.game.wants_text() {
+                        self.game.handle(Event::Text(text.to_string()));
+                    }
+                }
+            }
+            // Text an input method committed (Chinese, Japanese, Korean, dead keys, emoji picker...).
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if !self.holding && self.game.wants_text() {
+                    self.game.handle(Event::Text(text));
                 }
             }
             // A Ctrl held while switching away would never be seen let go.
@@ -591,6 +624,7 @@ impl ApplicationHandler for App {
             _ => {}
         }
         self.pump(event_loop);
+        self.sync_ime();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -607,6 +641,7 @@ impl ApplicationHandler for App {
                 }
             }
             self.pump(event_loop);
+            self.sync_ime();
         }
         let Some(window) = &self.window else { return };
         let next_anyway = self.last_frame + SETTLED_REDRAW;

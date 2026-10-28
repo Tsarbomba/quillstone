@@ -610,6 +610,53 @@ vars: { gold: 40, pack: [], polite: false }
 - The look of the inventory and the shop comes from the theme file (see below). The
   demo `examples/market.quill.md` with `examples/market_theme.txt` uses all of it.
 
+## Text input
+
+````markdown
+---
+vars: { hero.name: "Alex" }
+---
+::input{var=hero.name prompt="What is your name?" default="Alex" max=16}
+
+**Mika:** Nice to meet you, {hero.name}.
+````
+
+Asks the player to type a text and stores it in a variable (a name, mostly).
+
+- `var` (required) is a text variable declared in `vars:` or `persistent:` with a text
+  default (dotted names work). `prompt` (required) is the question; it takes `{name}`
+  values, `**bold**`, `*italic*`, colour and size tags like a line does (not `{nw}` or
+  `{p}`). `default` (optional) is the answer used when the player confirms an empty
+  field; the field then shows it dimmed as a hint. `max` (optional) is how many
+  characters the answer may have, from 1 to 64 (24 when left out); it counts characters,
+  not bytes, and `default` may not be longer.
+- The story waits at a centred panel with the prompt, a text field with a blinking
+  caret and an OK button. A long text scrolls so its last characters stay in view.
+  Typing adds characters at the end and Backspace removes the last one (there is no
+  moving the caret inside the text, and no paste). Enter or OK confirms. The panel
+  counts what is typed against the limit.
+- What is stored: control characters (newlines, tabs) are dropped, spaces at both ends are trimmed, and
+  the text is cut to `max`. An empty answer stores the `default`; with no default OK is
+  dimmed and Enter does nothing until something is typed. The value is always text, even
+  when it looks like a number (`n == "42"`, not `n == 42`).
+- Letters and digits go to the field while it is up, so shortcuts like A, H, S, L, I, U and Tab
+  do nothing there; Backspace deletes and never goes back. Esc and a right click open the
+  settings (closing them returns to the field with the text kept); F5 and F9 quick save and load.
+  A gamepad's A confirms (the default when the field is empty), X deletes and B or Start
+  opens the settings; there is no on-screen keyboard.
+- Whatever the player types shows exactly as typed: `{`, `}`, `*` and `\` in a name can't
+  become text tags when `{hero.name}` appears in a line or a prompt.
+- The input is an auto save point and stops skip and auto-forward. Neither the question nor
+  the answer is added to the history. Rolling back from the line after it lands on the
+  prompt with an empty field; the variable is back to its earlier value until the new
+  answer. Saves hold the stored value (the text typed but not yet confirmed is not
+  saved), and a `persistent:` text keeps the last name for the next playthrough.
+- `quillstone test` answers with the `default` (or `Player` when there is none) and goes on,
+  so a line that only another answer reaches, like `::if{hero.name == "Zed"}`, is reported as
+  never shown. `quillstone run` in the terminal asks on the command line (an empty line
+  takes the default; `!back` and `!quit` are the commands there).
+- The demo `examples/greeting.quill.md` asks for a name and uses it in a few lines.
+
 ## Kept across playthroughs
 
 ````markdown
@@ -659,7 +706,7 @@ mode remembers read lines by their label and text, so rewording a line makes it
 "unread" again. The same rules apply when the player reloads a script you just
 saved (hot reload): it carries on where you are. A save that was waiting at a
 choice, hotspot block or shop where nothing is on offer any more (an edited
-condition) carries on past it. Choice texts, hotspots and shop stock always come from
+condition) carries on past it. Choice texts, hotspots, shop stock and input prompts always come from
 the script, never from the save.
 
 Saves are shared between players, so loading is strict: a file path outside the game
@@ -776,6 +823,6 @@ ignored.
 
 ## Not (yet) in the language
 
-Player text input (asking for a name), multiple script files / `::include`,
+Pasting into a text input, multiple script files / `::include`,
 character voices per speaker, and transitions other than fades and wipes.
 The runtime is built so these slot in without changing what is written above.

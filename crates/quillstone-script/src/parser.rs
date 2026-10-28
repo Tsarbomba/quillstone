@@ -47,7 +47,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, fade, camera, textbox, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
+                        choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -67,6 +67,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "wait" => &["time"],
         "video" => &["src", "fit", "loop", "skippable"],
         "jump" => &["to", "if"],
+        "input" => &["var", "prompt", "default", "max"],
         _ => &[],
     }
 }
@@ -1106,6 +1107,68 @@ impl Parser {
                     },
                 };
                 Some((Op::Jump { target: UNSET, cond }, label))
+            }
+            "input" => {
+                let var = match a.value("var") {
+                    Some(v) if !v.is_empty() => v,
+                    _ => {
+                        self.err(line, "`::input` needs `var=` (the text variable that receives the answer, like `var=hero.name`)");
+                        return None;
+                    }
+                };
+                match self.program.vars.get(&var) {
+                    Some(Value::Str(_)) => {}
+                    Some(_) => {
+                        self.err(line, format!("`var={var}`: `{var}` must be a text variable (declare it with a text default, like `vars: {{ {var}: \"Alex\" }}`)"));
+                        return None;
+                    }
+                    None => {
+                        self.err(line, format!("`var={var}`: no text variable `{var}` (declare it in the front matter, like `vars: {{ {var}: \"Alex\" }}`)"));
+                        return None;
+                    }
+                }
+                let prompt = match a.value("prompt") {
+                    Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+                    _ => {
+                        self.err(line, "`::input` needs `prompt=\"...\"` (the question shown above the text field)");
+                        return None;
+                    }
+                };
+                match crate::markup::parse_markup(&prompt) {
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                    Ok(r) if r.no_wait || r.text.contains('\n') => {
+                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in an `::input` prompt");
+                        return None;
+                    }
+                    Ok(_) => {}
+                }
+                let default = a.value("default").map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+                if let Some(d) = &default {
+                    if d.chars().any(char::is_control) {
+                        self.err(line, "`default=` can't hold control characters");
+                        return None;
+                    }
+                }
+                let max = match a.value("max") {
+                    None => INPUT_MAX_DEFAULT,
+                    Some(v) => match v.parse::<usize>() {
+                        Ok(n) if (1..=INPUT_MAX_LIMIT).contains(&n) => n,
+                        _ => {
+                            self.err(line, format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_LIMIT})"));
+                            return None;
+                        }
+                    },
+                };
+                if let Some(d) = &default {
+                    if d.chars().count() > max {
+                        self.err(line, format!("`default=` is longer than `max={max}`"));
+                        return None;
+                    }
+                }
+                Some((Op::Input { var, prompt, default, max }, None))
             }
             "end" => Some((Op::End, None)),
             other => {
@@ -2723,6 +2786,50 @@ mod tests {
         e("::item{id=a icon=a.gif}\n", 1, "bad `icon=a.gif`");
         e("::item{id=a icon=a}\n", 1, "bad `icon=a`");
         e("::item{id=a colour=red}\n", 1, "unknown attribute `colour`");
+    }
+
+    const ASK: &str = "---\nvars: { hero.name: \"x\", n: 0 }\npersistent: { kept: \"k\" }\n---\n# a\n";
+
+    #[test]
+    fn an_input_asks_for_a_text_variable() {
+        let p = ok(&format!("{ASK}::input{{var=hero.name prompt=\"What is your name?\" default=\"Alex\" max=16}}\nHi {{hero.name}}.\n"));
+        assert_eq!(
+            p.ops[0],
+            Op::Input { var: "hero.name".into(), prompt: "What is your name?".into(), default: Some("Alex".into()), max: 16 }
+        );
+        assert_eq!(p.lines[0], 6);
+        let p = ok(&format!("{ASK}::input{{var=kept prompt=\"Name, **please**?\"}}\n"));
+        assert_eq!(p.ops[0], Op::Input { var: "kept".into(), prompt: "Name, **please**?".into(), default: None, max: 24 });
+    }
+
+    #[test]
+    fn the_greeting_demo_parses_with_one_input() {
+        let p = ok(include_str!("../../../examples/greeting.quill.md"));
+        let inputs: Vec<&Op> = p.ops.iter().filter(|op| matches!(op, Op::Input { .. })).collect();
+        assert_eq!(inputs.len(), 1);
+        assert!(matches!(inputs[0], Op::Input { var, max: 16, default: Some(d), .. } if var == "hero.name" && d == "Alex"));
+    }
+
+    #[test]
+    fn input_errors_name_the_line() {
+        let e = |body: &str, needle: &str| {
+            let errors = errs(&format!("{ASK}{body}"));
+            assert!(errors.iter().any(|e| e.line == 6 && e.message.contains(needle)), "{body:?}: {errors:?}");
+        };
+        e("::input{prompt=\"Name?\"}\n", "needs `var=");
+        e("::input{var=hero.name}\n", "needs `prompt=");
+        e("::input{var=hero.name prompt=\"  \"}\n", "needs `prompt=");
+        e("::input{var=nosuch prompt=\"Name?\"}\n", "no text variable `nosuch`");
+        e("::input{var=n prompt=\"Name?\"}\n", "must be a text variable");
+        e("::input{var=hero.name prompt=\"Name?\" bogus=1}\n", "unknown attribute `bogus`");
+        e("::input{var=hero.name prompt=\"Name?\" max=0}\n", "bad `max=0`");
+        e("::input{var=hero.name prompt=\"Name?\" max=65}\n", "bad `max=65`");
+        e("::input{var=hero.name prompt=\"Name?\" max=x}\n", "bad `max=x`");
+        e("::input{var=hero.name prompt=\"Name?\" default=\"toolong\" max=3}\n", "longer than `max=3`");
+        e("::input{var=hero.name prompt=\"Name?{nw}\"}\n", "only work in dialogue");
+        e("::input{var=hero.name prompt=\"**Name?\"}\n", "");
+        e("::input\n", "needs `var=");
+        ok(&format!("{ASK}::input{{var=hero.name prompt=\"ok\" max=64}}\n"));
     }
 
     const SHOP: &str = "---\nvars: { gold: 40, bag: [], met: false, name: \"x\" }\n---\n::item{id=key price=15}\n::item{id=lamp price=8}\n::item{id=free}\n# a\n";

@@ -12,7 +12,8 @@ use std::collections::HashSet;
 
 use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
 
-use crate::{rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteState, State};
+use quillstone_script::INPUT_MAX_LIMIT;
+use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteState, State};
 
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
@@ -57,6 +58,7 @@ impl Session<'_> {
                 Input::Advance => out.push_str("input advance\n"),
                 Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
                 Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
+                Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
             }
         }
         write_state(&mut out, &self.state, self.program);
@@ -89,6 +91,8 @@ impl<'p> Session<'p> {
                         (Some("advance"), _) => Input::Advance,
                         (Some("choose"), Some(i)) => Input::Choose(num(i, n)?),
                         (Some("buy"), Some(i)) => Input::Buy(num(i, n)?),
+                        // Only kept so the history lines up: the state before it is what rollback uses.
+                        (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_LIMIT).collect()),
                         _ => return Err(format!("line {n}: bad input record")),
                     });
                 }
@@ -151,6 +155,7 @@ fn consistent(state: &State, program: &Program) -> bool {
         Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
         Some(Cmd::ShowInventory) => matches!(op, Some(Op::Inventory)),
         Some(Cmd::ShowShop { .. }) => matches!(op, Some(Op::Shop { .. })),
+        Some(Cmd::AskInput { .. }) => matches!(op, Some(Op::Input { .. })),
         Some(_) => false,
     }
 }
@@ -352,6 +357,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         // Likewise the inventory and the shop (prices, what is owned) are read from the script.
         Some(Cmd::ShowInventory) => w("pending inventory".into()),
         Some(Cmd::ShowShop { .. }) => w("pending shop".into()),
+        // The prompt comes from the script (with the variables as they are); what was typed so far is not saved.
+        Some(Cmd::AskInput { .. }) => w("pending input".into()),
         _ => {}
     }
     if s.finished {
@@ -453,6 +460,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 let rebuilt = match (&s.pending, program.ops.get(s.pc)) {
                     (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
                     (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => rebuild_pending(program, op, &s.vars),
+                    (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. })) => rebuild_pending(program, op, &s.vars),
                     _ => None,
                 };
                 if rebuilt.is_some() {
@@ -552,6 +560,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
                     "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },
                     "inventory" => Cmd::ShowInventory,
+                    "input" => Cmd::AskInput { prompt: String::new(), default: None, max: 1 },
                     other => return Err(format!("line {n}: unknown pending `{other}`")),
                 });
             }
@@ -598,7 +607,7 @@ Narration with \"quotes\" and a \\\\ backslash.
     fn play<'p>(p: &'p Program, inputs: &[Input]) -> Session<'p> {
         let (mut game, _) = Session::start(p);
         for i in inputs {
-            game.input(*i);
+            game.input(i.clone());
         }
         game
     }
@@ -648,7 +657,7 @@ Narration with \"quotes\" and a \\\\ backslash.
     fn only_recent_history_is_kept() {
         let src: String = (0..150).map(|i| format!("**A:** line {i}\n")).collect();
         let p = parse(&src).unwrap();
-        let game = play(&p, &[Input::Advance; 140]);
+        let game = play(&p, &vec![Input::Advance; 140]);
         let (loaded, _) = Session::load(&p, &game.save()).unwrap();
         assert_eq!(loaded.history.len(), SAVE_HISTORY);
         assert_eq!(loaded.state(), game.state());

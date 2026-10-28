@@ -17,10 +17,12 @@ use crate::slots::{Page, SlotInfo, Storage};
 
 mod bag;
 mod extras;
+mod input;
 mod saves;
 mod skip;
 use bag::Bag;
 use extras::Extras;
+use input::InputField;
 use saves::{Confirm, Then};
 pub use skip::{SkipMode, SKIP_DELAY};
 #[cfg(test)]
@@ -56,7 +58,7 @@ pub enum Key {
     Char(char),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The cursor in virtual coordinates; `None` when it is off the picture.
     CursorMoved(Option<(f32, f32)>),
@@ -69,6 +71,11 @@ pub enum Event {
     Key(Key),
     /// A key was let go (only [`Key::Ctrl`] matters).
     KeyReleased(Key),
+    /// Text the player typed (what the platform delivers for a key press, or an input
+    /// method's committed text). Only used while [`Game::wants_text`] is true, at an
+    /// `::input`; elsewhere it is ignored. There [`Key::Char`] and [`Key::Space`] are
+    /// ignored, so a frontend may send both for the same key press.
+    Text(String),
 }
 
 /// Something only the frontend can do.
@@ -96,6 +103,8 @@ pub enum Screen {
     Inventory,
     /// A `::shop`: the story waits here, buying changes it, leaving moves on.
     Shop,
+    /// An `::input`: the story waits for the player to type a text (see [`Game::wants_text`]).
+    Input,
 }
 
 /// Extra auto-forward time per character, on top of the delay setting.
@@ -168,7 +177,9 @@ pub struct Game<'p> {
     slot_focus: Option<usize>,
     /// The inventory or shop screen.
     bag: Bag,
-    /// The shop or inventory screen that Settings, the history or a save screen
+    /// What is typed at an `::input`.
+    input: InputField,
+    /// The shop, inventory or text-entry screen that Settings, the history or a save screen
     /// is open over (or that is waiting for one to close after a reload): closing
     /// that screen goes back to it instead of to the story.
     under: Option<Screen>,
@@ -226,6 +237,7 @@ impl<'p> Game<'p> {
             choice_focus: None,
             slot_focus: None,
             bag: Bag::default(),
+            input: InputField::default(),
             ui_hidden: false,
             quick_alpha: 0.0,
             seed: quillstone_runtime::DEFAULT_SEED,
@@ -337,6 +349,7 @@ impl<'p> Game<'p> {
         }
         self.choice_focus = None;
         self.bag_resync();
+        self.input_resync();
         match self.screen {
             Screen::Extras if self.has_extras() => self.open_extras(),
             Screen::Extras => self.screen = Screen::MainMenu,
@@ -418,8 +431,9 @@ impl<'p> Game<'p> {
             return;
         }
         let before = self.focus_state();
+        let is_key = matches!(event, Event::Key(_));
         self.route(event);
-        if matches!(event, Event::Key(_)) && self.focus_state() != before {
+        if is_key && self.focus_state() != before {
             self.hover_muted = true;
         }
     }
@@ -448,6 +462,7 @@ impl<'p> Game<'p> {
             Screen::Save | Screen::Load => self.slots_event(event),
             Screen::Extras => self.extras_event(event),
             Screen::Inventory | Screen::Shop => self.bag_event(event),
+            Screen::Input => self.input_event(event),
         }
     }
 
@@ -463,6 +478,9 @@ impl<'p> Game<'p> {
             if *left <= 0.0 {
                 self.notice = None;
             }
+        }
+        if self.screen == Screen::Input {
+            self.tick_input(dt);
         }
         if self.screen != Screen::Story || self.confirm.is_some() {
             return;
@@ -507,6 +525,7 @@ impl<'p> Game<'p> {
     /// drawing until the next input.
     pub fn needs_ticks(&self) -> bool {
         self.notice.is_some()
+            || self.screen == Screen::Input // the caret blinks
             || self.auto
             || self.skip.is_some()
             || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
@@ -573,6 +592,7 @@ impl<'p> Game<'p> {
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
+            Screen::Input => self.draw_input_screen(&mut out),
         }
         if let Some(confirm) = &self.confirm {
             let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
@@ -897,6 +917,7 @@ impl<'p> Game<'p> {
         }
         self.view.apply(cmds);
         self.bag_arrived(cmds);
+        self.input_arrived(cmds);
         let mut actions = self.mixer.apply(cmds);
         if self.skip.is_some() {
             // Skipping through dozens of lines a second: no flashes, and don't play
@@ -939,17 +960,20 @@ impl<'p> Game<'p> {
         }
     }
 
-    /// Move the story on. Arriving at a choice is a checkpoint: auto save.
+    /// Move the story on. Arriving at a choice, shop or text entry is a checkpoint: auto save.
     fn forward(&mut self, input: Input) {
         self.mark_current_read();
+        let purchase = matches!(input, Input::Buy(_));
         let cmds = self.session.input(input);
         self.show(&cmds);
         if self.skip.is_some() {
             self.skip_arrived();
         }
-        // Arriving at a choice or a shop is a checkpoint (a purchase, which shows the shop again, is not).
-        let arrived = cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. }));
-        if arrived && !matches!(input, Input::Buy(_)) {
+        // Arriving at a choice, a shop or a text entry is a checkpoint (a purchase, which shows the shop again, is not).
+        let arrived = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. }));
+        if arrived && !purchase {
             self.autosave();
         }
     }
@@ -1124,3 +1148,5 @@ impl<'p> Game<'p> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod input_tests;
