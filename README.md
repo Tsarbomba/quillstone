@@ -126,7 +126,7 @@ The game opens at a main menu (Start, Continue, Load, Extras when the game has a
 gallery, music room or scene replays, Settings, Quit) and
 returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
 Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same with the mouse; a game may show it
-only while the mouse is over the textbox, or not at all, and Settings lets you choose. The game saves automatically
+only while the mouse is over the textbox, or not at all, and Settings lets you choose; a theme can draw the buttons as pictures at places of its own. The game saves automatically
 whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
 Linux: `~/.local/share/quillstone/<game>/`).
@@ -203,6 +203,7 @@ and `examples/demo.quill.md` for a script that uses them all (`examples/hotspots
 shows hotspots: a map, a collectible and an exit; `examples/shop.quill.md` shows a list
 variable as an inventory in a shop; `examples/market.quill.md` and `examples/market_theme.txt`
 show items, the built-in inventory and shop screens, and a theme that restyles them;
+`examples/iconmenu.quill.md` and `examples/icons_theme.txt` replace the quick menu's text buttons with picture buttons at positions the theme picks;
 `examples/staging.quill.md` shows sprite height and layering, text sizes, `{nw}` and a `::tint` colour wash;
 `examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
 `examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer; `examples/weather.quill.md` shows ambient snow, rain and falling petals; `examples/chapters.quill.md` and `examples/chapters/` show a story split over several files with `::include`; `examples/lang.quill.md` and `examples/lang/sv.txt` show a game in English and Swedish).

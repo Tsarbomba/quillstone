@@ -1299,6 +1299,41 @@ row moves the row right so that every button stays on the screen. `quick_menu` s
 The keyboard and gamepad shortcuts work in every mode. Players can override the mode in
 Settings (Quick menu: Game default, Always, On hover, Hidden).
 
+**Picture buttons.** A theme can replace the text labels with pictures and put buttons where it
+likes. Every key is optional and names a button by its id: `back`, `history`, `skip`, `auto`, `save`,
+`load`, `qsave`, `qload`, `settings` or `items` (Q.Save and Q.Load are `qsave` and `qload`).
+
+```text
+quick_back_icon = assets/gui/back.png        # idle picture: drawn instead of the text label
+quick_back_hover = assets/gui/back_hover.png # while the cursor is on it (needs _icon)
+quick_skip_on = assets/gui/skip_on.png       # while Skip or Auto is switched on (needs _icon)
+quick_back_pos = 160, 976                    # top left in the 1920x1080 screen
+quick_back_size = 56, 56                     # width, height (16 to 512 each)
+```
+
+- `_icon`, `_hover` and `_on` are PNG, JPEG or WebP files; an id that isn't in the list, a bad
+  number or a `_hover` or `_on` without its `_icon` is reported like any other theme mistake.
+- Without `_size` a picture button is as big as its picture (kept between 16 and 512 px on a
+  side); a text button is 150x32.
+- A button with `_pos` leaves the row and sits there (pulled back in if it would leave the screen);
+  the other buttons keep the row below the textbox, right-aligned as before (those to the left of the
+  gap shift right to close it). A picture button without `_pos` stays in the row, as wide and tall
+  as its picture. `_pos` and `_size` work on a text button too.
+- Without `_hover` the picture is drawn a little dimmed (80%) until the cursor is on it; with one
+  it is drawn whole and swapped for the hover picture. While Skip or Auto is on, the `_on` picture
+  shows; without one the idle picture stays lit and gets a thin accent line along its bottom edge.
+  A button that does nothing right now (Back on the first line, Q.Load before any quick save) is
+  drawn at 40%.
+- Where placed buttons overlap, the one later in the list `back, history, skip, auto, save, load,
+  qsave, qload, settings, items` is on top and gets the click.
+- Everything else is unchanged: `quick_menu` (`hover` mode fades pictures too, and the menu also
+  shows while the cursor is on a placed button), the keyboard and gamepad shortcuts,
+  `::textbox{hide}`, hiding the interface with U, and the screens that have no quick menu.
+- `quillstone check` reports a missing or unsupported picture as an error, and warns when two
+  buttons overlap or a placed button reaches past the screen; `package` includes the pictures.
+
+`examples/iconmenu.quill.md` and `examples/icons_theme.txt` show it.
+
 ### The inventory and shop screens
 
 One grid layout serves both screens, so they share the `inventory_` keys. Without

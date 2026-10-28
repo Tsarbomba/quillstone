@@ -174,6 +174,9 @@ fn check(path: &Path) -> Result<(), String> {
             missing += 1;
             eprintln!("{msg}");
         }
+        for msg in quick_menu_warnings(&root.join(theme_path), root) {
+            eprintln!("{msg}");
+        }
     }
     missing += check_extras(&program, path, root);
     for (pc, msg) in hidden_hotspots(&program) {
@@ -647,6 +650,56 @@ fn theme_problems(file: &Path, root: &Path) -> Vec<String> {
         };
         if let Err(msg) = why {
             found.push(format!("{}: error: {msg}", at(asset)));
+        }
+    }
+    found
+}
+
+/// Warnings about the quick menu's picture buttons: ones that overlap, and ones placed partly off the
+/// screen (the player moves those back in).
+fn quick_menu_warnings(file: &Path, root: &Path) -> Vec<String> {
+    use quillstone_render::theme::QUICK_IDS;
+    use quillstone_ui::screens::{quick_button_size, quick_layout};
+    let Ok(text) = std::fs::read_to_string(file) else { return Vec::new() };
+    let theme = quillstone_render::Theme::parse(&text).0;
+    if theme.quick_icons.iter().all(|q| q.pos.is_none() && q.icon.is_none() && q.size.is_none()) {
+        return Vec::new();
+    }
+    let size_of = |s: &str| {
+        let size = quillstone_script::is_inside(s).then(|| picture::read_picture(&root.join(s)).ok()).flatten();
+        size.map(|(w, h)| quillstone_render::Size::new(w as f32, h as f32))
+    };
+    // `file:line` of the last `quick_<id>_<field>` line, else just the file.
+    let at = |id: &str, fields: &[&str]| {
+        let key_of = |l: &str| l.split_once('=').map(|(k, _)| k.trim().to_string());
+        let line = text.lines().enumerate().filter(|(_, l)| fields.iter().any(|f| key_of(l) == Some(format!("quick_{id}_{f}")))).last();
+        line.map_or_else(|| file.display().to_string(), |(i, _)| format!("{}:{}", file.display(), i + 1))
+    };
+    let mut found = Vec::new();
+    for (k, spec) in theme.quick_icons.iter().enumerate() {
+        let Some([x, y]) = spec.pos else { continue };
+        let (w, h) = quick_button_size(spec, &size_of);
+        if x + w > 1920.0 || y + h > 1080.0 {
+            found.push(format!(
+                "{}: warning: the {w}x{h} quick menu button `{}` at {x}, {y} reaches past the 1920x1080 screen; the player moves it back in",
+                at(QUICK_IDS[k], &["pos", "size", "icon"]),
+                QUICK_IDS[k]
+            ));
+        }
+    }
+    let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, true, &size_of);
+    let overlap = |a: &quillstone_render::Rect, b: &quillstone_render::Rect| {
+        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    };
+    for (i, (a, ra)) in layout.buttons.iter().enumerate() {
+        for (b, rb) in &layout.buttons[i + 1..] {
+            if overlap(ra, rb) {
+                let (ia, ib) = (a.id(), b.id());
+                found.push(format!(
+                    "{}: warning: the quick menu buttons `{ia}` and `{ib}` overlap; `{ib}` is on top and gets the click where they do",
+                    at(ib, &["pos", "size", "icon"])
+                ));
+            }
         }
     }
     found
@@ -1345,6 +1398,52 @@ mod tests {
         for bad in [script("{time=5}", ""), script("", "{default}"), script("{time=0}", "{default}")] {
             assert!(checked(&bad, &[]).is_err(), "{bad}");
         }
+    }
+
+    fn quick_warnings(theme: &str, files: &[(&str, &[u8])]) -> Vec<String> {
+        let mut files = files.to_vec();
+        files.push(("t.txt", theme.as_bytes()));
+        in_dir(&files, |dir| quick_menu_warnings(&dir.join("t.txt"), dir))
+    }
+
+    #[test]
+    fn check_errors_on_missing_or_unsupported_quick_menu_pictures() {
+        let ok = themed("quick_back_icon = assets/key.png\nquick_back_hover = assets/key.png\nquick_skip_on = assets/key.png\n\
+                         quick_skip_icon = assets/key.png\n", &[("assets/key.png", KEY)]);
+        assert!(ok.is_empty(), "{ok:?}");
+        let missing = themed("quick_back_icon = assets/key.png\nquick_back_hover = assets/nope.png\n", &[("assets/key.png", KEY)]);
+        assert!(missing.len() == 1 && missing[0].contains("t.txt:2:") && missing[0].contains("missing theme picture `assets/nope.png`"), "{missing:?}");
+        let gif = themed("quick_load_icon = assets/a.gif\n", &[("assets/a.gif", b"GIF89a")]);
+        assert!(gif.len() == 1 && gif[0].contains("a.gif") && gif[0].contains("PNG, JPEG or WebP"), "{gif:?}");
+        let fake = themed("quick_load_icon = assets/a.png\n", &[("assets/a.png", b"not a picture")]);
+        assert!(fake.len() == 1 && fake[0].contains("a.png"), "{fake:?}");
+        let outside = themed("quick_load_icon = ../a.png\n", &[]);
+        assert!(outside.len() == 1 && outside[0].contains("outside"), "{outside:?}");
+        let bad = themed("quick_nothing_icon = a.png\nquick_back_size = 3, 3\n", &[]);
+        assert_eq!(bad.len(), 2, "{bad:?}");
+        let script = "---\ntheme: t.txt\n---\nHi.\n";
+        assert!(checked(script, &[("t.txt", b"quick_back_icon = assets/b.png")]).is_err());
+        assert!(checked(script, &[("t.txt", b"quick_back_icon = assets/key.png"), ("assets/key.png", KEY)]).is_ok());
+    }
+
+    #[test]
+    fn check_warns_about_overlapping_and_off_screen_quick_menu_buttons_but_not_about_a_clean_theme() {
+        let key = [("assets/key.png", KEY)];
+        let (w, h) = picture::read_picture(Path::new("../../examples/assets/gui/key.png")).unwrap();
+        assert!(w >= 16 && h >= 16 && w < 400, "the fixture is a button-sized picture: {w}x{h}");
+        let clean = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 20, 20\nquick_skip_icon = assets/key.png\n\
+                                    quick_settings_icon = assets/key.png\nquick_settings_pos = 200, 20\n", &key);
+        assert!(clean.is_empty(), "{clean:?}");
+        assert!(quick_warnings("text_size = 40\n", &[]).is_empty() && quick_warnings("quick_menu = hover\n", &[]).is_empty());
+        let both = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 20, 20\nquick_history_icon = assets/key.png\n\
+                                   quick_history_pos = 25, 25\n", &key);
+        assert!(both.len() == 1 && both[0].contains("t.txt:4:") && both[0].contains("`back` and `history` overlap"), "{both:?}");
+        assert!(both[0].contains("`history` is on top"), "{both:?}");
+        let off = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 1910, 1075\n", &key);
+        assert!(off.len() == 1 && off[0].contains("t.txt:2:") && off[0].contains("past the 1920x1080 screen"), "{off:?}");
+        // a text button placed over the row's buttons
+        let row = quick_warnings("quick_back_pos = 1700, 1050\nquick_back_size = 100, 40\n", &[]);
+        assert!(row.iter().any(|m| m.contains("`back` and")), "a text button placed on the row's buttons: {row:?}");
     }
 
     #[test]

@@ -198,6 +198,9 @@ impl Game<'_> {
         match self.storage.write(&slot.file_name(), &file.to_text()) {
             Ok(()) => {
                 self.newest_save = Some((file.seq, slot));
+                if matches!(slot.page, Page::Quick) {
+                    self.quick_saved.set(Some(true));
+                }
                 if matches!(self.screen, Screen::Save | Screen::Load) {
                     self.refresh_slots();
                 }

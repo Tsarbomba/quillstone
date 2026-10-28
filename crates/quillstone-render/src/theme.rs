@@ -59,6 +59,37 @@ pub enum CellStyle {
     Image(String),
 }
 
+/// The quick menu buttons a theme can give a picture, in the order they are drawn
+/// (and in which a later one is on top where two overlap): the ids of the keys
+/// `quick_<id>_icon`, `_hover`, `_on`, `_pos` and `_size`.
+pub const QUICK_IDS: [&str; 10] =
+    ["back", "history", "skip", "auto", "save", "load", "qsave", "qload", "settings", "items"];
+
+/// The smallest and largest side of a picture button.
+pub const QUICK_ICON_SIDE: (f32, f32) = (16.0, 512.0);
+
+/// How a theme dresses one quick menu button (all optional: the default is the text label in the row).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QuickIcon {
+    /// Idle picture; when set the button draws it instead of its text.
+    pub icon: Option<String>,
+    /// Picture while the cursor is on the button.
+    pub hover: Option<String>,
+    /// Picture while the toggle (Skip, Auto) is on.
+    pub on: Option<String>,
+    /// Top-left in the 1920x1080 screen: the button leaves the row and sits there.
+    pub pos: Option<[f32; 2]>,
+    /// Width and height; by default the picture's own size (a text button: 150x32).
+    pub size: Option<[f32; 2]>,
+}
+
+/// `quick_<id>_<field>` split into the button's index in [`QUICK_IDS`] (`Err`: an unknown id) and the field.
+fn quick_key(key: &str) -> Option<(Result<usize, &str>, &str)> {
+    let (id, field) = key.strip_prefix("quick_")?.rsplit_once('_')?;
+    ["icon", "hover", "on", "pos", "size"].contains(&field).then_some(())?;
+    Some((QUICK_IDS.iter().position(|q| *q == id).ok_or(id), field))
+}
+
 /// The least height of an inventory/shop cell: the icon (at least 16 px), name row
 /// and price row of `quillstone-ui`'s `bag.rs` need 106 px.
 pub const MIN_CELL_HEIGHT: f32 = 120.0;
@@ -103,6 +134,8 @@ pub struct Theme {
     pub name_align: Align,
     /// When the quick menu is shown (the player may override it in Settings).
     pub quick_menu: QuickMenu,
+    /// Picture buttons and positions for the quick menu, indexed like [`QUICK_IDS`].
+    pub quick_icons: [QuickIcon; 10],
     pub menu_background: Option<String>,
     pub menu_music: Option<String>,
     /// Full-screen picture behind the inventory (and the shop, unless
@@ -168,6 +201,7 @@ impl Default for Theme {
             text_align: Align::Left,
             name_align: Align::Left,
             quick_menu: QuickMenu::Visible,
+            quick_icons: Default::default(),
             menu_background: None,
             menu_music: None,
             inventory_background: None,
@@ -202,6 +236,7 @@ impl Theme {
         let mut t = Theme::default();
         let mut problems = Vec::new();
         let (mut rect_line, mut padding_line) = (0, 0);
+        let mut quick_lines = [[0usize; 2]; 10]; // the last `_hover` / `_on` line of each button
         for (i, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -258,6 +293,38 @@ impl Theme {
                 match parse_cell_style(value) {
                     Ok(style) => *slot = Some(style),
                     Err(m) => bad(m),
+                }
+                continue;
+            }
+            if let Some((id, field)) = quick_key(key) {
+                let k = match id {
+                    Ok(k) => k,
+                    Err(id) => {
+                        bad(format!("unknown quick menu button `{id}` (the ids are {})", QUICK_IDS.join(", ")));
+                        continue;
+                    }
+                };
+                let slot = &mut t.quick_icons[k];
+                let (lo, hi) = QUICK_ICON_SIDE;
+                match field {
+                    "pos" => match parse_numbers(value, 0.0, 1920.0) {
+                        Some(v) if v.len() == 2 && v[1] <= 1080.0 => slot.pos = Some([v[0], v[1]]),
+                        _ => bad(format!("`{key}` must be `x, y`: the top left, inside the 1920x1080 screen")),
+                    },
+                    "size" => match parse_numbers(value, lo, hi) {
+                        Some(v) if v.len() == 2 => slot.size = Some([v[0], v[1]]),
+                        _ => bad(format!("`{key}` must be `width, height`, each from {lo} to {hi}")),
+                    },
+                    _ if value.is_empty() => bad(format!("`{key}` needs a picture file")),
+                    "icon" => slot.icon = path(),
+                    "hover" => {
+                        slot.hover = path();
+                        quick_lines[k][0] = i + 1;
+                    }
+                    _ => {
+                        slot.on = path();
+                        quick_lines[k][1] = i + 1;
+                    }
                 }
                 continue;
             }
@@ -361,6 +428,15 @@ impl Theme {
                 other => bad(format!("unknown key `{other}`")),
             }
         }
+        for (k, slot) in t.quick_icons.iter_mut().enumerate() {
+            for (field, line, picture) in [("hover", quick_lines[k][0], &mut slot.hover), ("on", quick_lines[k][1], &mut slot.on)] {
+                if picture.is_some() && slot.icon.is_none() {
+                    *picture = None;
+                    let id = QUICK_IDS[k];
+                    problems.push(format!("line {line}: `quick_{id}_{field}` does nothing without `quick_{id}_icon`"));
+                }
+            }
+        }
         // The padding must leave room for text in the textbox. Reported at the line that
         // set the padding (or the rect, when the padding is the default).
         let [_, _, w, h] = t.textbox_rect;
@@ -382,7 +458,13 @@ impl Theme {
         let mut out = self.fonts();
         out.extend([&self.textbox_image, &self.name_plate_image, &self.menu_background, &self.menu_music].into_iter().filter_map(|p| p.as_deref()));
         out.extend(self.inventory_images());
+        out.extend(self.quick_pictures());
         out
+    }
+
+    /// The pictures of the quick menu's buttons (idle, hover and toggle-on).
+    pub fn quick_pictures(&self) -> Vec<&str> {
+        self.quick_icons.iter().flat_map(|q| [&q.icon, &q.hover, &q.on]).filter_map(|p| p.as_deref()).collect()
     }
 
     /// The pictures the inventory and shop screens use.
@@ -410,6 +492,7 @@ impl Theme {
         let mut out: Vec<&str> =
             [&self.textbox_image, &self.name_plate_image, &self.menu_background].into_iter().filter_map(|p| p.as_deref()).collect();
         out.extend(self.inventory_images());
+        out.extend(self.quick_pictures());
         out
     }
 }
@@ -607,6 +690,62 @@ mod tests {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
         assert_eq!(t, Theme::default(), "nothing took effect");
+    }
+
+    #[test]
+    fn the_quick_icon_keys_default_to_nothing_and_are_read() {
+        let t = Theme::default();
+        assert!(t.quick_icons.iter().all(|q| *q == QuickIcon::default()) && t.quick_pictures().is_empty());
+        assert_eq!(Theme::parse("quick_menu = hover\n").0.quick_icons, t.quick_icons, "quick_menu is not a button");
+        let mut text = String::new();
+        for id in QUICK_IDS {
+            text += &format!("quick_{id}_icon = g/{id}.png\nquick_{id}_hover = g/{id}_h.png\nquick_{id}_on = g/{id}_o.png\n");
+        }
+        text += "quick_back_pos = 10, 20.5\nquick_back_size = 64,48\nquick_items_pos = 1900, 1080\nquick_items_size = 16, 512\n";
+        let (t, problems) = Theme::parse(&text);
+        assert!(problems.is_empty(), "{problems:?}");
+        let back = &t.quick_icons[0];
+        assert_eq!(back.icon.as_deref(), Some("g/back.png"));
+        assert_eq!((back.hover.as_deref(), back.on.as_deref()), (Some("g/back_h.png"), Some("g/back_o.png")));
+        assert_eq!((back.pos, back.size), (Some([10.0, 20.5]), Some([64.0, 48.0])));
+        assert_eq!(t.quick_icons[9].pos, Some([1900.0, 1080.0]));
+        assert_eq!(t.quick_icons[1].pos, None);
+        assert_eq!(t.quick_pictures().len(), 30);
+        assert!(t.assets().contains(&"g/qload_h.png") && t.images().contains(&"g/settings_o.png"));
+        // only a position and a size: a text button moved
+        let (t, problems) = Theme::parse("quick_skip_pos = 5, 6\nquick_skip_size = 100, 40\n");
+        assert!(problems.is_empty() && t.quick_pictures().is_empty() && t.quick_icons[2].pos == Some([5.0, 6.0]));
+    }
+
+    #[test]
+    fn bad_quick_icon_lines_are_reported_with_their_line_and_ignored() {
+        let src = "quick_menue_icon = a.png\n\
+                   quick_back_icon =\n\
+                   quick_back_pos = 10\n\
+                   quick_back_pos = 10, 20, 30\n\
+                   quick_back_pos = -1, 5\n\
+                   quick_back_pos = 1921, 5\n\
+                   quick_back_pos = 5, 1081\n\
+                   quick_back_pos = a, b\n\
+                   quick_back_size = 15, 40\n\
+                   quick_back_size = 40, 513\n\
+                   quick_back_size = 40\n\
+                   quick_back_hover = h.png\n\
+                   quick_skip_on = o.png\n\
+                   quick_nothing_pos = 1, 1\n\
+                   quick_back = a.png\n\
+                   quick_hover = a.png\n";
+        let (t, problems) = Theme::parse(src);
+        assert_eq!(problems.len(), 16, "{problems:#?}");
+        // the lines in the file order, then the hover/on pictures that had no icon (reported last)
+        let lines = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 12, 13];
+        for (p, line) in problems.iter().zip(lines) {
+            assert!(p.starts_with(&format!("line {line}:")), "{p}");
+        }
+        assert!(problems[0].contains("unknown quick menu button `menue`") && problems[0].contains("settings"));
+        assert!(problems[14].contains("quick_back_hover") && problems[15].contains("quick_skip_on"), "{problems:#?}");
+        assert!(problems[11].contains("`nothing`") && problems[12].contains("unknown key `quick_back`"), "{problems:#?}");
+        assert!(t.quick_icons.iter().all(|q| *q == QuickIcon::default()), "nothing took effect: {:?}", t.quick_icons);
     }
 
     #[test]

@@ -195,6 +195,11 @@ pub struct Game<'p> {
     ui_hidden: bool,
     /// How visible the quick menu is in its `hover` mode (0..1); the other modes ignore it.
     quick_alpha: f32,
+    /// Sizes of the theme's quick menu pictures, noted by every draw (hit-testing needs them
+    /// and has no picture loader of its own).
+    quick_sizes: std::cell::RefCell<std::collections::HashMap<String, Size>>,
+    /// Whether a quick save exists, once known (only asked for a picture Q.Load button).
+    quick_saved: std::cell::Cell<Option<bool>>,
     /// Where the next new game's `random` rolls start (see [`Game::set_seed`]).
     seed: u64,
     /// A scene replay in progress (see `replay.rs`): nothing it does is saved.
@@ -257,6 +262,8 @@ impl<'p> Game<'p> {
             input: InputField::default(),
             ui_hidden: false,
             quick_alpha: 0.0,
+            quick_sizes: Default::default(),
+            quick_saved: std::cell::Cell::new(None),
             seed: quillstone_runtime::DEFAULT_SEED,
             replay: None,
             choice_elapsed: 0.0,
@@ -621,14 +628,31 @@ impl<'p> Game<'p> {
         if let Some(timer) = self.choice_timer() {
             draw_choice_timer(&mut out, theme, self.view.choices.len(), 1.0 - self.choice_elapsed / timer.seconds);
         }
+        if self.in_story {
+            // The quick menu's pictures: asked for every frame of the story (so they stay loaded
+            // even while the menu is hidden), their sizes kept for hit-testing.
+            let mut sizes = self.quick_sizes.borrow_mut();
+            for src in theme.quick_pictures() {
+                if let Some(size) = image_size(src) {
+                    sizes.insert(src.to_string(), size);
+                }
+            }
+        }
         if self.in_story && story && self.quick_menu_shown() {
-            let inventory = self.has_inventory();
-            let tb = self.textbox();
-            let hover = self.pointer().filter(|_| story).and_then(|(x, y)| quick_at(tb, x, y, inventory)).filter(|_| {
+            let layout = self.quick_layout();
+            let hover = self.pointer().filter(|_| story).and_then(|(x, y)| layout.at(x, y)).filter(|_| {
                 !self.pointer().is_some_and(|(x, y)| self.view.hotspot_at(x, y).is_some())
             });
             let alpha = self.quick_menu_alpha() * self.view.box_alpha();
-            draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some(), inventory, alpha);
+            let look = QuickLook {
+                hover,
+                auto: self.auto,
+                skipping: self.skip.is_some(),
+                back_off: !self.session.can_rollback(),
+                qload_off: self.quick_load_missing(),
+            };
+            let sizes = self.quick_sizes.borrow();
+            draw_quick(&mut out, theme, &layout, &look, &|s| sizes.get(s).copied(), alpha);
         }
         if self.in_story && story && !self.ui_hidden {
             draw_mode_badge(&mut out, theme, self.auto, self.skip.is_some());
@@ -884,7 +908,26 @@ impl<'p> Game<'p> {
     /// (a region has priority over the quick menu and the textbox).
     fn quick_button_under_cursor(&self) -> Option<QuickButton> {
         let (x, y) = self.cursor.filter(|_| self.quick_menu_clickable())?;
-        quick_at(self.textbox(), x, y, self.has_inventory()).filter(|_| self.view.hotspot_at(x, y).is_none())
+        self.quick_layout().at(x, y).filter(|_| self.view.hotspot_at(x, y).is_none())
+    }
+
+    /// Where the quick menu's buttons are now (the theme's, with the pictures' known sizes).
+    fn quick_layout(&self) -> QuickLayout {
+        let sizes = self.quick_sizes.borrow();
+        quick_layout(self.textbox(), self.theme(), self.has_inventory(), &|s| sizes.get(s).copied())
+    }
+
+    /// There is no quick save for Q.Load to load (only worked out when Q.Load is a picture).
+    fn quick_load_missing(&self) -> bool {
+        if self.theme().quick_icons[7].icon.is_none() {
+            return false;
+        }
+        let saved = self.quick_saved.get().unwrap_or_else(|| {
+            let found = crate::slots::newest_slot(&*self.storage, crate::slots::Page::Quick).is_some();
+            self.quick_saved.set(Some(found));
+            found
+        });
+        !saved
     }
 
     /// The textbox as the theme places it (the quick menu is laid out from it).
@@ -911,8 +954,8 @@ impl<'p> Game<'p> {
 
     /// Whether the cursor is where the `hover` mode shows the menu.
     fn cursor_in_quick_zone(&self) -> bool {
-        let tb = self.textbox();
-        self.cursor.is_some_and(|(x, y)| quick_hover_zone(tb, x, y))
+        let (tb, layout) = (self.textbox(), self.quick_layout());
+        self.cursor.is_some_and(|(x, y)| layout.in_zone(tb, x, y))
     }
 
     /// How visible the menu is by its mode alone (`hover` fades with time).
@@ -1279,3 +1322,5 @@ mod lang_tests;
 mod name_tests;
 #[cfg(test)]
 mod gallery_video_tests;
+#[cfg(test)]
+mod quickicon_tests;

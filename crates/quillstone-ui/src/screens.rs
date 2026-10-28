@@ -3,6 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
+use quillstone_render::theme::{QuickIcon, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
@@ -66,18 +67,28 @@ fn quick_total() -> f32 {
 /// Where the row's top edge is: directly below the textbox, or, when there is no
 /// room for it below, just inside the textbox's bottom edge.
 fn quick_y(tb: Rect) -> f32 {
+    quick_y_for(tb, QUICK_H)
+}
+
+/// [`quick_y`] for a row `h` tall.
+fn quick_y_for(tb: Rect, h: f32) -> f32 {
     let below = tb.y + tb.h + QUICK_MARGIN;
-    if below + QUICK_H <= VIRTUAL.h {
+    if below + h <= VIRTUAL.h {
         below
     } else {
-        tb.y + tb.h - QUICK_MARGIN - QUICK_H
+        (tb.y + tb.h - QUICK_MARGIN - h).max(0.0)
     }
 }
 
 /// The row's right edge: the textbox's, or further right when the textbox is too
 /// narrow for the whole row (so no button leaves the screen).
 fn quick_right(tb: Rect) -> f32 {
-    (tb.x + tb.w).max(quick_total() + QUICK_GAP)
+    quick_right_for(tb, quick_total())
+}
+
+/// [`quick_right`] for a row `total` wide.
+fn quick_right_for(tb: Rect, total: f32) -> f32 {
+    (tb.x + tb.w).max(total + QUICK_GAP)
 }
 
 /// Right-aligned with the textbox `tb`, in the strip below it (see [`quick_y`]).
@@ -97,43 +108,166 @@ pub fn quick_items_rect(tb: Rect) -> Rect {
     Rect::new(first.x - QUICK_GAP - QUICK_W, first.y, QUICK_W, first.h)
 }
 
-/// The quick menu button at a point. `inventory`: whether the game offers Items.
-pub fn quick_at(tb: Rect, x: f32, y: f32, inventory: bool) -> Option<QuickButton> {
-    if inventory && quick_items_rect(tb).contains(x, y) {
-        return Some(QuickButton::Items);
+/// Every button, in the order of the theme's ids ([`quillstone_render::theme::QUICK_IDS`]).
+const QUICK_ALL: [QuickButton; 10] = [
+    QuickButton::Back,
+    QuickButton::History,
+    QuickButton::Skip,
+    QuickButton::Auto,
+    QuickButton::Save,
+    QuickButton::Load,
+    QuickButton::QuickSave,
+    QuickButton::QuickLoad,
+    QuickButton::Settings,
+    QuickButton::Items,
+];
+
+impl QuickButton {
+    /// The id in the theme's `quick_<id>_...` keys.
+    pub fn id(self) -> &'static str {
+        quillstone_render::theme::QUICK_IDS[quick_index(self)]
     }
-    (0..QUICK_BUTTONS.len()).find(|&i| quick_rect(tb, i).contains(x, y)).map(|i| QUICK_BUTTONS[i])
 }
 
-/// Whether a point is where the quick menu shows in its `hover` mode: over the
-/// textbox, or in the strip of the row (the gap between them included).
-pub fn quick_hover_zone(tb: Rect, x: f32, y: f32) -> bool {
-    let right = quick_right(tb);
-    let top = quick_y(tb).min(tb.y + tb.h);
-    let strip = Rect::new(right - quick_total(), top, quick_total(), quick_y(tb) + QUICK_H - top);
-    tb.contains(x, y) || strip.contains(x, y)
+fn quick_index(b: QuickButton) -> usize {
+    QUICK_ALL.iter().position(|q| *q == b).unwrap_or(0)
+}
+
+/// How much of an icon without a `_hover` picture shows while the cursor is not on it.
+const ICON_IDLE_ALPHA: f32 = 0.8;
+/// An icon of a button that does nothing right now (Back at the start, Q.Load without a quick save).
+const ICON_DISABLED_ALPHA: f32 = 0.4;
+
+/// A button's picture, if the theme has one and it is loaded: its file and own size.
+fn quick_picture<'a>(spec: &'a QuickIcon, size_of: &dyn Fn(&str) -> Option<Size>) -> Option<(&'a str, Size)> {
+    let src = spec.icon.as_deref()?;
+    size_of(src).map(|size| (src, size))
+}
+
+fn loaded_picture<'a>(p: &'a Option<String>, size_of: &dyn Fn(&str) -> Option<Size>) -> Option<&'a str> {
+    p.as_deref().filter(|s| size_of(s).is_some())
+}
+
+/// A button's width and height: the theme's `size`, else its picture's own (kept within the
+/// allowed sides), else a text button's.
+pub fn quick_button_size(spec: &QuickIcon, size_of: &dyn Fn(&str) -> Option<Size>) -> (f32, f32) {
+    let (lo, hi) = QUICK_ICON_SIDE;
+    match (spec.size, quick_picture(spec, size_of)) {
+        (Some([w, h]), _) => (w, h),
+        (None, Some((_, s))) => (s.w.clamp(lo, hi), s.h.clamp(lo, hi)),
+        (None, None) => (QUICK_W, QUICK_H),
+    }
+}
+
+/// Where the quick menu's buttons are, from the theme.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuickLayout {
+    /// In drawing order: where two overlap the later one is on top and gets the click. Items is
+    /// there only in a game with an inventory.
+    pub buttons: Vec<(QuickButton, Rect)>,
+    /// Where else than over the textbox the cursor makes the `hover` mode show the menu: the row's
+    /// strip and every button the theme placed.
+    pub zone: Vec<Rect>,
+}
+
+impl QuickLayout {
+    /// The button at a point (the topmost one).
+    pub fn at(&self, x: f32, y: f32) -> Option<QuickButton> {
+        self.buttons.iter().rev().find(|(_, r)| r.contains(x, y)).map(|(b, _)| *b)
+    }
+
+    pub fn rect(&self, b: QuickButton) -> Option<Rect> {
+        self.buttons.iter().find(|(q, _)| *q == b).map(|(_, r)| *r)
+    }
+
+    /// Whether a point is where the quick menu shows in its `hover` mode: over the textbox `tb`,
+    /// in the strip of the row (the gap between them included), or on a placed button.
+    pub fn in_zone(&self, tb: Rect, x: f32, y: f32) -> bool {
+        tb.contains(x, y) || self.zone.iter().any(|r| r.contains(x, y))
+    }
+}
+
+/// Lay the buttons out. The ones without a `quick_<id>_pos` keep the row below the textbox
+/// (right-aligned, Items leftmost); the others sit at their position, kept on the screen.
+/// `size_of` gives a loaded picture's size: a button whose picture isn't loaded is a text button.
+pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, size_of: &dyn Fn(&str) -> Option<Size>) -> QuickLayout {
+    let specs = &theme.quick_icons;
+    let dims: Vec<(f32, f32)> = specs.iter().map(|q| quick_button_size(q, size_of)).collect();
+    let flow: Vec<usize> = std::iter::once(9).chain(0..9).filter(|&k| specs[k].pos.is_none()).collect();
+    let total = flow.iter().map(|&k| dims[k].0).sum::<f32>() + flow.len().saturating_sub(1) as f32 * QUICK_GAP;
+    let row_h = flow.iter().map(|&k| dims[k].1).fold(0.0, f32::max);
+    let (right, y) = (quick_right_for(tb, total), quick_y_for(tb, row_h));
+    let mut rects = [None; 10];
+    let mut x = right;
+    for &k in flow.iter().rev() {
+        let (w, h) = dims[k];
+        x -= w;
+        rects[k] = Some(Rect::new(x, y + (row_h - h) / 2.0, w, h));
+        x -= QUICK_GAP;
+    }
+    for (k, spec) in specs.iter().enumerate() {
+        if let Some([px, py]) = spec.pos {
+            let (w, h) = dims[k];
+            rects[k] = Some(Rect::new(px.min(VIRTUAL.w - w).max(0.0), py.min(VIRTUAL.h - h).max(0.0), w, h));
+        }
+    }
+    let mut zone = Vec::new();
+    if !flow.is_empty() {
+        let top = y.min(tb.y + tb.h);
+        zone.push(Rect::new(right - total, top, total, y + row_h - top));
+    }
+    let shown = |k: usize| k != 9 || inventory;
+    zone.extend((0..10).filter(|&k| shown(k) && specs[k].pos.is_some()).filter_map(|k| rects[k]));
+    let buttons = (0..10).filter(|&k| shown(k)).filter_map(|k| Some((QUICK_ALL[k], rects[k]?))).collect();
+    QuickLayout { buttons, zone }
+}
+
+/// What the quick menu looks like right now.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QuickLook {
+    pub hover: Option<QuickButton>,
+    pub auto: bool,
+    pub skipping: bool,
+    /// Back has nowhere to go; Q.Load has no quick save to load (a picture is drawn dimmed).
+    pub back_off: bool,
+    pub qload_off: bool,
 }
 
 /// Draw the quick menu at opacity `alpha` (0..1: the hover mode fades it).
 pub fn draw_quick(
     out: &mut Vec<Draw>,
     theme: &Theme,
-    hover: Option<QuickButton>,
-    auto: bool,
-    skipping: bool,
-    inventory: bool,
+    layout: &QuickLayout,
+    look: &QuickLook,
+    size_of: &dyn Fn(&str) -> Option<Size>,
     alpha: f32,
 ) {
     if alpha <= 0.0 {
         return;
     }
-    let tb = quillstone_render::textbox_rect(theme);
     let fade = |c: [f32; 4]| quillstone_render::faded(c, alpha);
-    if inventory {
-        let color = if hover == Some(QuickButton::Items) { theme.text_color } else { theme.dim_color };
-        text(out, "Items", quick_items_rect(tb), 24.0, fade(color), Align::Center);
-    }
-    for (i, b) in QUICK_BUTTONS.iter().enumerate() {
+    for &(b, rect) in &layout.buttons {
+        let spec = &theme.quick_icons[quick_index(b)];
+        let on = (b == QuickButton::Auto && look.auto) || (b == QuickButton::Skip && look.skipping);
+        let hovered = look.hover == Some(b);
+        if let Some((idle, _)) = quick_picture(spec, size_of) {
+            let off = (b == QuickButton::Back && look.back_off) || (b == QuickButton::QuickLoad && look.qload_off);
+            let loaded = |p| loaded_picture(p, size_of);
+            let (src, a) = match (loaded(&spec.on).filter(|_| on && !off), loaded(&spec.hover).filter(|_| hovered && !off)) {
+                (Some(on), _) => (on, 1.0),
+                (None, Some(hover)) => (hover, 1.0),
+                _ if off => (idle, ICON_DISABLED_ALPHA),
+                _ if on || hovered || spec.hover.is_some() => (idle, 1.0),
+                _ => (idle, ICON_IDLE_ALPHA),
+            };
+            let uv = Rect::new(0.0, 0.0, 1.0, 1.0);
+            out.push(Draw::Image { src: src.to_string(), dest: rect, uv, alpha: a * alpha });
+            if on && loaded(&spec.on).is_none() {
+                let bar = Rect::new(rect.x, rect.y + rect.h - 3.0, rect.w, 3.0);
+                out.push(Draw::Rect { rect: bar, color: fade(theme.accent_color) });
+            }
+            continue;
+        }
         let label = match b {
             QuickButton::Back => "Back",
             QuickButton::History => "History",
@@ -146,15 +280,14 @@ pub fn draw_quick(
             QuickButton::Settings => "Settings",
             QuickButton::Items => "Items",
         };
-        let on = (*b == QuickButton::Auto && auto) || (*b == QuickButton::Skip && skipping);
         let color = if on {
             theme.accent_color
-        } else if hover == Some(*b) {
+        } else if hovered {
             theme.text_color
         } else {
             theme.dim_color
         };
-        text(out, label, quick_rect(tb, i), 24.0, fade(color), Align::Center);
+        text(out, label, rect, 24.0, fade(color), Align::Center);
     }
 }
 
@@ -775,24 +908,205 @@ mod tests {
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
     }
 
+    fn plain(inventory: bool) -> QuickLayout {
+        quick_layout(TEXTBOX, &Theme::default(), inventory, &|_| None)
+    }
+
     #[test]
     fn quick_menu_sits_under_the_textbox_and_is_hit_testable() {
         for (i, b) in QUICK_BUTTONS.iter().enumerate() {
             let r = quick_rect(TEXTBOX, i);
             assert!(r.y >= TEXTBOX.y + TEXTBOX.h && r.y + r.h <= VIRTUAL.h);
             let (x, y) = centre(r);
-            assert_eq!(quick_at(TEXTBOX, x, y, false), Some(*b));
-            assert_eq!(quick_at(TEXTBOX, x, y, true), Some(*b), "Items doesn't move the others");
+            assert_eq!(plain(false).at(x, y), Some(*b));
+            assert_eq!(plain(true).at(x, y), Some(*b), "Items doesn't move the others");
         }
         let items = quick_items_rect(TEXTBOX);
         let (x, y) = centre(items);
-        assert_eq!(quick_at(TEXTBOX, x, y, true), Some(QuickButton::Items));
-        assert_eq!(quick_at(TEXTBOX, x, y, false), None, "only games with an inventory have the button");
+        assert_eq!(plain(true).at(x, y), Some(QuickButton::Items));
+        assert_eq!(plain(false).at(x, y), None, "only games with an inventory have the button");
         assert!(items.x >= TEXTBOX.x && items.x + items.w <= quick_rect(TEXTBOX, 0).x, "Items fits under the textbox, left of Back");
         let last = quick_rect(TEXTBOX, QUICK_BUTTONS.len() - 1);
         assert!((last.x + QUICK_W - (TEXTBOX.x + TEXTBOX.w)).abs() < 1e-3);
         assert!(quick_rect(TEXTBOX, 0).x >= TEXTBOX.x, "all buttons fit under the textbox");
-        assert_eq!(quick_at(TEXTBOX, 10.0, 10.0, true), None);
+        assert_eq!(plain(true).at(10.0, 10.0), None);
+    }
+
+    #[test]
+    fn without_picture_keys_the_layout_is_the_old_row() {
+        let l = plain(true);
+        assert_eq!(l.buttons.len(), 10);
+        for (b, r) in &l.buttons {
+            let old = if *b == QuickButton::Items { quick_items_rect(TEXTBOX) } else { quick_button_rect(TEXTBOX, *b) };
+            assert_eq!(*r, old, "{b:?}");
+        }
+        assert_eq!(l.zone.len(), 1);
+        for tb in [Rect::new(100.0, 200.0, 500.0, 300.0), Rect::new(160.0, 800.0, 1600.0, 280.0), Rect::new(200.0, 200.0, 1500.0, 300.0)] {
+            let l = quick_layout(tb, &Theme::default(), false, &|_| None);
+            for (b, r) in &l.buttons {
+                assert_eq!(*r, quick_button_rect(tb, *b));
+            }
+            for (x, y) in [(tb.x + 5.0, tb.y + tb.h + 2.0), (tb.x + 5.0, tb.y + 5.0), (5.0, 5.0)] {
+                let old = {
+                    let right = quick_right(tb);
+                    let top = quick_y(tb).min(tb.y + tb.h);
+                    Rect::new(right - quick_total(), top, quick_total(), quick_y(tb) + QUICK_H - top).contains(x, y) || tb.contains(x, y)
+                };
+                assert_eq!(l.in_zone(tb, x, y), old);
+            }
+        }
+    }
+
+    fn themed(text: &str) -> Theme {
+        let (t, problems) = Theme::parse(text);
+        assert!(problems.is_empty(), "{problems:?}");
+        t
+    }
+
+    fn sized(s: &str) -> Option<Size> {
+        match s {
+            "wide.png" => Some(Size::new(90.0, 40.0)),
+            "huge.png" => Some(Size::new(2000.0, 4.0)),
+            "gone.png" => None,
+            _ => Some(Size::new(48.0, 48.0)),
+        }
+    }
+
+    #[test]
+    fn a_picture_button_without_a_position_stays_in_the_row_sized_by_its_picture() {
+        let tb = Rect::new(160.0, 700.0, 1600.0, 260.0);
+        let t = themed("quick_back_icon = wide.png\nquick_settings_icon = a.png\n");
+        let l = quick_layout(tb, &t, false, &sized);
+        let (back, history, settings) = (
+            l.rect(QuickButton::Back).unwrap(),
+            l.rect(QuickButton::History).unwrap(),
+            l.rect(QuickButton::Settings).unwrap(),
+        );
+        let huge = themed("quick_back_icon = huge.png\n");
+        assert_eq!(quick_button_size(&huge.quick_icons[0], &sized), (512.0, 16.0), "clamped to the allowed sides");
+        assert_eq!((back.w, back.h, settings.w, settings.h), (90.0, 40.0, 48.0, 48.0));
+        assert_eq!((history.w, history.h), (QUICK_W, QUICK_H));
+        assert_eq!(settings.x + settings.w, tb.x + tb.w, "still right-aligned");
+        assert!(back.x + back.w + QUICK_GAP <= history.x, "in the row, in order");
+        let row_top = tb.y + tb.h + QUICK_MARGIN;
+        assert_eq!(settings.y, row_top, "the tallest sets the row");
+        assert_eq!(back.y, row_top + 4.0, "the others are centred on it");
+        // an explicit size beats the picture's
+        let t = themed("quick_back_icon = wide.png\nquick_back_size = 100, 30\n");
+        assert_eq!(quick_layout(TEXTBOX, &t, false, &sized).rect(QuickButton::Back).unwrap().w, 100.0);
+        // a picture that isn't loaded is a plain text button
+        let t = themed("quick_back_icon = gone.png\n");
+        let r = quick_layout(TEXTBOX, &t, false, &sized).rect(QuickButton::Back).unwrap();
+        assert_eq!((r.w, r.h), (QUICK_W, QUICK_H));
+    }
+
+    #[test]
+    fn a_placed_button_leaves_the_row_and_is_kept_on_the_screen() {
+        let t = themed("quick_back_icon = a.png\nquick_back_pos = 20, 30\nquick_load_pos = 1900, 1070\n");
+        let l = quick_layout(TEXTBOX, &t, true, &sized);
+        assert_eq!(l.rect(QuickButton::Back), Some(Rect::new(20.0, 30.0, 48.0, 48.0)));
+        let load = l.rect(QuickButton::Load).unwrap();
+        assert_eq!((load.x + load.w, load.y + load.h), (1920.0, 1080.0), "a text button too, pulled back in");
+        let plain = plain(true);
+        assert_eq!(l.rect(QuickButton::Settings), plain.rect(QuickButton::Settings), "right-aligned ones stay");
+        assert_eq!(l.rect(QuickButton::Items), plain.rect(QuickButton::Items).map(|r| Rect::new(r.x + 158.0 * 2.0, r.y, r.w, r.h)),
+            "Items stays leftmost of the row, which closed up over the two placed buttons");
+        assert_eq!(l.rect(QuickButton::Save), plain.rect(QuickButton::Save).map(|r| Rect::new(r.x + 158.0, r.y, r.w, r.h)));
+        // hit-testing follows
+        assert_eq!(l.at(30.0, 40.0), Some(QuickButton::Back));
+        let old = quick_button_rect(TEXTBOX, QuickButton::Back);
+        assert_eq!(l.at(old.x + 1.0, old.y + 1.0), None, "its old place in the row is empty now... ");
+    }
+
+    #[test]
+    fn where_placed_buttons_overlap_the_later_one_in_the_id_order_is_on_top() {
+        let t = themed("quick_settings_pos = 100, 100\nquick_back_pos = 120, 110\nquick_items_pos = 130, 120\n");
+        let l = quick_layout(TEXTBOX, &t, true, &sized);
+        assert_eq!(l.at(125.0, 115.0), Some(QuickButton::Settings), "settings comes after back");
+        assert_eq!(l.at(125.0, 105.0), Some(QuickButton::Settings));
+        assert_eq!(l.at(135.0, 125.0), Some(QuickButton::Items), "items last of all");
+        assert_eq!(l.at(121.0, 111.0), Some(QuickButton::Settings));
+        assert_eq!(l.buttons.last().map(|b| b.0), Some(QuickButton::Items), "drawn last: on top");
+        // without an inventory Items isn't there at all
+        let l = quick_layout(TEXTBOX, &t, false, &sized);
+        assert_eq!(l.at(135.0, 125.0), Some(QuickButton::Settings));
+    }
+
+    #[test]
+    fn the_hover_zone_covers_the_textbox_the_row_and_every_placed_button() {
+        let t = themed("quick_back_pos = 20, 30\nquick_items_pos = 900, 20\n");
+        let l = quick_layout(TEXTBOX, &t, false, &sized);
+        assert!(l.in_zone(TEXTBOX, 30.0, 40.0), "a placed button far from the box");
+        assert!(!l.in_zone(TEXTBOX, 905.0, 25.0), "Items isn't offered here");
+        assert!(l.in_zone(TEXTBOX, TEXTBOX.x + 5.0, TEXTBOX.y + 5.0));
+        let row = l.rect(QuickButton::Settings).unwrap();
+        assert!(l.in_zone(TEXTBOX, row.x + 1.0, row.y + 1.0));
+        assert!(!l.in_zone(TEXTBOX, 400.0, 400.0));
+        assert!(quick_layout(TEXTBOX, &t, true, &sized).in_zone(TEXTBOX, 905.0, 25.0));
+        // every button placed: no row, no strip
+        let all: String = quillstone_render::theme::QUICK_IDS.iter().map(|id| format!("quick_{id}_pos = 10, 10\n")).collect();
+        let l = quick_layout(TEXTBOX, &themed(&all), true, &sized);
+        assert!(l.in_zone(TEXTBOX, 12.0, 12.0) && !l.in_zone(TEXTBOX, 1000.0, TEXTBOX.y + TEXTBOX.h + 10.0));
+    }
+
+    fn images_of(list: &[Draw]) -> Vec<(&str, f32)> {
+        list.iter().filter_map(|d| match d {
+            Draw::Image { src, alpha, .. } => Some((src.as_str(), *alpha)),
+            _ => None,
+        }).collect()
+    }
+
+    fn drawn_quick(t: &Theme, inventory: bool, look: QuickLook, alpha: f32) -> Vec<Draw> {
+        let layout = quick_layout(TEXTBOX, t, inventory, &sized);
+        let mut out = Vec::new();
+        draw_quick(&mut out, t, &layout, &look, &sized, alpha);
+        out
+    }
+
+    fn labelled(list: &[Draw], what: &str) -> bool {
+        list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == what))
+    }
+
+    #[test]
+    fn a_picture_button_draws_its_picture_instead_of_its_text() {
+        let t = themed("quick_back_icon = a.png\nquick_back_hover = h.png\nquick_skip_icon = s.png\nquick_skip_on = so.png\n\
+                        quick_auto_icon = au.png\n");
+        let list = drawn_quick(&t, false, QuickLook::default(), 1.0);
+        assert!(!labelled(&list, "Back") && !labelled(&list, "Skip") && labelled(&list, "History"));
+        assert_eq!(images_of(&list), vec![("a.png", 1.0), ("s.png", ICON_IDLE_ALPHA), ("au.png", ICON_IDLE_ALPHA)],
+            "a button with a hover picture is whole when idle, without one it is a little dimmer");
+        let dest = list.iter().find_map(|d| match d {
+            Draw::Image { dest, uv, .. } => Some((*dest, *uv)),
+            _ => None,
+        });
+        assert_eq!(dest, Some((Rect::new(dest.unwrap().0.x, dest.unwrap().0.y, 48.0, 48.0), Rect::new(0.0, 0.0, 1.0, 1.0))));
+        let look = QuickLook { hover: Some(QuickButton::Back), ..QuickLook::default() };
+        assert_eq!(images_of(&drawn_quick(&t, false, look, 1.0))[0], ("h.png", 1.0));
+        let look = QuickLook { hover: Some(QuickButton::Skip), ..QuickLook::default() };
+        assert_eq!(images_of(&drawn_quick(&t, false, look, 1.0))[1], ("s.png", 1.0), "no hover picture: lit");
+        // the toggle's own picture, or the idle one with an accent bar under it
+        let look = QuickLook { skipping: true, auto: true, ..QuickLook::default() };
+        let list = drawn_quick(&t, false, look, 1.0);
+        assert_eq!(images_of(&list)[1], ("so.png", 1.0));
+        assert_eq!(images_of(&list)[2], ("au.png", 1.0));
+        let bars = list.iter().filter(|d| matches!(d, Draw::Rect { color, .. } if *color == t.accent_color)).count();
+        assert_eq!(bars, 1, "only Auto, which has no `on` picture");
+        // fading and nothing at zero
+        assert_eq!(images_of(&drawn_quick(&t, false, QuickLook::default(), 0.5))[0], ("a.png", 0.5));
+        assert!(drawn_quick(&t, false, QuickLook::default(), 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_disabled_picture_is_dimmed_and_a_missing_one_falls_back_to_text() {
+        let t = themed("quick_back_icon = a.png\nquick_back_hover = h.png\nquick_qload_icon = q.png\nquick_save_icon = gone.png\n");
+        let look = QuickLook { back_off: true, qload_off: true, hover: Some(QuickButton::Back), ..QuickLook::default() };
+        let list = drawn_quick(&t, false, look, 1.0);
+        let imgs = images_of(&list);
+        assert_eq!(imgs, vec![("a.png", ICON_DISABLED_ALPHA), ("q.png", ICON_DISABLED_ALPHA)], "no hover look on a disabled one");
+        assert!(labelled(&list, "Save"), "`gone.png` isn't loaded: the text shows");
+        // text buttons look as before when "disabled"
+        let list = drawn_quick(&Theme::default(), true, look, 1.0);
+        assert!(labelled(&list, "Back") && labelled(&list, "Q.Load") && labelled(&list, "Items"));
     }
 
     #[test]

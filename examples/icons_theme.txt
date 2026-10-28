@@ -1,0 +1,25 @@
+# Picture buttons for the quick menu: Back, History, Skip and Auto sit under the box at their own
+# places, Settings in the top left corner, Save stays in the row with the text buttons.
+# Positions are in the 1920x1080 screen; a button without `_pos` keeps its place in the row.
+# See SCRIPT.md ("The quick menu").
+textbox_rect = 160, 700, 1600, 260
+
+quick_back_icon = assets/gui/icon_back.png
+quick_back_hover = assets/gui/icon_back_hover.png
+quick_back_pos = 160, 976
+
+quick_history_icon = assets/gui/icon_history.png
+quick_history_pos = 226, 976
+
+quick_skip_icon = assets/gui/icon_skip.png
+quick_skip_on = assets/gui/icon_skip_on.png
+quick_skip_pos = 292, 976
+
+quick_auto_icon = assets/gui/icon_auto.png
+quick_auto_on = assets/gui/icon_auto_on.png
+quick_auto_pos = 358, 976
+
+quick_settings_icon = assets/gui/icon_settings.png
+quick_settings_pos = 24, 24
+
+quick_save_icon = assets/gui/icon_save.png
