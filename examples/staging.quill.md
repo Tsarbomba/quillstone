@@ -4,7 +4,7 @@ title: Staging
 
 <!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{p}` and `{nw}`
      text tags, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
-     one axis, a flipped and a stretched sprite, a dip to black (`::fade` and `through=`) and a timed choice.
+     one axis, a flipped and a stretched sprite, a dip to black (`::fade` and `through=`), a `::tint` wash and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
@@ -55,6 +55,13 @@ The screen is black, and this narration is still readable: the dialogue box is n
 ::bg{src=assets/rooftop.png fade=1.2 through=#000000}
 ::show{mika happy at=0.3 scale=0.8 fade=0.4}
 **Mika:** And that was the short form: `through=` dips to a colour, changes the picture and comes back, all in one line.
+
+<!-- A colour wash over the stage. It stays until `none`, saves with the game, and sits under the text. -->
+::tint{color=#203060 alpha=0.45 fade=1}
+**Mika:** And this is `::tint`: a night wash over the whole picture, eased in over a second. It stays until it is removed, and the text box is never tinted.
+
+::tint{none fade=1}
+**Mika:** Gone again. A grey or sepia tint makes a decent flashback, but it only lays a colour over the picture: it does not drain it.
 
 **Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
 

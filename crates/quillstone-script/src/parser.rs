@@ -46,7 +46,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, particles, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -63,6 +63,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "particles" => &["snow", "rain", "none", "off", "src", "amount", "speed", "wind", "fade", "layer"],
+        "tint" => &["none", "off", "color", "alpha", "fade"],
         "textbox" => &["hide", "show", "fade"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
@@ -1074,6 +1075,7 @@ impl Parser {
                 Some((op, None))
             }
             "particles" => self.particles(line, a).map(|op| (op, None)),
+            "tint" => self.tint(line, a).map(|op| (op, None)),
             "textbox" => {
                 let (hide, show) = (a.flag("hide"), a.flag("show"));
                 let fade = match a.value("fade") {
@@ -2126,6 +2128,36 @@ impl Parser {
             }
         };
         Some(Op::Particles { set: Some(Particles { kind, amount, speed, wind, back }), fade })
+    }
+
+    /// `::tint{color=#203060 alpha=0.35 fade=1}` sets the wash; `::tint{none}` (or `off`) removes it.
+    fn tint(&mut self, line: usize, a: &mut Attrs) -> Option<Op> {
+        let (none, off) = (a.flag("none"), a.flag("off"));
+        let fade = self.seconds(line, a, "fade", 0.0)?;
+        if fade > 10.0 {
+            self.err(line, format!("`fade={fade}` must be at most 10 seconds"));
+            return None;
+        }
+        if none || off {
+            if let Some(extra) = ["color", "alpha"].into_iter().find(|k| a.0.iter().any(|(x, _)| x == k)) {
+                self.err(line, format!("`::tint{{none}}` takes only `fade=`, not `{extra}=`"));
+                return None;
+            }
+            return Some(Op::Tint { set: None, fade });
+        }
+        let Some(c) = a.value("color") else {
+            self.err(line, "`::tint` needs `color=#rrggbb` (or `none` to remove the tint)");
+            return None;
+        };
+        let color = match parse_color(&c) {
+            Ok(c) => c,
+            Err(m) => {
+                self.err(line, m);
+                return None;
+            }
+        };
+        let alpha = self.number(line, a, "alpha", TINT_ALPHA)?.unwrap_or(DEFAULT_TINT_ALPHA);
+        Some(Op::Tint { set: Some(Tint { color, alpha }), fade })
     }
 
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {

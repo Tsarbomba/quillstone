@@ -607,6 +607,25 @@ struct Cover {
     rate: f32,
 }
 
+/// The colour wash over the stage (`::tint`), easing from where it was to `color`/`alpha`.
+#[derive(Debug, Clone, PartialEq)]
+struct TintFade {
+    from: ([f32; 3], f32),
+    to: ([f32; 3], f32),
+    /// 0 at the start of the ease, 1 when it has arrived.
+    progress: f32,
+    /// Progress per second (0: at once).
+    rate: f32,
+}
+
+impl TintFade {
+    fn current(&self) -> ([f32; 3], f32) {
+        let (a, b, t) = (self.from, self.to, self.progress);
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        ([mix(a.0[0], b.0[0]), mix(a.0[1], b.0[1]), mix(a.0[2], b.0[2])], mix(a.1, b.1))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View {
     pub background: Option<Background>,
@@ -626,6 +645,7 @@ pub struct View {
     cover: Option<Cover>,
     hud: HudLayer,
     particles: ParticleLayer,
+    tint: Option<TintFade>,
     /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
     /// how fast it fades (per second; 0 = at once).
     box_hidden: bool,
@@ -668,6 +688,7 @@ impl View {
             cover: None,
             hud: HudLayer::default(),
             particles: ParticleLayer::default(),
+            tint: None,
             box_hidden: false,
             box_alpha: 1.0,
             box_rate: 0.0,
@@ -798,6 +819,7 @@ impl View {
                     self.cover = None;
                     self.hud.clear_all();
                     self.particles.clear();
+                    self.tint = None;
                     self.box_hidden = false;
                     self.box_alpha = 1.0;
                 }
@@ -868,6 +890,7 @@ impl View {
                 }
                 Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } => self.hud.apply(cmd),
                 Cmd::Particles { set, fade } => self.particles.apply(set, *fade),
+                Cmd::Tint { set, fade } => self.set_tint(set.map(|t| (t.color, t.alpha)), *fade),
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
@@ -989,6 +1012,31 @@ impl View {
         }
     }
 
+    /// Ease the tint to `set` (`None`: to nothing) from what it is now, or from clear.
+    fn set_tint(&mut self, set: Option<([f32; 3], f32)>, fade: f32) {
+        let now = self.tint();
+        let to = match (set, now) {
+            (Some(to), _) => to,
+            (None, Some((color, _))) => (color, 0.0),
+            (None, None) => return,
+        };
+        let from = now.unwrap_or((to.0, 0.0));
+        let rate = if fade > 0.0 { 1.0 / fade } else { 0.0 };
+        self.tint = Some(TintFade { from, to, progress: if rate > 0.0 { 0.0 } else { 1.0 }, rate });
+        self.drop_cleared_tint();
+    }
+
+    fn drop_cleared_tint(&mut self) {
+        if self.tint.as_ref().is_some_and(|t| t.progress >= 1.0 && t.to.1 <= 0.0) {
+            self.tint = None;
+        }
+    }
+
+    /// The colour and opacity of the tint right now, if there is one showing.
+    pub fn tint(&self) -> Option<([f32; 3], f32)> {
+        self.tint.as_ref().map(TintFade::current).filter(|(_, alpha)| *alpha > 0.0)
+    }
+
     /// The colour and opacity the stage is covered with right now, if it is.
     pub fn cover(&self) -> Option<([f32; 3], f32)> {
         self.cover.as_ref().filter(|c| c.alpha > 0.0).map(|c| (c.color, c.alpha))
@@ -1107,6 +1155,10 @@ impl View {
                 self.cover = None;
             }
         }
+        if let Some(t) = &mut self.tint {
+            t.progress = if t.rate > 0.0 { (t.progress + t.rate * dt).min(1.0) } else { 1.0 };
+        }
+        self.drop_cleared_tint();
         self.sprites.retain(|s| !s.is_gone());
         self.hud.tick(dt);
         self.particles.tick(dt, animate);
@@ -1138,6 +1190,7 @@ impl View {
         self.wait.is_some()
             || self.flash.is_some()
             || self.cover.as_ref().is_some_and(|c| c.alpha != c.target)
+            || self.tint.as_ref().is_some_and(|t| t.progress < 1.0)
             || self.hud.fading()
             || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
@@ -1328,8 +1381,11 @@ impl View {
             }
         }
 
-        // The cover and the flash are over the whole picture (stage, inline images, video and
-        // hotspot art), the flash over the cover, but under the textbox and the UI.
+        // The tint, the cover and the flash are over the whole picture (stage, particles, inline images,
+        // video and hotspot art), in that order, but under the textbox and the UI.
+        if let Some(([r, g, b], alpha)) = self.tint() {
+            out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] });
+        }
         if let Some((color, alpha)) = self.cover() {
             let [r, g, b] = color;
             out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] });
@@ -2881,6 +2937,105 @@ mod tests {
         let mut done = shake(Axis::Y);
         done.elapsed = 1.0;
         assert_eq!((done.cover_zoom(), done.offset()), (1.0, (0.0, 0.0)));
+    }
+
+    // ---- tint ----------------------------------------------------------------------------
+
+    fn tint_cmd(rgb: [f32; 3], alpha: f32, fade: f32) -> Cmd {
+        Cmd::Tint { set: Some(quillstone_script::Tint { color: rgb, alpha }), fade }
+    }
+
+    fn screen_rects(list: &[Draw]) -> Vec<(usize, [f32; 4])> {
+        let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
+        list.iter()
+            .enumerate()
+            .filter_map(|(i, d)| match d {
+                Draw::Rect { rect, color } if *rect == screen => Some((i, *color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tint_is_one_translucent_screen_rect_and_needs_no_ticks_without_a_fade() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), tint_cmd([0.1, 0.2, 0.4], 0.35, 0.0)]);
+        assert!(!v.busy());
+        assert_eq!(screen_rects(&v.draw_list(&all_1080p, None)).iter().map(|r| r.1).collect::<Vec<_>>(), [[0.1, 0.2, 0.4, 0.35]]);
+    }
+
+    #[test]
+    fn a_tint_eases_from_clear_then_from_where_it_is_and_out_to_nothing() {
+        let mut v = View::new();
+        v.apply(&[tint_cmd([1.0, 0.0, 0.0], 0.8, 2.0)]);
+        assert!(v.busy());
+        assert_eq!(v.tint(), None, "starts clear");
+        v.tick(1.0);
+        let (c, a) = v.tint().unwrap();
+        assert!(close(a, 0.4) && c == [1.0, 0.0, 0.0], "{c:?} {a}");
+        // A new tint mid-fade eases from the current colour and opacity.
+        v.apply(&[tint_cmd([0.0, 0.0, 1.0], 0.2, 1.0)]);
+        v.tick(0.5);
+        let (c, a) = v.tint().unwrap();
+        assert!(close(a, 0.3) && close(c[0], 0.5) && close(c[2], 0.5), "{c:?} {a}");
+        v.tick(1.0);
+        assert_eq!(v.tint(), Some(([0.0, 0.0, 1.0], 0.2)));
+        assert!(!v.busy());
+        v.apply(&[Cmd::Tint { set: None, fade: 1.0 }]);
+        v.tick(0.5);
+        let (c, a) = v.tint().unwrap();
+        assert!(close(a, 0.1) && c == [0.0, 0.0, 1.0], "keeps its colour while it fades away");
+        v.tick(0.6);
+        assert_eq!(v.tint(), None);
+        assert!(screen_rects(&v.draw_list(&all_1080p, None)).is_empty());
+        v.apply(&[Cmd::Tint { set: None, fade: 1.0 }]);
+        assert!(!v.busy(), "removing nothing is nothing");
+    }
+
+    #[test]
+    fn a_redraw_and_a_settle_finish_it() {
+        let mut v = View::new();
+        v.apply(&[tint_cmd([1.0; 3], 0.5, 5.0)]);
+        v.settle(30.0);
+        assert_eq!(v.tint(), Some(([1.0; 3], 0.5)));
+        v.apply(&[Cmd::ClearScene]);
+        assert_eq!(v.tint(), None);
+        v.apply(&[Cmd::ClearScene, tint_cmd([1.0; 3], 0.5, 0.0)]);
+        assert_eq!(v.tint(), Some(([1.0; 3], 0.5)));
+    }
+
+    #[test]
+    fn a_tint_is_over_the_stage_and_inline_images_and_under_the_cover_flash_and_text() {
+        let set = |src: &str| Cmd::Particles {
+            set: Some(quillstone_script::Particles::new(quillstone_script::ParticleKind::Image(src.into()))),
+            fade: 0.0,
+        };
+        let mut v = View::new();
+        v.apply(&[
+            bg("bg.png", 0.0),
+            show("a", "a.png", 0.5, 0.0),
+            set("p.png"),
+            Cmd::ShowImage { src: "inline.png".into(), alt: String::new() },
+            tint_cmd([0.0, 0.0, 1.0], 0.4, 0.0),
+            Cmd::FadeOut { time: 0.0, color: [0.0; 3] },
+            Cmd::Flash { time: 1.0, color: [1.0; 3] },
+            say(None, "hello"),
+        ]);
+        let list = v.draw_list(&all_1080p, None);
+        let pos = |f: &dyn Fn(&Draw) -> bool| list.iter().position(f).unwrap();
+        let tint_at = pos(&|d| matches!(d, Draw::Rect { color, .. } if color == &[0.0, 0.0, 1.0, 0.4]));
+        let last_image = list.iter().rposition(|d| matches!(d, Draw::Image { .. })).unwrap();
+        assert!(tint_at > last_image, "over background, sprite, particles and inline image");
+        let cover_at = pos(&|d| matches!(d, Draw::Rect { color, .. } if color == &[0.0, 0.0, 0.0, 1.0]));
+        let flash_at = pos(&|d| matches!(d, Draw::Rect { color, .. } if color[..3] == [1.0; 3]));
+        let text_at = pos(&|d| matches!(d, Draw::Text { .. }));
+        assert!(tint_at < cover_at && cover_at < flash_at && flash_at < text_at, "{tint_at} {cover_at} {flash_at} {text_at}");
+        // Screen space: the camera does not move it.
+        v.apply(&[Cmd::Camera { camera: Camera { zoom: 3.0, x: 0.1, y: 0.1 }, time: 0.0, ease: Ease::Linear }]);
+        let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
+        assert!(v.draw_list(&all_1080p, None).iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == screen && color[2] == 1.0 && color[3] == 0.4)));
+        // The scene under an overlay menu has it too.
+        assert!(v.draw_scene(&all_1080p).iter().any(|d| matches!(d, Draw::Rect { color, .. } if color == &[0.0, 0.0, 1.0, 0.4])));
     }
 
     // ---- fade to a colour ----------------------------------------------------------------

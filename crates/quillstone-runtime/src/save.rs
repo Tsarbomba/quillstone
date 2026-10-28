@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Value, Vars};
+use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Tint, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
 use quillstone_script::{Ease, ANIM_PREFIX};
@@ -467,6 +467,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         };
         w(format!("particles {kind} {} {} {} {}{src}", p.amount, p.speed, p.wind, p.back));
     }
+    // Saves from before `::tint` existed have no such record: they load without one.
+    if let Some(t) = &s.tint {
+        w(format!("tint {} {}", color(Some(t.color)), t.alpha));
+    }
     // Saves from before `::textbox` existed have no such record: they load with the box shown.
     if s.textbox_hidden {
         w("textbox hidden".to_string());
@@ -764,6 +768,13 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     wind: sane(f(4)?, *PARTICLE_WIND.start(), *PARTICLE_WIND.end(), 0.0),
                     back: b(5)?,
                 });
+            }
+            "tint" => {
+                let parts: Vec<f32> = arg(1)?.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
+                let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{}`", arg(1)?)) };
+                let alpha = sane(f(2)?, *TINT_ALPHA.start(), *TINT_ALPHA.end(), 0.0);
+                let color = [sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)];
+                s.tint = Some(Tint { color, alpha });
             }
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {

@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Particles, Program, ShopEntry, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Particles, Program, ShopEntry, Tint, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -24,6 +24,8 @@ mod layers_tests;
 mod hud_tests;
 #[cfg(test)]
 mod particles_tests;
+#[cfg(test)]
+mod tint_tests;
 #[cfg(test)]
 mod timed_tests;
 mod persist;
@@ -102,6 +104,8 @@ pub enum Cmd {
     /// Start or change (`Some`) the ambient particles, or stop them (`None`), easing over
     /// `fade` seconds. Part of the scene: see [`State::particles`].
     Particles { set: Option<Particles>, fade: f32 },
+    /// The colour wash over the stage (`::tint`), easing in over `fade` seconds; `None` removes it.
+    Tint { set: Option<Tint>, fade: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
     /// With an `intro`, that file plays once and `src` then loops.
@@ -328,6 +332,8 @@ pub struct State {
     /// The ambient particles (`::particles`): only their settings. Where each one is
     /// belongs to the view, which works it out from the time.
     pub particles: Option<Particles>,
+    /// The colour wash over the stage (`::tint`). Its fade is the view's.
+    pub tint: Option<Tint>,
     /// `::textbox{hide}` is in effect: the dialogue box stays hidden until
     /// `::textbox{show}` or the next line or choice.
     pub textbox_hidden: bool,
@@ -374,6 +380,7 @@ impl State {
             sprites: Vec::new(),
             camera: Camera::default(),
             particles: None,
+            tint: None,
             textbox_hidden: false,
             cover: None,
             hud: Vec::new(),
@@ -399,6 +406,9 @@ impl State {
         }
         if let Some(p) = &self.particles {
             out.push(Cmd::Particles { set: Some(p.clone()), fade: 0.0 });
+        }
+        if let Some(t) = self.tint {
+            out.push(Cmd::Tint { set: Some(t), fade: 0.0 });
         }
         if let Some(color) = self.cover {
             out.push(Cmd::FadeOut { time: 0.0, color });
@@ -1023,6 +1033,14 @@ pub(crate) fn step_traced(
                 if set.is_some() || state.particles.is_some() {
                     state.particles = set.clone();
                     out.push(Cmd::Particles { set: set.clone(), fade: *fade });
+                }
+                state.pc += 1;
+            }
+            Op::Tint { set, fade } => {
+                // Removing what isn't there says nothing.
+                if set.is_some() || state.tint.is_some() {
+                    state.tint = *set;
+                    out.push(Cmd::Tint { set: *set, fade: *fade });
                 }
                 state.pc += 1;
             }

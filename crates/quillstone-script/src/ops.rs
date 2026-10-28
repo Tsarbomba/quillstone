@@ -805,6 +805,17 @@ pub const DEFAULT_PARTICLES: u32 = 60;
 pub const PARTICLE_SPEED: std::ops::RangeInclusive<f32> = 0.2..=5.0;
 pub const PARTICLE_WIND: std::ops::RangeInclusive<f32> = -2.0..=2.0;
 
+/// Allowed `alpha=` of `::tint` (the story must stay visible), and its default.
+pub const TINT_ALPHA: std::ops::RangeInclusive<f32> = 0.0..=0.9;
+pub const DEFAULT_TINT_ALPHA: f32 = 0.4;
+
+/// The colour wash over the stage (`::tint`): an RGB colour (0..1) at `alpha` opacity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    pub color: [f32; 3],
+    pub alpha: f32,
+}
+
 /// What falls in `::particles`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticleKind {
@@ -1098,6 +1109,9 @@ pub enum Op {
     /// Start, change (`Some`) or stop (`None`) the ambient particles, easing over `fade`
     /// seconds. Doesn't wait.
     Particles { set: Option<Particles>, fade: f32 },
+    /// Set (`Some`) or remove (`None`) the colour wash over the stage, easing over `fade`
+    /// seconds from what it is now. Doesn't wait.
+    Tint { set: Option<Tint>, fade: f32 },
     /// Background music. With an `intro`, that file plays once and `src` then loops.
     Music { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },

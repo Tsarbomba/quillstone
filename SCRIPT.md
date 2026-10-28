@@ -297,6 +297,7 @@ rest were not tried.
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
 | `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites. Doesn't wait. See [Ambient particles](#ambient-particles). |
+| `::tint{color=#203060 alpha=0.35 fade=1}` | A colour wash over the whole stage that **stays** until it is changed or removed: `::tint{none}` (or `{off}`) takes it away. `color` is `#rrggbb` or `#rgb` (required); `alpha` is how strong it is, 0 to 0.9 (default 0.4; it never goes higher so the story stays visible; `35%` also works); `fade` is the seconds to ease from the current tint (or from none), 0 to 10 (default 0: at once). `{none}` takes only `fade`. Doesn't wait. See "Colour wash". |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
@@ -344,6 +345,29 @@ screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
   Settings is open and don't run ahead in skip mode.
 - Where each particle is isn't saved, only the settings, so rollback, saves and replays bring the
   weather back (starting from a fresh sky). A save from before `::particles` loads without any.
+
+## Colour wash
+
+`::tint` lays a translucent colour over the whole picture and keeps it there, for night, dusk, a
+sick green or a sepia memory.
+
+```
+::tint{color=#203060 alpha=0.35 fade=1}
+::tint{color=#8a6a3a alpha=0.5}
+::tint{none fade=1}
+```
+
+- It is one flat colour at `alpha` opacity, so it is **not** a filter: a grey or sepia tint gives
+  a flashback look, but the picture is not truly drained of colour, and bright parts stay bright.
+  There are no blend modes.
+- A new `::tint` eases from the one on screen (colour and strength), or from nothing, over
+  `fade`. `::tint{none fade=1}` eases the wash away. Removing a tint that isn't there does nothing.
+- It is drawn over the background, sprites, particles, inline images and video, and under the
+  `::fade` cover, `::flash`, the HUD, the textbox, choices and every menu, so the text is never
+  tinted. It belongs to the screen: the camera and `::shake` don't move it.
+- The colour and strength are saved, so rollback, saves and replays bring the tint back at once
+  (without its fade). A save from before `::tint` loads without one. `{variable}` isn't supported in it.
+- `quillstone run` prints `[tint: #203060]` and `[tint off]`.
 
 ## Picture names from variables
 
@@ -1050,7 +1074,7 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the colour wash of `::tint`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

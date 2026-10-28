@@ -889,6 +889,11 @@ fn print_cmds(cmds: &[Cmd]) {
                 ParticleKind::Image(src) => println!("[particles: {src}]"),
             },
             Cmd::Particles { set: None, .. } => println!("[particles stop]"),
+            Cmd::Tint { set: Some(t), .. } => {
+                let [r, g, b] = t.color.map(|c| (c * 255.0).round() as u8);
+                println!("[tint: #{r:02x}{g:02x}{b:02x}]");
+            }
+            Cmd::Tint { set: None, .. } => println!("[tint off]"),
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
             Cmd::StopMusic { .. } => println!("[music stops]"),
@@ -1210,6 +1215,15 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(!found[0].0 && found[0].1.contains(":2:") && found[0].1.contains("300x40") && found[0].1.contains("256 px"), "{found:?}");
         assert!(checked(script, big).is_ok(), "only a warning");
+    }
+
+    #[test]
+    fn check_reports_tint_mistakes_with_their_line() {
+        assert!(checked("::tint{color=#203060 alpha=0.35 fade=1}\nHi.\n::tint{none fade=1}\n", &[]).is_ok());
+        let err = checked("Hi.\n::tint{color=#203060 alpha=2}\n", &[]).unwrap_err();
+        assert!(err.contains(":2:") && err.contains("alpha=2"), "{err}");
+        let err = checked("::tint{none color=#fff}\n", &[]).unwrap_err();
+        assert!(err.contains(":1:") && err.contains("takes only"), "{err}");
     }
 
     #[test]
