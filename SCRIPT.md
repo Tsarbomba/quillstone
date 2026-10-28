@@ -269,6 +269,7 @@ rest were not tried.
 | Command | What it does |
 | --- | --- |
 | `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped). |
+| `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
@@ -301,10 +302,75 @@ isn't replayed. A flash stands still while a menu is open and ends at once when 
 player skips.
 
 The cover is drawn over the stage, inline images, video and hotspot pictures, under a
-`::flash` and under the textbox and everything else on the interface. Rollback goes
+`::flash` and under the HUD elements, the textbox and everything else on the interface. Rollback goes
 past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
 through a fade, and roll forward does the same. The last line stays on screen while the
 screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
+
+## HUD: text, bars and pictures over the story
+
+`::hud{...}` puts an always-on element over the story: a counter, a clock, a health bar, a
+title card. An element has an `id` (letters, digits and underscores); using the same `id` again
+**replaces** the element where it stands. Which kind it is depends on which attribute is there,
+and exactly one of these is required:
+
+| Attribute | Kind |
+| --- | --- |
+| `text="Day {day}, {hero.gold} gold"` | **Text**. The same tags and `{variable}` values as dialogue (`**bold**`, `*italic*`, `{color=..}`, `{size=..}`), but not `{nw}` or `{p}`. The values are read **every time the screen is drawn**, so the text follows the variables by itself. |
+| `bar=hero.hp max=hero.max_hp size=320,26` | **Bar**. `bar` and `max` are whole-number expressions (a variable, a number, or arithmetic like `hero.max_hp + 2`). It is filled `bar / max` of the way from the left, kept between empty and full; with `max` 0 or less it is empty. `size` is width,height in pixels of the 1920x1080 screen. |
+| `image=assets/heart.png scale=0.5` | **Picture** (`.png`, `.jpg`, `.jpeg` or `.webp` inside the game folder, like a hotspot image), drawn at its own pixel size times `scale` (0.05 to 10, default 1). `quillstone check` tests it as a picture and `package` includes it. |
+
+Attributes for every kind:
+
+| Attribute | |
+| --- | --- |
+| `at=0.92,0.04` | Where the element's anchor point is: two numbers from 0 to 1 or percentages (`at=92%,4%`) of the screen. Default `0,0`. |
+| `anchor=left` / `center` / `right` | Which side of the point the element is on (default `left`). The top of the element is always at the point's height. |
+| `if="hero.hp <= 3"` | Draw the element only while the condition is true; it is checked every time the screen is drawn. `random` isn't allowed, as in any condition. |
+| `fade=0.3` | Fade in over that many seconds (more than 0, up to 10) when the element is created. |
+
+Attributes of a **text** element: `size` (8 to 300; default the theme's text size), `color`
+(default the theme's text colour), `back` (a panel behind the text, e.g. `back=#00000099`; colours
+here may have an alpha part, `#rrggbbaa` or `#rgba`) and `pad` (the padding around the text in pixels, 0
+to 200; default 0). Without `back` the text is placed exactly by its anchor. With `back` the panel is as
+wide as the text is *expected* to be, a little generously, so it may be a few pixels wider than the text.
+
+Attributes of a **bar**: `color` (the fill; default the theme's accent colour), `back` (the empty
+part; default `#333333`), `border` (an outline colour; drawn outside the bar's size) and `border_size`
+(1 to 3 pixels, default 2).
+
+```
+::hud{id=hp bar=hero.hp max=hero.max_hp at=0.02,0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff}
+::hud{id=clock text="Day {day}, {hero.gold} gold" at=0.98,0.04 anchor=right size=32 back=#00000099 pad=12 fade=0.3}
+::hud{id=low text="LOW HP" at=0.02,0.11 color=#ff5555 if="hero.hp <= 3"}
+::hud{id=heart image=assets/heart.png at=0.02,0.9 scale=0.5}
+```
+
+`::hud{hide=clock fade=0.3}` removes one element (with an optional fade out); hiding an id that
+isn't there does nothing. `::hud{clear}` removes all of them (`fade=` works too). Neither waits.
+
+**Where they are drawn.** Elements are drawn in the order they were created (an element that is
+replaced keeps its place), above the background, sprites, inline images, video, hotspot pictures and
+the colour cover and flash, and below the textbox, quick menu and every other piece of interface. That
+is why a title card can sit on a black screen:
+
+```
+::bg{color=#000000}
+::hud{id=card text="{size=96}Chapter 1{/size}" at=0.5,0.4 anchor=center fade=1}
+::wait{time=3}
+::hud{hide=card fade=1}
+```
+
+They are part of the story's interface: they are not drawn on the main menu, nor under the full-screen
+screens (Settings, History, Save, Load, Extras, the shop, the inventory and text input). They **are**
+drawn (dimmed) under a confirmation question over the story. The `U` key hides them together with the
+textbox; `::textbox{hide}` does not. Text in a `{color=..}` tag doesn't fade with the element.
+
+Elements, like the background and sprites, are part of the scene: rollback, saves and hot reload
+restore them (a save from before `::hud` existed shows none; fades are not saved). `quillstone test`
+ignores `::hud` itself but counts the variables its text, `bar`, `max` and `if` read, so a typo is
+reported as a variable that is never set. Putting an element in a text-heavy corner is up to you: the
+textbox and the quick menu are drawn over it.
 
 ## Sound and video
 
@@ -684,7 +750,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch and mirroring, the camera, the colour cover of `::fade{out}`, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch and mirroring, the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

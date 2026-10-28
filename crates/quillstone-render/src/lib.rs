@@ -16,6 +16,7 @@
 //! another textured quad.
 
 pub mod batch;
+pub mod hud;
 pub mod image_probe;
 pub mod layout;
 pub mod pixels;

@@ -12,6 +12,7 @@ use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{Axis, Ease, Fit, Wipe};
 
+use crate::hud::HudLayer;
 use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 
@@ -45,6 +46,8 @@ pub enum Align {
     Center,
     /// Each line centred across the rect, the text starting at the top (centred dialogue).
     CenterX,
+    /// Each line against the right edge of the rect, the text starting at the top.
+    Right,
 }
 
 /// One thing for a backend to draw. Coordinates are virtual (1920x1080);
@@ -470,6 +473,7 @@ pub struct View {
     shake: Option<Shake>,
     flash: Option<Flash>,
     cover: Option<Cover>,
+    hud: HudLayer,
     /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
     /// how fast it fades (per second; 0 = at once).
     box_hidden: bool,
@@ -505,6 +509,7 @@ impl View {
             shake: None,
             flash: None,
             cover: None,
+            hud: HudLayer::default(),
             box_hidden: false,
             box_alpha: 1.0,
             box_rate: 0.0,
@@ -569,6 +574,7 @@ impl View {
                     self.shake = None;
                     self.flash = None;
                     self.cover = None;
+                    self.hud.clear_all();
                     self.box_hidden = false;
                     self.box_alpha = 1.0;
                 }
@@ -624,6 +630,7 @@ impl View {
                         self.cover = None;
                     }
                 }
+                Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } => self.hud.apply(cmd),
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
@@ -710,6 +717,17 @@ impl View {
         self.hide_ui
     }
 
+    /// Hand over the story's variables: HUD text, bars and conditions read them each time
+    /// the draw list is built.
+    pub fn set_vars(&mut self, vars: &quillstone_script::Vars) {
+        self.hud.set_vars(vars);
+    }
+
+    /// The HUD elements, in drawing order.
+    pub fn hud(&self) -> &HudLayer {
+        &self.hud
+    }
+
     /// End a flash that is running (skipping doesn't wait for one).
     pub fn end_flash(&mut self) {
         self.flash = None;
@@ -718,6 +736,7 @@ impl View {
     /// Finish the cover's fades at once (skipping doesn't wait for them): a fade out
     /// is complete, a fade in is gone.
     pub fn end_cover_fade(&mut self) {
+        self.hud.end_fades();
         self.finish_fade_out();
         if self.cover.as_ref().is_some_and(|c| c.target == 0.0) {
             self.cover = None;
@@ -817,6 +836,7 @@ impl View {
             }
         }
         self.sprites.retain(|s| !s.is_gone());
+        self.hud.tick(dt);
         let target = if self.box_hidden { 0.0 } else { 1.0 };
         if self.box_rate > 0.0 {
             let step = self.box_rate * dt;
@@ -844,6 +864,7 @@ impl View {
         self.wait.is_some()
             || self.flash.is_some()
             || self.cover.as_ref().is_some_and(|c| c.alpha != c.target)
+            || self.hud.fading()
             || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
     }
@@ -930,16 +951,21 @@ impl View {
         // The stage: background and sprites, seen through the camera and shake.
         let mut stage = Vec::new();
         if let Some(prev) = &self.previous_background {
-            push_image(&mut stage, prev, screen, Fit::Cover, 1.0, image_size);
+            push_backdrop(&mut stage, prev, screen, 1.0, image_size);
         }
         if let Some(bg) = &self.background {
             let mut picture = Vec::new();
-            push_image(&mut picture, &bg.src, screen, Fit::Cover, bg.alpha(), image_size);
+            push_backdrop(&mut picture, &bg.src, screen, bg.alpha(), image_size);
             for draw in picture {
                 match (draw, bg.revealed()) {
                     (Draw::Image { src, dest, uv, alpha }, Some(part)) => {
                         if let Some((dest, uv)) = clip(dest, uv, part) {
                             stage.push(Draw::Image { src, dest, uv, alpha });
+                        }
+                    }
+                    (Draw::Rect { rect, color }, Some(part)) => {
+                        if let Some((rect, _)) = clip(rect, Rect::new(0.0, 0.0, 1.0, 1.0), part) {
+                            stage.push(Draw::Rect { rect, color });
                         }
                     }
                     (draw, _) => stage.push(draw),
@@ -958,10 +984,15 @@ impl View {
         }
         let view = self.stage_transform();
         for draw in stage {
-            if let Draw::Image { src, dest, uv, alpha } = draw {
-                if let Some((dest, uv)) = clip(view(dest), uv, screen) {
-                    out.push(Draw::Image { src, dest, uv, alpha });
+            match draw {
+                Draw::Image { src, dest, uv, alpha } => {
+                    if let Some((dest, uv)) = clip(view(dest), uv, screen) {
+                        out.push(Draw::Image { src, dest, uv, alpha });
+                    }
                 }
+                // A solid colour fills the screen whatever the camera and shake do.
+                rect @ Draw::Rect { .. } => out.push(rect),
+                Draw::Text { .. } => {}
             }
         }
 
@@ -1007,6 +1038,12 @@ impl View {
         if let Some(flash) = &self.flash {
             let [r, g, b] = flash.color;
             out.push(Draw::Rect { rect: screen, color: [r, g, b, flash.alpha()] });
+        }
+
+        // The HUD is story UI: over the cover and the flash (a title card can sit on a black
+        // screen), under the textbox. Not with a full-screen overlay up, nor when the player hid the UI.
+        if ui && !self.hide_ui {
+            self.hud.draw(&self.theme, image_size, &mut out);
         }
 
         let box_alpha = self.box_alpha();
@@ -1223,6 +1260,14 @@ pub fn choice_rects(theme: &Theme, count: usize) -> Vec<Rect> {
     let top = (textbox.y - full * k) / 2.0;
     let x = (VIRTUAL.w - CHOICE_W) / 2.0;
     (0..count).map(|i| Rect::new(x, top + i as f32 * (h + gap), CHOICE_W, h)).collect()
+}
+
+/// A background: its picture, or the whole screen in its colour for a `color:#rrggbb` one.
+fn push_backdrop(out: &mut Vec<Draw>, src: &str, screen: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
+    match quillstone_script::bg_color(src) {
+        Some([r, g, b]) => out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] }),
+        None => push_image(out, src, screen, Fit::Cover, alpha, image_size),
+    }
 }
 
 fn push_image(

@@ -7,11 +7,13 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
 mod hardening;
+#[cfg(test)]
+mod hud_tests;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
@@ -71,6 +73,13 @@ pub enum Cmd {
     /// Hide or show the dialogue box (textbox, name plate, line, quick menu),
     /// fading over `fade` seconds (0: at once). Part of the scene: see [`State::textbox_hidden`].
     Textbox { hidden: bool, fade: f32 },
+    /// Create or replace a HUD element (same id: in place), fading in over `fade`
+    /// seconds. Part of the scene: see [`State::hud`].
+    HudShow { elem: Box<HudElem>, fade: f32 },
+    /// Remove one HUD element, fading out over `fade` seconds (0: at once).
+    HudHide { id: String, fade: f32 },
+    /// Remove every HUD element.
+    HudClear { fade: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
     /// With an `intro`, that file plays once and `src` then loops.
@@ -257,6 +266,9 @@ pub struct State {
     /// The stage is covered with this colour (`::fade{out}`) until `::fade{in}`.
     /// Textbox, choices and menus are not covered.
     pub cover: Option<[f32; 3]>,
+    /// The HUD elements (`::hud`), in the order they were created: that is the drawing
+    /// order, and an id that is created again keeps its place.
+    pub hud: Vec<HudElem>,
     pub music: Option<MusicState>,
     /// Looping sound effects, in the order they started.
     pub sfx_loops: Vec<SfxLoopState>,
@@ -271,6 +283,14 @@ pub struct State {
 }
 
 impl State {
+    /// Add a HUD element, or replace the one with the same id where it stands.
+    pub fn set_hud(&mut self, elem: HudElem) {
+        match self.hud.iter_mut().find(|h| h.id == elem.id) {
+            Some(slot) => *slot = elem,
+            None => self.hud.push(elem),
+        }
+    }
+
     pub fn new(program: &Program) -> State {
         State::with_seed(program, DEFAULT_SEED)
     }
@@ -287,6 +307,7 @@ impl State {
             camera: Camera::default(),
             textbox_hidden: false,
             cover: None,
+            hud: Vec::new(),
             music: None,
             sfx_loops: Vec::new(),
             inline: Vec::new(),
@@ -312,6 +333,9 @@ impl State {
         }
         if self.textbox_hidden {
             out.push(Cmd::Textbox { hidden: true, fade: 0.0 });
+        }
+        for h in &self.hud {
+            out.push(Cmd::HudShow { elem: Box::new(h.clone()), fade: 0.0 });
         }
         for s in &self.sprites {
             out.push(Cmd::ShowSprite {
@@ -694,6 +718,25 @@ pub(crate) fn step_traced(
             Op::Bg { src, fade, wipe } => {
                 state.background = Some(src.clone());
                 out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe });
+                state.pc += 1;
+            }
+            Op::Hud { elem, fade } => {
+                state.set_hud((**elem).clone());
+                out.push(Cmd::HudShow { elem: elem.clone(), fade: *fade });
+                state.pc += 1;
+            }
+            Op::HudHide { id, fade } => {
+                if state.hud.iter().any(|h| h.id == *id) {
+                    state.hud.retain(|h| h.id != *id);
+                    out.push(Cmd::HudHide { id: id.clone(), fade: *fade });
+                }
+                state.pc += 1;
+            }
+            Op::HudClear { fade } => {
+                if !state.hud.is_empty() {
+                    state.hud.clear();
+                    out.push(Cmd::HudClear { fade: *fade });
+                }
                 state.pc += 1;
             }
             Op::Show { id, src, at, y, z, scale, flip, xscale, yscale, fade } => {

@@ -195,7 +195,7 @@ mod real {
             let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
             let y_off = match job.align {
                 Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
-                Align::Left | Align::CenterX => 0.0,
+                Align::Left | Align::CenterX | Align::Right => 0.0,
             };
 
             if line_count == 0 && !job.text.trim().is_empty() {
@@ -212,6 +212,7 @@ mod real {
                 let x_off = match job.align {
                     Align::Center | Align::CenterX => ((width as f32 - run.line_w) / 2.0).max(0.0),
                     Align::Left => 0.0,
+                    Align::Right => (width as f32 - run.line_w).max(0.0),
                 };
                 let line_y = (run.line_y + y_off).round() as i32;
                 for glyph in run.glyphs.iter() {

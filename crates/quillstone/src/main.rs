@@ -682,6 +682,9 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
+            Cmd::HudShow { elem, .. } => println!("[hud: {}]", elem.id),
+            Cmd::HudHide { id, .. } => println!("[hud hidden: {id}]"),
+            Cmd::HudClear { .. } => println!("[hud cleared]"),
             Cmd::FadeOut { time, .. } if *time > 0.0 => println!("[the screen fades out]"),
             Cmd::FadeOut { .. } => println!("[the screen is covered]"),
             Cmd::FadeIn { .. } => println!("[the screen fades in]"),
@@ -787,6 +790,23 @@ mod tests {
         assert!(err.contains("3 problem"), "two missing images and a bad line: {err}");
         let theme = "inventory_panel = assets/key.png\ninventory_cell = #112233\ninventory_cell_hover = assets/key.png\n";
         assert!(checked(&themed, &[("assets/key.png", KEY), ("t.txt", theme.as_bytes())]).is_ok());
+    }
+
+    #[test]
+    fn check_validates_hud_images_as_pictures_and_accepts_the_hud_demo() {
+        const KEY: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+        let script = "::hud{id=k image=assets/key.png at=0.1,0.1}\nHi.\n";
+        assert!(checked(script, &[("assets/key.png", KEY)]).is_ok());
+        let err = checked(script, &[]).unwrap_err();
+        assert!(err.contains("1 problem"), "missing: {err}");
+        let err = checked(script, &[("assets/key.png", b"not a picture")]).unwrap_err();
+        assert!(err.contains("1 problem"), "not a picture: {err}");
+        let err = checked("::hud{id=k image=../key.png}\nHi.\n", &[]).unwrap_err();
+        assert!(err.contains("inside the game folder"), "{err}");
+        // a solid background needs no file
+        assert!(checked("::bg{color=#102030}\nHi.\n", &[]).is_ok());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hud.quill.md");
+        assert!(check(&path).is_ok());
     }
 
     #[test]

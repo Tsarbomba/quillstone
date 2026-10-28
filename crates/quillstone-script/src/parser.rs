@@ -46,13 +46,14 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, fade, camera, textbox, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, fade, camera, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
-        "bg" => &["src", "fade", "wipe", "through"],
+        "bg" => &["src", "color", "fade", "wipe", "through"],
+        "hud" => &["id", "text", "bar", "max", "image", "at", "anchor", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear"],
         "show" => &["src", "id", "at", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
         "hide" => &["all", "fade"],
         "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease"],
@@ -769,7 +770,29 @@ impl Parser {
     fn build_op(&mut self, line: usize, name: &str, a: &mut Attrs) -> Option<(Op, Option<String>)> {
         match name {
             "bg" => {
-                let src = self.require(line, name, a, "src")?;
+                let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
+                let src = match (has(a, "src"), has(a, "color")) {
+                    (true, true) => {
+                        self.err(line, "`::bg` takes `src=` (a picture or video) or `color=` (a solid colour), not both");
+                        return None;
+                    }
+                    (false, true) => match a.value("color").map(|c| parse_color(&c)) {
+                        Some(Ok(c)) => bg_color_src(c),
+                        Some(Err(m)) => {
+                            self.err(line, m);
+                            return None;
+                        }
+                        None => {
+                            self.err(line, "`::bg{color=...}` needs a colour like `color=#102030`");
+                            return None;
+                        }
+                    },
+                    (false, false) => {
+                        self.err(line, "`::bg` needs `src=file` or `color=#rrggbb`");
+                        return None;
+                    }
+                    (true, false) => self.require(line, name, a, "src")?,
+                };
                 let fade = self.fade(line, a)?;
                 let wipe = match a.value("wipe") {
                     None => None,
@@ -814,6 +837,7 @@ impl Parser {
                 Some((Op::Bg { src, fade, wipe }, None))
             }
             "show" => self.show(line, a),
+            "hud" => self.hud(line, a),
             "hide" => {
                 let all = a.flag("all");
                 let bare = a.take_bare();
@@ -1480,6 +1504,214 @@ impl Parser {
         Ok(ShopEntry { item: key.to_string(), price, cond })
     }
 
+    /// `::hud{...}`: create or replace an element, or `hide=id` / `clear`.
+    fn hud(&mut self, line: usize, a: &mut Attrs) -> Option<(Op, Option<String>)> {
+        let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
+        let fade = match a.value("fade") {
+            None => 0.0,
+            Some(v) => match v.parse::<f32>() {
+                Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
+                _ => {
+                    self.err(line, format!("`fade={v}` must be a number of seconds above 0 and at most 10"));
+                    return None;
+                }
+            },
+        };
+        let (clear, hide) = (a.flag("clear"), has(a, "hide"));
+        if clear || hide {
+            if clear && hide {
+                self.err(line, "`::hud` takes `clear` or `hide=id`, not both");
+                return None;
+            }
+            if let Some(extra) = a.0.iter().map(|(k, _)| k.as_str()).find(|k| *k != "hide") {
+                let extra = extra.to_string();
+                self.err(line, format!("`{extra}` can't be combined with `{}` (only `fade=` can)", if clear { "clear" } else { "hide" }));
+                return None;
+            }
+            if clear {
+                return Some((Op::HudClear { fade }, None));
+            }
+            return match a.value("hide") {
+                Some(id) if is_plain_ident(&id) => Some((Op::HudHide { id, fade }, None)),
+                _ => {
+                    self.err(line, "`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`");
+                    None
+                }
+            };
+        }
+        let id = match a.value("id") {
+            Some(id) if is_plain_ident(&id) => id,
+            Some(id) => {
+                self.err(line, format!("bad `id={id}` (an id is letters, digits and underscores, not starting with a digit)"));
+                return None;
+            }
+            None => {
+                self.err(line, "`::hud` needs `id=name` (the key that lets a later `::hud` replace or hide it)");
+                return None;
+            }
+        };
+        let kinds: Vec<&str> = ["text", "bar", "image"].into_iter().filter(|k| has(a, k)).collect();
+        if kinds.len() != 1 {
+            let m = if kinds.is_empty() { "`::hud` needs one of `text=`, `bar=` or `image=`" } else { "`::hud` takes only one of `text=`, `bar=` and `image=`" };
+            self.err(line, m);
+            return None;
+        }
+        let kind_name = kinds[0];
+        // Attributes that belong to other kinds are mistakes, not silently ignored.
+        let allowed: &[&str] = match kind_name {
+            "text" => &["text", "size", "color", "back", "pad"],
+            "bar" => &["bar", "max", "size", "color", "back", "border", "border_size"],
+            _ => &["image", "scale"],
+        };
+        let common = ["id", "at", "anchor", "if"];
+        let stray = a.0.iter().map(|(k, _)| k.as_str()).find(|k| !allowed.contains(k) && !common.contains(k)).map(str::to_string);
+        if let Some(k) = stray {
+            let known = known_attrs("hud");
+            if known.contains(&k.as_str()) {
+                self.err(line, format!("`{k}=` isn't used by a `{kind_name}` element (it takes: {}, {})", allowed.join(", "), common.join(", ")));
+                return None;
+            }
+            return None; // unknown: reported by the caller as an unknown attribute
+        }
+        let at = match a.value("at") {
+            None => [0.0, 0.0],
+            Some(v) => {
+                let parts: Vec<&str> = v.split(',').collect();
+                match parts.as_slice() {
+                    [x, y] => match (parse_fraction(x), parse_fraction(y)) {
+                        (Some(x), Some(y)) => [x, y],
+                        _ => {
+                            self.err(line, format!("bad `at={v}` (two numbers from 0 to 1 or percentages: `at=0.92,0.04` or `at=92%,4%`)"));
+                            return None;
+                        }
+                    },
+                    _ => {
+                        self.err(line, format!("bad `at={v}` (two numbers from 0 to 1 or percentages: `at=0.92,0.04` or `at=92%,4%`)"));
+                        return None;
+                    }
+                }
+            }
+        };
+        let anchor = match a.value("anchor") {
+            None => HudAnchor::Left,
+            Some(v) => match HudAnchor::parse(&v) {
+                Some(x) => x,
+                None => {
+                    self.err(line, format!("`anchor={v}` must be `left`, `center` or `right`"));
+                    return None;
+                }
+            },
+        };
+        let cond = match a.value("if") {
+            None => None,
+            Some(c) => match HudExpr::parse(&c).and_then(|e| self.check_expr(&e.expr).map(|()| e)) {
+                Ok(c) => Some(c),
+                Err(m) => {
+                    self.err(line, m);
+                    return None;
+                }
+            },
+        };
+        let colour = |this: &mut Self, a: &mut Attrs, key: &str| -> Option<Option<[f32; 4]>> {
+            match a.value(key) {
+                None => Some(None),
+                Some(v) => match parse_color_alpha(&v) {
+                    Ok(c) => Some(Some(c)),
+                    Err(m) => {
+                        this.err(line, format!("`{key}`: {m}"));
+                        None
+                    }
+                },
+            }
+        };
+        let kind = match kind_name {
+            "text" => {
+                let text = a.value("text").unwrap_or_default();
+                if text.trim().is_empty() {
+                    self.err(line, "`::hud{text=...}` needs some text");
+                    return None;
+                }
+                match crate::markup::parse_markup(&text) {
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                    Ok(r) if r.no_wait || r.text.contains('\n') => {
+                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::hud` text");
+                        return None;
+                    }
+                    Ok(_) => {}
+                }
+                let size = self.number(line, a, "size", 8.0..=300.0)?;
+                let color = colour(self, a, "color")?;
+                let back = colour(self, a, "back")?;
+                let pad = self.number(line, a, "pad", 0.0..=200.0)?.unwrap_or(0.0);
+                HudKind::Text { text, size, color, back, pad }
+            }
+            "bar" => {
+                let bar_src = a.value("bar").unwrap_or_default();
+                let Some(max_src) = a.value("max") else {
+                    self.err(line, "`::hud{bar=...}` needs `max=` (the value that fills the bar: a number or an expression)");
+                    return None;
+                };
+                let expr = |this: &mut Self, key: &str, v: &str| -> Option<HudExpr> {
+                    match HudExpr::parse(v).and_then(|e| this.check_expr(&e.expr).map(|()| e)) {
+                        Ok(e) => Some(e),
+                        Err(m) => {
+                            this.err(line, format!("`{key}=`: {m}"));
+                            None
+                        }
+                    }
+                };
+                let value = expr(self, "bar", &bar_src)?;
+                let max = expr(self, "max", &max_src)?;
+                let size = match a.value("size") {
+                    None => {
+                        self.err(line, "`::hud{bar=...}` needs `size=width,height` (in pixels of the 1920x1080 screen, like `size=320,26`)");
+                        return None;
+                    }
+                    Some(v) => {
+                        let parts: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse::<f32>().ok().filter(|f| f.is_finite())).collect();
+                        match parts.as_slice() {
+                            [w, h] if (1.0..=1920.0).contains(w) && (1.0..=1080.0).contains(h) && v.split(',').count() == 2 => [*w, *h],
+                            _ => {
+                                self.err(line, format!("bad `size={v}` for a bar (width,height in pixels: `size=320,26`, at most 1920,1080)"));
+                                return None;
+                            }
+                        }
+                    }
+                };
+                let color = colour(self, a, "color")?;
+                let back = colour(self, a, "back")?.unwrap_or([0.2, 0.2, 0.2, 1.0]);
+                let border_color = colour(self, a, "border")?;
+                let width = self.number(line, a, "border_size", 1.0..=3.0)?;
+                if width.is_some() && border_color.is_none() {
+                    self.err(line, "`border_size=` needs `border=` (the outline's colour)");
+                    return None;
+                }
+                let border = border_color.map(|c| (c, width.unwrap_or(2.0)));
+                HudKind::Bar { value, max, size, color, back, border }
+            }
+            _ => {
+                let src = a.value("image").unwrap_or_default();
+                if src.is_empty() {
+                    self.err(line, "`::hud{image=...}` needs a picture file");
+                    return None;
+                }
+                let src = match check_image_path(&src, "image", "a HUD image") {
+                    Ok(s) => s,
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                };
+                let scale = self.number(line, a, "scale", 0.05..=10.0)?.unwrap_or(1.0);
+                HudKind::Image { src, scale }
+            }
+        };
+        Some((Op::Hud { elem: Box::new(HudElem { id, at, anchor, cond, kind }), fade }, None))
+    }
+
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
         match a.value(key) {
             Some(v) if !v.is_empty() => match check_inside(key, &v) {
@@ -2056,6 +2288,21 @@ pub(crate) fn parse_color(s: &str) -> Result<[f32; 3], String> {
     }
 }
 
+/// `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` -> 0..1 RGBA (opaque without an alpha part).
+pub(crate) fn parse_color_alpha(s: &str) -> Result<[f32; 4], String> {
+    let bad = || format!("bad colour `{s}` (use #rrggbb, #rrggbbaa, #rgb or #rgba)");
+    let hex = s.strip_prefix('#').ok_or_else(bad)?;
+    let d: Vec<u32> = hex.chars().map(|c| c.to_digit(16)).collect::<Option<_>>().ok_or_else(bad)?;
+    let byte = |hi: u32, lo: u32| (hi * 16 + lo) as f32 / 255.0;
+    match d.as_slice() {
+        [r1, r2, g1, g2, b1, b2] => Ok([byte(*r1, *r2), byte(*g1, *g2), byte(*b1, *b2), 1.0]),
+        [r1, r2, g1, g2, b1, b2, a1, a2] => Ok([byte(*r1, *r2), byte(*g1, *g2), byte(*b1, *b2), byte(*a1, *a2)]),
+        [r, g, b] => Ok([byte(*r, *r), byte(*g, *g), byte(*b, *b), 1.0]),
+        [r, g, b, a] => Ok([byte(*r, *r), byte(*g, *g), byte(*b, *b), byte(*a, *a)]),
+        _ => Err(bad()),
+    }
+}
+
 /// A flag that may be absent: `flip` or `flip=true` is `Some(true)`, `flip=false` is `Some(false)`.
 fn opt_flag(a: &mut Attrs, key: &str) -> Option<bool> {
     a.take(key).map(|v| v.is_none_or(|v| !matches!(v.as_str(), "false" | "0" | "no")))
@@ -2521,7 +2768,7 @@ mod tests {
         assert_eq!(e.len(), 1, "the unread `wipe` isn't reported: {e:?}");
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
-        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, fade, wipe, through)"));
+        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, fade, wipe, through)"));
         assert!(has_err("::frobnicate\n", "shake, flash, fade, camera"));
     }
 
@@ -3521,5 +3768,167 @@ mod tests {
             assert_eq!(e[0].line, 2, "{src}");
             assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
         }
+    }
+
+    // ---- ::hud and ::bg{color} ----
+
+    fn hud_of(src: &str) -> (HudElem, f32) {
+        match ok(src).ops.into_iter().next().unwrap() {
+            Op::Hud { elem, fade } => (*elem, fade),
+            other => panic!("not a hud op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hud_text_takes_every_attribute() {
+        let (e, fade) = hud_of("::hud{id=clock text=\"Day {day}, {hero.gold} gold\" at=0.92,0.04 size=32 color=#ffffff anchor=right back=#00000099 pad=12 fade=0.3 if=\"day > 1\"}\n");
+        assert_eq!(fade, 0.3);
+        assert_eq!((e.id.as_str(), e.at, e.anchor), ("clock", [0.92, 0.04], HudAnchor::Right));
+        assert_eq!(e.cond.as_ref().unwrap().src, "day > 1");
+        let HudKind::Text { text, size, color, back, pad } = e.kind else { panic!() };
+        assert_eq!(text, "Day {day}, {hero.gold} gold");
+        assert_eq!((size, pad), (Some(32.0), 12.0));
+        assert_eq!(color, Some([1.0, 1.0, 1.0, 1.0]));
+        assert!((back.unwrap()[3] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hud_defaults_and_percentages() {
+        let (e, fade) = hud_of("::hud{id=a text=Hi at=50%,10%}\n");
+        assert_eq!((fade, e.at, e.anchor, e.cond.is_none()), (0.0, [0.5, 0.1], HudAnchor::Left, true));
+        assert_eq!(e.kind, HudKind::Text { text: "Hi".into(), size: None, color: None, back: None, pad: 0.0 });
+        assert_eq!(hud_of("::hud{id=a text=Hi}\n").0.at, [0.0, 0.0]);
+        for (name, anchor) in [("left", HudAnchor::Left), ("center", HudAnchor::Center), ("right", HudAnchor::Right)] {
+            assert_eq!(hud_of(&format!("::hud{{id=a text=Hi anchor={name}}}\n")).0.anchor, anchor);
+        }
+    }
+
+    #[test]
+    fn a_hud_bar_takes_expressions_a_size_and_a_border() {
+        let src = "::hud{id=hp bar=hero.hp max=hero.max_hp+2 at=0.02,0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff border_size=3}\n";
+        let (e, _) = hud_of(&format!("---\nvars: {{ hero.hp: 3, hero.max_hp: 5 }}\n---\n{src}"));
+        let HudKind::Bar { value, max, size, color, back, border } = e.kind else { panic!() };
+        assert_eq!((value.src.as_str(), max.src.as_str(), size), ("hero.hp", "hero.max_hp+2", [320.0, 26.0]));
+        assert_eq!(color.unwrap()[0], 0xcc as f32 / 255.0);
+        assert_eq!(back, [0.2, 0.2, 0.2, 1.0]);
+        assert_eq!(border.unwrap().1, 3.0);
+        let (e, _) = hud_of("::hud{id=hp bar=3 max=10 size=100,10 border=#fff}\n");
+        let HudKind::Bar { color, border, max, .. } = e.kind else { panic!() };
+        assert_eq!((color, border.unwrap().1, max.expr), (None, 2.0, Expr::Lit(Value::Int(10))));
+    }
+
+    #[test]
+    fn a_hud_image_is_checked_like_a_hotspot_image() {
+        let p = ok("::hud{id=heart image=assets/heart.png at=0.02,0.9 scale=0.5}\n");
+        assert!(matches!(&p.ops[0], Op::Hud { elem, .. } if elem.image() == Some("assets/heart.png")));
+        assert_eq!(p.assets().map(|(_, _, a)| a).collect::<Vec<_>>(), ["assets/heart.png"]);
+        assert!(has_err("::hud{id=h image=../x.png}\n", "inside the game folder"));
+        assert!(has_err("::hud{id=h image=a.txt}\n", ".png, .jpg or .webp"));
+        assert!(has_err("::hud{id=h image=a.png scale=11}\n", "scale=11"));
+    }
+
+    #[test]
+    fn hud_hide_and_clear() {
+        assert_eq!(ok("::hud{hide=clock fade=0.3}\n").ops[0], Op::HudHide { id: "clock".into(), fade: 0.3 });
+        assert_eq!(ok("::hud{hide=clock}\n").ops[0], Op::HudHide { id: "clock".into(), fade: 0.0 });
+        assert_eq!(ok("::hud{clear}\n").ops[0], Op::HudClear { fade: 0.0 });
+        assert_eq!(ok("::hud{clear fade=2}\n").ops[0], Op::HudClear { fade: 2.0 });
+        assert!(has_err("::hud{hide}\n", "needs the id"));
+        assert!(has_err("::hud{clear hide=a}\n", "not both"));
+        assert!(has_err("::hud{clear id=a}\n", "can't be combined"));
+    }
+
+    #[test]
+    fn a_hud_needs_exactly_one_kind_and_an_id() {
+        assert!(has_err("::hud{id=a}\n", "needs one of `text=`, `bar=` or `image=`"));
+        assert!(has_err("::hud{id=a text=x bar=1 max=2 size=1,1}\n", "only one of"));
+        assert!(has_err("::hud{id=a text=x image=a.png}\n", "only one of"));
+        assert!(has_err("::hud{text=x}\n", "needs `id=name`"));
+        assert!(has_err("::hud{id=1a text=x}\n", "bad `id=1a`"));
+        assert!(has_err("::hud{id=a.b text=x}\n", "bad `id=a.b`"));
+    }
+
+    #[test]
+    fn hud_errors_name_the_line_and_the_problem() {
+        let e = errs("one\n\n::hud{id=a text=x fade=0}\n");
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].line, 3);
+        for (src, needle) in [
+            ("::hud{id=a text=x fade=11}", "fade=11"),
+            ("::hud{id=a text=x at=2,0}", "bad `at=2,0`"),
+            ("::hud{id=a text=x at=0.5}", "bad `at=0.5`"),
+            ("::hud{id=a text=x at=0.1,0.2,0.3}", "bad `at="),
+            ("::hud{id=a text=x anchor=top}", "`anchor=top` must be"),
+            ("::hud{id=a text=x size=7}", "size=7"),
+            ("::hud{id=a text=x size=301}", "size=301"),
+            ("::hud{id=a text=x color=red}", "bad colour"),
+            ("::hud{id=a text=x back=#12}", "bad colour"),
+            ("::hud{id=a text=x pad=-1}", "pad=-1"),
+            ("::hud{id=a text=\"x{nw}\"}", "only work in dialogue"),
+            ("::hud{id=a text=\"x{p}y\"}", "only work in dialogue"),
+            ("::hud{id=a text=\"{color=#zzz}x\"}", "colour"),
+            ("::hud{id=a text=x if=\"1 +\"}", "too early"),
+            ("::hud{id=a text=x if=\"random(1,2)\"}", "random"),
+            ("::hud{id=a bar=1 size=10,10}", "needs `max=`"),
+            ("::hud{id=a bar=1 max=2}", "needs `size="),
+            ("::hud{id=a bar=1 max=2 size=0,10}", "bad `size=0,10`"),
+            ("::hud{id=a bar=1 max=2 size=10}", "bad `size=10`"),
+            ("::hud{id=a bar=1 max=2 size=10,10,10}", "bad `size="),
+            ("::hud{id=a bar=\"1 +\" max=2 size=10,10}", "`bar=`"),
+            ("::hud{id=a bar=1 max=random(1,2) size=10,10}", "`max=`"),
+            ("::hud{id=a bar=1 max=2 size=10,10 border=#fff border_size=4}", "border_size=4"),
+            ("::hud{id=a bar=1 max=2 size=10,10 border_size=2}", "needs `border=`"),
+            ("::hud{id=a text=x scale=2}", "isn't used by a `text` element"),
+            ("::hud{id=a image=a.png size=3}", "isn't used by a `image` element"),
+            ("::hud{id=a bar=1 max=2 size=1,1 pad=3}", "isn't used by a `bar` element"),
+            ("::hud{id=a text=x colour=#fff}", "unknown attribute `colour`"),
+            ("::hud{id=a text=\"\"}", "needs some text"),
+        ] {
+            assert!(has_err(&format!("{src}\n"), needle), "{src} should say `{needle}`: {:?}", errs(&format!("{src}\n")));
+        }
+    }
+
+    #[test]
+    fn a_hud_bar_over_a_text_variable_is_an_error() {
+        assert!(has_err("---\nvars: { name: \"Ann\" }\n---\n::hud{id=a bar=name+1 max=3 size=10,10}\n", "name"));
+    }
+
+    #[test]
+    fn hud_expressions_count_as_reads() {
+        let p = ok("---\nvars: { hp: 3 }\n---\n::hud{id=a bar=hp max=seen(go) size=10,10 if=\"hp > 0\"}\n# go\nHi.\n");
+        let mut names = Vec::new();
+        p.ops[0].exprs().iter().for_each(|e| e.vars_read(&mut names));
+        assert!(names.contains(&"hp") && names.contains(&"seen:go"), "{names:?}");
+        assert!(p.counted.contains_key(&p.labels["go"]), "seen() in a HUD expression is counted");
+    }
+
+    #[test]
+    fn a_solid_colour_background() {
+        assert_eq!(ok("::bg{color=#102030}\n").ops[0], Op::Bg { src: "color:#102030".into(), fade: 0.0, wipe: None });
+        assert_eq!(ok("::bg{color=#fff fade=0.5}\n").ops[0], Op::Bg { src: "color:#ffffff".into(), fade: 0.5, wipe: None });
+        assert_eq!(ok("::bg{color=#000 fade=1 wipe=left}\n").ops[0], Op::Bg { src: "color:#000000".into(), fade: 1.0, wipe: Some(Wipe::Left) });
+        let p = ok("::bg{color=#fff fade=1 through=#000}\n");
+        assert!(matches!(p.ops[0], Op::FadeOut { .. }) && matches!(p.ops[1], Op::Bg { fade, .. } if fade == 0.0) && matches!(p.ops[2], Op::FadeIn { .. }));
+        assert_eq!(p.assets().count(), 0, "a colour is no file");
+        assert_eq!(bg_color("color:#102030"), Some([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0]));
+        assert_eq!(bg_color("assets/a.png"), None);
+        assert_eq!(bg_color("color:#12"), None);
+        assert_eq!(bg_color(&bg_color_src([1.0, 0.5, 0.0])), Some([1.0, 128.0 / 255.0, 0.0]));
+    }
+
+    #[test]
+    fn a_background_is_a_file_or_a_colour() {
+        assert!(has_err("::bg{src=a.png color=#fff}\n", "not both"));
+        assert!(has_err("::bg{fade=1}\n", "needs `src=file` or `color=#rrggbb`"));
+        assert!(has_err("::bg{color=blue}\n", "bad colour"));
+        assert!(has_err("::bg{color=#fff wipe=left}\n", "needs a duration"));
+        assert!(has_err("::bg{color}\n", "needs a colour"));
+    }
+
+    #[test]
+    fn the_hud_demo_parses() {
+        let p = ok(include_str!("../../../examples/hud.quill.md"));
+        assert!(p.ops.iter().any(|o| matches!(o, Op::HudClear { .. })));
+        assert_eq!(p.ops.iter().filter(|o| matches!(o, Op::Hud { .. })).count(), 7);
     }
 }

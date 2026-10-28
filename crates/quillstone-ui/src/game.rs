@@ -916,6 +916,9 @@ impl<'p> Game<'p> {
             self.notify(format!("The story was stopped: {reason}"));
         }
         self.view.apply(cmds);
+        if !self.view.hud().is_empty() {
+            self.view.set_vars(&self.session.state().vars); // the HUD shows them live
+        }
         self.bag_arrived(cmds);
         self.input_arrived(cmds);
         let mut actions = self.mixer.apply(cmds);
@@ -1150,3 +1153,5 @@ impl<'p> Game<'p> {
 mod tests;
 #[cfg(test)]
 mod input_tests;
+#[cfg(test)]
+mod hud_tests;

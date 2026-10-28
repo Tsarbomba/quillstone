@@ -430,6 +430,15 @@ impl Explorer<'_> {
                     }
                 }
                 Op::Say { text, .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
+                // A HUD element reads its variables every time it is drawn.
+                Op::Hud { elem, .. } => {
+                    for e in elem.exprs() {
+                        read.extend(names(|out| e.vars_read(out)).into_iter().map(|n| (at, n, false)));
+                    }
+                    if let quillstone_script::HudKind::Text { text, .. } = &elem.kind {
+                        read.extend(braces(text).into_iter().map(|n| (at, n, true)));
+                    }
+                }
                 Op::Input { prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 Op::Shop { pay, into, stock } => {
                     set.insert(into);

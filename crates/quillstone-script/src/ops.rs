@@ -692,6 +692,113 @@ impl Wipe {
     }
 }
 
+/// Prefix of a background that is a solid colour instead of a file: `color:#rrggbb`.
+/// (`:` can't be in a game-folder path, see [`is_inside`], so it never collides with a file.)
+pub const BG_COLOR_PREFIX: &str = "color:";
+
+/// The `src` of a solid-colour background (quantised to 8 bits per channel).
+pub fn bg_color_src(c: [f32; 3]) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("{BG_COLOR_PREFIX}#{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]))
+}
+
+/// The colour of a solid-colour background `src`, or `None` for a file.
+pub fn bg_color(src: &str) -> Option<[f32; 3]> {
+    let hex = src.strip_prefix(BG_COLOR_PREFIX)?.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map(|v| v as f32 / 255.0).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// Where a HUD element sits relative to its `at` point (the vertical side is always the top).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HudAnchor {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl HudAnchor {
+    pub fn parse(s: &str) -> Option<HudAnchor> {
+        match s {
+            "left" => Some(HudAnchor::Left),
+            "center" | "centre" => Some(HudAnchor::Center),
+            "right" => Some(HudAnchor::Right),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HudAnchor::Left => "left",
+            HudAnchor::Center => "center",
+            HudAnchor::Right => "right",
+        }
+    }
+}
+
+/// An expression kept with the text it was written as (saves store the text).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HudExpr {
+    pub src: String,
+    pub expr: Expr,
+}
+
+impl HudExpr {
+    /// Parse `src` as an expression (`random` is refused, as in every condition).
+    pub fn parse(src: &str) -> Result<HudExpr, String> {
+        let src = src.trim();
+        Ok(HudExpr { src: src.to_string(), expr: crate::parse_expr(src)? })
+    }
+}
+
+/// What a HUD element is (see [`HudElem`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HudKind {
+    /// Tagged text with `{name}` values filled in when it is drawn. `size` and `color`
+    /// default to the theme's; `back` is a panel behind the text, `pad` its padding.
+    Text { text: String, size: Option<f32>, color: Option<[f32; 4]>, back: Option<[f32; 4]>, pad: f32 },
+    /// A bar filled `value / max` of the way, left to right. `border` is a colour and a width.
+    Bar { value: HudExpr, max: HudExpr, size: [f32; 2], color: Option<[f32; 4]>, back: [f32; 4], border: Option<([f32; 4], f32)> },
+    /// A picture inside the game folder, drawn at its own size times `scale`.
+    Image { src: String, scale: f32 },
+}
+
+/// One always-on overlay element (`::hud`). `id` is its key: a new element with the
+/// same id replaces it in place. `at` is where the anchor point is, as fractions of the screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HudElem {
+    pub id: String,
+    pub at: [f32; 2],
+    pub anchor: HudAnchor,
+    /// Drawn only while this is true (checked every time it is drawn).
+    pub cond: Option<HudExpr>,
+    pub kind: HudKind,
+}
+
+impl HudElem {
+    /// Every expression the element reads when it is drawn.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut out: Vec<&Expr> = self.cond.iter().map(|c| &c.expr).collect();
+        if let HudKind::Bar { value, max, .. } = &self.kind {
+            out.push(&value.expr);
+            out.push(&max.expr);
+        }
+        out
+    }
+
+    /// The picture file, for an image element.
+    pub fn image(&self) -> Option<&str> {
+        match &self.kind {
+            HudKind::Image { src, .. } => Some(src),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetKind {
     Image,
@@ -817,6 +924,12 @@ pub enum Op {
     FadeOut { time: f32, color: [f32; 3] },
     /// Fade the cover away over `time` seconds. Doesn't wait.
     FadeIn { time: f32 },
+    /// Create or replace a HUD element (`::hud`), fading in over `fade` seconds.
+    Hud { elem: Box<HudElem>, fade: f32 },
+    /// Remove one HUD element (`::hud{hide=id}`); an unknown id does nothing.
+    HudHide { id: String, fade: f32 },
+    /// Remove every HUD element (`::hud{clear}`).
+    HudClear { fade: f32 },
     /// Voice clip for the next line.
     Voice { src: String },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.
@@ -852,6 +965,7 @@ impl Op {
         match self {
             Op::Jump { cond: Some(c), .. } => vec![c],
             Op::Set(e) => vec![&e.value],
+            Op::Hud { elem, .. } => elem.exprs(),
             Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),
             Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
             Op::Choice { options } => options
@@ -882,7 +996,9 @@ impl Op {
     pub fn asset(&self) -> Option<(AssetKind, &str)> {
         match self {
             Op::Image { src, .. } => Some((AssetKind::Image, src)),
+            Op::Bg { src, .. } if bg_color(src).is_some() => None,
             Op::Bg { src, .. } => Some((kind_from_path(src), src)),
+            Op::Hud { elem, .. } => elem.image().map(|i| (AssetKind::Image, i)),
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
             Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {
                 Some((AssetKind::Audio, src))

@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
+use quillstone_script::{bg_color, is_inside, Fit, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
 use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteState, State};
@@ -30,6 +30,11 @@ const MAX_SAVE_STATES: usize = 1_000;
 
 /// Most return addresses (`stack` records) in one state: the runtime's call depth limit.
 const MAX_STACK_RECORDS: usize = crate::MAX_CALL_DEPTH;
+
+/// Most `hud` records in one state (a save with more is refused), and the longest
+/// text or expression one may hold.
+const MAX_HUD_RECORDS: usize = 256;
+const MAX_HUD_TEXT: usize = 2_000;
 
 const MAGIC: &str = "quillstone-session 1";
 
@@ -271,6 +276,104 @@ fn color(c: Option<[f32; 3]>) -> String {
     }
 }
 
+fn rgba(c: Option<[f32; 4]>) -> String {
+    match c {
+        Some([r, g, b, a]) => format!("{r},{g},{b},{a}"),
+        None => "-".into(),
+    }
+}
+
+/// `hud <kind> "id" x y anchor "if" ...kind fields`: an empty `if` is no condition, `-` is "not set".
+fn hud_record(h: &HudElem) -> String {
+    let head = format!(
+        "hud {} {} {} {} {} {}",
+        match &h.kind {
+            HudKind::Text { .. } => "text",
+            HudKind::Bar { .. } => "bar",
+            HudKind::Image { .. } => "image",
+        },
+        q(&h.id),
+        h.at[0],
+        h.at[1],
+        h.anchor.name(),
+        q(h.cond.as_ref().map_or("", |c| c.src.as_str()))
+    );
+    match &h.kind {
+        HudKind::Text { text, size, color, back, pad } => {
+            format!("{head} {} {} {} {} {pad}", q(text), size.map_or("-".into(), |s| s.to_string()), rgba(*color), rgba(*back))
+        }
+        HudKind::Bar { value, max, size, color, back, border } => {
+            let (bc, bw) = border.map_or(("-".to_string(), 0.0), |(c, w)| (rgba(Some(c)), w));
+            format!("{head} {} {} {} {} {} {} {bc} {bw}", q(&value.src), q(&max.src), size[0], size[1], rgba(*color), rgba(Some(*back)))
+        }
+        HudKind::Image { src, scale } => format!("{head} {} {scale}", q(src)),
+    }
+}
+
+fn parse_rgba(s: &str, n: usize) -> Result<[f32; 4], String> {
+    let parts: Vec<f32> = s.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
+    let [r, g, b, a] = parts[..] else { return Err(format!("line {n}: bad colour `{s}`")) };
+    Ok([r, g, b, a].map(|c| sane(c, 0.0, 1.0, 0.0)))
+}
+
+fn read_hud(t: &[String], n: usize) -> Result<HudElem, String> {
+    let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: a `hud` record is too short"));
+    let f = |i: usize| -> Result<f32, String> { num(arg(i)?, n) };
+    let opt_rgba = |i: usize| -> Result<Option<[f32; 4]>, String> {
+        match arg(i)? {
+            "-" => Ok(None),
+            c => parse_rgba(c, n).map(Some),
+        }
+    };
+    let expr = |i: usize| -> Result<HudExpr, String> {
+        let src = arg(i)?;
+        if src.len() > MAX_HUD_TEXT {
+            return Err(format!("line {n}: a `hud` expression is too long"));
+        }
+        HudExpr::parse(src).map_err(|e| format!("line {n}: bad `hud` expression `{src}`: {e}"))
+    };
+    let id = arg(2)?.to_string();
+    if !quillstone_script::is_plain_ident(&id) {
+        return Err(format!("line {n}: bad `hud` id `{id}`"));
+    }
+    let at = [sane(f(3)?, 0.0, 1.0, 0.0), sane(f(4)?, 0.0, 1.0, 0.0)];
+    let anchor = HudAnchor::parse(arg(5)?).ok_or(format!("line {n}: bad `hud` anchor `{}`", arg(5)?))?;
+    let cond = match arg(6)? {
+        "" => None,
+        _ => Some(expr(6)?),
+    };
+    let kind = match arg(1)? {
+        "text" => {
+            let text = arg(7)?.to_string();
+            if text.len() > MAX_HUD_TEXT {
+                return Err(format!("line {n}: a `hud` text is too long"));
+            }
+            let size = match arg(8)? {
+                "-" => None,
+                _ => Some(sane(f(8)?, 8.0, 300.0, 32.0)),
+            };
+            HudKind::Text { text, size, color: opt_rgba(9)?, back: opt_rgba(10)?, pad: sane(f(11)?, 0.0, 200.0, 0.0) }
+        }
+        "bar" => HudKind::Bar {
+            value: expr(7)?,
+            max: expr(8)?,
+            size: [sane(f(9)?, 1.0, 1920.0, 100.0), sane(f(10)?, 1.0, 1080.0, 20.0)],
+            color: opt_rgba(11)?,
+            back: opt_rgba(12)?.unwrap_or([0.2, 0.2, 0.2, 1.0]),
+            border: opt_rgba(13)?.map(|c| (c, sane(f(14).unwrap_or(2.0), 1.0, 3.0, 2.0))),
+        },
+        "image" => {
+            let src = arg(7)?;
+            if !is_inside(src) {
+                return Err(format!("line {n}: unsafe file path `{src}`"));
+            }
+            HudKind::Image { src: src.to_string(), scale: sane(f(8)?, 0.05, 10.0, 1.0) }
+        }
+        other => return Err(format!("line {n}: unknown `hud` kind `{other}`")),
+    };
+    Ok(HudElem { id, at, anchor, cond, kind })
+}
+
 fn write_state(out: &mut String, s: &State, program: &Program) {
     let mut w = |line: String| {
         out.push_str(&line);
@@ -315,6 +418,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     // Saves from before `::fade` existed have no such record: they load uncovered.
     if s.cover.is_some() {
         w(format!("cover {}", color(s.cover)));
+    }
+    // Saves from before `::hud` existed have no such records: they load with none.
+    for h in &s.hud {
+        w(hud_record(h));
     }
     // The intro, if any, is a fourth value; saves from before it existed load without one.
     if let Some(m) = &s.music {
@@ -490,7 +597,15 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 }
             }
             "rng" => s.rng = num(arg(1)?, n)?,
+            // A solid colour is `color:#rrggbb`; anything else is a file and must be inside the game folder.
+            "bg" if bg_color(arg(1)?).is_some() => s.background = Some(arg(1)?.to_string()),
             "bg" => s.background = Some(path(1)?),
+            "hud" => {
+                if s.hud.len() >= MAX_HUD_RECORDS {
+                    return Err(format!("line {n}: more than {MAX_HUD_RECORDS} `hud` records in a state"));
+                }
+                s.set_hud(read_hud(&t, n)?);
+            }
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
                 src: path(2)?,
