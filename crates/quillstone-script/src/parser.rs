@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use crate::expr::{is_ident, is_keyword, parse_effect, parse_expr, parse_list, parse_value, split_top_level};
+use crate::expr::{is_ident, is_keyword, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value, split_top_level};
 use crate::ops::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,7 +416,9 @@ impl Parser {
 
     // ---- list variables ---------------------------------------------------
 
-    /// `has` needs a list variable declared in the front matter.
+    /// `has` and `count()` need a list variable declared in the front matter, and
+    /// arithmetic needs numbers: a text or a list operand that is known from the
+    /// declarations is an error.
     fn check_expr(&self, e: &Expr) -> Result<(), String> {
         let mut tests = Vec::new();
         e.has_tests(&mut tests);
@@ -430,7 +432,53 @@ impl Parser {
                 }
             }
         }
-        Ok(())
+        self.check_numbers(e)
+    }
+
+    fn check_numbers(&self, e: &Expr) -> Result<(), String> {
+        let number = |operand: &Expr, what: &str| -> Result<(), String> {
+            let kind = match operand {
+                Expr::Lit(Value::Str(s)) => Some(format!("the text \"{s}\"")),
+                Expr::Var(n) => match self.program.vars.get(n) {
+                    Some(Value::Str(_)) => Some(format!("`{n}` (a text variable)")),
+                    Some(Value::List(_)) => Some(format!("`{n}` (a list)")),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match kind {
+                Some(k) => Err(format!(
+                    "{k} is not a number, but {what} works on whole numbers (text is joined with `+=`; `count(list)` is a list's size)"
+                )),
+                None => Ok(()),
+            }
+        };
+        match e {
+            Expr::Bin(a, op, b) => {
+                let what = format!("`{}`", op.symbol());
+                number(a, &what)?;
+                number(b, &what)?;
+            }
+            Expr::Neg(a) => number(a, "`-`")?,
+            Expr::Func(_, args) => {
+                for a in args {
+                    number(a, "a function like `min`, `max` or `abs`")?;
+                }
+            }
+            Expr::Random(a, b) => {
+                number(a, "`random`")?;
+                number(b, "`random`")?;
+            }
+            Expr::Count(name) => match self.program.vars.get(name) {
+                Some(Value::List(_)) => {}
+                Some(_) => return Err(format!("`count({name})`: `{name}` is not a list")),
+                None => {
+                    return Err(format!("`count({name})`: `{name}` is not a list (declare it in the front matter: `vars: {{ {name}: [] }}`)"));
+                }
+            },
+            _ => {}
+        }
+        e.children().into_iter().try_for_each(|c| self.check_numbers(c))
     }
 
     /// A bare list variable can't be used as a value (it would be silently ignored):
@@ -457,6 +505,9 @@ impl Parser {
             (AssignOp::Set, _) => Err(format!("`{var}` is a list: change it with `{var} += \"item\"` or `{var} -= \"item\"`, not `=`")),
             (_, Expr::Lit(Value::Str(s))) if !s.is_empty() => Ok(()),
             (_, Expr::Lit(_)) => Err(format!("`{var}` is a list: `+=` and `-=` take a non-empty text, like `{var} += \"key\"`")),
+            (_, Expr::Bin(..) | Expr::Neg(_) | Expr::Func(..) | Expr::Count(_) | Expr::Random(..)) => {
+                Err(format!("`{var}` is a list: `+=` and `-=` take a text item, like `{var} += \"key\"`, not a number"))
+            }
             _ => Ok(()), // a variable or other expression: only text works, anything else is ignored
         }
     }
@@ -495,7 +546,7 @@ impl Parser {
         }
         let mut names: Vec<String> = Vec::new();
         for part in inner.split(',').map(str::trim) {
-            if !is_ident(part) {
+            if !is_plain_ident(part) {
                 return Err(format!("bad parameter `{part}` in the heading (names are letters, digits and `_`, separated by commas)"));
             }
             if is_keyword(part) || matches!(part, "to" | "p" | "nw") {
@@ -687,7 +738,7 @@ impl Parser {
                     (None, label) => to = Some(label.to_string()),
                 },
                 Some(v) => {
-                    if !is_ident(&key) || is_keyword(&key) {
+                    if !is_plain_ident(&key) || is_keyword(&key) {
                         self.err(line, format!("`{key}` can't be an argument name (arguments are the label's parameter names)"));
                     } else if args.iter().any(|(k, _)| *k == key) {
                         self.err(line, format!("`{key}` is given twice in this `::call`"));
@@ -1171,7 +1222,7 @@ impl Parser {
             self.err(line, "`::character` needs `id=...`");
             return;
         };
-        if !is_ident(&id) {
+        if !is_plain_ident(&id) {
             self.err(line, format!("character id `{id}` must be letters, digits and `_`"));
             return;
         }
@@ -2613,6 +2664,18 @@ mod tests {
     }
 
     #[test]
+    fn the_stats_demo_uses_dotted_names_arithmetic_functions_and_random() {
+        let p = ok(include_str!("../../../examples/stats.quill.md"));
+        assert_eq!(p.vars["hero.hp"], Value::Int(12));
+        let sets: Vec<&Effect> = p.ops.iter().filter_map(|op| if let Op::Set(e) = op { Some(e) } else { None }).collect();
+        assert!(sets.iter().any(|e| e.var == "dmg" && matches!(e.value, Expr::Random(..))));
+        assert!(sets.iter().any(|e| e.var == "cost" && matches!(e.value, Expr::Bin(_, BinOp::Sub, _))));
+        assert!(sets.iter().any(|e| e.var == "gap" && matches!(&e.value, Expr::Func(Func::Abs, _))));
+        assert!(sets.iter().any(|e| e.var == "items" && matches!(e.value, Expr::Count(_))));
+        assert!(p.ops.iter().filter_map(|op| match op { Op::Jump { cond: Some(c), .. } => Some(c), _ => None }).any(|c| format!("{c:?}").contains("Count")));
+    }
+
+    #[test]
     fn the_market_demo_parses_with_items_a_shop_and_an_inventory_call() {
         let p = ok(include_str!("../../../examples/market.quill.md"));
         assert_eq!(p.items.len(), 4);
@@ -2915,6 +2978,105 @@ mod tests {
         assert_eq!(line("# a\n::choice\n- [x](#a){gold = inv}\n::\n", "can't be the right side"), 6);
         assert_eq!(line("::call{to=h x=inv}\n::end\n# h(x)\nHi.\n::return\n", "`::call` argument"), 4);
         assert!(!ok(&format!("{head}::set{{gold = (inv has \"k\")}}\n")).ops.is_empty(), "asking about a list is fine");
+    }
+
+    // ---- arithmetic, functions, dotted names, random ----------------------
+
+    #[test]
+    fn expressions_work_wherever_a_value_or_condition_does() {
+        let src = "---\nvars: { hero.hp: 10, gold: 20, bag: [], price: 3 }\n---\n\
+            ::set{gold -= price * 2 + 1, hero.hp = min(hero.hp + 4, 12)}\n\
+            ::if{hero.hp - gold > -20 and count(bag) == 0}\nYes.\n::elif{abs(gold) % 2 == 1}\nOdd.\n::endif\n\
+            ::jump{to=a if=\"hero.hp * 2 > max(gold, 5)\"}\n\
+            # a\n::call{to=h x=(price * 2) y=min(1,2)}\n::end\n\
+            ::choice\n- [Rest](#a){hero.hp += 2 * price, gold = gold / 2, if gold >= price + 1}\n::\n::end\n\
+            # h(x, y)\nHi {hero.hp}.\n::return\n";
+        let p = ok(src);
+        assert_eq!(p.vars["hero.hp"], Value::Int(10));
+        let Op::Set(e) = &p.ops[0] else { panic!() };
+        assert_eq!((e.var.as_str(), e.op), ("gold", AssignOp::Sub));
+        assert!(matches!(&e.value, Expr::Bin(_, BinOp::Add, _)));
+        let Op::Set(e) = &p.ops[1] else { panic!() };
+        assert_eq!(e.var, "hero.hp");
+        assert!(matches!(&e.value, Expr::Func(Func::Min, args) if args.len() == 2));
+        let call = p.ops.iter().find_map(|op| match op { Op::Call { args, .. } => Some(args), _ => None }).unwrap();
+        assert!(matches!(call[0].1, Expr::Bin(_, BinOp::Mul, _)) && matches!(call[1].1, Expr::Func(Func::Min, _)));
+        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options } => Some(options), _ => None }).unwrap();
+        assert_eq!(options[0].effects.len(), 2);
+        assert!(matches!(&options[0].cond, Some(Expr::Cmp(_, Cmp::Ge, r)) if matches!(**r, Expr::Bin(_, BinOp::Add, _))));
+    }
+
+    #[test]
+    fn dotted_names_in_declarations_effects_and_text() {
+        let src = "---\nvars: { hero.love: 0, stats.hp.max: 10, bag.items: [], who.name: \"Mika\" }\npersistent: { seen.end: false }\ninventory: bag.items\n---\n\
+            ::set{hero.love += 1, bag.items += \"key\", seen.end = true}\n\
+            ::if{bag.items has \"key\" and hero.love >= 1}\nHi {who.name}, love {hero.love}/{stats.hp.max}.\n::endif\n";
+        let p = ok(src);
+        assert!(p.vars.contains_key("hero.love") && p.vars.contains_key("stats.hp.max"));
+        assert!(p.persistent.contains("seen.end"));
+        assert_eq!(p.inventory.as_deref(), Some("bag.items"));
+        assert!(has_err("---\nvars: { a..b: 0 }\n---\nHi.\n", "bad variable"));
+        assert!(has_err("---\nvars: { a.: 0 }\n---\nHi.\n", "bad variable"));
+        assert!(has_err("---\nvars: { .a: 0 }\n---\nHi.\n", "bad variable"));
+        assert!(has_err("---\nvars: { and: 0 }\n---\nHi.\n", "keyword"));
+        assert!(has_err("::set{a. = 1}\n", "bad assignment"));
+        assert!(has_err("---\nvars: { hero.hp: 1.5 }\n---\nHi.\n", "not a whole number"));
+        assert!(has_err("::set{x = 1.5}\n", "not a whole number"));
+        assert!(has_err("::if{x > 0.5}\nHi.\n::endif\n", "not a whole number"));
+        // other uses of a dot are untouched
+        let p = ok("::bg{src=assets/a.png}\n::show{x src=assets/b.v2.png}\n::wait{time=0.5}\nHi{w=0.5} there.\n");
+        assert!(!p.ops.is_empty());
+        assert!(has_err("::character{id=a.b name=A}\n", "character id"));
+        assert!(has_err("::call{to=h a.b=1}\n::end\n# h(x)\nHi.\n::return\n", "argument name"));
+        assert!(has_err("::end\n# h(a.b)\nHi.\n::return\n", "bad parameter"));
+    }
+
+    #[test]
+    fn arithmetic_mistakes_are_errors_with_line_numbers() {
+        let head = "---\nvars: { n: 1, t: \"x\", inv: [] }\n---\n";
+        let line = |tail: &str, needle: &str| {
+            let e = errs(&format!("{head}{tail}"));
+            let hit = e.iter().find(|e| e.message.contains(needle));
+            assert!(hit.is_some(), "{tail:?}: {e:?}");
+            hit.unwrap().line
+        };
+        assert_eq!(line("Hi.\n::set{n = t + 1}\n", "is not a number"), 5);
+        assert_eq!(line("::set{n = 1 + \"a\"}\n", "the text \"a\" is not a number"), 4);
+        assert_eq!(line("::if{n * inv > 1}\nHi.\n::endif\n", "(a list)"), 4);
+        assert_eq!(line("::set{n = -t}\n", "is not a number"), 4);
+        assert_eq!(line("::set{n = max(t, 1)}\n", "is not a number"), 4);
+        assert_eq!(line("::set{n = n / 0}\n", "by 0"), 4);
+        assert_eq!(line("# a\n::choice\n- [x](#a){n = n % 0}\n::\n", "by 0"), 6);
+        assert_eq!(line("::set{n = count(n)}\n", "is not a list"), 4);
+        assert_eq!(line("::set{n = count(nothing)}\n", "declare it"), 4);
+        assert_eq!(line("::set{n = count(1)}\n", "takes a list variable"), 4);
+        assert_eq!(line("::set{n = len(inv)}\n", "unknown function `len`"), 4);
+        assert_eq!(line("::set{n = min(1)}\n", "at least 2 values"), 4);
+        assert_eq!(line("::set{n = abs(1, 2)}\n", "abs(x)"), 4);
+        assert_eq!(line("::set{inv += n + 1}\n", "not a number"), 4);
+        assert_eq!(line("::set{n = random(5, 1)}\n", "lowest value comes first"), 4);
+        // text += still appends, and numbers add up; neither is an error
+        assert!(!ok(&format!("{head}::set{{t += \"y\", t += n * 2, n += n}}\n")).ops.is_empty());
+    }
+
+    #[test]
+    fn random_is_only_allowed_when_assigning() {
+        let head = "---\nvars: { roll: 0, bonus: 1, bag: [] }\n---\n";
+        let p = ok(&format!("{head}::set{{roll = random(1, 6), roll = random(2, 4) + bonus}}\n# a\n::choice\n- [x](#a){{roll = random(1, 3)}}\n::\n"));
+        assert!(matches!(&p.ops[0], Op::Set(e) if matches!(e.value, Expr::Random(..))));
+        assert!(matches!(&p.ops[1], Op::Set(e) if e.value.has_random()));
+        let line = |tail: &str| {
+            let e = errs(&format!("{head}{tail}"));
+            let hit = e.iter().find(|e| e.message.contains("assign it to a variable first"));
+            assert!(hit.is_some(), "{tail:?}: {e:?}");
+            hit.unwrap().line
+        };
+        assert_eq!(line("::if{random(1, 6) > 3}\nHi.\n::endif\n"), 4);
+        assert_eq!(line("Hi.\n::if{roll == 1}\nA.\n::elif{random(1, 2) == 1}\nB.\n::endif\n"), 7);
+        assert_eq!(line("# a\n::jump{to=a if=\"random(1, 2) == 1\"}\n"), 5);
+        assert_eq!(line("# a\n::choice\n- [x](#a){if random(0, 1)}\n::\n"), 6);
+        assert_eq!(line("::call{to=h x=random(1, 2)}\n::end\n# h(x)\nHi.\n::return\n"), 4);
+        assert_eq!(line("::item{id=k name=Key}\n::shop{pay=roll into=bag}\n- k{price=1, if random(0, 1)}\n::\n"), 6);
     }
 
     // ---- labels with parameters ------------------------------------------

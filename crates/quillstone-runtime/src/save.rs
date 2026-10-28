@@ -279,6 +279,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     for (name, value) in &s.vars {
         w(var_record(name, value));
     }
+    // Saves from before `random` existed have no such record: they load with the default seed.
+    w(format!("rng {}", s.rng));
     if let Some(bg) = &s.background {
         w(format!("bg {}", q(bg)));
     }
@@ -479,6 +481,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     s.vars.insert(name, value);
                 }
             }
+            "rng" => s.rng = num(arg(1)?, n)?,
             "bg" => s.background = Some(path(1)?),
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),

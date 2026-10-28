@@ -176,6 +176,8 @@ pub struct Game<'p> {
     ui_hidden: bool,
     /// How visible the quick menu is in its `hover` mode (0..1); the other modes ignore it.
     quick_alpha: f32,
+    /// Where the next new game's `random` rolls start (see [`Game::set_seed`]).
+    seed: u64,
 }
 
 impl<'p> Game<'p> {
@@ -226,6 +228,7 @@ impl<'p> Game<'p> {
             bag: Bag::default(),
             ui_hidden: false,
             quick_alpha: 0.0,
+            seed: quillstone_runtime::DEFAULT_SEED,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -234,9 +237,18 @@ impl<'p> Game<'p> {
         game
     }
 
+    /// Where the `random(lo, hi)` rolls of the next new game start. Frontends pass
+    /// something unpredictable (the clock); the default is a fixed seed, so tests
+    /// and the command line replay the same game. Each new game moves the seed
+    /// on, so playing again rolls differently. A loaded save brings its own.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = seed;
+    }
+
     /// Begin the story from the top (the main menu's Start).
     pub fn start_story(&mut self) {
-        let (session, first) = Session::start_with(self.program, self.session.persistent().clone());
+        let seed = quillstone_runtime::next_seed(&mut self.seed);
+        let (session, first) = Session::start_seeded(self.program, self.session.persistent().clone(), seed);
         self.session = session;
         self.fresh_view();
         self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }])); // the menu's music

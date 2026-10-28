@@ -23,9 +23,16 @@ const MAGIC: &str = "quillstone-persistent 1";
 impl<'p> Session<'p> {
     /// Start the script with what earlier playthroughs kept (see [`Session::persistent`]).
     pub fn start_with(program: &'p Program, persistent: Vars) -> (Session<'p>, Vec<Cmd>) {
+        Session::start_seeded(program, persistent, crate::DEFAULT_SEED)
+    }
+
+    /// [`Session::start_with`] for a game whose `random(lo, hi)` rolls start from
+    /// `seed`: the same seed and the same choices give the same game. The host
+    /// picks it (the player uses the clock; tests and the command line use a fixed one).
+    pub fn start_seeded(program: &'p Program, persistent: Vars, seed: u64) -> (Session<'p>, Vec<Cmd>) {
         let mut session = Session {
             program,
-            state: State::new(program),
+            state: State::with_seed(program, seed),
             history: Vec::new(),
             redo: Vec::new(),
             redo_tip: None,

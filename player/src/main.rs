@@ -147,6 +147,8 @@ fn main() {
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
     game.set_voice_files(voice_files(program, &root));
     game.set_theme(theme);
+    // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
+    game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
     let mut app = App {
         title: program.title.clone().unwrap_or_else(|| "Quillstone".to_string()),
         game,

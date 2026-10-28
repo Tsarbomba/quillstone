@@ -10,12 +10,20 @@
 //! number the script compares them with: beyond that, more visits change nothing.
 //! Persistent variables can hold what an earlier playthrough left, so the story
 //! is also played from each combination of the values the script gives them.
+//! The random seed is not part of a situation. A `random(lo, hi)` is a branch
+//! point instead: one branch per value when the range has at most
+//! [`MAX_ROLL_VALUES`] values, else `lo`, the middle and `hi` (and a warning).
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Expr, Op, Program, Value, Vars, ONCE, SEEN};
 
 use crate::{offered_stock, step_traced, visible_options, Cmd, Input, State};
+
+/// The widest `random(lo, hi)` the tester tries value by value; a wider one is
+/// tried at its lowest, middle and highest value only.
+pub const MAX_ROLL_VALUES: i64 = 12;
 
 /// Something the tester found, at a script line.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,8 +68,10 @@ pub fn explore(program: &Program, limit: usize) -> Report {
     for (origin, kept) in playthroughs(program) {
         let mut state = State::new(program);
         state.vars.extend(kept);
-        if let Some(root) = x.visit(state, None, None) {
-            x.nodes[root].origin = origin;
+        for (after, trace) in x.outcomes(&state, None) {
+            if let Some(root) = x.visit(after, trace, None) {
+                x.nodes[root].origin = origin.clone();
+            }
         }
     }
     while let Some(id) = x.queue.pop_front() {
@@ -97,8 +107,10 @@ pub fn explore(program: &Program, limit: usize) -> Report {
             None => Vec::new(),
         };
         for (input, label) in inputs {
-            if let Some(next) = x.visit(state.clone(), Some(input), Some((id, label))) {
-                x.nodes[id].next.push(next);
+            for (after, trace) in x.outcomes(&state, Some(input)) {
+                if let Some(next) = x.visit(after, trace, Some((id, label.clone()))) {
+                    x.nodes[id].next.push(next);
+                }
             }
         }
     }
@@ -147,10 +159,72 @@ struct Explorer<'p> {
 }
 
 impl Explorer<'_> {
-    /// Step from `state` with `input` and file the situation it leads to.
-    fn visit(&mut self, mut state: State, input: Option<Input>, parent: Option<(usize, Option<String>)>) -> Option<usize> {
-        let mut trace = Vec::new();
-        step_traced(&mut state, self.program, input, &mut |pc| trace.push(pc));
+    /// Every way stepping from `from` with `input` can end, with the ops that ran in
+    /// each: one, unless a `random(lo, hi)` branches it (see [`MAX_ROLL_VALUES`]).
+    /// Each branch is found by running the step again with the rolls fixed so far; a
+    /// roll that is not fixed yet is where the next fork goes.
+    fn outcomes(&mut self, from: &State, input: Option<Input>) -> Vec<(State, Vec<usize>)> {
+        let mut done = Vec::new();
+        let mut work: Vec<Vec<i64>> = vec![Vec::new()];
+        while let Some(fixed) = work.pop() {
+            let mut state = from.clone();
+            let mut trace = Vec::new();
+            let at = Cell::new(from.pc);
+            let mut next_roll: Option<(i64, i64, usize)> = None;
+            let mut asked = 0;
+            {
+                let mut draw = |lo: i64, hi: i64| {
+                    let k = asked;
+                    asked += 1;
+                    match fixed.get(k) {
+                        Some(&v) => v,
+                        None => {
+                            next_roll.get_or_insert((lo, hi, at.get()));
+                            lo
+                        }
+                    }
+                };
+                let mut ran = |pc: usize| {
+                    trace.push(pc);
+                    at.set(pc);
+                };
+                step_traced(&mut state, self.program, input, &mut ran, Some(&mut draw));
+            }
+            let Some((lo, hi, pc)) = next_roll else {
+                done.push((state, trace));
+                continue;
+            };
+            let span = hi as i128 - lo as i128 + 1;
+            let values: Vec<i64> = if span <= MAX_ROLL_VALUES as i128 {
+                (lo..=hi).collect()
+            } else {
+                let msg = format!(
+                    "`random({lo}, {hi})` has {span} values: the tester tries only {lo}, {} and {hi}, so what \
+                     happens for the others is not checked",
+                    lo + (hi - lo) / 2
+                );
+                self.warn(pc, "wide random", &msg, None);
+                vec![lo, lo + (hi - lo) / 2, hi]
+            };
+            // never more branches than the situation limit (but always one way on)
+            let room = self.limit.saturating_sub(done.len() + work.len()).max(1);
+            let mut values = values;
+            if values.len() > room {
+                self.report.partial = true;
+                values.truncate(room);
+            }
+            for v in values.into_iter().rev() {
+                let mut f = fixed.clone();
+                f.push(v);
+                work.push(f);
+            }
+        }
+        done
+    }
+
+    /// File the situation `state` (reached by running `trace`) leads to.
+    fn visit(&mut self, state: State, trace: Vec<usize>, parent: Option<(usize, Option<String>)>) -> Option<usize> {
+        let mut state = state;
         for &pc in &trace {
             self.ran[pc] = true;
         }
@@ -481,7 +555,9 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
                     uncapped(caps, b);
                 }
             },
-            Expr::Lit(_) | Expr::Var(_) => {}
+            // arithmetic and calls: whatever `seen:` counts they read feed a computed value
+            Expr::Bin(..) | Expr::Neg(_) | Expr::Func(..) | Expr::Random(..) => uncapped(caps, e),
+            Expr::Lit(_) | Expr::Var(_) | Expr::Count(_) => {}
         }
     }
     let mut caps = HashMap::new();
@@ -669,6 +745,13 @@ mod tests {
         let r = test(src);
         assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
         assert!(!r.partial && r.situations > 5 && !r.endings.is_empty());
+    }
+
+    #[test]
+    fn the_stats_demo_is_clean_and_every_roll_is_tried() {
+        let r = test(include_str!("../../../examples/stats.quill.md"));
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
+        assert!(!r.partial && r.situations > 100 && r.endings.len() == 1);
     }
 
     #[test]
@@ -933,5 +1016,97 @@ mod tests {
         let w = messages(&r.warnings);
         assert!(w.iter().any(|m| m.contains("`glod` is never set")), "{w:?}");
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    // ---- random and expressions ----
+
+    #[test]
+    fn a_small_random_range_is_a_branch_per_value() {
+        let src = "---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 3)}\n::if{roll == 1}\nOne.\n::elif{roll == 2}\nTwo.\n::else\nThree.\n::endif\n::end\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+        assert_eq!(r.situations, 3 * 2, "per value: the line shown, then the end");
+        let p = parse(src).unwrap();
+        assert_eq!(explore(&p, 10_000).endings.len(), 1);
+    }
+
+    #[test]
+    fn every_value_of_a_roll_reaches_its_own_line() {
+        // a line only the highest roll shows is not reported as unreachable
+        let src = "---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 12)}\n::if{roll == 12}\nCritical!\n::endif\nDone.\n::end\n";
+        let r = test(src);
+        assert!(r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+        assert_eq!(r.situations, 12 * 2 + 1, "per value a line and an end, and one more line for the 12");
+    }
+
+    #[test]
+    fn two_rolls_in_one_step_multiply() {
+        let src = "---\nvars: { a: 0, b: 0 }\n---\n::set{a = random(1, 3), b = random(1, 2)}\nHi {a} {b}.\n::end\n";
+        assert_eq!(test(src).situations, 6 * 2, "3 x 2 combinations, each a line and an end");
+    }
+
+    #[test]
+    fn a_choice_effect_rolls_branch_too() {
+        let src = "---\nvars: { dmg: 0 }\n---\n# a\n::choice\n- [Hit](#b){dmg = random(2, 4)}\n::\n# b\n::if{dmg == 4}\nBig.\n::endif\n::end\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+        assert_eq!(r.situations, 1 + 3 + 1, "the choice, one situation per value, and the end after the line that 4 shows");
+    }
+
+    #[test]
+    fn a_wide_range_tries_three_values_and_warns() {
+        let src = "---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 100)}\nRolled {roll}.\n::end\n";
+        let r = test(src);
+        assert_eq!(r.situations, 3 * 2, "lo, mid, hi: each a line and an end");
+        let w = messages(&r.warnings);
+        assert!(w.len() == 1 && w[0].starts_with("4: ") && w[0].contains("random(1, 100)") && w[0].contains("only 1, 50 and 100"), "{w:?}");
+        assert!(r.errors.is_empty() && !r.partial);
+        // exactly at the limit of the small range, no warning
+        let r = test("---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 12)}\nRolled {roll}.\n::end\n");
+        assert!(r.warnings.is_empty() && r.situations == 12 * 2);
+        let r = test("---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 13)}\nRolled {roll}.\n::end\n");
+        assert_eq!((r.warnings.len(), r.situations), (1, 3 * 2));
+    }
+
+    #[test]
+    fn the_seed_is_not_part_of_a_situation_so_a_rolling_loop_ends() {
+        let src = "---\nvars: { r: 0 }\n---\n# a\n::set{r = random(1, 2)}\nRoll {r}.\n::choice\n- [Again](#a)\n- [Stop](#b)\n::\n# b\nBye.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty(), "{:?}", messages(&r.errors));
+        assert!(r.situations <= 12, "a handful of situations, not one per roll: {}", r.situations);
+    }
+
+    #[test]
+    fn the_limit_still_stops_a_growing_counter_with_random_in_it() {
+        let src = "---\nvars: { total: 0 }\n---\n# a\n::set{total += random(1, 3)}\nTotal {total}.\n::choice\n- [Again](#a)\n::\n";
+        let r = explore(&parse(src).unwrap(), 50);
+        assert!(r.partial, "total keeps growing");
+        assert!(r.situations <= 50, "{}", r.situations);
+    }
+
+    #[test]
+    fn branching_never_exceeds_the_limit() {
+        let src = "---\nvars: { a: 0, b: 0, c: 0 }\n---\n::set{a = random(1, 12), b = random(1, 12), c = random(1, 12)}\nHi.\n::end\n";
+        let r = explore(&parse(src).unwrap(), 100);
+        assert!(r.partial && r.situations <= 100, "{} {}", r.partial, r.situations);
+    }
+
+    #[test]
+    fn variable_warnings_understand_expressions_and_dotted_names() {
+        let src = "---\nvars: { hero.love: 0, gold: 5 }\n---\n::set{hero.love += gold * 2, bonus = max(hero.lvoe, 1)}\nLove {hero.love}, {hero.lvoe}.\n::if{hero.love + extra > 3}\nYes.\n::endif\n::end\n";
+        let w = messages(&test(src).warnings);
+        let said = |needle: &str| w.iter().filter(|m| m.contains(needle)).count();
+        assert_eq!(said("`hero.lvoe` is never set"), 1, "{w:?}");
+        assert_eq!(said("`extra` is never set"), 1, "{w:?}");
+        assert_eq!(said("hero.love"), 0, "{w:?}");
+        assert_eq!(said("gold"), 0, "{w:?}");
+        assert_eq!(said("bonus"), 0, "set by the story");
+    }
+
+    #[test]
+    fn count_of_an_undeclared_list_is_refused_before_the_tester_runs() {
+        let src = "---\nvars: { bag: [] }\n---\n::set{n = count(bag) + count(bag.x)}\nHi.\n::end\n";
+        // `count(bag.x)` isn't declared: the compiler already refuses it
+        assert!(parse(src).is_err());
     }
 }

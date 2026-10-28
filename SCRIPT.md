@@ -57,9 +57,24 @@ Names are letters, digits and `_`, but not `true`, `false`, `and`, `or` or `not`
 Lists of items (an inventory) have their own [section](#list-variables).
 
 - `::set{trust+=1, met=true, name="Alex"}` sets one or more (`=`, `+=`, `-=`;
-  `+=` on text appends). The right-hand side may be another variable: `gold -= price`.
+  `+=` on text appends). The right-hand side may be any [expression](#expressions):
+  `gold -= price`, `cost = base * 2 - discount`, `hp = min(hp + 4, max_hp)`.
 - `{name}` inside a line or choice text is replaced by the variable's value.
-  `\{` writes a literal brace; an unknown `{name}` is left as written.
+  `\{` writes a literal brace; an unknown `{name}` is left as written. Text shows
+  variables only, never a calculation: store the result first (`::set{left = max_hp - hp}`,
+  then `{left}`).
+
+### Dotted names
+
+A name may have several parts joined by dots, to group related variables:
+`hero.love`, `hero.hp`, `stats.hp.max`. Each part follows the rules above (letters,
+digits and `_`, not starting with a digit) and none may be empty, so `hero.`, `.hero`
+and `hero..love` are errors. The dot is only a way of writing the name: `hero.love` is
+an ordinary variable everywhere, in `vars:` and `persistent:` (`vars: { hero.love: 0 }`),
+`::set`, conditions, choice effects, `{hero.love}` in text, saves, and list variables
+(`bag.items += "key"`, `bag.items has "key"`, `count(bag.items)`). Character ids,
+label parameters and `::call` argument names stay plain, without dots. Numbers have no
+decimals (`1.5` is an error: variables hold whole numbers).
 
 ## List variables
 
@@ -152,12 +167,102 @@ italic files too (`font_bold`, `font_italic`, see [Themes](#themes)).
 Used by `::if`, `::jump{if=...}` and choice options `{if ...}`:
 `==  !=  <  <=  >  >=` (a lone `=` also means equals), `and` / `or` / `not`
 (also `&&` `||` `!`), parentheses, and a bare name means "is not 0/false/empty".
-`trust > 1 and not met`, `name == "Mika"`, `(a or b) and c`.
+`trust > 1 and not met`, `name == "Mika"`, `(a or b) and c`. Either side of a
+comparison may be a calculation: `hp * 2 < max_hp`, `count(inventory) >= 2`
+(see [Expressions](#expressions)).
 
 `seen(label)` is how many times the story has passed that label (0 if never), so
 it works both as a yes/no and as a count: `::if{seen(cafe)}`, `seen(cafe) >= 3`.
 The label is written like a link target (`seen(the-roof)`, or `seen(#The Roof)`).
 Rollback and saves keep the counts; they belong to one playthrough.
+
+## Expressions
+
+Expressions appear wherever the language takes a value or a condition: `::if` and
+`::elif`, `::jump{if=...}`, the `if` of a choice option, hotspot or shop line, the right
+side of `::set` and of choice effects, and `::call` arguments. They are made of
+numbers, `true`/`false`, `"text"`, variables, operators and the functions below.
+
+| Operator | Meaning | Binds |
+| --- | --- | --- |
+| `( )` | grouping | tightest |
+| `-x` | negative | |
+| `*  /  %` | multiply, divide, remainder | |
+| `+  -` | add, subtract | |
+| `==  !=  <  <=  >  >=`, `list has item` | compare | |
+| `not` (`!`) | the opposite | |
+| `and` (`&&`) | both | |
+| `or` (`\|\|`) | either | loosest |
+
+Operators of one level work left to right: `10 - 4 - 3` is `3`. `hp + 4 > max_hp and not
+dead` reads as `((hp + 4) > max_hp) and (not dead)`. A comparison does not chain
+(`a < b < c` is an error); write `a < b and b < c`.
+
+**Numbers** are whole numbers (from about -9.2 × 10^18 to 9.2 × 10^18). Arithmetic never
+fails: results stop at the ends of that range instead of wrapping around.
+
+- `/` divides and drops the fraction toward zero: `7 / 2` is `3` and `-7 / 2` is `-3`.
+- `%` is the remainder and takes the sign of the left side: `7 % 2` is `1`, `-7 % 2` is `-1`.
+- Dividing by zero, or taking a remainder by zero, gives `0` instead of stopping the
+  game. Writing a literal `0` as the divisor (`hp / 0`) is an error when the script is
+  checked.
+- `true` counts as `1` and `false` as `0`. A text, a list or an unset variable counts as
+  `0` in arithmetic. Where the declarations show that an operand is text or a list
+  (`name + 1` with `name: "Alex"`, `1 + "a"`), the script is refused with the line instead.
+  Text is joined with `+=` (`name += "!"`), and a number added with `+=` to a text variable
+  is appended as text.
+- `x += expression` and `x -= expression` take any expression on the right.
+
+**Functions.** This is the whole list; there are no user-defined functions.
+
+| Function | Result |
+| --- | --- |
+| `min(a, b, ...)` | the smallest value (at least two) |
+| `max(a, b, ...)` | the largest value (at least two) |
+| `abs(x)` | the value without its sign |
+| `count(list)` | how many items the list variable holds (`count(inventory)`) |
+| `random(lo, hi)` | a whole number from `lo` to `hi`, both included (see below) |
+
+`count` needs a list variable declared in `vars:` or `persistent:`. An unknown function
+or a wrong number of arguments is an error that names the line and lists these
+functions. A variable may share a function's name (`count += 1` still works).
+
+````markdown
+::set{hero.hp = min(hero.hp + 4, hero.max_hp)}      heal, but not above the maximum
+::set{hero.hp = max(hero.hp - dmg, 0)}              hurt, but not below zero
+::set{cost = base * 2 - discount}
+::if{count(inventory) >= 2 and abs(a - b) < 3}
+````
+
+### Random numbers
+
+`random(lo, hi)` picks a whole number from `lo` to `hi`, both included. It can only be
+the right side of an assignment, alone or inside a calculation:
+
+````markdown
+::set{roll = random(1, 6)}
+::set{dmg = random(2, 4) + bonus}
+- [Swing the sword](#fight){dmg = random(2, 5)}
+````
+
+Using it in a condition (`::if{random(1, 6) > 3}`, an option's `if`, a `::call` argument)
+is an error that says to assign it to a variable first: write `::set{roll = random(1, 6)}`
+and then test `roll`. Screens are rebuilt from their conditions after a rollback or a
+load, and a roll inside one would come out differently each time. With literal bounds,
+`lo` must not be larger than `hi`; with variables as bounds, a swapped pair is put in
+order when it runs.
+
+Rolls are repeatable *within a game*. The game keeps a random seed as part of the story
+state, and every roll moves it on. Going back with rollback restores the state, seed
+included, so the same choice made again gives **the same roll**, and rolling forward
+replays the rolls too: players cannot re-roll by going back. Saves keep the seed, so a
+loaded game continues with the rolls it would have had. A new game starts from a fresh
+seed chosen by the player program, so each playthrough rolls differently. (`quillstone
+run` and `quillstone test` use one fixed seed.)
+
+`quillstone test` treats a roll as a branch: a range of up to 12 values is tried value by
+value, and a wider one at its lowest, middle and highest value, with a warning that the
+rest were not tried.
 
 ## Scene
 
@@ -339,8 +444,9 @@ A label can take values from the `::call` that runs it:
   dashes). If you meant a plain title and wrote `# Round 1(a)`, the errors that follow
   ("can run into", "can only be reached by `::call`") say so: put a space before the `(`.
 - A `::call` passes every parameter as `name=value`, with exactly the names the
-  heading lists. The value is an ordinary expression, as on the right of a `::set`:
-  a number, `"text"` in quotes, `true`/`false`, a variable, or a parenthesised
+  heading lists. The value is an ordinary expression, as on the right of a `::set`
+  (except that `random` is not allowed, assign it first): a number, `"text"` in quotes,
+  `true`/`false`, a variable, a calculation in parentheses (`n=(gold - 5)`), or a parenthesised
   condition. Spaces are fine inside quotes or parentheses (`who="Mika Tanaka"`,
   `ok=(gold >= 5 and met)`); elsewhere a space starts the next argument.
 - **Parameters are ordinary variables.** At the call, every value is worked out
@@ -530,7 +636,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 
 ## What rollback restores
 
-Going back one step restores variables, the call stack, background, sprites and
+Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
 their positions, heights, depths, sizes, stretch and mirroring, the camera, the colour cover of `::fade{out}`, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 

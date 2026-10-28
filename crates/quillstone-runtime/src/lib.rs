@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -15,6 +15,12 @@ mod hardening;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
+pub use quillstone_script::DEFAULT_SEED;
+
+/// A fresh game seed from a host's `seed` (which is advanced for the next game).
+pub fn next_seed(seed: &mut u64) -> u64 {
+    quillstone_script::splitmix64(seed)
+}
 pub use persist::{read_persistent, write_persistent, UNLOCKED};
 pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, SAVE_HISTORY};
 
@@ -207,6 +213,10 @@ pub struct Line {
 pub struct State {
     pub pc: usize,
     pub vars: Vars,
+    /// The state of the generator behind `random(lo, hi)` (splitmix64). Every roll
+    /// advances it. It is part of the scene, so rollback and roll forward replay
+    /// the same rolls, and saves keep it.
+    pub rng: u64,
     /// Return addresses of active `::call`s.
     pub stack: Vec<usize>,
     pub background: Option<String>,
@@ -233,9 +243,15 @@ pub struct State {
 
 impl State {
     pub fn new(program: &Program) -> State {
+        State::with_seed(program, DEFAULT_SEED)
+    }
+
+    /// A new game whose `random` rolls start from `seed` (see [`Session::start_seeded`]).
+    pub fn with_seed(program: &Program, seed: u64) -> State {
         State {
             pc: 0,
             vars: program.vars.clone(),
+            rng: seed,
             stack: Vec::new(),
             background: None,
             sprites: Vec::new(),
@@ -508,11 +524,28 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
 /// Input that doesn't match what the script is waiting for is ignored and returns
 /// no commands. A step that does something always returns at least one command.
 pub fn step(state: &mut State, program: &Program, input: Option<Input>) -> Vec<Cmd> {
-    step_traced(state, program, input, &mut |_| {})
+    step_traced(state, program, input, &mut |_| {}, None)
+}
+
+/// Run one effect. Each `random(lo, hi)` in it is rolled from the state's generator
+/// (the seed advances), or from `hook` when the story tester supplies the values.
+fn run_effect(effect: &Effect, vars: &mut Vars, rng: &mut u64, hook: &mut Option<&mut dyn FnMut(i64, i64) -> i64>) {
+    effect.apply_with(vars, &mut |lo, hi| match hook {
+        Some(h) => h(lo, hi),
+        None => roll(rng, lo, hi),
+    });
 }
 
 /// [`step`], telling `ran` the index of every op it runs (for the story tester).
-pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<Input>, ran: &mut dyn FnMut(usize)) -> Vec<Cmd> {
+/// With a `draw` hook, `random(lo, hi)` asks it for its values instead of the
+/// state's generator (which then doesn't move).
+pub(crate) fn step_traced(
+    state: &mut State,
+    program: &Program,
+    input: Option<Input>,
+    ran: &mut dyn FnMut(usize),
+    mut draw: Option<&mut dyn FnMut(i64, i64) -> i64>,
+) -> Vec<Cmd> {
     if state.finished {
         return Vec::new();
     }
@@ -546,7 +579,7 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 let Some(&index) = visible.get(i) else { return Vec::new() };
                 let chosen = &all[index];
                 for effect in &chosen.effects {
-                    effect.apply(&mut state.vars);
+                    run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
                 }
                 state.pc = chosen.target;
             }
@@ -766,7 +799,7 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 None => break, // `::return` outside a `::call` ends the story
             },
             Op::Set(effect) => {
-                effect.apply(&mut state.vars);
+                run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
                 state.pc += 1;
             }
             Op::End => break,
@@ -2432,3 +2465,6 @@ vars: { amount: 99 }
         assert_eq!(cmds[1], Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::X });
     }
 }
+
+#[cfg(test)]
+mod dice;

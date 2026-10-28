@@ -2892,3 +2892,23 @@ fn a_saved_covered_scene_loads_covered_and_an_uncovered_one_uncovered() {
     assert_eq!(line(&g), "before");
     assert_eq!(cover_alpha(&g), 0.0);
 }
+
+#[test]
+fn the_host_seed_decides_the_rolls_and_a_new_game_moves_it_on() {
+    let p = quillstone_script::parse("---\nvars: { r: 0 }\n---\n::set{r = random(1, 100000)}\nRoll {r}.\n::end\n").unwrap();
+    let roll = |seed: Option<u64>| {
+        let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
+        if let Some(seed) = seed {
+            g.set_seed(seed);
+        }
+        g.start_story();
+        let first = line(&g);
+        g.start_story(); // playing again
+        (first, line(&g))
+    };
+    assert_eq!(roll(Some(11)), roll(Some(11)), "the same seed replays");
+    assert_ne!(roll(Some(11)).0, roll(Some(12)).0);
+    let (a, b) = roll(Some(11));
+    assert_ne!(a, b, "a second playthrough rolls differently");
+    assert_eq!(roll(None), roll(None), "the default is a fixed seed");
+}

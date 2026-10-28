@@ -92,24 +92,143 @@ pub enum Expr {
     Cmp(Box<Expr>, Cmp, Box<Expr>),
     /// `inventory has "key"`: the list variable holds that text.
     Has(String, Box<Expr>),
+    /// Whole-number arithmetic: `a + b`, `a * 2`, `a / b`, `a % b`.
+    Bin(Box<Expr>, BinOp, Box<Expr>),
+    /// `-x`.
+    Neg(Box<Expr>),
+    /// `min(a, b, ...)`, `max(a, b, ...)`, `abs(x)`.
+    Func(Func, Vec<Expr>),
+    /// `count(list)`: how many items the list variable holds.
+    Count(String),
+    /// `random(lo, hi)`: a whole number from `lo` to `hi`, both included. Only the
+    /// parser's assignment sites let it through (never a condition), so rebuilding a
+    /// screen can't re-roll it.
+    Random(Box<Expr>, Box<Expr>),
+}
+
+/// The whole-number operators, loosest first: `+ -`, then `* / %`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    /// Truncates toward zero; dividing by 0 gives 0.
+    Div,
+    /// The remainder, with the sign of the left side; modulo 0 gives 0.
+    Rem,
+}
+
+impl BinOp {
+    pub fn symbol(self) -> char {
+        match self {
+            BinOp::Add => '+',
+            BinOp::Sub => '-',
+            BinOp::Mul => '*',
+            BinOp::Div => '/',
+            BinOp::Rem => '%',
+        }
+    }
+
+    /// Saturating at the ends of the integer range; never panics.
+    pub fn apply(self, a: i64, b: i64) -> i64 {
+        match self {
+            BinOp::Add => a.saturating_add(b),
+            BinOp::Sub => a.saturating_sub(b),
+            BinOp::Mul => a.saturating_mul(b),
+            BinOp::Div if b == 0 => 0,
+            BinOp::Div => a.saturating_div(b),
+            // `i64::MIN % -1` overflows in Rust, and is 0 in mathematics
+            BinOp::Rem => a.checked_rem(b).unwrap_or(0),
+        }
+    }
+}
+
+/// The functions that take any number of values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Func {
+    Min,
+    Max,
+    Abs,
+}
+
+/// The functions of the language, for error messages.
+pub const FUNCTIONS: &str = "min(a, b, ...), max(a, b, ...), abs(x), count(list), random(lo, hi)";
+
+/// The generator behind `random(lo, hi)`: splitmix64, one step per call. The seed
+/// lives in the story state, so rollback and saves replay the same rolls.
+pub fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// The seed of a game whose host gave none (tests, the command line, old saves).
+pub const DEFAULT_SEED: u64 = 0x5EED_C0DE_5EED_C0DE;
+
+/// A whole number from `lo` to `hi` (both included; swapped if `lo > hi`), advancing `state`.
+pub fn roll(state: &mut u64, lo: i64, hi: i64) -> i64 {
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let span = (hi as i128 - lo as i128 + 1) as u128;
+    let r = splitmix64(state) as u128 % span;
+    (lo as i128 + r as i128) as i64
+}
+
+fn int(v: &Value) -> i64 {
+    v.as_int().unwrap_or(0)
 }
 
 /// A condition is just an expression that is tested for truthiness.
 pub type Cond = Expr;
 
 impl Expr {
+    /// The value, with `random()` giving its lower bound (the parser keeps it out of
+    /// everything that is evaluated this way).
     pub fn eval(&self, vars: &Vars) -> Value {
+        self.eval_with(vars, &mut |lo, _| lo)
+    }
+
+    /// The value; `draw(lo, hi)` supplies each `random(lo, hi)` (with `lo <= hi`).
+    /// A text, a list or an unset variable in arithmetic counts as 0.
+    pub fn eval_with(&self, vars: &Vars, draw: &mut dyn FnMut(i64, i64) -> i64) -> Value {
         match self {
             Expr::Lit(v) => v.clone(),
             Expr::Var(name) => vars.get(name).cloned().unwrap_or(Value::Int(0)),
-            Expr::Not(e) => Value::Bool(!e.eval(vars).truthy()),
-            Expr::And(a, b) => Value::Bool(a.eval(vars).truthy() && b.eval(vars).truthy()),
-            Expr::Or(a, b) => Value::Bool(a.eval(vars).truthy() || b.eval(vars).truthy()),
-            Expr::Cmp(a, op, b) => Value::Bool(compare(&a.eval(vars), *op, &b.eval(vars))),
-            Expr::Has(name, item) => Value::Bool(match (vars.get(name), item.eval(vars)) {
+            Expr::Not(e) => Value::Bool(!e.eval_with(vars, draw).truthy()),
+            Expr::And(a, b) => Value::Bool(a.eval_with(vars, draw).truthy() && b.eval_with(vars, draw).truthy()),
+            Expr::Or(a, b) => Value::Bool(a.eval_with(vars, draw).truthy() || b.eval_with(vars, draw).truthy()),
+            Expr::Cmp(a, op, b) => {
+                let a = a.eval_with(vars, draw);
+                Value::Bool(compare(&a, *op, &b.eval_with(vars, draw)))
+            }
+            Expr::Has(name, item) => Value::Bool(match (vars.get(name), item.eval_with(vars, draw)) {
                 (Some(Value::List(items)), Value::Str(s)) => items.contains(&s),
                 _ => false,
             }),
+            Expr::Bin(a, op, b) => {
+                let a = int(&a.eval_with(vars, draw));
+                Value::Int(op.apply(a, int(&b.eval_with(vars, draw))))
+            }
+            Expr::Neg(e) => Value::Int(int(&e.eval_with(vars, draw)).saturating_neg()),
+            Expr::Func(f, args) => {
+                let mut nums = args.iter().map(|a| int(&a.eval_with(vars, draw))).collect::<Vec<_>>().into_iter();
+                let first = nums.next().unwrap_or(0);
+                Value::Int(match f {
+                    Func::Min => nums.fold(first, i64::min),
+                    Func::Max => nums.fold(first, i64::max),
+                    Func::Abs => first.saturating_abs(),
+                })
+            }
+            Expr::Count(name) => Value::Int(match vars.get(name) {
+                Some(Value::List(items)) => items.len() as i64,
+                _ => 0,
+            }),
+            Expr::Random(lo, hi) => {
+                let lo = int(&lo.eval_with(vars, draw));
+                let hi = int(&hi.eval_with(vars, draw));
+                Value::Int(if lo <= hi { draw(lo, hi) } else { draw(hi, lo) })
+            }
         }
     }
 
@@ -121,9 +240,9 @@ impl Expr {
     pub fn vars_read<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Expr::Lit(_) => {}
-            Expr::Var(name) => out.push(name),
-            Expr::Not(e) => e.vars_read(out),
-            Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) => {
+            Expr::Var(name) | Expr::Count(name) => out.push(name),
+            Expr::Not(e) | Expr::Neg(e) => e.vars_read(out),
+            Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) | Expr::Bin(a, _, b) | Expr::Random(a, b) => {
                 a.vars_read(out);
                 b.vars_read(out);
             }
@@ -131,22 +250,32 @@ impl Expr {
                 out.push(name);
                 item.vars_read(out);
             }
+            Expr::Func(_, args) => args.iter().for_each(|a| a.vars_read(out)),
         }
+    }
+
+    /// The expressions directly inside this one.
+    pub fn children(&self) -> Vec<&Expr> {
+        match self {
+            Expr::Lit(_) | Expr::Var(_) | Expr::Count(_) => Vec::new(),
+            Expr::Not(e) | Expr::Neg(e) | Expr::Has(_, e) => vec![e],
+            Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) | Expr::Bin(a, _, b) | Expr::Random(a, b) => vec![a, b],
+            Expr::Func(_, args) => args.iter().collect(),
+        }
+    }
+
+    /// Whether a `random(lo, hi)` is anywhere inside.
+    pub fn has_random(&self) -> bool {
+        matches!(self, Expr::Random(..)) || self.children().into_iter().any(Expr::has_random)
     }
 
     /// Every `list has item` test inside the expression, as `(list variable, item expression)`.
     pub fn has_tests<'a>(&'a self, out: &mut Vec<(&'a str, &'a Expr)>) {
-        match self {
-            Expr::Lit(_) | Expr::Var(_) => {}
-            Expr::Not(e) => e.has_tests(out),
-            Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) => {
-                a.has_tests(out);
-                b.has_tests(out);
-            }
-            Expr::Has(name, item) => {
-                out.push((name, item));
-                item.has_tests(out);
-            }
+        if let Expr::Has(name, item) = self {
+            out.push((name, item));
+        }
+        for c in self.children() {
+            c.has_tests(out);
         }
     }
 }
@@ -190,7 +319,12 @@ pub struct Effect {
 
 impl Effect {
     pub fn apply(&self, vars: &mut Vars) {
-        let rhs = self.value.eval(vars);
+        self.apply_with(vars, &mut |lo, _| lo);
+    }
+
+    /// [`Effect::apply`], with `draw(lo, hi)` supplying each `random(lo, hi)`.
+    pub fn apply_with(&self, vars: &mut Vars, draw: &mut dyn FnMut(i64, i64) -> i64) {
+        let rhs = self.value.eval_with(vars, draw);
         // A list changes only by `+=` / `-=` of text; anything else leaves it alone.
         if let Some(Value::List(items)) = vars.get_mut(&self.var) {
             match (self.op, rhs) {
