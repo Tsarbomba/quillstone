@@ -1,5 +1,6 @@
 use super::*;
-use quillstone_render::Rect;
+use quillstone_render::{Rect, TEXTBOX};
+use crate::settings::QuickMenuSetting;
 use quillstone_script::parse;
 
 /// A game past its main menu, at the start of the story.
@@ -121,14 +122,14 @@ fn the_quick_menu_acts_instead_of_advancing() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space);
-    click_at(&mut g, centre(quick_button_rect(QuickButton::Back)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Back)));
     assert_eq!(line(&g), "one");
-    click_at(&mut g, centre(quick_button_rect(QuickButton::History)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::History)));
     assert_eq!(g.screen(), Screen::Backlog);
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(quick_button_rect(QuickButton::Auto)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Auto)));
     assert!(g.auto());
-    click_at(&mut g, centre(quick_button_rect(QuickButton::Settings)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Settings)));
     assert_eq!(g.screen(), Screen::Settings);
     assert_eq!(line(&g), "one", "none of that advanced the story");
 }
@@ -147,7 +148,7 @@ fn choices_take_clicks_and_number_keys_but_not_advance() {
 
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space);
-    click_at(&mut g, centre(quillstone_render::view::choice_rects(2)[0]));
+    click_at(&mut g, centre(quillstone_render::view::choice_rects(&Theme::default(), 2)[0]));
     assert_eq!(line(&g), "went left");
 }
 
@@ -488,10 +489,40 @@ fn quit_and_back_buttons() {
     assert!(g.take_requests().is_empty(), "asks first");
     click_at(&mut g, centre(confirm_button_rect(false)));
     assert!(g.take_requests().is_empty(), "No: still playing");
-    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Settings, "No goes back to Settings, not the story");
     click_at(&mut g, centre(button_rect(SettingsButton::Quit, true)));
     click_at(&mut g, centre(confirm_button_rect(true)));
     assert_eq!(g.take_requests(), vec![Request::Quit]);
+}
+
+#[test]
+fn a_confirm_launched_from_settings_returns_to_settings_on_no_and_proceeds_on_yes() {
+    let p = parse(THREE).unwrap();
+    for (button, yes_leaves) in [(SettingsButton::Quit, false), (SettingsButton::MainMenu, true)] {
+        let mut g = new_game(&p, instant());
+        key(&mut g, Key::Escape);
+        click_at(&mut g, centre(button_rect(button, true)));
+        assert_eq!(g.screen(), Screen::Settings, "Settings stays open under the question");
+        assert!(g.confirm.is_some());
+        let list = g.draw_list(&|_| None);
+        assert!(has_text(&list, "Settings") && has_text(&list, "Yes"), "both are drawn");
+        click_at(&mut g, centre(confirm_button_rect(false)));
+        assert!(g.confirm.is_none());
+        assert_eq!(g.screen(), Screen::Settings, "{button:?}: No returns to Settings");
+        assert!(g.in_story());
+        // Escape in the dialog is a No as well
+        click_at(&mut g, centre(button_rect(button, true)));
+        key(&mut g, Key::Escape);
+        assert_eq!(g.screen(), Screen::Settings);
+        // Yes proceeds
+        click_at(&mut g, centre(button_rect(button, true)));
+        click_at(&mut g, centre(confirm_button_rect(true)));
+        if yes_leaves {
+            assert_eq!(g.screen(), Screen::MainMenu);
+        } else {
+            assert!(g.take_requests().contains(&Request::Quit));
+        }
+    }
 }
 
 // ---- backlog -----------------------------------------------------------------------------------
@@ -694,7 +725,7 @@ fn quick_save_and_quick_load() {
     key(&mut g, Key::F9);
     assert_eq!(notice(&g).as_deref(), Some("No quick save yet"));
     key(&mut g, Key::Space);
-    click_at(&mut g, centre(quick_button_rect(QuickButton::QuickSave)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::QuickSave)));
     assert_eq!(notice(&g).as_deref(), Some("Quick saved"));
     assert!(has_file(&g, "quick-1.save"));
     g.tick(NOTICE_SECONDS + 0.1, false);
@@ -706,7 +737,7 @@ fn quick_save_and_quick_load() {
     key(&mut g, Key::Backspace);
     key(&mut g, Key::Backspace);
     assert_eq!(line(&g), "one");
-    click_at(&mut g, centre(quick_button_rect(QuickButton::QuickLoad)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::QuickLoad)));
     key(&mut g, Key::Enter); // yes
     assert_eq!(line(&g), "three", "the newest quick save");
 }
@@ -865,9 +896,9 @@ fn a_click_stops_skipping_without_advancing_and_tab_toggles() {
     assert!(g.skipping());
     key(&mut g, Key::Tab);
     assert!(!g.skipping());
-    click_at(&mut g, centre(quick_button_rect(QuickButton::Skip)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Skip)));
     assert!(g.skipping(), "the quick menu button works too");
-    click_at(&mut g, centre(quick_button_rect(QuickButton::Skip)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Skip)));
     assert!(!g.skipping());
 }
 
@@ -1566,7 +1597,7 @@ fn the_items_button_and_the_i_key_exist_only_in_games_with_an_inventory() {
     assert_eq!(g.screen(), Screen::Story, "I does nothing without an inventory");
     assert_eq!(line(&g), "one");
     // where the button would be, a click is an ordinary click on the story
-    click_at(&mut g, centre(crate::screens::quick_items_rect()));
+    click_at(&mut g, centre(crate::screens::quick_items_rect(TEXTBOX)));
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "two");
 }
@@ -1575,7 +1606,7 @@ fn the_items_button_and_the_i_key_exist_only_in_games_with_an_inventory() {
 fn the_quick_menu_button_and_i_open_the_inventory_and_four_things_close_it() {
     let p = parse(BAG).unwrap();
     let mut g = new_game(&p, instant());
-    click_at(&mut g, centre(crate::screens::quick_items_rect()));
+    click_at(&mut g, centre(crate::screens::quick_items_rect(TEXTBOX)));
     assert_eq!(g.screen(), Screen::Inventory);
     assert_eq!(line(&g), "one", "opening it doesn't advance the story");
     key(&mut g, Key::Escape);
@@ -2322,4 +2353,427 @@ fn a_click_still_lands_where_the_mouse_is_after_the_keyboard_moved_the_focus() {
     key(&mut g, Key::Right);
     assert_eq!(g.pointer(), None);
     assert!(g.cursor.is_some(), "the real position is kept for clicks");
+}
+
+// ---- hotspots over the textbox and the quick menu ------------------------------------------------------
+
+/// A line on screen, then two regions: one over the quick menu's Settings button
+/// (and the strip around it), one inside the textbox.
+const OVER_UI: &str = "# map\n**A:** Where to?\n::hotspots\n- [Over Settings](#out){rect=0.8385,0.9630,0.0781,0.0370}\n- [In the box](#out){rect=0.3,0.75,0.2,0.2}\n::\n# out\n**A:** Bye.\n::end\n";
+
+#[test]
+fn a_hotspot_wins_over_the_quick_menu_where_they_overlap_and_the_menu_works_elsewhere() {
+    let p = parse(OVER_UI).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // past the line: the regions appear, the line stays
+    let settings = centre(quick_button_rect(TEXTBOX, QuickButton::Settings));
+    let spot = centre(quillstone_render::view::hotspot_rect(&g.view().hotspots[0]));
+    assert!(quick_button_rect(TEXTBOX, QuickButton::Settings).contains(spot.unwrap().0, spot.unwrap().1), "the region overlaps the button");
+    click_at(&mut g, settings);
+    assert_eq!(g.screen(), Screen::Story, "Settings did not open");
+    assert_eq!(line(&g), "Bye.", "the region was picked");
+
+    let p = parse(OVER_UI).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // past the line: the regions appear, the line stays
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::History)));
+    assert_eq!(g.screen(), Screen::Backlog, "a quick-menu button with no region over it still works");
+}
+
+#[test]
+fn a_hotspot_inside_the_textbox_is_clickable_and_drawn_over_the_textbox() {
+    let p = parse(OVER_UI).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // past the line: the regions appear, the line stays
+    let at = centre(quillstone_render::view::hotspot_rect(&g.view().hotspots[1]));
+    g.handle(Event::CursorMoved(at));
+    let list = g.draw_list(&|_| None);
+    let box_at = list.iter().position(|d| matches!(d, quillstone_render::Draw::Rect { rect, .. } if *rect == quillstone_render::TEXTBOX)).unwrap();
+    let tint_at = list
+        .iter()
+        .position(|d| matches!(d, quillstone_render::Draw::Rect { rect, color } if *rect == quillstone_render::view::hotspot_rect(&g.view().hotspots[1]) && color[3] < 0.5))
+        .expect("the hovered region is tinted");
+    assert!(tint_at > box_at, "tint at {tint_at}, textbox at {box_at}");
+    g.handle(Event::Press(Button::Left));
+    assert_eq!(line(&g), "Bye.");
+}
+
+// ---- the auto and skip badge -----------------------------------------------------------------------
+
+fn badge(g: &Game) -> Option<String> {
+    g.draw_list(&|_| None).into_iter().find_map(|d| match d {
+        Draw::Text { text, .. } if text.starts_with("AUTO") || text.starts_with("SKIP") => Some(text),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_mode_badge_shows_auto_and_skip_and_the_old_skipping_label_is_gone() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    assert_eq!(badge(&g), None);
+    key(&mut g, Key::Char('a'));
+    assert_eq!(badge(&g).as_deref(), Some("AUTO"));
+    key(&mut g, Key::Tab);
+    assert!(g.skipping());
+    assert_eq!(badge(&g).as_deref(), Some("AUTO  SKIP »"));
+    key(&mut g, Key::Char('a'));
+    assert_eq!(badge(&g).as_deref(), Some("SKIP »"));
+    assert!(!has_text(&g.draw_list(&|_| None), "Skipping »"), "one indicator, not two");
+    // inside the 40 px margin, top right
+    let r = mode_badge_rect("SKIP »");
+    assert!(r.x + r.w <= 1880.0 + 1e-3 && r.y >= 30.0 && r.x > 960.0);
+}
+
+#[test]
+fn the_mode_badge_shows_where_there_is_no_quick_menu_and_hides_under_overlays() {
+    let p = parse(MAP).unwrap(); // regions and no line: no quick menu
+    let mut g = new_game(&p, instant());
+    assert!(!has_text(&g.draw_list(&|_| None), "Settings"), "no quick menu here");
+    key(&mut g, Key::Char('a'));
+    assert!(g.auto());
+    assert_eq!(badge(&g).as_deref(), Some("AUTO"));
+    g.ask("Sure?", Then::Quit);
+    assert_eq!(badge(&g).as_deref(), Some("AUTO"), "still shown over the story under a confirm");
+    g.confirm = None;
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Settings);
+    assert_eq!(badge(&g), None, "a full-screen overlay hides the story and its badge");
+    key(&mut g, Key::Escape);
+    let m = parse(THREE).unwrap();
+    let mut g = Game::new(&m, instant(), Box::new(crate::MemoryStorage::default()));
+    assert_eq!(badge(&g), None, "not at the main menu");
+    g.start_story();
+}
+
+// ---- quick menu modes, hide the interface, ::textbox --------------------------------
+
+fn quick_theme(mode: quillstone_render::QuickMenu) -> Theme {
+    Theme { quick_menu: mode, ..Theme::default() }
+}
+
+fn with_theme<'p>(p: &'p Program, settings: Settings, theme: Theme) -> Game<'p> {
+    let mut g = new_game(p, settings);
+    g.set_theme(theme);
+    g
+}
+
+fn drawn(g: &Game, what: &str) -> bool {
+    has_text(&g.draw_list(&|_| None), what)
+}
+
+#[test]
+fn hover_mode_shows_the_quick_menu_with_a_fade_and_gates_its_clicks() {
+    use quillstone_render::QuickMenu;
+    let p = parse(THREE).unwrap();
+    let mut g = with_theme(&p, instant(), quick_theme(QuickMenu::Hover));
+    g.tick(1.0, false);
+    assert!(!drawn(&g, "Back") && !g.needs_ticks(), "idle and away from it: nothing drawn, nothing to tick");
+
+    // the cursor over the textbox starts the fade; the buttons aren't clickable before they are visible
+    let back = centre(quick_button_rect(TEXTBOX, QuickButton::Back));
+    g.handle(Event::CursorMoved(back));
+    assert!(g.needs_ticks(), "a fade is a timer");
+    assert!(!drawn(&g, "Back"));
+    click_at(&mut g, back);
+    assert_eq!(line(&g), "two", "an invisible button doesn't take the click: it advanced");
+    g.handle(Event::CursorMoved(back));
+    g.tick(QUICK_FADE / 2.0 + 0.001, false);
+    assert!(drawn(&g, "Back"), "half way through the fade it is drawn");
+    let alpha = |g: &Game| g.draw_list(&|_| None).iter().find_map(|d| match d {
+        Draw::Text { text, color, .. } if text == "Back" => Some(color[3]),
+        _ => None,
+    });
+    assert!(alpha(&g).unwrap() < 1.0 && alpha(&g).unwrap() > 0.0, "{:?}", alpha(&g));
+    g.tick(1.0, false);
+    assert_eq!(alpha(&g), Some(1.0), "fully faded in (and lit: the cursor is on it)");
+    assert!(!g.needs_ticks());
+    click_at(&mut g, back);
+    assert_eq!(line(&g), "one", "now Back goes back");
+
+    // over the strip (not the textbox) counts too, and leaving fades it out again
+    let strip = (quick_button_rect(TEXTBOX, QuickButton::Settings).x + 5.0, TEXTBOX.y + TEXTBOX.h + 2.0);
+    g.handle(Event::CursorMoved(Some(strip)));
+    g.tick(0.3, false);
+    assert!(drawn(&g, "Back"), "the gap under the textbox is part of the strip");
+    g.handle(Event::CursorMoved(Some((900.0, 200.0))));
+    assert!(g.needs_ticks());
+    g.tick(QUICK_FADE / 2.0, false);
+    assert!(drawn(&g, "Back"), "still fading out");
+    g.tick(1.0, false);
+    assert!(!drawn(&g, "Back") && !g.needs_ticks());
+    g.handle(Event::CursorMoved(None)); // off the picture
+    g.tick(1.0, false);
+    assert!(!drawn(&g, "Back"));
+}
+
+fn theme_dim_alpha() -> f32 {
+    Theme::default().dim_color[3]
+}
+
+#[test]
+fn hidden_mode_never_draws_or_clicks_and_the_keys_still_work() {
+    use quillstone_render::QuickMenu;
+    let p = parse(THREE).unwrap();
+    let mut g = with_theme(&p, instant(), quick_theme(QuickMenu::Hidden));
+    let settings = centre(quick_button_rect(TEXTBOX, QuickButton::Settings));
+    g.handle(Event::CursorMoved(settings));
+    g.tick(1.0, false);
+    assert!(!drawn(&g, "Settings") && !drawn(&g, "Back"));
+    click_at(&mut g, settings);
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"), "the click advanced instead");
+    key(&mut g, Key::Char('h'));
+    assert_eq!(g.screen(), Screen::Backlog, "shortcuts are unaffected");
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "one");
+    key(&mut g, Key::Char('a'));
+    assert!(g.auto());
+}
+
+#[test]
+fn the_player_setting_overrides_the_theme_and_default_follows_it() {
+    use quillstone_render::QuickMenu;
+    let p = parse(THREE).unwrap();
+    let back = centre(quick_button_rect(TEXTBOX, QuickButton::Back));
+    let shown = |theme: QuickMenu, pref: QuickMenuSetting| {
+        let settings = Settings { quick_menu: pref, ..instant() };
+        let mut g = with_theme(&p, settings, quick_theme(theme));
+        g.handle(Event::CursorMoved(None));
+        g.tick(1.0, false);
+        drawn(&g, "Back")
+    };
+    assert!(shown(QuickMenu::Visible, QuickMenuSetting::Default));
+    assert!(!shown(QuickMenu::Hidden, QuickMenuSetting::Default));
+    assert!(!shown(QuickMenu::Hover, QuickMenuSetting::Default), "no cursor: hover mode is hidden");
+    assert!(shown(QuickMenu::Hidden, QuickMenuSetting::Visible), "Always beats a hidden theme");
+    assert!(!shown(QuickMenu::Visible, QuickMenuSetting::Hidden));
+    assert!(!shown(QuickMenu::Visible, QuickMenuSetting::Hover));
+    let mut g = with_theme(&p, Settings { quick_menu: QuickMenuSetting::Hover, ..instant() }, quick_theme(QuickMenu::Visible));
+    g.handle(Event::CursorMoved(back));
+    g.tick(1.0, false);
+    assert!(drawn(&g, "Back"));
+}
+
+#[test]
+fn the_settings_row_cycles_the_quick_menu_and_it_is_saved() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Escape);
+    let row = ROWS.iter().position(|r| *r == Row::QuickMenu).unwrap();
+    assert!(drawn(&g, "Quick menu") && drawn(&g, "Game default"));
+    click_at(&mut g, centre(control_rect(row)));
+    assert_eq!(g.settings().quick_menu, QuickMenuSetting::Visible);
+    assert!(drawn(&g, "Always"));
+    click_at(&mut g, centre(control_rect(row)));
+    assert_eq!(g.settings().quick_menu, QuickMenuSetting::Hover);
+    assert!(drawn(&g, "On hover"));
+    // the keyboard: Down to the row, Left goes back, Right and Enter go on
+    for _ in 0..ROWS.len() {
+        key(&mut g, Key::Up);
+    }
+    for _ in 0..row {
+        key(&mut g, Key::Down);
+    }
+    key(&mut g, Key::Left);
+    assert_eq!(g.settings().quick_menu, QuickMenuSetting::Visible);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.settings().quick_menu, QuickMenuSetting::Hidden);
+    assert!(drawn(&g, "Hidden"));
+    key(&mut g, Key::Escape);
+    assert!(g.take_requests().contains(&Request::SaveSettings));
+    assert_eq!(Settings::parse(&g.settings().to_text()).quick_menu, QuickMenuSetting::Hidden);
+    assert!(g.settings().to_text().contains("quick_menu = hidden"));
+    // it takes effect at once
+    assert!(!drawn(&g, "Back"));
+}
+
+#[test]
+fn the_settings_screen_fits_every_row_and_the_buttons_at_the_screen_size() {
+    for i in 0..ROWS.len() {
+        let r = row_rect(i);
+        assert!(r.y >= 170.0, "row {i} is below the title");
+        if i > 0 {
+            assert!(r.y >= row_rect(i - 1).y + row_rect(i - 1).h, "row {i} doesn't overlap the one above");
+        }
+        let c = control_rect(i);
+        assert!(c.y >= r.y && c.y + c.h <= r.y + r.h + 1e-3, "row {i}'s control is inside the row vertically");
+        assert!(c.x + c.w <= r.x + r.w, "row {i}'s control is inside the row");
+    }
+    let last = row_rect(ROWS.len() - 1);
+    for in_story in [true, false] {
+        for &b in settings_buttons(in_story) {
+            let r = button_rect(b, in_story);
+            assert!(r.y >= last.y + last.h && r.y + r.h < 960.0, "buttons under the rows and above the hint line");
+        }
+    }
+}
+
+const CHOICE_UI: &str = "**A:** one\n**A:** two\n::choice\n- [Left](#l)\n::\n# l\n**A:** three\n";
+
+#[test]
+fn u_hides_the_interface_and_the_next_key_or_click_only_brings_it_back() {
+    let p = parse(CHOICE_UI).unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(drawn(&g, "one") && drawn(&g, "Back"));
+    key(&mut g, Key::Char('u'));
+    let list = g.draw_list(&|_| None);
+    assert!(!has_text(&list, "one") && !has_text(&list, "A") && !has_text(&list, "Back"), "no textbox, name plate, line or quick menu");
+    assert!(g.view().hide_ui());
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "one", "the restoring key doesn't advance");
+    assert!(drawn(&g, "one") && drawn(&g, "Back") && !g.view().hide_ui());
+    // again, restored by a click (not by the click's action: on the quick menu's Back, say)
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Char('U'));
+    click_at_swallowed(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Settings)));
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"), "neither opened Settings nor advanced");
+    assert!(drawn(&g, "two"));
+    // U toggles back too (as any key does), and keys that do something do nothing the first time
+    key(&mut g, Key::Char('u'));
+    key(&mut g, Key::Char('u'));
+    assert!(drawn(&g, "two"), "the second U is the restoring key");
+    key(&mut g, Key::Char('u'));
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story, "Escape only restored");
+    // choices stay when the interface is hidden
+    key(&mut g, Key::Space);
+    assert!(g.view().choices.len() == 1);
+    key(&mut g, Key::Char('u'));
+    assert!(drawn(&g, "Left") && !drawn(&g, "two") && !drawn(&g, "Back"));
+    key(&mut g, Key::Char('1'));
+    assert_eq!(line(&g), "two", "the restoring key was swallowed, no choice made");
+    key(&mut g, Key::Char('1'));
+    assert_eq!(line(&g), "three");
+}
+
+fn click_at_swallowed(g: &mut Game, at: Option<(f32, f32)>) {
+    click_at(g, at);
+}
+
+#[test]
+fn hiding_the_interface_works_only_on_the_story_screen() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Settings);
+    key(&mut g, Key::Char('u'));
+    key(&mut g, Key::Escape);
+    assert!(drawn(&g, "one") && drawn(&g, "Back") && !g.view().hide_ui(), "U in Settings did nothing");
+    // over the quit question
+    key(&mut g, Key::Escape);
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true)));
+    key(&mut g, Key::Char('u'));
+    assert!(!g.view().hide_ui());
+    key(&mut g, Key::Char('n'));
+    key(&mut g, Key::Escape);
+    assert!(drawn(&g, "one"));
+    // the history
+    key(&mut g, Key::Char('h'));
+    key(&mut g, Key::Char('u'));
+    key(&mut g, Key::Escape);
+    assert!(!g.view().hide_ui() && drawn(&g, "one"));
+}
+
+#[test]
+fn hidden_interface_draws_no_mode_badge_and_keeps_ticking_the_story() {
+    let p = parse("**A:** one\n::wait{time=1}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // into the wait
+    key(&mut g, Key::Char('a'));
+    assert!(drawn(&g, "AUTO"));
+    key(&mut g, Key::Char('u'));
+    assert!(!drawn(&g, "AUTO"));
+    g.tick(2.0, false); // the wait runs out while the interface is hidden
+    assert_eq!(line(&g), "two");
+}
+
+const TEXTBOX_SCRIPT: &str = "**A:** one\n::textbox{hide}\n::wait{time=5}\n**A:** two\n";
+
+#[test]
+fn a_scripted_hidden_box_hides_the_line_and_the_quick_menu_and_clicks_advance() {
+    let p = parse(TEXTBOX_SCRIPT).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // into the wait, box hidden
+    assert!(g.view().textbox_hidden());
+    assert!(!drawn(&g, "one") && !drawn(&g, "Back") && !drawn(&g, "Settings"));
+    // the quick menu isn't there to click: a click where Settings was just advances
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Settings)));
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"));
+    assert!(drawn(&g, "two") && drawn(&g, "Back"), "the next line shows the box again");
+}
+
+#[test]
+fn a_scripted_fade_asks_for_ticks_and_the_menu_fades_with_the_box() {
+    let p = parse("**A:** one\n::textbox{hide fade=1}\n::wait{time=5}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert!(g.needs_ticks());
+    assert!(drawn(&g, "Back"), "still on screen at the start of the fade");
+    g.tick(0.5, false);
+    let back_alpha = g.draw_list(&|_| None).iter().find_map(|d| match d {
+        Draw::Text { text, color, .. } if text == "Back" => Some(color[3]),
+        _ => None,
+    });
+    assert!(back_alpha.unwrap() < theme_dim_alpha() * 0.6);
+    g.tick(1.0, false);
+    assert!(!drawn(&g, "Back") && !drawn(&g, "one"));
+}
+
+const BOX_MAP: &str = "**A:** one\n::textbox{hide}\n::hotspots\n- [Go](#x){rect=0,0,0.2,0.2}\n::\n# x\n**A:** two\n";
+
+#[test]
+fn a_hidden_box_is_restored_by_rollback_and_a_save() {
+    let p = parse(BOX_MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert!(g.view().textbox_hidden() && !g.view().hotspots.is_empty());
+    assert!(!drawn(&g, "one") && !drawn(&g, "Back"), "a clean map");
+    // quick save, move on (the next line shows the box), then load: hidden again
+    key(&mut g, Key::F5);
+    click_at(&mut g, Some((50.0, 50.0)));
+    assert_eq!(line(&g), "two");
+    assert!(!g.view().textbox_hidden() && drawn(&g, "two") && drawn(&g, "Back"));
+    key(&mut g, Key::F9);
+    key(&mut g, Key::Char('y'));
+    assert!(g.view().textbox_hidden() && !drawn(&g, "one") && !drawn(&g, "Back"));
+    // rolling back from the next line lands on the hidden map; once more, on the shown line
+    click_at(&mut g, Some((50.0, 50.0)));
+    key(&mut g, Key::Backspace);
+    assert!(g.view().textbox_hidden() && !drawn(&g, "one"));
+    key(&mut g, Key::Backspace);
+    assert!(!g.view().textbox_hidden() && drawn(&g, "one"));
+}
+
+#[test]
+fn a_custom_textbox_moves_the_quick_menu_and_its_clicks() {
+    let p = parse(THREE).unwrap();
+    let theme = Theme { textbox_rect: [200.0, 200.0, 1500.0, 300.0], ..Theme::default() };
+    let tb = quillstone_render::textbox_rect(&theme);
+    let mut g = with_theme(&p, instant(), theme.clone());
+    let back = quick_button_rect(tb, QuickButton::Back);
+    assert_eq!(back.y, 504.0, "directly below the textbox");
+    assert!(back.x + back.w * 8.0 > 0.0);
+    // the row is right-aligned to the textbox
+    assert_eq!(quick_button_rect(tb, QuickButton::Settings).x + back.w, 1700.0);
+    // a textbox too narrow for the row: it moves right so that no button leaves the screen
+    let narrow = quillstone_render::Rect::new(100.0, 200.0, 500.0, 300.0);
+    assert!(crate::screens::quick_items_rect(narrow).x >= 0.0);
+    assert!(quick_button_rect(narrow, QuickButton::Settings).x + back.w <= 1920.0);
+    // no room below the textbox: the row sits just inside its bottom edge
+    let low = quillstone_render::Rect::new(160.0, 800.0, 1600.0, 280.0);
+    assert_eq!(quick_button_rect(low, QuickButton::Back).y + back.h, 1080.0 - 4.0);
+    let tight = quillstone_render::Rect::new(160.0, 780.0, 1600.0, 290.0); // 1070 + 4 + 32 > 1080
+    assert!(quick_button_rect(tight, QuickButton::Back).y < 1070.0);
+    let exact = quillstone_render::Rect::new(160.0, 780.0, 1600.0, 264.0); // 1044 + 4 + 32 = 1080: fits below
+    assert_eq!(quick_button_rect(exact, QuickButton::Back).y, 1048.0);
+    click_at(&mut g, centre(back));
+    key(&mut g, Key::Space);
+    click_at(&mut g, centre(back));
+    assert_eq!(line(&g), "one", "Back at its new place worked");
+    // the old place is just the stage now
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Settings)));
+    assert_eq!(g.screen(), Screen::Story);
 }

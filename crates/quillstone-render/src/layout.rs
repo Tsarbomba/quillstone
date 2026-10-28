@@ -140,6 +140,22 @@ pub fn estimate_lines(text: &str, size: f32, width: f32) -> usize {
     estimate_lines_styled(text, &[], size, width)
 }
 
+/// `s` cut short with an ellipsis so that it fits one row `width` wide (a row has no room for a second line).
+pub fn one_row(s: &str, size: f32, width: f32) -> String {
+    let mut chars: Vec<char> = s.chars().collect();
+    if estimate_lines(s, size, width) <= 1 {
+        return s.to_string();
+    }
+    while chars.len() > 1 {
+        chars.pop();
+        let cut: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
+        if estimate_lines(&cut, size, width) <= 1 {
+            return cut;
+        }
+    }
+    String::new()
+}
+
 /// Like [`estimate_lines`] for text with `{size}` runs (see `quillstone_script::markup`):
 /// each character is as wide as its run's size says, so a `{size=+30}` shout takes
 /// the room it will really need.

@@ -17,6 +17,40 @@
 //! inventory_cell = #20283a
 //! ```
 
+use crate::view::Align;
+
+/// When the quick menu (Back, History, Skip, ...) under the textbox is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuickMenu {
+    /// Always (the default).
+    #[default]
+    Visible,
+    /// Only while the cursor is over the textbox or the quick menu's strip.
+    Hover,
+    /// Never drawn or clickable (the keyboard and gamepad shortcuts still work).
+    Hidden,
+}
+
+impl QuickMenu {
+    pub fn from_name(name: &str) -> Option<QuickMenu> {
+        match name {
+            "visible" => Some(QuickMenu::Visible),
+            "hover" => Some(QuickMenu::Hover),
+            "hidden" => Some(QuickMenu::Hidden),
+            _ => None,
+        }
+    }
+}
+
+/// The dialogue box at 1920x1080 (`x, y, w, h`) unless the theme moves it.
+pub const DEFAULT_TEXTBOX: [f32; 4] = [160.0, 780.0, 1600.0, 260.0];
+/// Text inset `left, top, right, bottom` inside the textbox. The top inset is used
+/// for a line without a speaker; with one, the text starts below the name plate.
+pub const DEFAULT_TEXTBOX_PADDING: [f32; 4] = [40.0, 36.0, 40.0, 20.0];
+/// Least size of the textbox, and of the text area left inside it by the padding.
+pub const MIN_TEXTBOX: [f32; 2] = [400.0, 120.0];
+pub const MIN_TEXT_AREA: [f32; 2] = [200.0, 60.0];
+
 /// How a cell of the inventory and shop grid is filled: a colour or a picture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellStyle {
@@ -56,6 +90,19 @@ pub struct Theme {
     pub overlay_color: [f32; 4],
     /// Drawn stretched over the textbox area (1600x260 at 1920x1080).
     pub textbox_image: Option<String>,
+    /// `x, y, w, h` of the dialogue box in the 1920x1080 screen.
+    pub textbox_rect: [f32; 4],
+    /// Text inset `left, top, right, bottom` (see [`DEFAULT_TEXTBOX_PADDING`]).
+    pub textbox_padding: [f32; 4],
+    /// Drawn stretched over the name plate (under the speaker's name), if loaded.
+    pub name_plate_image: Option<String>,
+    /// `x, y, w, h` of the name plate in the screen; `None`: inside the top left of the textbox.
+    pub name_plate_rect: Option<[f32; 4]>,
+    /// Alignment of the dialogue text and of the speaker's name: `Left` or `CenterX`.
+    pub text_align: Align,
+    pub name_align: Align,
+    /// When the quick menu is shown (the player may override it in Settings).
+    pub quick_menu: QuickMenu,
     pub menu_background: Option<String>,
     pub menu_music: Option<String>,
     /// Full-screen picture behind the inventory (and the shop, unless
@@ -110,6 +157,13 @@ impl Default for Theme {
             button_hover_color: [0.25, 0.20, 0.42, 0.88],
             overlay_color: [0.02, 0.02, 0.05, 0.88],
             textbox_image: None,
+            textbox_rect: DEFAULT_TEXTBOX,
+            textbox_padding: DEFAULT_TEXTBOX_PADDING,
+            name_plate_image: None,
+            name_plate_rect: None,
+            text_align: Align::Left,
+            name_align: Align::Left,
+            quick_menu: QuickMenu::Visible,
             menu_background: None,
             menu_music: None,
             inventory_background: None,
@@ -141,6 +195,7 @@ impl Theme {
     pub fn parse(text: &str) -> (Theme, Vec<String>) {
         let mut t = Theme::default();
         let mut problems = Vec::new();
+        let (mut rect_line, mut padding_line) = (0, 0);
         for (i, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -237,6 +292,49 @@ impl Theme {
                     text if key == "shop_title" => t.shop_title = text.to_string(),
                     text => t.shop_currency = Some(text.to_string()),
                 },
+                "textbox_rect" => match parse_rect(value) {
+                    Some([x, y, w, h]) if w >= MIN_TEXTBOX[0] && h >= MIN_TEXTBOX[1] => {
+                        t.textbox_rect = [x, y, w, h];
+                        rect_line = i + 1;
+                    }
+                    _ => bad(format!(
+                        "`textbox_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, \
+                         at least {}x{}",
+                        MIN_TEXTBOX[0], MIN_TEXTBOX[1]
+                    )),
+                },
+                "textbox_padding" => match parse_numbers(value, 0.0, 400.0) {
+                    Some(v) if v.len() == 1 => {
+                        t.textbox_padding = [v[0]; 4];
+                        padding_line = i + 1;
+                    }
+                    Some(v) if v.len() == 4 => {
+                        t.textbox_padding = [v[0], v[1], v[2], v[3]];
+                        padding_line = i + 1;
+                    }
+                    _ => bad("`textbox_padding` must be one number or `left, top, right, bottom` (each 0 to 400)".into()),
+                },
+                "name_plate_image" => t.name_plate_image = path(),
+                "name_plate_rect" => match parse_rect(value) {
+                    Some(r) => t.name_plate_rect = Some(r),
+                    None => bad("`name_plate_rect` must be four numbers `x, y, w, h` that lie inside the 1920x1080 screen".into()),
+                },
+                "text_align" | "name_align" => {
+                    let align = match value {
+                        "left" => Some(Align::Left),
+                        "center" => Some(Align::CenterX),
+                        _ => None,
+                    };
+                    match (align, key) {
+                        (Some(a), "text_align") => t.text_align = a,
+                        (Some(a), _) => t.name_align = a,
+                        (None, _) => bad(format!("`{key}` must be `left` or `center`")),
+                    }
+                }
+                "quick_menu" => match QuickMenu::from_name(value) {
+                    Some(m) => t.quick_menu = m,
+                    None => bad("`quick_menu` must be `visible`, `hover` or `hidden`".into()),
+                },
                 "font" => t.font = path(),
                 "font_bold" => t.font_bold = path(),
                 "font_italic" => t.font_italic = path(),
@@ -252,13 +350,26 @@ impl Theme {
                 other => bad(format!("unknown key `{other}`")),
             }
         }
+        // The padding must leave room for text in the textbox. Reported at the line that
+        // set the padding (or the rect, when the padding is the default).
+        let [_, _, w, h] = t.textbox_rect;
+        let [l, tp, r, b] = t.textbox_padding;
+        if w - l - r < MIN_TEXT_AREA[0] || h - tp - b < MIN_TEXT_AREA[1] {
+            let line = if padding_line > 0 { padding_line } else { rect_line };
+            problems.push(format!(
+                "line {line}: the textbox padding leaves less than {}x{} px for the text inside the textbox; \
+                 using the default padding",
+                MIN_TEXT_AREA[0], MIN_TEXT_AREA[1]
+            ));
+            t.textbox_padding = DEFAULT_TEXTBOX_PADDING;
+        }
         (t, problems)
     }
 
     /// Files the theme refers to (relative to the script's folder).
     pub fn assets(&self) -> Vec<&str> {
         let mut out = self.fonts();
-        out.extend([&self.textbox_image, &self.menu_background, &self.menu_music].into_iter().filter_map(|p| p.as_deref()));
+        out.extend([&self.textbox_image, &self.name_plate_image, &self.menu_background, &self.menu_music].into_iter().filter_map(|p| p.as_deref()));
         out.extend(self.inventory_images());
         out
     }
@@ -286,7 +397,7 @@ impl Theme {
     /// Images the theme draws (to load along with the script's own).
     pub fn images(&self) -> Vec<&str> {
         let mut out: Vec<&str> =
-            [&self.textbox_image, &self.menu_background].into_iter().filter_map(|p| p.as_deref()).collect();
+            [&self.textbox_image, &self.name_plate_image, &self.menu_background].into_iter().filter_map(|p| p.as_deref()).collect();
         out.extend(self.inventory_images());
         out
     }
@@ -437,5 +548,62 @@ mod tests {
         for (i, p) in problems.iter().enumerate() {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
+    }
+
+    #[test]
+    fn the_textbox_keys_default_to_the_old_look() {
+        let t = Theme::default();
+        assert_eq!(t.textbox_rect, [160.0, 780.0, 1600.0, 260.0]);
+        assert_eq!(t.textbox_rect, [crate::TEXTBOX.x, crate::TEXTBOX.y, crate::TEXTBOX.w, crate::TEXTBOX.h]);
+        assert_eq!(t.textbox_padding, [40.0, 36.0, 40.0, 20.0]);
+        assert_eq!((t.name_plate_image.as_deref(), t.name_plate_rect), (None, None));
+        assert_eq!((t.text_align, t.name_align, t.quick_menu), (Align::Left, Align::Left, QuickMenu::Visible));
+        assert_eq!(Theme::parse("").0, t);
+    }
+
+    #[test]
+    fn the_textbox_keys_are_read() {
+        let (t, problems) = Theme::parse(
+            "textbox_rect = 100, 500.5, 1400, 400\ntextbox_padding = 10, 20, 30, 40\nname_plate_image = g/plate.png\n\
+             name_plate_rect = 120,450,300,60\ntext_align = center\nname_align = center\nquick_menu = hover\n",
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(t.textbox_rect, [100.0, 500.5, 1400.0, 400.0]);
+        assert_eq!(t.textbox_padding, [10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(t.name_plate_image.as_deref(), Some("g/plate.png"));
+        assert_eq!(t.name_plate_rect, Some([120.0, 450.0, 300.0, 60.0]));
+        assert_eq!((t.text_align, t.name_align, t.quick_menu), (Align::CenterX, Align::CenterX, QuickMenu::Hover));
+        assert!(t.assets().contains(&"g/plate.png") && t.images().contains(&"g/plate.png"));
+        assert_eq!(Theme::parse("textbox_padding = 24\n").0.textbox_padding, [24.0; 4]);
+        assert_eq!(Theme::parse("quick_menu = hidden\n").0.quick_menu, QuickMenu::Hidden);
+    }
+
+    #[test]
+    fn bad_textbox_values_are_reported_with_their_line_and_ignored() {
+        let src = "textbox_rect = 0, 0, 2000, 300\n\
+                   textbox_rect = 1700, 800, 400, 200\n\
+                   textbox_rect = 100, 100, 200, 300\n\
+                   textbox_rect = 1, 2, 3\n\
+                   textbox_padding = 1, 2\n\
+                   textbox_padding = -4\n\
+                   name_plate_rect = 100, 100, 5000, 40\n\
+                   text_align = right\n\
+                   name_align = middle\n\
+                   quick_menu = sometimes\n";
+        let (t, problems) = Theme::parse(src);
+        assert_eq!(problems.len(), 10, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
+        }
+        assert_eq!(t, Theme::default(), "nothing took effect");
+    }
+
+    #[test]
+    fn a_padding_that_leaves_no_room_is_refused() {
+        let (t, problems) = Theme::parse("textbox_rect = 100, 100, 500, 200\ntextbox_padding = 40, 100, 300, 50\n");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("line 2:") && problems[0].contains("padding"), "{problems:?}");
+        assert_eq!(t.textbox_padding, DEFAULT_TEXTBOX_PADDING);
+        assert_eq!(t.textbox_rect, [100.0, 100.0, 500.0, 200.0]);
     }
 }

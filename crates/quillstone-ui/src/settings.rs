@@ -3,6 +3,55 @@
 //! The file is `key = value` lines. Unknown keys and bad values are ignored (the
 //! default is used), so an old or hand-edited file never stops the game.
 
+use quillstone_render::QuickMenu;
+
+/// The player's say over the quick menu (see [`quillstone_render::QuickMenu`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuickMenuSetting {
+    /// Whatever the game's theme says.
+    #[default]
+    Default,
+    Visible,
+    Hover,
+    Hidden,
+}
+
+impl QuickMenuSetting {
+    pub const ALL: [QuickMenuSetting; 4] =
+        [QuickMenuSetting::Default, QuickMenuSetting::Visible, QuickMenuSetting::Hover, QuickMenuSetting::Hidden];
+
+    /// The mode to use, given the theme's.
+    pub fn resolve(self, theme: QuickMenu) -> QuickMenu {
+        match self {
+            QuickMenuSetting::Default => theme,
+            QuickMenuSetting::Visible => QuickMenu::Visible,
+            QuickMenuSetting::Hover => QuickMenu::Hover,
+            QuickMenuSetting::Hidden => QuickMenu::Hidden,
+        }
+    }
+
+    /// The next one in the list (wrapping), or the previous with `back`.
+    pub fn cycled(self, back: bool) -> QuickMenuSetting {
+        let n = Self::ALL.len();
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(i + if back { n - 1 } else { 1 }) % n]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            QuickMenuSetting::Default => "default",
+            QuickMenuSetting::Visible => "visible",
+            QuickMenuSetting::Hover => "hover",
+            QuickMenuSetting::Hidden => "hidden",
+        }
+    }
+
+    /// Unknown names are `None` (the caller keeps the default).
+    pub fn from_name(name: &str) -> Option<QuickMenuSetting> {
+        Self::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
 /// Everything the settings screen can change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -17,6 +66,8 @@ pub struct Settings {
     pub fullscreen: bool,
     /// Whether skip mode also skips lines the player hasn't read yet.
     pub skip_unread: bool,
+    /// When the quick menu under the textbox shows.
+    pub quick_menu: QuickMenuSetting,
 }
 
 impl Default for Settings {
@@ -29,6 +80,7 @@ impl Default for Settings {
             voice_volume: 1.0,
             fullscreen: false,
             skip_unread: false,
+            quick_menu: QuickMenuSetting::Default,
         }
     }
 }
@@ -66,6 +118,7 @@ impl Settings {
                 "voice_volume" => s.voice_volume = num().map_or(s.voice_volume, |v| v.clamp(0.0, 1.0)),
                 "fullscreen" => s.fullscreen = value.parse().unwrap_or(s.fullscreen),
                 "skip_unread" => s.skip_unread = value.parse().unwrap_or(s.skip_unread),
+                "quick_menu" => s.quick_menu = QuickMenuSetting::from_name(value).unwrap_or_default(),
                 _ => {}
             }
         }
@@ -82,14 +135,16 @@ impl Settings {
              sfx_volume = {}\n\
              voice_volume = {}\n\
              fullscreen = {}\n\
-             skip_unread = {}\n",
+             skip_unread = {}\n\
+             quick_menu = {}\n",
             self.text_speed,
             self.auto_delay,
             self.music_volume,
             self.sfx_volume,
             self.voice_volume,
             self.fullscreen,
-            self.skip_unread
+            self.skip_unread,
+            self.quick_menu.name()
         )
     }
 }
@@ -142,6 +197,7 @@ mod tests {
             voice_volume: 0.75,
             fullscreen: true,
             skip_unread: true,
+            quick_menu: QuickMenuSetting::Hover,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse(&Settings::default().to_text()), Settings::default());
@@ -155,6 +211,36 @@ mod tests {
         assert!(!s.fullscreen);
         assert_eq!(Settings::parse(""), Settings::default());
         assert_eq!(Settings::parse("text_speed = NaN\n").text_speed, 60.0);
+    }
+
+    #[test]
+    fn the_quick_menu_setting_reads_names_and_defaults_otherwise() {
+        for s in QuickMenuSetting::ALL {
+            assert_eq!(Settings::parse(&format!("quick_menu = {}\n", s.name())).quick_menu, s);
+        }
+        for bad in ["quick_menu = sometimes\n", "quick_menu =\n", "quick_menu = HOVER\n", "music_volume = 1\n", ""] {
+            assert_eq!(Settings::parse(bad).quick_menu, QuickMenuSetting::Default, "{bad:?}");
+        }
+        // a file from before the setting existed
+        let old = "text_speed = 40\nauto_delay = 2\nmusic_volume = 0.5\nsfx_volume = 1\nvoice_volume = 1\nfullscreen = true\nskip_unread = false\n";
+        let s = Settings::parse(old);
+        assert_eq!((s.quick_menu, s.text_speed, s.fullscreen), (QuickMenuSetting::Default, 40.0, true));
+    }
+
+    #[test]
+    fn the_quick_menu_setting_cycles_and_resolves_against_the_theme() {
+        let mut s = QuickMenuSetting::Default;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(s);
+            s = s.cycled(false);
+        }
+        assert_eq!(seen[..4], QuickMenuSetting::ALL);
+        assert_eq!(seen[4], QuickMenuSetting::Default, "wraps");
+        assert_eq!(QuickMenuSetting::Default.cycled(true), QuickMenuSetting::Hidden);
+        assert_eq!(QuickMenuSetting::Default.resolve(QuickMenu::Hover), QuickMenu::Hover);
+        assert_eq!(QuickMenuSetting::Visible.resolve(QuickMenu::Hover), QuickMenu::Visible);
+        assert_eq!(QuickMenuSetting::Hidden.resolve(QuickMenu::Visible), QuickMenu::Hidden);
     }
 
     #[test]

@@ -32,6 +32,10 @@ title: Staging
 ::hide{ren fade=0.3}
 **Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
 
+<!-- A CG moment: the dialogue box is hidden for a few seconds (a click goes on). The next line shows it again by itself. -->
+::textbox{hide fade=0.4}
+::wait{time=3}
+
 **Mika:** A paragraph break starts a new line inside one line of dialogue.{p}It never waits, and it works with {color=#ffd98c}colour{/color} and {size=+14}size{/size} too.
 
 **Mika:** Text can change size too: {size=+14}bigger{/size}, {size=24}smaller{/size}, and {size=+14}big {color=#ff8080}and red{/color}{/size} together.

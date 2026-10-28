@@ -7,3 +7,10 @@ menu_background = assets/night.png
 menu_music = assets/calm.ogg
 # A bundled font looks the same on every PC (otherwise the system font is used):
 # font = assets/fonts/YourFont.ttf
+# The dialogue box can be moved and styled too (see SCRIPT.md, "Themes"):
+# textbox_rect = 360, 700, 1200, 340      # x, y, width, height of the box
+# textbox_padding = 40, 36, 40, 20        # text inset: left, top, right, bottom
+# name_plate_image = assets/gui/plate.png
+# name_plate_rect = 380, 640, 400, 64     # where the speaker's name goes
+# text_align = center                     # or left
+# quick_menu = hover                      # visible (default), hover or hidden

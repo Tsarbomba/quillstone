@@ -272,7 +272,7 @@ fn line_warnings(program: &Program, root: &Path) -> Vec<(usize, String)> {
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
             Op::Say { speaker, text, .. } => {
-                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(text, speaker.is_some(), theme.text_size);
+                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(&theme, text, speaker.is_some(), theme.text_size);
                 if lines > fit + 1 {
                     out.push((
                         program.lines[pc],
@@ -285,7 +285,7 @@ fn line_warnings(program: &Program, root: &Path) -> Vec<(usize, String)> {
             }
             Op::Choice { options } => {
                 let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none()).collect();
-                let Some(rect) = quillstone_render::view::choice_rects(buttons.len()).first().copied() else { continue };
+                let Some(rect) = quillstone_render::view::choice_rects(&theme, buttons.len()).first().copied() else { continue };
                 let size = theme.text_size.min(rect.h * 0.5); // as the player draws it
                 let fit = (rect.h / (size * 1.35).round().max(1.0)).floor() as usize;
                 for o in buttons {
@@ -665,6 +665,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
+            Cmd::Textbox { .. } => {} // nothing to show in text mode
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
             Cmd::StopMusic { .. } => println!("[music stops]"),
@@ -783,7 +784,7 @@ mod tests {
     #[test]
     fn a_paragraph_break_counts_as_a_line_in_the_long_line_estimate() {
         let words = plain("one{p}two{p}three{p}four{p}five{p}six");
-        let (lines, fit) = quillstone_render::view::dialogue_lines(&words, true, 38.0);
+        let (lines, fit) = quillstone_render::view::dialogue_lines(&quillstone_render::Theme::default(), &words, true, 38.0);
         assert_eq!(lines, 6);
         assert!(lines > fit + 1, "six short paragraphs don't fit the textbox: {fit}");
     }
@@ -837,7 +838,7 @@ mod tests {
     fn theme_paths_outside_the_game_folder_are_rejected_in_every_form() {
         let key: &[(&str, &[u8])] = &[("assets/key.png", KEY), ("assets/f.ttf", FONT)];
         for bad in ["../x.png", "/x.png", "assets\\key.png", "C:\\x.png", "C:/x.png", "\\\\host\\share\\x.png", "//host/share/x.png", "assets/../../x.png"] {
-            for line in [format!("textbox_image = {bad}"), format!("inventory_panel = {bad}"), format!("font = {bad}")] {
+            for line in [format!("textbox_image = {bad}"), format!("inventory_panel = {bad}"), format!("font = {bad}"), format!("name_plate_image = {bad}")] {
                 let found = themed(&format!("# a comment\n{line}\n"), key);
                 assert!(
                     found.len() == 1 && found[0].contains("t.txt:2:") && found[0].contains("is outside the script's folder"),
@@ -946,5 +947,38 @@ mod tests {
         let at: Vec<usize> = found.iter().map(|(l, _)| *l).collect();
         assert_eq!(at, [9, 6], "the choice option's line, then the item's declaration line: {found:?}");
         assert!(found[0].1.contains("button") && found[1].1.contains("description of `b`"));
+    }
+
+    #[test]
+    fn check_validates_the_name_plate_picture_like_the_textbox_picture() {
+        let ok = themed("textbox_image = assets/key.png\nname_plate_image = assets/key.png\n", &[("assets/key.png", KEY)]);
+        assert!(ok.is_empty(), "{ok:?}");
+        let missing = themed("textbox_rect = 100, 500, 1200, 400\nname_plate_image = assets/plate.png\n", &[]);
+        assert!(missing.len() == 1 && missing[0].contains("t.txt:2:") && missing[0].contains("missing theme picture `assets/plate.png`"), "{missing:?}");
+        let fake = themed("name_plate_image = assets/plate.png\n", &[("assets/plate.png", b"not a picture")]);
+        assert!(fake.len() == 1 && fake[0].contains("plate.png"), "{fake:?}");
+        // a bad textbox line is reported with its line number like any theme line
+        let bad = themed("text_size = 40\ntextbox_rect = 0, 0, 100, 100\n", &[]);
+        assert!(bad.len() == 1 && bad[0].contains("line 2:") && bad[0].contains("textbox_rect"), "{bad:?}");
+        let script = "---\ntheme: t.txt\n---\nHi.\n";
+        assert!(checked(script, &[("t.txt", b"name_plate_image = assets/plate.png")]).is_err());
+        assert!(checked(script, &[("t.txt", b"name_plate_image = assets/key.png"), ("assets/key.png", KEY)]).is_ok());
+    }
+
+    #[test]
+    fn the_long_line_warning_uses_the_themes_textbox_and_padding() {
+        let line = "word ".repeat(40); // 200 characters
+        let script = format!("---\ntheme: t.txt\n---\n**A:** {line}\n");
+        let warns = |theme: &str| {
+            in_dir(&[("t.txt", theme.as_bytes()), ("s.quill.md", script.as_bytes())], |dir| {
+                line_warnings(&parse(&script).unwrap(), dir)
+            })
+        };
+        assert!(warns("").is_empty(), "fits the default textbox");
+        assert!(warns("textbox_rect = 100, 700, 1200, 300\n").is_empty(), "a smaller but tall enough box still fits");
+        let small = warns("textbox_rect = 700, 700, 500, 200\ntextbox_padding = 20\n");
+        assert_eq!(small.len(), 1, "{small:?}");
+        let padded = warns("textbox_rect = 160, 780, 800, 260\ntextbox_padding = 40, 36, 300, 20\n");
+        assert_eq!(padded.len(), 1, "padding narrows the text area: {padded:?}");
     }
 }

@@ -175,8 +175,9 @@ Rollback and saves keep the counts; they belong to one playthrough.
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
-| `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. |
+| `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
+| `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
 Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
@@ -552,7 +553,7 @@ font_bold = assets/fonts/MyFont-Bold.ttf          # for **bold** (same family)
 font_italic = assets/fonts/MyFont-Italic.ttf      # for *italic*
 font_bold_italic = assets/fonts/MyFont-BoldItalic.ttf
 text_size = 38                      # dialogue and buttons (8 to 200)
-name_size = 36                      # the speaker's name plate
+name_size = 36                      # the speaker's name plate (48 px high: bigger names shrink to fit, down to 60%, so keep it under about 60)
 text_color = #ffffff
 name_color = #ffd98c                # name plates of characters without color=
 accent_color = #ffd98c              # highlights, the title on the main menu
@@ -561,12 +562,54 @@ panel_color = #000000b8             # the textbox, if there is no textbox_image
 button_color = #000000b3
 button_hover_color = #40336be0
 overlay_color = #050510e0           # behind settings, history and save/load
-textbox_image = assets/gui/textbox.png   # stretched over the 1600x260 textbox
+textbox_image = assets/gui/textbox.png   # stretched over the textbox (1600x260 unless textbox_rect says otherwise)
+quick_menu = visible                # visible (default), hover or hidden (see below)
 menu_background = assets/gui/menu.png
 menu_music = assets/audio/menu.ogg
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).
+
+### The dialogue box
+
+The textbox, the name plate and the quick menu under them can be moved and styled.
+Positions and sizes are in the 1920x1080 virtual screen; without these keys the box looks as
+it always has (a 1600x260 box at 160, 780).
+
+```text
+textbox_rect = 360, 700, 1200, 340      # x, y, width, height; inside the screen, at least 400x120
+textbox_padding = 40, 36, 40, 20        # text inset: left, top, right, bottom (or one number for all four)
+name_plate_image = assets/gui/plate.png # stretched over the name plate, under the speaker's name
+name_plate_rect = 380, 640, 400, 64     # x, y, width, height of the name plate
+text_align = center                     # the dialogue text: left (default) or center
+name_align = center                     # the speaker's name: left (default) or center
+```
+
+- The padding must leave at least 200x60 px for the text inside the textbox, otherwise it
+  is reported and the default is used. The top inset is for a line without a speaker; with
+  one, the text starts 10 px below the name plate when the plate is inside the box.
+- Without `name_plate_rect` the plate is a 48 px strip at the top of the textbox, 22 px down and
+  inset by the padding's left and right. The rect is absolute, so it can sit above the box.
+- Choice buttons stack centred above the top edge of the textbox (and shrink if there is little
+  room, so leave some above it), and inline pictures are drawn above it too.
+- `quillstone check` warns about lines too long for the real textbox and padding, and checks
+  `name_plate_image` and `textbox_image` as pictures; `package` includes them.
+- The history screen is not affected.
+
+**The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items
+in a game with an inventory) sits in a row directly below the textbox, aligned with its right
+edge. When there is no room below (the textbox ends less than 36 px above the bottom of the screen)
+the row is drawn just inside the bottom edge of the textbox instead; a textbox narrower than the
+row moves the row right so that every button stays on the screen. `quick_menu` says when it shows:
+
+| `quick_menu` | |
+| --- | --- |
+| `visible` | always (default) |
+| `hover` | only while the cursor is over the textbox or the row, fading in and out in about 0.15 s; buttons that aren't shown can't be clicked |
+| `hidden` | never drawn or clickable |
+
+The keyboard and gamepad shortcuts work in every mode. Players can override the mode in
+Settings (Quick menu: Game default, Always, On hover, Hidden).
 
 ### The inventory and shop screens
 

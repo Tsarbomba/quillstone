@@ -623,6 +623,9 @@ pub enum Op {
     /// `::sfx{stop=file}` (one file) or `::sfx{stop}` (`None`: everything on the
     /// sound-effect channel): stops its loop and any one-shot of it still playing.
     StopSfx { src: Option<String>, fade: f32 },
+    /// Hide or show the whole dialogue box (textbox, name plate, line, quick menu),
+    /// fading over `fade` seconds (0: at once). A line or choice shows it again by itself.
+    Textbox { hidden: bool, fade: f32 },
     /// A full-screen flash of `color` that fades out over `time` seconds. Doesn't wait.
     Flash { time: f32, color: [f32; 3] },
     /// Voice clip for the next line.

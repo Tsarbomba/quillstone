@@ -43,6 +43,9 @@ pub enum Cmd {
     /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
     /// Like a shake it is a moment: not part of [`State`], never replayed.
     Flash { time: f32, color: [f32; 3] },
+    /// Hide or show the dialogue box (textbox, name plate, line, quick menu),
+    /// fading over `fade` seconds (0: at once). Part of the scene: see [`State::textbox_hidden`].
+    Textbox { hidden: bool, fade: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
     PlayMusic { src: String, fade: f32, looped: bool, volume: f32 },
@@ -182,6 +185,9 @@ pub struct State {
     pub background: Option<String>,
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
+    /// `::textbox{hide}` is in effect: the dialogue box stays hidden until
+    /// `::textbox{show}` or the next line or choice.
+    pub textbox_hidden: bool,
     pub music: Option<MusicState>,
     /// Looping sound effects, in the order they started.
     pub sfx_loops: Vec<SfxLoopState>,
@@ -204,6 +210,7 @@ impl State {
             background: None,
             sprites: Vec::new(),
             camera: Camera::default(),
+            textbox_hidden: false,
             music: None,
             sfx_loops: Vec::new(),
             inline: Vec::new(),
@@ -223,6 +230,9 @@ impl State {
         }
         if self.camera != Camera::default() {
             out.push(Cmd::Camera { camera: self.camera, time: 0.0, ease: Ease::Linear });
+        }
+        if self.textbox_hidden {
+            out.push(Cmd::Textbox { hidden: true, fade: 0.0 });
         }
         for s in &self.sprites {
             out.push(Cmd::ShowSprite {
@@ -528,6 +538,7 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
         }
         match op {
             Op::Say { speaker, color, text } => {
+                show_textbox(state, &mut out);
                 let text = interpolate(text, &state.vars);
                 state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
                 return block(state, &mut out, Cmd::Say { speaker: speaker.clone(), color: *color, text });
@@ -545,6 +556,10 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 if visible.is_empty() {
                     state.pc += 1; // nothing on offer: carry on past the block
                     continue;
+                }
+                // Choice buttons bring the box back; a hotspot map keeps it hidden (a clean map).
+                if options.iter().all(|o| o.area.is_none()) {
+                    show_textbox(state, &mut out);
                 }
                 return block(state, &mut out, choice_cmd(options, &visible, &state.vars));
             }
@@ -613,6 +628,11 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
             }
             Op::Flash { time, color } => {
                 out.push(Cmd::Flash { time: *time, color: *color });
+                state.pc += 1;
+            }
+            Op::Textbox { hidden, fade } => {
+                state.textbox_hidden = *hidden;
+                out.push(Cmd::Textbox { hidden: *hidden, fade: *fade });
                 state.pc += 1;
             }
             Op::Camera { zoom, x, y, time, ease } => {
@@ -698,6 +718,14 @@ fn moves_on_by_itself(pending: &Option<Cmd>) -> bool {
         Some(Cmd::Wait { .. } | Cmd::PlayVideo { .. }) => true,
         Some(Cmd::Say { text, .. }) => quillstone_script::markup::rich(text).no_wait,
         _ => false,
+    }
+}
+
+/// A line or choice arrives: a hidden dialogue box comes back (so the story never moves on unseen).
+fn show_textbox(state: &mut State, out: &mut Vec<Cmd>) {
+    if state.textbox_hidden {
+        state.textbox_hidden = false;
+        out.push(Cmd::Textbox { hidden: false, fade: 0.0 });
     }
 }
 
@@ -2105,5 +2133,56 @@ vars: { amount: 99 }
         // an unsafe path in one is refused like any other
         let bad = text.replace("\"wind.ogg\"", "\"../wind.ogg\"");
         assert!(Session::load(&p, &bad).err().unwrap().contains("unsafe file path"));
+    }
+
+    // ---- ::textbox -----------------------------------------------------------------
+
+    const HIDDEN: &str = "**A:** one\n::textbox{hide fade=0.5}\n::wait{time=1}\n**A:** two\n::textbox{hide}\n::choice\n- [Go](#end)\n::\n# end\n::textbox{hide}\n::hotspots\n- [Map](#back){rect=0,0,1,1}\n::\n# back\n**A:** back\n";
+
+    #[test]
+    fn textbox_hide_is_scene_state_and_redraw_emits_it_again() {
+        let p = parse(HIDDEN).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert!(!game.state().textbox_hidden);
+        let cmds = game.input(Input::Advance);
+        assert!(cmds.contains(&Cmd::Textbox { hidden: true, fade: 0.5 }));
+        assert!(game.state().textbox_hidden);
+        let redraw = game.state().redraw();
+        assert_eq!(redraw[0], Cmd::ClearScene);
+        assert!(redraw.contains(&Cmd::Textbox { hidden: true, fade: 0.0 }));
+        // rolling back to the first line restores the shown box
+        let back = game.rollback().unwrap();
+        assert!(!game.state().textbox_hidden);
+        assert!(!back.iter().any(|c| matches!(c, Cmd::Textbox { .. })));
+    }
+
+    #[test]
+    fn a_line_or_a_choice_shows_the_box_again_but_a_hotspot_map_does_not() {
+        let p = parse(HIDDEN).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // hide, wait
+        let cmds = game.input(Input::Advance); // wait ends: line "two" arrives
+        let at = |c: &Cmd| cmds.iter().position(|x| x == c).unwrap();
+        let say = cmds.iter().position(|c| matches!(c, Cmd::Say { .. })).unwrap();
+        assert!(at(&Cmd::Textbox { hidden: false, fade: 0.0 }) < say, "shown before the line");
+        assert!(!game.state().textbox_hidden);
+        let cmds = game.input(Input::Advance); // hide, then choices
+        assert!(cmds.contains(&Cmd::Textbox { hidden: true, fade: 0.0 }));
+        assert!(cmds.contains(&Cmd::Textbox { hidden: false, fade: 0.0 }), "choices bring the box back");
+        assert!(!game.state().textbox_hidden);
+        let cmds = game.input(Input::Choose(0)); // hide, hotspots
+        assert!(matches!(game.state().pending, Some(Cmd::ShowHotspots { .. })));
+        assert!(game.state().textbox_hidden, "a map stays clean");
+        assert!(!cmds.contains(&Cmd::Textbox { hidden: false, fade: 0.0 }));
+        let cmds = game.input(Input::Choose(0));
+        assert!(cmds.contains(&Cmd::Textbox { hidden: false, fade: 0.0 }), "the next line shows it");
+    }
+
+    #[test]
+    fn textbox_show_command_shows_it() {
+        let p = parse("::textbox{hide}\n::textbox{show fade=1}\n::wait{time=1}\n").unwrap();
+        let (game, cmds) = Session::start(&p);
+        assert!(cmds.contains(&Cmd::Textbox { hidden: false, fade: 1.0 }));
+        assert!(!game.state().textbox_hidden);
     }
 }

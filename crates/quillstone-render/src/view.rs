@@ -12,10 +12,11 @@ use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{Ease, Fit, Wipe};
 
-use crate::layout::{clip, is_wide, place, Rect, Size, VIRTUAL};
+use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
+/// This is the default; a theme may move it (`textbox_rect`, see [`textbox_rect`]).
 pub const TEXTBOX: Rect = Rect::new(160.0, 780.0, 1600.0, 260.0);
 
 /// Height of a sprite at `scale = 1`, in virtual pixels. Sprites stand on the
@@ -40,7 +41,10 @@ pub const DEFAULT_CHARS_PER_SEC: f32 = 60.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Left,
+    /// Each line centred across the rect, and the whole text centred down it (buttons).
     Center,
+    /// Each line centred across the rect, the text starting at the top (centred dialogue).
+    CenterX,
 }
 
 /// One thing for a backend to draw. Coordinates are virtual (1920x1080);
@@ -341,13 +345,31 @@ struct Shake {
 }
 
 impl Shake {
+    /// How strong the shake is now: eases in over a short attack, then dies away
+    /// linearly, so the offset and the cover zoom both start and end at zero.
+    fn envelope(&self) -> f32 {
+        let t = self.elapsed;
+        if t >= self.time || self.time <= 0.0 {
+            return 0.0;
+        }
+        let attack = (self.time / 4.0).min(0.1);
+        self.strength.abs() * (t / attack).min(1.0) * (1.0 - t / self.time)
+    }
+
+    /// The zoom about the screen centre that keeps the shifted stage covering the
+    /// whole screen (the largest offset is `envelope` across, 0.6 of it down).
+    fn cover_zoom(&self) -> f32 {
+        let e = self.envelope();
+        (1.0 + 2.0 * e / VIRTUAL.w).max(1.0 + 2.0 * 0.6 * e / VIRTUAL.h)
+    }
+
     /// The stage's offset now: a fast wobble that dies away (deterministic).
     fn offset(&self) -> (f32, f32) {
         let t = self.elapsed;
-        if t >= self.time {
+        let fade = self.envelope();
+        if fade == 0.0 {
             return (0.0, 0.0);
         }
-        let fade = self.strength * (1.0 - t / self.time);
         let tau = std::f32::consts::TAU;
         (fade * (t * tau * 13.0).sin(), fade * 0.6 * (t * tau * 17.0 + 1.3).sin())
     }
@@ -383,6 +405,13 @@ pub struct View {
     camera: CameraMove,
     shake: Option<Shake>,
     flash: Option<Flash>,
+    /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
+    /// how fast it fades (per second; 0 = at once).
+    box_hidden: bool,
+    box_alpha: f32,
+    box_rate: f32,
+    /// The player hid the interface (the `U` key); see [`View::set_hide_ui`].
+    hide_ui: bool,
     /// Seconds left of a `::wait`, if one is running.
     wait: Option<f32>,
     chars_per_sec: f32,
@@ -410,6 +439,10 @@ impl View {
             camera: CameraMove { from: Camera::default(), to: Camera::default(), time: 0.0, elapsed: 0.0, ease: Ease::Linear },
             shake: None,
             flash: None,
+            box_hidden: false,
+            box_alpha: 1.0,
+            box_rate: 0.0,
+            hide_ui: false,
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
@@ -466,6 +499,15 @@ impl View {
                     self.set_camera(Camera::default(), 0.0, Ease::Linear);
                     self.shake = None;
                     self.flash = None;
+                    self.box_hidden = false;
+                    self.box_alpha = 1.0;
+                }
+                Cmd::Textbox { hidden, fade } => {
+                    self.box_hidden = *hidden;
+                    self.box_rate = if *fade > 0.0 { 1.0 / fade } else { 0.0 };
+                    if *fade <= 0.0 {
+                        self.box_alpha = if *hidden { 0.0 } else { 1.0 };
+                    }
                 }
                 Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
                 Cmd::ShowSprite { id, src, x, y, z, scale, fade } => self.show_sprite(id, src, (*x, *y), *z, *scale, *fade),
@@ -547,6 +589,31 @@ impl View {
         self.camera = CameraMove { from, to, time, elapsed: 0.0, ease };
     }
 
+    /// Whether `::textbox{hide}` is in effect (the box may still be fading out).
+    pub fn textbox_hidden(&self) -> bool {
+        self.box_hidden
+    }
+
+    /// How visible the dialogue box is: 1 shown, 0 hidden (by the script or by
+    /// [`View::set_hide_ui`]), in between while it fades.
+    pub fn box_alpha(&self) -> f32 {
+        if self.hide_ui {
+            0.0
+        } else {
+            self.box_alpha
+        }
+    }
+
+    /// The player hides (or brings back) the whole interface: textbox, name plate,
+    /// line and quick menu. Choices and hotspots stay (see `quillstone-ui`).
+    pub fn set_hide_ui(&mut self, hide: bool) {
+        self.hide_ui = hide;
+    }
+
+    pub fn hide_ui(&self) -> bool {
+        self.hide_ui
+    }
+
     /// End a flash that is running (skipping doesn't wait for one).
     pub fn end_flash(&mut self) {
         self.flash = None;
@@ -618,6 +685,13 @@ impl View {
             }
         }
         self.sprites.retain(|s| !s.is_gone());
+        let target = if self.box_hidden { 0.0 } else { 1.0 };
+        if self.box_rate > 0.0 {
+            let step = self.box_rate * dt;
+            self.box_alpha = if self.box_alpha < target { (self.box_alpha + step).min(target) } else { (self.box_alpha - step).max(target) };
+        } else {
+            self.box_alpha = target;
+        }
         if let Some(left) = &mut self.wait {
             *left -= dt;
         }
@@ -635,7 +709,10 @@ impl View {
     /// counting down, a flash fading, or a typewriter that is still typing (or
     /// paused at `{w=}`). Other animations show up as a changing draw list anyway.
     pub fn busy(&self) -> bool {
-        self.wait.is_some() || self.flash.is_some() || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
+        self.wait.is_some()
+            || self.flash.is_some()
+            || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
+            || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
     }
 
     /// `true` exactly once when a `::wait` has run out: send `Input::Advance`.
@@ -671,7 +748,7 @@ impl View {
 
     /// Which choice button (if any) contains this virtual-space point.
     pub fn choice_at(&self, x: f32, y: f32) -> Option<usize> {
-        choice_rects(self.choices.len()).iter().position(|r| r.contains(x, y))
+        choice_rects(&self.theme, self.choices.len()).iter().position(|r| r.contains(x, y))
     }
 
     /// Which hotspot (if any) contains this virtual-space point. Later ones are
@@ -755,7 +832,8 @@ impl View {
             }
         }
 
-        let stage = Rect::new(0.0, 0.0, VIRTUAL.w, TEXTBOX.y);
+        let textbox = textbox_rect(&self.theme);
+        let stage = Rect::new(0.0, 0.0, VIRTUAL.w, textbox.y);
         for img in &self.images {
             push_image(&mut out, &img.src, stage, Fit::Contain, 1.0, image_size);
         }
@@ -787,11 +865,56 @@ impl View {
         }
 
         let theme = &self.theme;
+        for spot in &self.hotspots {
+            if let Some(src) = &spot.image {
+                push_image(&mut out, src, hotspot_rect(spot), Fit::Stretch, 1.0, image_size);
+            }
+        }
+
+        let box_alpha = self.box_alpha();
+        if let Some(d) = self.dialogue.as_ref().filter(|_| ui && box_alpha > 0.0) {
+            // The theme's textbox picture if it is loaded, else a plain panel.
+            let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
+            match picture {
+                Some(src) => push_image(&mut out, src, textbox, Fit::Stretch, box_alpha, image_size),
+                None => out.push(Draw::Rect { rect: textbox, color: faded(theme.panel_color, box_alpha) }),
+            }
+            let has_name = match &d.speaker {
+                Some(name) => {
+                    let color = d.color.map(|[r, g, b]| [r, g, b, 1.0]).unwrap_or(theme.name_color);
+                    let plate = name_plate_rect(theme);
+                    if let Some(src) = theme.name_plate_image.as_deref() {
+                        push_image(&mut out, src, plate, Fit::Stretch, box_alpha, image_size);
+                    }
+                    let (name, size) = fit_name(name, theme.name_size, plate.w, plate.h);
+                    out.push(Draw::Text {
+                        text: name,
+                        runs: Vec::new(),
+                        visible_chars: usize::MAX,
+                        rect: plate,
+                        size,
+                        color: faded(color, box_alpha),
+                        align: theme.name_align,
+                    });
+                    true
+                }
+                None => false,
+            };
+            out.push(Draw::Text {
+                text: d.text.clone(),
+                runs: d.runs.clone(), // coloured runs don't fade (the colour has no alpha)
+                visible_chars: d.visible_chars(),
+                rect: dialogue_body(theme, has_name),
+                size: theme.text_size,
+                color: faded(theme.text_color, box_alpha),
+                align: theme.text_align,
+            });
+        }
+
+        // A hovered region's tint and outline are over the textbox, so one that
+        // reaches under it can be seen (hit-testing gives it the click, too).
         for (i, spot) in self.hotspots.iter().enumerate() {
             let rect = hotspot_rect(spot);
-            if let Some(src) = &spot.image {
-                push_image(&mut out, src, rect, Fit::Stretch, 1.0, image_size);
-            }
             if ui && hover == Some(i) && !spot.hidden {
                 let [r, g, b, _] = theme.accent_color;
                 out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
@@ -807,44 +930,8 @@ impl View {
             }
         }
 
-        if let Some(d) = self.dialogue.as_ref().filter(|_| ui) {
-            // The theme's textbox picture if it is loaded, else a plain panel.
-            let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
-            match picture {
-                Some(src) => push_image(&mut out, src, TEXTBOX, Fit::Stretch, 1.0, image_size),
-                None => out.push(Draw::Rect { rect: TEXTBOX, color: theme.panel_color }),
-            }
-            let pad = 40.0;
-            let inner_w = TEXTBOX.w - 2.0 * pad;
-            let has_name = match &d.speaker {
-                Some(name) => {
-                    let color = d.color.map(|[r, g, b]| [r, g, b, 1.0]).unwrap_or(theme.name_color);
-                    out.push(Draw::Text {
-                        text: name.clone(),
-                        runs: Vec::new(),
-                        visible_chars: usize::MAX,
-                        rect: Rect::new(TEXTBOX.x + pad, TEXTBOX.y + 22.0, inner_w, 48.0),
-                        size: theme.name_size,
-                        color,
-                        align: Align::Left,
-                    });
-                    true
-                }
-                None => false,
-            };
-            out.push(Draw::Text {
-                text: d.text.clone(),
-                runs: d.runs.clone(),
-                visible_chars: d.visible_chars(),
-                rect: dialogue_body(has_name),
-                size: theme.text_size,
-                color: theme.text_color,
-                align: Align::Left,
-            });
-        }
-
         let choices = if ui { self.choices.as_slice() } else { &[] };
-        for (i, (rect, label)) in choice_rects(choices.len()).into_iter().zip(choices).enumerate() {
+        for (i, (rect, label)) in choice_rects(theme, choices.len()).into_iter().zip(choices).enumerate() {
             let color = if hover == Some(i) { theme.button_hover_color } else { theme.button_color };
             out.push(Draw::Rect { rect, color });
             let Rich { text, runs, .. } = rich(label);
@@ -899,31 +986,84 @@ impl View {
         let left = (c.x * VIRTUAL.w - w / 2.0).clamp(0.0, VIRTUAL.w - w);
         let top = (c.y * VIRTUAL.h - h / 2.0).clamp(0.0, VIRTUAL.h - h);
         let (dx, dy) = self.shake.as_ref().map_or((0.0, 0.0), Shake::offset);
-        move |r: Rect| Rect::new((r.x - left) * z + dx, (r.y - top) * z + dy, r.w * z, r.h * z)
+        // While shaking, zoom about the screen centre so the offset never shows the edge.
+        let s = self.shake.as_ref().map_or(1.0, Shake::cover_zoom);
+        let (cx, cy) = (VIRTUAL.w / 2.0, VIRTUAL.h / 2.0);
+        move |r: Rect| {
+            let (x, y, w, h) = ((r.x - left) * z, (r.y - top) * z, r.w * z, r.h * z);
+            Rect::new((x - cx) * s + cx + dx, (y - cy) * s + cy + dy, w * s, h * s)
+        }
     }
 }
 
 /// Button rectangles for `count` choices, stacked and centred above the textbox.
-/// Where a line's words go in the textbox: below the name plate if there is one.
-pub fn dialogue_body(with_speaker: bool) -> Rect {
-    let pad = 40.0;
-    let top = TEXTBOX.y + if with_speaker { 80.0 } else { 36.0 };
-    Rect::new(TEXTBOX.x + pad, top, TEXTBOX.w - 2.0 * pad, TEXTBOX.y + TEXTBOX.h - top - 20.0)
+/// Height of the speaker's name plate.
+const NAME_PLATE_H: f32 = 48.0;
+
+/// The speaker's name and the size to draw it at so that it fits the plate: the
+/// configured size stepped down (never below 60% of it) until one line fits the
+/// plate's height and width, then cut with an ellipsis if it still doesn't.
+fn fit_name(name: &str, size: f32, width: f32, height: f32) -> (String, f32) {
+    let floor = size * 0.6;
+    let fits = |s: f32| (s * 1.35).round() <= height + 1.0 && estimate_lines(name, s, width) <= 1;
+    let mut s = size;
+    while s > floor && !fits(s) {
+        s -= 1.0;
+    }
+    let s = s.max(floor);
+    (one_row(name, s, width), s)
+}
+
+/// The dialogue box for this theme (`textbox_rect`), in virtual coordinates.
+pub fn textbox_rect(theme: &Theme) -> Rect {
+    let [x, y, w, h] = theme.textbox_rect;
+    Rect::new(x, y, w, h)
+}
+
+/// The speaker's name plate: the theme's `name_plate_rect`, else a strip inside the
+/// textbox's top left (inset by the padding's left and right).
+pub fn name_plate_rect(theme: &Theme) -> Rect {
+    if let Some([x, y, w, h]) = theme.name_plate_rect {
+        return Rect::new(x, y, w, h);
+    }
+    let tb = textbox_rect(theme);
+    let [l, _, r, _] = theme.textbox_padding;
+    Rect::new(tb.x + l, tb.y + 22.0, tb.w - l - r, NAME_PLATE_H)
+}
+
+/// Where a line's words go in the textbox: inside the padding, and below the name
+/// plate if there is a speaker and the plate is inside the box.
+pub fn dialogue_body(theme: &Theme, with_speaker: bool) -> Rect {
+    let tb = textbox_rect(theme);
+    let [l, t, r, b] = theme.textbox_padding;
+    let mut top = tb.y + t;
+    if with_speaker {
+        let plate = name_plate_rect(theme);
+        if plate.y + plate.h > tb.y {
+            top = top.max(plate.y + plate.h + 10.0);
+        }
+    }
+    Rect::new(tb.x + l, top, tb.w - l - r, (tb.y + tb.h - top - b).max(0.0))
 }
 
 /// About how many textbox lines `text` (tags removed) takes at `size` px, and how
 /// many fit. A line that doesn't fit is drawn smaller by the player.
-pub fn dialogue_lines(text: &str, with_speaker: bool, size: f32) -> (usize, usize) {
-    dialogue_lines_tagged(text, with_speaker, size)
+pub fn dialogue_lines(theme: &Theme, text: &str, with_speaker: bool, size: f32) -> (usize, usize) {
+    dialogue_lines_tagged(theme, text, with_speaker, size)
 }
 
 /// [`dialogue_lines`] for a line as written (with its `{size}` tags): a bigger run
 /// is counted as wide as it will really be drawn. Plain text works too.
-pub fn dialogue_lines_tagged(tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
-    let body = dialogue_body(with_speaker);
+pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
+    let body = dialogue_body(theme, with_speaker);
     let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
     let Rich { text, runs, .. } = rich(tagged);
     (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
+}
+
+/// `color` with its opacity scaled by `alpha`.
+pub fn faded(color: [f32; 4], alpha: f32) -> [f32; 4] {
+    [color[0], color[1], color[2], color[3] * alpha]
 }
 
 /// A hotspot's region in virtual coordinates.
@@ -932,16 +1072,17 @@ pub fn hotspot_rect(spot: &Spot) -> Rect {
     Rect::new(x * VIRTUAL.w, y * VIRTUAL.h, w * VIRTUAL.w, h * VIRTUAL.h)
 }
 
-pub fn choice_rects(count: usize) -> Vec<Rect> {
+pub fn choice_rects(theme: &Theme, count: usize) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
     }
+    let textbox = textbox_rect(theme);
     // Many options: buttons and gaps shrink together so all of them stay above the textbox.
-    let room = TEXTBOX.y - 2.0 * CHOICE_MARGIN;
+    let room = textbox.y - 2.0 * CHOICE_MARGIN;
     let full = count as f32 * CHOICE_H + (count - 1) as f32 * CHOICE_GAP;
     let k = (room / full).min(1.0);
     let (h, gap) = (CHOICE_H * k, CHOICE_GAP * k);
-    let top = (TEXTBOX.y - full * k) / 2.0;
+    let top = (textbox.y - full * k) / 2.0;
     let x = (VIRTUAL.w - CHOICE_W) / 2.0;
     (0..count).map(|i| Rect::new(x, top + i as f32 * (h + gap), CHOICE_W, h)).collect()
 }
@@ -1510,14 +1651,43 @@ mod tests {
         for _ in 0..4 {
             v.tick(0.05);
             let list = v.draw_list(&all_1080p, None);
-            let (_, dest, _) = images(&list)[0];
-            moved |= dest.x != 0.0 || dest.y != 0.0;
-            assert!(dest.x.abs() <= 30.0 && dest.y.abs() <= 30.0);
+            let (_, dest, uv) = images(&list)[0];
+            // The stage is zoomed in and shifted, then clipped: the picture moves in the crop.
+            moved |= uv.x != (1.0 - uv.w) / 2.0 || uv.y != (1.0 - uv.h) / 2.0;
+            assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h));
         }
         assert!(moved);
         v.tick(1.0);
         let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "back in place");
+    }
+
+    #[test]
+    fn a_strong_shake_never_exposes_the_screen_edge() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 1.0, strength: 200.0 }]);
+        let mut zoomed = false;
+        for _ in 0..200 {
+            v.tick(0.005);
+            let list = v.draw_list(&all_1080p, None);
+            let (_, dest, uv) = images(&list)[0];
+            // Clipped to the screen, so a full-screen quad means nothing is uncovered.
+            assert!(dest.x.abs() < 1e-2 && dest.y.abs() < 1e-2 && (dest.w - VIRTUAL.w).abs() < 1e-2 && (dest.h - VIRTUAL.h).abs() < 1e-2, "{dest:?}");
+            assert!(uv.x >= -1e-4 && uv.y >= -1e-4 && uv.x + uv.w <= 1.0001 && uv.y + uv.h <= 1.0001, "{uv:?}");
+            zoomed |= uv.w < 0.99;
+        }
+        assert!(zoomed);
+    }
+
+    #[test]
+    fn no_shake_means_no_zoom_and_the_zoom_starts_smoothly() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0)]);
+        let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
+        assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h));
+        v.apply(&[Cmd::Shake { time: 1.0, strength: 200.0 }]);
+        let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
+        assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "no pop at the start");
     }
 
     // ---- flash ------------------------------------------------------------------
@@ -1605,8 +1775,8 @@ mod tests {
         });
         assert_eq!(body, Some(("Hi.\nHo.".to_string(), 2, 7)));
         // the long-line estimate sees two lines where there is one short paragraph each
-        assert_eq!(dialogue_lines("Hi.\nHo.", true, 38.0).0, 2);
-        assert_eq!(dialogue_lines("Hi. Ho.", true, 38.0).0, 1);
+        assert_eq!(dialogue_lines(&theme(), "Hi.\nHo.", true, 38.0).0, 2);
+        assert_eq!(dialogue_lines(&theme(), "Hi. Ho.", true, 38.0).0, 1);
     }
 
     #[test]
@@ -1614,14 +1784,35 @@ mod tests {
         let plain = "Stop right there, you are not going anywhere near that door tonight, not after what happened. ".repeat(2);
         let plain = plain.as_str();
         let shout = format!("{{size=+40}}{plain}{{/size}}");
-        assert!(dialogue_lines_tagged(plain, true, 38.0).0 <= 3, "the plain line fits");
-        let (small, fit) = dialogue_lines_tagged(plain, true, 38.0);
-        let (big, _) = dialogue_lines_tagged(&shout, true, 38.0);
+        assert!(dialogue_lines_tagged(&theme(), plain, true, 38.0).0 <= 3, "the plain line fits");
+        let (small, fit) = dialogue_lines_tagged(&theme(), plain, true, 38.0);
+        let (big, _) = dialogue_lines_tagged(&theme(), &shout, true, 38.0);
         assert!(big > small, "{small} vs {big}");
         assert!(big > fit, "the shout cannot fit the textbox ({fit} lines)");
     }
 
     // ---- speaker colour -------------------------------------------------------
+
+    #[test]
+    fn a_big_name_size_shrinks_to_fit_the_plate() {
+        let name_draw = |size: f32, name: &str| {
+            let theme = Theme { name_size: size, ..Theme::default() };
+            let mut v = View::new().with_speed(0.0);
+            v.set_theme(theme);
+            v.apply(&[say(Some(name), "hi")]);
+            v.draw_list(&no_images, None).into_iter().find_map(|d| match d {
+                Draw::Text { text, size, rect, .. } if text.starts_with(&name[..2]) => Some((text, size, rect)),
+                _ => None,
+            })
+        };
+        let (_, size, rect) = name_draw(50.0, "Mika").unwrap();
+        assert!((30.0..50.0).contains(&size) && (size * 1.35).round() <= rect.h + 1.0, "{size}");
+        let (_, size, _) = name_draw(36.0, "Mika").unwrap();
+        assert_eq!(size, 36.0, "the default fits untouched");
+        let long = "Professor Bartholomew Fitzgerald-Montgomery the Third of Nowhere ".repeat(4);
+        let (text, size, rect) = name_draw(50.0, &long).unwrap();
+        assert!(size >= 30.0 && text.ends_with('…') && crate::estimate_lines(&text, size, rect.w) == 1);
+    }
 
     #[test]
     fn name_plate_uses_the_speakers_colour() {
@@ -1671,14 +1862,14 @@ mod tests {
 
     #[test]
     fn choice_buttons_are_stacked_centred_and_hit_testable() {
-        let rects = choice_rects(2);
+        let rects = choice_rects(&theme(), 2);
         assert_eq!(rects.len(), 2);
         assert!(rects[0].y < rects[1].y);
         assert_eq!(rects[0].x, (VIRTUAL.w - CHOICE_W) / 2.0);
         assert!(rects[1].y + rects[1].h < TEXTBOX.y); // both sit above the textbox
         assert_eq!(rects[0].h, CHOICE_H, "few options keep the full size");
         for n in [6, 7, 9, 15] {
-            let rects = choice_rects(n);
+            let rects = choice_rects(&theme(), n);
             let last = rects[n - 1];
             assert!(rects[0].y >= CHOICE_MARGIN - 0.01 && last.y + last.h <= TEXTBOX.y - CHOICE_MARGIN + 0.01, "{n} fit");
             assert!(rects.windows(2).all(|w| w[0].y + w[0].h < w[1].y), "{n} don't overlap");
@@ -2009,7 +2200,7 @@ mod tests {
         let dialogue = &view.dialogue.as_ref().unwrap().text;
         assert_eq!(dialogue, "Remember that day on the rooftop? Her voice is quieter now.");
 
-        let r = choice_rects(3)[2];
+        let r = choice_rects(&theme(), 3)[2];
         let picked = view.choice_at(r.x + 5.0, r.y + 5.0).unwrap();
         view.apply(&session.input(Input::Choose(picked)));
         assert_eq!(view.dialogue.as_ref().unwrap().text, "You remembered all of it?");
@@ -2023,5 +2214,125 @@ mod tests {
         view.apply(&session.input(Input::Advance));
         assert_eq!(view.dialogue.as_ref().unwrap().text, "I'm glad it was you. I really am.");
         assert!(!view.draw_list(&all_1080p, None).is_empty());
+    }
+
+    // ---- theme-driven textbox geometry, hiding the box ---------------------------------
+
+    fn themed(text: &str) -> Theme {
+        let (t, problems) = Theme::parse(text);
+        assert!(problems.is_empty(), "{problems:?}");
+        t
+    }
+
+    #[test]
+    fn the_default_geometry_is_the_old_fixed_layout() {
+        let t = theme();
+        assert_eq!(textbox_rect(&t), TEXTBOX);
+        assert_eq!(textbox_rect(&t), Rect::new(160.0, 780.0, 1600.0, 260.0));
+        assert_eq!(name_plate_rect(&t), Rect::new(200.0, 802.0, 1520.0, 48.0));
+        assert_eq!(dialogue_body(&t, true), Rect::new(200.0, 860.0, 1520.0, 160.0));
+        assert_eq!(dialogue_body(&t, false), Rect::new(200.0, 816.0, 1520.0, 204.0));
+        let rects = choice_rects(&t, 3);
+        assert_eq!((rects[0].x, rects[0].w, rects[0].h), (460.0, 1000.0, 96.0));
+        assert_eq!(rects[0].y, (780.0 - (3.0 * 96.0 + 2.0 * 28.0)) / 2.0);
+    }
+
+    #[test]
+    fn a_custom_textbox_moves_the_body_the_plate_the_choices_and_the_fit() {
+        let t = themed("textbox_rect = 360, 600, 1200, 400\ntextbox_padding = 50, 30, 70, 40\n");
+        let tb = textbox_rect(&t);
+        assert_eq!(tb, Rect::new(360.0, 600.0, 1200.0, 400.0));
+        assert_eq!(name_plate_rect(&t), Rect::new(410.0, 622.0, 1080.0, 48.0));
+        assert_eq!(dialogue_body(&t, false), Rect::new(410.0, 630.0, 1080.0, 330.0));
+        assert_eq!(dialogue_body(&t, true).y, 680.0, "below the plate (622 + 48 + 10)");
+        // the long-line estimate uses the real width and height
+        let (_, fit) = dialogue_lines(&t, "x", true, 40.0);
+        assert_eq!(fit, (dialogue_body(&t, true).h / 54.0).floor() as usize);
+        assert!(dialogue_lines(&t, &"word ".repeat(60), false, 38.0).0 > dialogue_lines(&theme(), &"word ".repeat(60), false, 38.0).0 - 1);
+        // choices stack above the textbox top
+        let rects = choice_rects(&t, 3);
+        assert!(rects.iter().all(|r| r.y + r.h <= 600.0 - CHOICE_MARGIN + 0.01));
+        let mut v = View::new().with_theme(t.clone()).with_speed(0.0);
+        v.apply(&[say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into(), "B".into()] }]);
+        let r = choice_rects(&t, 2)[1];
+        assert_eq!(v.choice_at(r.x + 4.0, r.y + 4.0), Some(1));
+        let list = v.draw_list(&no_images, None);
+        assert!(list.contains(&Draw::Rect { rect: tb, color: t.panel_color }));
+        let body = list.iter().find_map(|d| match d {
+            Draw::Text { text, rect, .. } if text == "Hello" => Some(*rect),
+            _ => None,
+        });
+        assert_eq!(body, Some(dialogue_body(&t, true)));
+    }
+
+    #[test]
+    fn a_name_plate_picture_and_alignment_follow_the_theme() {
+        let t = themed("name_plate_image = plate.png\nname_plate_rect = 100, 700, 400, 60\ntext_align = center\nname_align = center\n");
+        let mut v = View::new().with_theme(t.clone()).with_speed(0.0);
+        v.apply(&[say(Some("Mika"), "Hello")]);
+        let list = v.draw_list(&all_1080p, None);
+        let plate = Rect::new(100.0, 700.0, 400.0, 60.0);
+        assert!(list.iter().any(|d| matches!(d, Draw::Image { src, dest, .. } if src == "plate.png" && *dest == plate)));
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { text, rect, align, .. } if text == "Mika" && *rect == plate && *align == Align::CenterX)));
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { text, align, .. } if text == "Hello" && *align == Align::CenterX)));
+        // the plate is outside the box (above it): the text still starts at the padding
+        assert_eq!(dialogue_body(&t, true), dialogue_body(&t, false));
+        // narration has no plate; a plate picture that isn't loaded is skipped
+        v.apply(&[say(None, "Wind.")]);
+        assert!(!v.draw_list(&all_1080p, None).iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "plate.png")));
+    }
+
+    #[test]
+    fn a_hidden_textbox_is_not_drawn_and_fades_in_between() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[say(Some("Mika"), "Hello")]);
+        let boxed = |v: &View| v.draw_list(&no_images, None).iter().filter(|d| matches!(d, Draw::Text { .. } | Draw::Rect { .. })).count();
+        assert_eq!(boxed(&v), 3, "panel, name and line");
+        v.apply(&[Cmd::Textbox { hidden: true, fade: 0.0 }]);
+        assert_eq!(boxed(&v), 0);
+        assert!(v.textbox_hidden() && v.box_alpha() == 0.0);
+        v.apply(&[Cmd::Textbox { hidden: false, fade: 1.0 }]);
+        assert!(!v.textbox_hidden());
+        assert_eq!(v.box_alpha(), 0.0, "starts from hidden");
+        assert!(v.busy(), "ticks are needed while it fades");
+        v.tick(0.5);
+        assert!(close(v.box_alpha(), 0.5));
+        let panel = v.draw_list(&no_images, None).into_iter().find_map(|d| match d {
+            Draw::Rect { color, .. } => Some(color),
+            _ => None,
+        });
+        assert!(close(panel.unwrap()[3], theme().panel_color[3] * 0.5));
+        v.tick(1.0);
+        assert_eq!(v.box_alpha(), 1.0);
+        assert!(!v.busy() || v.dialogue.as_ref().is_some_and(|d| !d.is_complete()));
+        // a redraw (rollback, load) starts from a shown box
+        v.apply(&[Cmd::Textbox { hidden: true, fade: 0.0 }]);
+        v.apply(&[Cmd::ClearScene, say(None, "x")]);
+        assert_eq!(v.box_alpha(), 1.0);
+    }
+
+    #[test]
+    fn hide_ui_hides_the_box_but_keeps_choices_and_the_stage() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[bg("bg.png", 0.0), say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into()] }]);
+        let n = v.draw_list(&all_1080p, None).len();
+        v.set_hide_ui(true);
+        let list = v.draw_list(&all_1080p, None);
+        assert!(list.len() < n);
+        assert!(matches!(&list[0], Draw::Image { src, .. } if src == "bg.png"));
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "A")), "choices stay");
+        assert!(!list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Hello" || text == "Mika")));
+    }
+
+    #[test]
+    fn a_hotspot_map_with_a_hidden_box_draws_no_line() {
+        let spot = quillstone_runtime::Spot { label: "Door".into(), rect: [0.1, 0.1, 0.2, 0.2], image: None, hidden: false };
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[say(None, "Where to?"), Cmd::ShowHotspots { spots: vec![spot.clone()] }]);
+        assert!(v.draw_list(&no_images, None).iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Where to?")));
+        v.apply(&[Cmd::Textbox { hidden: true, fade: 0.0 }, Cmd::ShowHotspots { spots: vec![spot] }]);
+        let list = v.draw_list(&no_images, Some(0));
+        assert!(!list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Where to?")));
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Door")), "the tooltip stays");
     }
 }

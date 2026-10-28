@@ -107,7 +107,7 @@ impl Game<'_> {
             .filter(|_| self.extras.tab == Tab::Music)
             .and_then(|p| p.checked_sub(start))
             .filter(|&p| p < per);
-        let hover = self.pointer().and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, entries.len(), pages));
+        let hover = self.pointer().and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, entries.len(), self.extras.page, pages));
         let shown = ex::ExtrasScreen {
             tabs: &tabs,
             tab: self.extras.tab,
@@ -128,7 +128,7 @@ impl Game<'_> {
         let (tabs, on_page, pages) = (self.extras_tabs(), self.extras_entries().len(), self.extras_pages());
         match event {
             Event::Press(Button::Left) => {
-                match self.cursor.and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, on_page, pages)) {
+                match self.cursor.and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, on_page, self.extras.page, pages)) {
                     Some(Hit::Tab(tab)) => self.extras = Extras { tab, playing: self.extras.playing, ..Extras::default() },
                     Some(Hit::Item(i)) => self.activate(i),
                     Some(Hit::Prev) => self.turn_extras_page(-1),

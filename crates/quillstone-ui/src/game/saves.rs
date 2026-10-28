@@ -61,6 +61,9 @@ impl Game<'_> {
         if !yes {
             return;
         }
+        if self.screen == Screen::Settings && matches!(confirm.then, Then::Quit | Then::MainMenu) {
+            self.close_settings(); // asked from Settings, which stayed open: close it (and save its changes) first
+        }
         match confirm.then {
             Then::Quit => {
                 self.autosave();

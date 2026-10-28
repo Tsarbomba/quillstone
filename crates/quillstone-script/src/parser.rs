@@ -43,7 +43,7 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
 /// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
 const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 
-const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, camera, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, camera, textbox, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
@@ -56,6 +56,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "shake" => &["time", "strength"],
         "flash" => &["time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
+        "textbox" => &["hide", "show", "fade"],
         "music" => &["src", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src"],
@@ -812,6 +813,31 @@ impl Parser {
                     Op::Camera { zoom, x, y, time, ease }
                 };
                 Some((op, None))
+            }
+            "textbox" => {
+                let (hide, show) = (a.flag("hide"), a.flag("show"));
+                let fade = match a.value("fade") {
+                    None => 0.0,
+                    Some(v) => match v.parse::<f32>() {
+                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
+                        _ => {
+                            self.err(line, format!("`fade={v}` must be a number of seconds above 0 and at most 10"));
+                            return None;
+                        }
+                    },
+                };
+                match (hide, show) {
+                    (true, false) => Some((Op::Textbox { hidden: true, fade }, None)),
+                    (false, true) => Some((Op::Textbox { hidden: false, fade }, None)),
+                    (true, true) => {
+                        self.err(line, "`::textbox` takes `hide` or `show`, not both");
+                        None
+                    }
+                    (false, false) => {
+                        self.err(line, "`::textbox` needs `hide` or `show` (and optionally `fade=<seconds>`)");
+                        None
+                    }
+                }
             }
             "music" => {
                 if a.flag("stop") {
@@ -1932,6 +1958,30 @@ mod tests {
             p.ops[5],
             Op::Camera { zoom: Some(1.0), x: Some(0.5), y: Some(0.5), time: 1.0, ease: Ease::InOut }
         );
+    }
+
+    #[test]
+    fn textbox_commands() {
+        let p = ok("::textbox{hide}\n::textbox{show fade=0.5}\n::textbox{hide fade=2}\n");
+        assert_eq!(p.ops[0], Op::Textbox { hidden: true, fade: 0.0 });
+        assert_eq!(p.ops[1], Op::Textbox { hidden: false, fade: 0.5 });
+        assert_eq!(p.ops[2], Op::Textbox { hidden: true, fade: 2.0 });
+    }
+
+    #[test]
+    fn textbox_errors_name_the_line() {
+        for (src, needle) in [
+            ("::textbox\n", "needs `hide` or `show`"),
+            ("::textbox{hide show}\n", "not both"),
+            ("::textbox{hide fade=0}\n", "fade=0"),
+            ("::textbox{show fade=11}\n", "fade=11"),
+            ("::textbox{hide fade=soon}\n", "fade=soon"),
+            ("::textbox{hide speed=2}\n", "unknown attribute `speed`"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
     }
 
     #[test]

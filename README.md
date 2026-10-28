@@ -108,7 +108,8 @@ double-click the exe. If it can't start, the reason is also written to
 | Tab / hold Ctrl | skip lines already read (stops at unread lines, choices and the end; "Skip unread text" in settings skips everything up to a choice) |
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
-| Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, Main menu, Quit |
+| U | hide the textbox and quick menu to see the picture; the next key press or click brings them back (and does nothing else) |
+| Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu (game default, always, on hover, hidden), Main menu, Quit |
 | I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the settings (closing them returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
 | F11 | fullscreen |
 | Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
@@ -123,7 +124,8 @@ around. Building on Linux needs libudev's development files for this
 The game opens at a main menu (Start, Continue, Load, Extras when the game has a
 gallery or music room, Settings, Quit) and
 returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
-Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same with the mouse. The game saves automatically
+Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same with the mouse; a game may show it
+only while the mouse is over the textbox, or not at all, and Settings lets you choose. The game saves automatically
 whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
 Linux: `~/.local/share/quillstone/<game>/`).

@@ -6,7 +6,7 @@
 //! up (story, settings, backlog) and what each input means there lives here.
 
 use quillstone_audio::{Action, Channel, Mixer};
-use quillstone_render::{Draw, Size, Theme, View};
+use quillstone_render::{textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
 use quillstone_runtime::{voice_name, Cmd, Input, Logged, Session, State};
 use quillstone_script::{kind_from_path, AssetKind, Program, Value};
 use quillstone_video::Wanted;
@@ -101,6 +101,9 @@ pub enum Screen {
 /// Extra auto-forward time per character, on top of the delay setting.
 pub const AUTO_PER_CHAR: f32 = 0.02;
 
+/// How long the quick menu takes to fade in or out in its `hover` mode, in seconds.
+pub const QUICK_FADE: f32 = 0.15;
+
 /// How far one keyboard press moves a settings slider.
 const SLIDER_STEP: f32 = 0.05;
 
@@ -169,6 +172,10 @@ pub struct Game<'p> {
     /// is open over (or that is waiting for one to close after a reload): closing
     /// that screen goes back to it instead of to the story.
     under: Option<Screen>,
+    /// The player hid the interface with `U`; the next key press or click brings it back.
+    ui_hidden: bool,
+    /// How visible the quick menu is in its `hover` mode (0..1); the other modes ignore it.
+    quick_alpha: f32,
 }
 
 impl<'p> Game<'p> {
@@ -217,6 +224,8 @@ impl<'p> Game<'p> {
             choice_focus: None,
             slot_focus: None,
             bag: Bag::default(),
+            ui_hidden: false,
+            quick_alpha: 0.0,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -261,6 +270,7 @@ impl<'p> Game<'p> {
     /// A view with nothing in it yet (same speed and theme).
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
+        self.ui_hidden = false;
         self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme);
     }
 
@@ -433,6 +443,9 @@ impl<'p> Game<'p> {
     /// the settings or backlog screen is up. `voice_playing`: whether a voice clip
     /// is still audible (auto-forward waits for it).
     pub fn tick(&mut self, dt: f32, voice_playing: bool) {
+        if self.screen != Screen::Story && self.ui_hidden {
+            self.set_ui_hidden(false); // hiding the interface is for the story screen only
+        }
         if let Some((_, left)) = &mut self.notice {
             *left -= dt;
             if *left <= 0.0 {
@@ -443,6 +456,7 @@ impl<'p> Game<'p> {
             return;
         }
         self.view.tick(dt);
+        self.fade_quick_menu(dt);
         if self.view.take_wait_finished() {
             self.forward(Input::Advance);
         }
@@ -483,7 +497,7 @@ impl<'p> Game<'p> {
         self.notice.is_some()
             || self.auto
             || self.skip.is_some()
-            || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line()))
+            || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
             || !self.wanted_videos().is_empty()
     }
 
@@ -518,18 +532,22 @@ impl<'p> Game<'p> {
             }
             out
         };
-        if self.in_story && story && self.quick_menu_visible() {
+        if self.in_story && story && self.quick_menu_shown() {
             let inventory = self.has_inventory();
-            let hover = self.pointer().filter(|_| story).and_then(|(x, y)| quick_at(x, y, inventory));
-            draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some(), inventory);
+            let tb = self.textbox();
+            let hover = self.pointer().filter(|_| story).and_then(|(x, y)| quick_at(tb, x, y, inventory)).filter(|_| {
+                !self.pointer().is_some_and(|(x, y)| self.view.hotspot_at(x, y).is_some())
+            });
+            let alpha = self.quick_menu_alpha() * self.view.box_alpha();
+            draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some(), inventory, alpha);
         }
-        if self.skip.is_some() && story {
-            draw_skip_indicator(&mut out, theme);
+        if self.in_story && story && !self.ui_hidden {
+            draw_mode_badge(&mut out, theme, self.auto, self.skip.is_some());
         }
         match self.screen {
             Screen::MainMenu | Screen::Story => {}
             Screen::Settings => {
-                let hover = self.pointer().and_then(|(x, y)| settings_at(x, y, self.in_story));
+                let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story));
                 draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover);
             }
             Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll),
@@ -651,13 +669,16 @@ impl<'p> Game<'p> {
     // ---- the story ----------------------------------------------------------------
 
     fn story_event(&mut self, event: Event) {
+        // With the interface hidden, the next key press or click only brings it back.
+        if self.ui_hidden && matches!(event, Event::Key(_) | Event::Press(_)) {
+            return self.set_ui_hidden(false);
+        }
         // While skipping, a click or an advance key just stops it.
         let interrupts = matches!(
             event,
             Event::Press(Button::Left) | Event::Key(Key::Space | Key::Enter | Key::Right)
         );
-        let inventory = self.has_inventory();
-        let on_quick_menu = self.cursor.is_some_and(|(x, y)| quick_at(x, y, inventory).is_some()) && self.quick_menu_visible();
+        let on_quick_menu = self.quick_button_under_cursor().is_some();
         if self.skip.is_some() && interrupts && !(on_quick_menu && event == Event::Press(Button::Left)) {
             return self.stop_skip();
         }
@@ -710,6 +731,7 @@ impl<'p> Game<'p> {
                 Key::Char('s' | 'S') => self.open_slots(Screen::Save),
                 Key::Char('l' | 'L') => self.open_slots(Screen::Load),
                 Key::Char('i' | 'I') => self.open_inventory_overlay(),
+                Key::Char('u' | 'U') => self.set_ui_hidden(true),
                 Key::F5 => self.quick_save(),
                 Key::F9 => self.quick_load(),
                 Key::Tab => self.start_skip(SkipMode::Toggled),
@@ -726,9 +748,7 @@ impl<'p> Game<'p> {
     }
 
     fn story_click(&mut self) {
-        let inventory = self.has_inventory();
-        let quick = self.cursor.filter(|_| self.quick_menu_visible()).and_then(|(x, y)| quick_at(x, y, inventory));
-        if let Some(button) = quick {
+        if let Some(button) = self.quick_button_under_cursor() {
             return match button {
                 QuickButton::Back => self.rollback(),
                 QuickButton::History => self.open_backlog(),
@@ -750,8 +770,85 @@ impl<'p> Game<'p> {
         }
     }
 
-    fn quick_menu_visible(&self) -> bool {
+    /// The quick menu button under the cursor; none where a hotspot overlaps it
+    /// (a region has priority over the quick menu and the textbox).
+    fn quick_button_under_cursor(&self) -> Option<QuickButton> {
+        let (x, y) = self.cursor.filter(|_| self.quick_menu_clickable())?;
+        quick_at(self.textbox(), x, y, self.has_inventory()).filter(|_| self.view.hotspot_at(x, y).is_none())
+    }
+
+    /// The textbox as the theme places it (the quick menu is laid out from it).
+    fn textbox(&self) -> Rect {
+        textbox_rect(self.theme())
+    }
+
+    /// Hide (or bring back) the textbox, line, quick menu and mode badge. The stage,
+    /// choices and hotspots stay.
+    fn set_ui_hidden(&mut self, hidden: bool) {
+        self.ui_hidden = hidden;
+        self.view.set_hide_ui(hidden);
+    }
+
+    /// The quick menu's mode: the player's choice, else the theme's.
+    pub fn quick_menu_mode(&self) -> QuickMenu {
+        self.settings.quick_menu.resolve(self.theme().quick_menu)
+    }
+
+    /// There is a dialogue box for the quick menu to belong to.
+    fn quick_menu_possible(&self) -> bool {
         self.view.dialogue.is_some() && self.view.video.is_none() && !self.view.finished
+    }
+
+    /// Whether the cursor is where the `hover` mode shows the menu.
+    fn cursor_in_quick_zone(&self) -> bool {
+        let tb = self.textbox();
+        self.cursor.is_some_and(|(x, y)| quick_hover_zone(tb, x, y))
+    }
+
+    /// How visible the menu is by its mode alone (`hover` fades with time).
+    fn quick_menu_alpha(&self) -> f32 {
+        match self.quick_menu_mode() {
+            QuickMenu::Visible => 1.0,
+            QuickMenu::Hover => self.quick_alpha,
+            QuickMenu::Hidden => 0.0,
+        }
+    }
+
+    /// Whether the menu is drawn at all (it may be fading): not when the script
+    /// hides the box (once the fade is over) or the player hid the interface.
+    fn quick_menu_shown(&self) -> bool {
+        self.quick_menu_possible() && self.quick_menu_alpha() * self.view.box_alpha() > 0.0
+    }
+
+    /// Whether its buttons react to the mouse: shown for real (half way through a
+    /// fade-in at least), not hidden by the script, `U` or the mode.
+    fn quick_menu_clickable(&self) -> bool {
+        self.quick_menu_possible()
+            && !self.view.textbox_hidden()
+            && !self.ui_hidden
+            && self.quick_menu_alpha() >= 0.5
+            && (self.quick_menu_mode() != QuickMenu::Hover || self.cursor_in_quick_zone())
+    }
+
+    /// Move the `hover` mode's fade towards where the cursor says it should be.
+    fn fade_quick_menu(&mut self, dt: f32) {
+        let step = dt / QUICK_FADE;
+        let target = self.quick_target();
+        self.quick_alpha =
+            if self.quick_alpha < target { (self.quick_alpha + step).min(target) } else { (self.quick_alpha - step).max(target) };
+    }
+
+    fn quick_target(&self) -> f32 {
+        let shown = self.quick_menu_mode() == QuickMenu::Hover && self.cursor_in_quick_zone();
+        if shown {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn quick_fading(&self) -> bool {
+        self.quick_menu_mode() == QuickMenu::Hover && self.quick_alpha != self.quick_target()
     }
 
     /// Auto-voice: the recordings there are, as `voice_name` -> file (relative to
@@ -916,14 +1013,14 @@ impl<'p> Game<'p> {
                 }
                 Some(SettingsHit::Button(SettingsButton::Back)) => self.close_settings(),
                 Some(SettingsHit::Button(SettingsButton::MainMenu)) => {
-                    self.close_settings();
+                    // Settings stays open beneath the question, so No comes back to it.
                     self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
                 }
                 Some(SettingsHit::Button(SettingsButton::Quit)) => {
-                    self.close_settings();
                     if self.in_story {
                         self.ask("Quit the game?", Then::Quit);
                     } else {
+                        self.close_settings();
                         self.save_read();
                         self.requests.push(Request::Quit); // nothing else to lose at the main menu
                     }
@@ -934,6 +1031,7 @@ impl<'p> Game<'p> {
             Event::Press(Button::Right) | Event::Key(Key::Escape) => self.close_settings(),
             Event::Key(Key::Up) => self.focus = self.focus.saturating_sub(1),
             Event::Key(Key::Down) => self.focus = (self.focus + 1).min(ROWS.len() - 1),
+            Event::Key(Key::Left) if ROWS[self.focus] == Row::QuickMenu => self.cycle_quick_menu(true),
             Event::Key(Key::Left) => self.nudge(-SLIDER_STEP),
             Event::Key(Key::Right) => self.nudge(SLIDER_STEP),
             Event::Key(Key::Enter | Key::Space) if ROWS[self.focus].is_toggle() => self.toggle_row(ROWS[self.focus]),
@@ -952,8 +1050,14 @@ impl<'p> Game<'p> {
         match row {
             Row::Fullscreen => self.toggle_fullscreen(),
             Row::SkipUnread => self.settings.skip_unread = !self.settings.skip_unread,
+            Row::QuickMenu => self.cycle_quick_menu(false),
             _ => {}
         }
+    }
+
+    /// Game default -> Always -> On hover -> Hidden -> (round again), or the other way.
+    fn cycle_quick_menu(&mut self, back: bool) {
+        self.settings.quick_menu = self.settings.quick_menu.cycled(back);
     }
 
     fn set_slider(&mut self, i: usize, pos: f32) {
@@ -964,7 +1068,7 @@ impl<'p> Game<'p> {
             Row::Music => Channel::Music,
             Row::Sfx => Channel::Sfx,
             Row::Voice => Channel::Voice,
-            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen => return,
+            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => return,
         };
         self.audio.push(Action::SetChannelVolume { channel, volume: self.channel_volume(channel) });
     }

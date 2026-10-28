@@ -289,6 +289,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
     }
+    // Saves from before `::textbox` existed have no such record: they load with the box shown.
+    if s.textbox_hidden {
+        w("textbox hidden".to_string());
+    }
     if let Some(m) = &s.music {
         w(format!("music {} {} {}", q(&m.src), m.looped, m.volume));
     }
@@ -465,6 +469,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 z: if t.len() > 6 { num::<i32>(arg(6)?, n)?.clamp(-100, 100) } else { 0 },
             }),
             "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },
+            "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) }),
             "sfxloop" => {
                 let volume = f(2)?;
@@ -800,5 +805,28 @@ Narration with \"quotes\" and a \\\\ backslash.
         game.rollback().unwrap();
         assert_eq!(loaded.state().vars["inv"], Value::List(vec!["map".into()]));
         assert_eq!(loaded.state(), game.state());
+    }
+
+    #[test]
+    fn a_hidden_textbox_is_saved_and_an_old_save_loads_shown() {
+        let p = parse("**A:** one\n::textbox{hide}\n::wait{time=1}\n**A:** two\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        assert!(game.state().textbox_hidden);
+        let text = game.save();
+        assert!(text.contains("textbox hidden"), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert!(loaded.state().textbox_hidden);
+        assert_eq!(loaded.state(), game.state());
+        assert!(cmds.contains(&Cmd::Textbox { hidden: true, fade: 0.0 }));
+        // history keeps its own copy: back at the first line the box is shown
+        let (mut loaded, _) = Session::load(&p, &text).unwrap();
+        loaded.rollback();
+        assert!(!loaded.state().textbox_hidden);
+        // a save from before the command existed has no such record
+        let old: String = text.lines().filter(|l| !l.starts_with("textbox")).map(|l| format!("{l}\n")).collect();
+        let (loaded, cmds) = Session::load(&p, &old).unwrap();
+        assert!(!loaded.state().textbox_hidden);
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::Textbox { .. })));
     }
 }

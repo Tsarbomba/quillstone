@@ -19,8 +19,10 @@ You stand in a small town at night. Everything is within walking distance.
 
 # map
 
-<!-- No line here: the map just shows, and the regions are the only way on. -->
+<!-- No line here: the box with the last line is hidden, so the map just shows and the
+     regions are the only way on. Any line (or choice) shows the box again by itself. -->
 ::bg{src=assets/night.png}
+::textbox{hide}
 ::hotspots
 - [The rooftop](#rooftop){rect=14%,52%,8%,14% image=assets/gui/pin.png}
 - [The old bridge](#bridge){rect=55%,64%,16%,12%}

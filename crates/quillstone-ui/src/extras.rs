@@ -86,18 +86,19 @@ fn item_rect(tab: Tab, i: usize) -> Rect {
     }
 }
 
-/// What is under the cursor. `on_page`: entries on the current page; `pages`: page count.
-pub fn hit(x: f32, y: f32, tabs: &[Tab], tab: Tab, on_page: usize, pages: usize) -> Option<Hit> {
+/// What is under the cursor. `on_page`: entries on the current page; `page` (from 0) and `pages`:
+/// where the page is; an arrow with no page beyond it is not there.
+pub fn hit(x: f32, y: f32, tabs: &[Tab], tab: Tab, on_page: usize, page: usize, pages: usize) -> Option<Hit> {
     if let Some(i) = (0..tabs.len()).find(|&i| tab_rect(i, tabs.len()).contains(x, y)) {
         return Some(Hit::Tab(tabs[i]));
     }
     if let Some(i) = (0..on_page).find(|&i| item_rect(tab, i).contains(x, y)) {
         return Some(Hit::Item(i));
     }
-    if pages > 1 && prev_rect().contains(x, y) {
+    if page > 0 && prev_rect().contains(x, y) {
         return Some(Hit::Prev);
     }
-    if pages > 1 && next_rect().contains(x, y) {
+    if page + 1 < pages && next_rect().contains(x, y) {
         return Some(Hit::Next);
     }
     slots_back_rect().contains(x, y).then_some(Hit::Back)
@@ -175,8 +176,10 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
     }
     if s.pages > 1 {
         for (hit, r, arrow) in [(Hit::Prev, prev_rect(), "\u{2039}"), (Hit::Next, next_rect(), "\u{203A}")] {
-            out.push(Draw::Rect { rect: r, color: lit(s.hover == Some(hit)) });
-            text(out, arrow, r, 64.0, theme.text_color, Align::Center);
+            // No page that way: the arrow is dim and does nothing.
+            let live = if hit == Hit::Prev { s.page > 0 } else { s.page + 1 < s.pages };
+            out.push(Draw::Rect { rect: r, color: lit(live && s.hover == Some(hit)) });
+            text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
         }
         let label = format!("Page {} of {}", s.page + 1, s.pages);
         text(out, label, Rect::new(0.0, 912.0, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
@@ -225,10 +228,37 @@ mod tests {
         assert!(track_rect(MUSIC_PAGE - 1).y + 72.0 < 912.0, "tracks clear the page label");
         let tabs = tabs(1, 1);
         let c = cell_rect(5);
-        assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 12, 1), Some(Hit::Item(5)));
-        assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 3, 1), None, "past the last entry");
+        assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 12, 0, 1), Some(Hit::Item(5)));
+        assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 3, 0, 1), None, "past the last entry");
         let p = prev_rect();
-        assert_eq!(hit(p.x + 1.0, p.y + 1.0, &tabs, Tab::Gallery, 0, 1), None, "no arrows on one page");
-        assert_eq!(hit(p.x + 1.0, p.y + 1.0, &tabs, Tab::Gallery, 0, 2), Some(Hit::Prev));
+        assert_eq!(hit(p.x + 1.0, p.y + 1.0, &tabs, Tab::Gallery, 0, 0, 1), None, "no arrows on one page");
+        assert_eq!(hit(p.x + 1.0, p.y + 1.0, &tabs, Tab::Gallery, 0, 1, 2), Some(Hit::Prev));
+        assert_eq!(hit(p.x + 1.0, p.y + 1.0, &tabs, Tab::Gallery, 0, 0, 2), None, "no page before the first");
+        let n = next_rect();
+        assert_eq!(hit(n.x + 1.0, n.y + 1.0, &tabs, Tab::Gallery, 0, 0, 2), Some(Hit::Next));
+        assert_eq!(hit(n.x + 1.0, n.y + 1.0, &tabs, Tab::Gallery, 0, 1, 2), None, "no page after the last");
+    }
+
+    #[test]
+    fn an_arrow_with_no_page_beyond_it_is_drawn_dim() {
+        let theme = Theme::default();
+        let arrow_color = |page: usize, glyph: &str| {
+            let tabs = tabs(1, 0);
+            let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Gallery, page, pages: 3, entries: &[], focus: None, playing: None, hover: None };
+            let mut out = Vec::new();
+            draw_extras(&mut out, &theme, &screen, &|_| None);
+            out.iter()
+                .find_map(|d| match d {
+                    Draw::Text { text, color, .. } if text == glyph => Some(*color),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (prev, next) = ("\u{2039}", "\u{203A}");
+        assert_eq!(arrow_color(0, prev), theme.dim_color, "first page: nothing before");
+        assert_eq!(arrow_color(0, next), theme.text_color);
+        assert_eq!(arrow_color(1, prev), theme.text_color);
+        assert_eq!(arrow_color(1, next), theme.text_color);
+        assert_eq!(arrow_color(2, next), theme.dim_color, "last page: nothing after");
     }
 }

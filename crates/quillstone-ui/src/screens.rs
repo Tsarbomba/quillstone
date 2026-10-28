@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, TEXTBOX, VIRTUAL};
+use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
 
@@ -53,37 +53,85 @@ pub const QUICK_BUTTONS: [QuickButton; 9] = [
 
 const QUICK_W: f32 = 150.0;
 const QUICK_GAP: f32 = 8.0;
+const QUICK_H: f32 = 32.0;
+/// Space between the textbox and the row below it.
+const QUICK_MARGIN: f32 = 4.0;
+/// Slots in the row: the buttons every game has, and Items to the left of them.
+const QUICK_SLOTS: usize = QUICK_BUTTONS.len() + 1;
 
-/// Right-aligned with the textbox, in the strip below it.
-pub fn quick_rect(i: usize) -> Rect {
-    let n = QUICK_BUTTONS.len();
-    let right = TEXTBOX.x + TEXTBOX.w;
-    let x = right - (n - i) as f32 * QUICK_W - (n - 1 - i) as f32 * QUICK_GAP;
-    Rect::new(x, TEXTBOX.y + TEXTBOX.h + 4.0, QUICK_W, 32.0)
+fn quick_total() -> f32 {
+    QUICK_SLOTS as f32 * QUICK_W + (QUICK_SLOTS - 1) as f32 * QUICK_GAP
 }
 
-pub fn quick_button_rect(b: QuickButton) -> Rect {
-    quick_rect(QUICK_BUTTONS.iter().position(|q| *q == b).unwrap_or(0))
+/// Where the row's top edge is: directly below the textbox, or, when there is no
+/// room for it below, just inside the textbox's bottom edge.
+fn quick_y(tb: Rect) -> f32 {
+    let below = tb.y + tb.h + QUICK_MARGIN;
+    if below + QUICK_H <= VIRTUAL.h {
+        below
+    } else {
+        tb.y + tb.h - QUICK_MARGIN - QUICK_H
+    }
+}
+
+/// The row's right edge: the textbox's, or further right when the textbox is too
+/// narrow for the whole row (so no button leaves the screen).
+fn quick_right(tb: Rect) -> f32 {
+    (tb.x + tb.w).max(quick_total() + QUICK_GAP)
+}
+
+/// Right-aligned with the textbox `tb`, in the strip below it (see [`quick_y`]).
+pub fn quick_rect(tb: Rect, i: usize) -> Rect {
+    let n = QUICK_BUTTONS.len();
+    let x = quick_right(tb) - (n - i) as f32 * QUICK_W - (n - 1 - i) as f32 * QUICK_GAP;
+    Rect::new(x, quick_y(tb), QUICK_W, QUICK_H)
+}
+
+pub fn quick_button_rect(tb: Rect, b: QuickButton) -> Rect {
+    quick_rect(tb, QUICK_BUTTONS.iter().position(|q| *q == b).unwrap_or(0))
 }
 
 /// The Items button: one place left of the first button, so no other button moves.
-pub fn quick_items_rect() -> Rect {
-    let first = quick_rect(0);
+pub fn quick_items_rect(tb: Rect) -> Rect {
+    let first = quick_rect(tb, 0);
     Rect::new(first.x - QUICK_GAP - QUICK_W, first.y, QUICK_W, first.h)
 }
 
 /// The quick menu button at a point. `inventory`: whether the game offers Items.
-pub fn quick_at(x: f32, y: f32, inventory: bool) -> Option<QuickButton> {
-    if inventory && quick_items_rect().contains(x, y) {
+pub fn quick_at(tb: Rect, x: f32, y: f32, inventory: bool) -> Option<QuickButton> {
+    if inventory && quick_items_rect(tb).contains(x, y) {
         return Some(QuickButton::Items);
     }
-    (0..QUICK_BUTTONS.len()).find(|&i| quick_rect(i).contains(x, y)).map(|i| QUICK_BUTTONS[i])
+    (0..QUICK_BUTTONS.len()).find(|&i| quick_rect(tb, i).contains(x, y)).map(|i| QUICK_BUTTONS[i])
 }
 
-pub fn draw_quick(out: &mut Vec<Draw>, theme: &Theme, hover: Option<QuickButton>, auto: bool, skipping: bool, inventory: bool) {
+/// Whether a point is where the quick menu shows in its `hover` mode: over the
+/// textbox, or in the strip of the row (the gap between them included).
+pub fn quick_hover_zone(tb: Rect, x: f32, y: f32) -> bool {
+    let right = quick_right(tb);
+    let top = quick_y(tb).min(tb.y + tb.h);
+    let strip = Rect::new(right - quick_total(), top, quick_total(), quick_y(tb) + QUICK_H - top);
+    tb.contains(x, y) || strip.contains(x, y)
+}
+
+/// Draw the quick menu at opacity `alpha` (0..1: the hover mode fades it).
+pub fn draw_quick(
+    out: &mut Vec<Draw>,
+    theme: &Theme,
+    hover: Option<QuickButton>,
+    auto: bool,
+    skipping: bool,
+    inventory: bool,
+    alpha: f32,
+) {
+    if alpha <= 0.0 {
+        return;
+    }
+    let tb = quillstone_render::textbox_rect(theme);
+    let fade = |c: [f32; 4]| quillstone_render::faded(c, alpha);
     if inventory {
         let color = if hover == Some(QuickButton::Items) { theme.text_color } else { theme.dim_color };
-        text(out, "Items", quick_items_rect(), 24.0, color, Align::Center);
+        text(out, "Items", quick_items_rect(tb), 24.0, fade(color), Align::Center);
     }
     for (i, b) in QUICK_BUTTONS.iter().enumerate() {
         let label = match b {
@@ -106,13 +154,33 @@ pub fn draw_quick(out: &mut Vec<Draw>, theme: &Theme, hover: Option<QuickButton>
         } else {
             theme.dim_color
         };
-        text(out, label, quick_rect(i), 24.0, color, Align::Center);
+        text(out, label, quick_rect(tb, i), 24.0, fade(color), Align::Center);
     }
 }
 
-/// "Skipping" in the corner while skip mode runs.
-pub fn draw_skip_indicator(out: &mut Vec<Draw>, theme: &Theme) {
-    text(out, "Skipping »", Rect::new(40.0, 30.0, 400.0, 50.0), 30.0, theme.accent_color, Align::Left);
+/// The badge text for the modes that run: "AUTO", "SKIP »" or both; `None` when neither does.
+pub fn mode_badge_text(auto: bool, skipping: bool) -> Option<String> {
+    match (auto, skipping) {
+        (false, false) => None,
+        (true, false) => Some("AUTO".into()),
+        (false, true) => Some("SKIP »".into()),
+        (true, true) => Some("AUTO  SKIP »".into()),
+    }
+}
+
+/// Where the mode badge sits: top-right, inside a 40 px margin, sized for its text.
+pub fn mode_badge_rect(label: &str) -> Rect {
+    let w = 36.0 + label.chars().count() as f32 * 19.0;
+    Rect::new(VIRTUAL.w - 40.0 - w, 30.0, w, 44.0)
+}
+
+/// A small badge in the corner while auto-forward and/or skip is on, wherever the
+/// quick menu is or is not (it only tints its labels).
+pub fn draw_mode_badge(out: &mut Vec<Draw>, theme: &Theme, auto: bool, skipping: bool) {
+    let Some(label) = mode_badge_text(auto, skipping) else { return };
+    let r = mode_badge_rect(&label);
+    out.push(Draw::Rect { rect: r, color: [0.0, 0.0, 0.0, 0.6] });
+    text(out, label, r, 26.0, theme.text_color, Align::Center);
 }
 
 // ---- main menu ----------------------------------------------------------------------------
@@ -200,15 +268,16 @@ pub enum Row {
     Sfx,
     Voice,
     Fullscreen,
+    QuickMenu,
 }
 
-pub const ROWS: [Row; 7] =
-    [Row::TextSpeed, Row::AutoDelay, Row::SkipUnread, Row::Music, Row::Sfx, Row::Voice, Row::Fullscreen];
+pub const ROWS: [Row; 8] =
+    [Row::TextSpeed, Row::AutoDelay, Row::SkipUnread, Row::Music, Row::Sfx, Row::Voice, Row::Fullscreen, Row::QuickMenu];
 
 impl Row {
-    /// On/off rows (a button) rather than sliders.
+    /// Rows that are a button (on/off, or a list the button cycles through) rather than sliders.
     pub fn is_toggle(self) -> bool {
-        matches!(self, Row::SkipUnread | Row::Fullscreen)
+        matches!(self, Row::SkipUnread | Row::Fullscreen | Row::QuickMenu)
     }
 }
 
@@ -237,8 +306,8 @@ pub enum SettingsHit {
     Button(SettingsButton),
 }
 
-const ROW_Y: f32 = 220.0;
-const ROW_H: f32 = 80.0;
+const ROW_Y: f32 = 190.0;
+const ROW_H: f32 = 72.0;
 const TRACK_X: f32 = 880.0;
 const TRACK_W: f32 = 440.0;
 
@@ -248,14 +317,15 @@ pub fn row_rect(i: usize) -> Rect {
 
 /// The visible slider track of row `i`.
 pub fn track_rect(i: usize) -> Rect {
-    Rect::new(TRACK_X, row_rect(i).y + 32.0, TRACK_W, 12.0)
+    Rect::new(TRACK_X, row_rect(i).y + 24.0, TRACK_W, 12.0)
 }
 
 /// Where a row's control reacts to the mouse (taller than the thin track).
 pub fn control_rect(i: usize) -> Rect {
     let row = row_rect(i);
     if ROWS[i].is_toggle() {
-        Rect::new(TRACK_X, row.y + 8.0, 160.0, 52.0)
+        let w = if ROWS[i] == Row::QuickMenu { 260.0 } else { 160.0 };
+        Rect::new(TRACK_X, row.y + 4.0, w, 52.0)
     } else {
         Rect::new(TRACK_X - 12.0, row.y, TRACK_W + 24.0, row.h)
     }
@@ -296,7 +366,7 @@ pub fn row_slider(s: &Settings, row: Row) -> Option<f32> {
         Row::Music => Some(s.music_volume),
         Row::Sfx => Some(s.sfx_volume),
         Row::Voice => Some(s.voice_volume),
-        Row::SkipUnread | Row::Fullscreen => None,
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => None,
     }
 }
 
@@ -308,7 +378,7 @@ pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
         Row::Music => s.music_volume = volume_from_slider(pos),
         Row::Sfx => s.sfx_volume = volume_from_slider(pos),
         Row::Voice => s.voice_volume = volume_from_slider(pos),
-        Row::SkipUnread | Row::Fullscreen => {}
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => {}
     }
 }
 
@@ -321,6 +391,7 @@ fn row_label(row: Row) -> &'static str {
         Row::Sfx => "Sound volume",
         Row::Voice => "Voice volume",
         Row::Fullscreen => "Fullscreen",
+        Row::QuickMenu => "Quick menu",
     }
 }
 
@@ -334,7 +405,31 @@ pub fn row_value(s: &Settings, row: Row) -> String {
         Row::Voice => format!("{}%", (s.voice_volume * 100.0).round()),
         Row::SkipUnread => if s.skip_unread { "On" } else { "Off" }.into(),
         Row::Fullscreen => if s.fullscreen { "On" } else { "Off" }.into(),
+        Row::QuickMenu => match s.quick_menu {
+            QuickMenuSetting::Default => "Game default",
+            QuickMenuSetting::Visible => "Always",
+            QuickMenuSetting::Hover => "On hover",
+            QuickMenuSetting::Hidden => "Hidden",
+        }
+        .into(),
     }
+}
+
+/// A slider row's value column, with a margin before the row's right edge.
+pub fn value_rect(i: usize) -> Rect {
+    let row = row_rect(i);
+    let x = TRACK_X + TRACK_W + 20.0;
+    Rect::new(x, row.y + 6.0, row.x + row.w - 20.0 - x, 48.0)
+}
+
+/// A value and the size to draw it at so that it fits one row `width` wide: stepped
+/// down from `size` (not below 60%), then cut with an ellipsis.
+fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
+    let mut s = size;
+    while s > size * 0.6 && estimate_lines(value, s, width) > 1 {
+        s -= 1.0;
+    }
+    (one_row(value, s, width), s)
 }
 
 pub fn draw_settings(
@@ -353,16 +448,17 @@ pub fn draw_settings(
         if i == focus {
             out.push(Draw::Rect { rect: r, color: FOCUS });
         }
-        text(out, row_label(row), Rect::new(r.x + 30.0, r.y + 14.0, 440.0, 48.0), 36.0, theme.text_color, Align::Left);
+        text(out, row_label(row), Rect::new(r.x + 30.0, r.y + 6.0, 440.0, 48.0), 36.0, theme.text_color, Align::Left);
         match row_slider(s, row) {
             Some(pos) => {
                 let t = track_rect(i);
                 out.push(Draw::Rect { rect: t, color: TRACK });
                 let fill = [theme.button_hover_color[0], theme.button_hover_color[1], theme.button_hover_color[2], 1.0];
                 out.push(Draw::Rect { rect: Rect::new(t.x, t.y, t.w * pos, t.h), color: fill });
-                out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0, r.y + 18.0, 20.0, 40.0), color: theme.text_color });
-                let value = Rect::new(TRACK_X + TRACK_W + 30.0, r.y + 14.0, 200.0, 48.0);
-                text(out, row_value(s, row), value, 32.0, theme.dim_color, Align::Left);
+                out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0, r.y + 10.0, 20.0, 40.0), color: theme.text_color });
+                let value = value_rect(i);
+                let (shown, size) = fit_value(&row_value(s, row), 32.0, value.w);
+                text(out, shown, value, size, theme.dim_color, Align::Left);
             }
             None => {
                 let c = control_rect(i);
@@ -471,21 +567,7 @@ pub fn draw_backlog(out: &mut Vec<Draw>, theme: &Theme, entries: &[Logged], scro
     }
 }
 
-/// `s` cut short with an ellipsis so that it fits one row `width` wide (a row has no room for a second line).
-pub(crate) fn one_row(s: &str, size: f32, width: f32) -> String {
-    let mut chars: Vec<char> = s.chars().collect();
-    if estimate_lines(s, size, width) <= 1 {
-        return s.to_string();
-    }
-    while chars.len() > 1 {
-        chars.pop();
-        let cut: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
-        if estimate_lines(&cut, size, width) <= 1 {
-            return cut;
-        }
-    }
-    String::new()
-}
+pub(crate) use quillstone_render::one_row;
 
 // ---- save / load slots ---------------------------------------------------------------
 
@@ -629,13 +711,14 @@ pub fn draw_confirm(out: &mut Vec<Draw>, theme: &Theme, message: &str, hover: Op
 /// A short message at the top of the screen ("Saved", "Quick saved", errors).
 pub fn draw_notice(out: &mut Vec<Draw>, theme: &Theme, message: &str) {
     let r = Rect::new((VIRTUAL.w - 700.0) / 2.0, 30.0, 700.0, 60.0);
-    out.push(Draw::Rect { rect: r, color: [0.0, 0.0, 0.0, 0.8] });
+    out.push(Draw::Rect { rect: r, color: [0.0, 0.0, 0.0, 0.95] }); // nearly opaque: a title under it must not show through
     text(out, message, r, 28.0, theme.text_color, Align::Center);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quillstone_render::TEXTBOX;
     use quillstone_runtime::Line;
 
     fn centre(r: Rect) -> (f32, f32) {
@@ -645,21 +728,21 @@ mod tests {
     #[test]
     fn quick_menu_sits_under_the_textbox_and_is_hit_testable() {
         for (i, b) in QUICK_BUTTONS.iter().enumerate() {
-            let r = quick_rect(i);
+            let r = quick_rect(TEXTBOX, i);
             assert!(r.y >= TEXTBOX.y + TEXTBOX.h && r.y + r.h <= VIRTUAL.h);
             let (x, y) = centre(r);
-            assert_eq!(quick_at(x, y, false), Some(*b));
-            assert_eq!(quick_at(x, y, true), Some(*b), "Items doesn't move the others");
+            assert_eq!(quick_at(TEXTBOX, x, y, false), Some(*b));
+            assert_eq!(quick_at(TEXTBOX, x, y, true), Some(*b), "Items doesn't move the others");
         }
-        let items = quick_items_rect();
+        let items = quick_items_rect(TEXTBOX);
         let (x, y) = centre(items);
-        assert_eq!(quick_at(x, y, true), Some(QuickButton::Items));
-        assert_eq!(quick_at(x, y, false), None, "only games with an inventory have the button");
-        assert!(items.x >= TEXTBOX.x && items.x + items.w <= quick_rect(0).x, "Items fits under the textbox, left of Back");
-        let last = quick_rect(QUICK_BUTTONS.len() - 1);
+        assert_eq!(quick_at(TEXTBOX, x, y, true), Some(QuickButton::Items));
+        assert_eq!(quick_at(TEXTBOX, x, y, false), None, "only games with an inventory have the button");
+        assert!(items.x >= TEXTBOX.x && items.x + items.w <= quick_rect(TEXTBOX, 0).x, "Items fits under the textbox, left of Back");
+        let last = quick_rect(TEXTBOX, QUICK_BUTTONS.len() - 1);
         assert!((last.x + QUICK_W - (TEXTBOX.x + TEXTBOX.w)).abs() < 1e-3);
-        assert!(quick_rect(0).x >= TEXTBOX.x, "all buttons fit under the textbox");
-        assert_eq!(quick_at(10.0, 10.0, true), None);
+        assert!(quick_rect(TEXTBOX, 0).x >= TEXTBOX.x, "all buttons fit under the textbox");
+        assert_eq!(quick_at(TEXTBOX, 10.0, 10.0, true), None);
     }
 
     #[test]
@@ -852,6 +935,23 @@ mod tests {
         assert!(cut.ends_with('…') && cut.len() < long.len());
         assert_eq!(estimate_lines(&cut, 22.0, 448.0), 1);
         assert_eq!(one_row("Mika: Hi.", 22.0, 448.0), "Mika: Hi.");
+    }
+
+    #[test]
+    fn a_settings_value_stays_inside_its_row_with_a_margin_and_shrinks_to_fit() {
+        for i in 0..ROWS.len() {
+            let (v, row) = (value_rect(i), row_rect(i));
+            assert!(v.x + v.w <= row.x + row.w - 20.0 + 1e-3, "row {i}: value column ends before the row does");
+            assert!(v.x >= TRACK_X + TRACK_W, "row {i}: and starts after the track");
+        }
+        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0).w);
+        assert_eq!(estimate_lines(&text, size, value_rect(0).w), 1);
+        assert!(size >= 32.0 * 0.6 && text == "60 chars/s");
+        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0).w);
+        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0).w) == 1);
+        let mut out = Vec::new();
+        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0))), "drawn in its column");
     }
 
     #[test]

@@ -20,5 +20,5 @@ pub mod settings;
 pub mod slots;
 
 pub use game::{Button, Event, Game, Key, Request, Screen, AUTO_PER_CHAR};
-pub use settings::Settings;
+pub use settings::{QuickMenuSetting, Settings};
 pub use slots::{MemoryStorage, Storage, Timestamp};
