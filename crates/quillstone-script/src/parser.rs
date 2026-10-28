@@ -1711,7 +1711,37 @@ impl Parser {
             }
         };
         let name = name.unwrap_or_else(|| id.clone());
+        if let Err(m) = self.check_name_template(&name) {
+            self.err(line, m);
+            return;
+        }
         self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites });
+    }
+
+    /// A display name may hold `{variable}` of declared variables (shown with their value at the line);
+    /// `\{` is a literal brace.
+    fn check_name_template(&self, name: &str) -> Result<(), String> {
+        let mut rest = name;
+        while let Some(pos) = rest.find(['{', '\\']) {
+            rest = &rest[pos..];
+            if let Some(after) = rest.strip_prefix("\\{").or_else(|| rest.strip_prefix("\\\\")) {
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix('{') {
+                let Some(end) = after.find('}') else {
+                    return Err(format!("character name `{name}` has a `{{` with no `}}` (write `\\{{` for a brace)"));
+                };
+                let var = after[..end].trim();
+                if !self.program.vars.contains_key(var) {
+                    return Err(format!(
+                        "character name `{name}`: `{{{var}}}` is not a declared variable (declare it in the front matter `vars`)"
+                    ));
+                }
+                rest = &after[end + 1..];
+            } else {
+                rest = &rest[1..];
+            }
+        }
+        Ok(())
     }
 
     /// The layer ids of `layers=body,eyes,mouth`, checked together with the `layer_sprites=` template.
@@ -5060,5 +5090,43 @@ mod tests {
         let p = ok(include_str!("../../../examples/replay.quill.md"));
         assert_eq!(p.replays.len(), 2);
         assert!(p.ops.iter().filter(|o| matches!(o, Op::EndReplay)).count() == 2);
+    }
+
+    const NAMED: &str = "---\nvars: { hero.name: \"A\", hname: \"B\" }\n---\n";
+
+    #[test]
+    fn a_character_name_may_hold_declared_variables() {
+        let p = ok(&format!("{NAMED}::character{{id=h name=\"{{hero.name}}\" color=#112233}}\n**h:** Hi.\n"));
+        assert_eq!(p.characters["h"].name, "{hero.name}");
+        assert!(matches!(&p.ops[0], Op::Say { speaker: Some(s), color: Some(_), .. } if s == "{hero.name}"));
+        ok(&format!("{NAMED}::character{{id=h name=\"Dr. \\{{x}} {{hname}}\"}}\n"));
+    }
+
+    #[test]
+    fn a_character_name_with_an_unknown_variable_or_open_brace_is_an_error() {
+        for name in ["{hero.nmae}", "{nw}", "{}", "A {hname", "{hname} {zzz}"] {
+            let e = errs(&format!("{NAMED}Hi.\n::character{{id=h name=\"{name}\"}}\n"));
+            assert_eq!(e.len(), 1, "{name}: {e:?}");
+            assert_eq!(e[0].line, 5, "{name}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_speaker_prefix_equal_to_the_name_template_finds_the_character() {
+        let src = format!(
+            "{NAMED}::character{{id=h name=\"{{hero.name}}\" color=#112233}}\n::character{{id=b name=\"{{hname}}\" color=#445566}}\n\
+             **{{hname}}:** One.\n\n**{{HERO.name}}:** Two.\n\n**{{hero.name}}:** Three.\n\n**{{other}}:** Four.\n"
+        );
+        let p = ok(&src);
+        let says: Vec<_> = p.ops.iter().filter_map(|o| match o {
+            Op::Say { speaker, color, text } => Some((speaker.clone().unwrap(), *color, text.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(says[0].0, "{hname}");
+        assert_eq!(says[0].1, p.characters["b"].color);
+        assert_eq!(says[0].2, "One.");
+        assert_eq!((says[1].0.as_str(), says[1].1), ("{hero.name}", p.characters["h"].color), "case-insensitive");
+        assert_eq!((says[2].0.as_str(), says[2].1), ("{hero.name}", p.characters["h"].color));
+        assert_eq!((says[3].0.as_str(), says[3].1), ("{other}", None), "unknown speaker: as written, no colour");
     }
 }

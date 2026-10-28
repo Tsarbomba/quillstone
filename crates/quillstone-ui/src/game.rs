@@ -1271,3 +1271,5 @@ mod replay_tests;
 mod timed_tests;
 #[cfg(test)]
 mod lang_tests;
+#[cfg(test)]
+mod name_tests;

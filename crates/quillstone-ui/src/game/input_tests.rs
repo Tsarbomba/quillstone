@@ -389,6 +389,8 @@ fn the_greeting_demo_plays_with_a_typed_name() {
         type_in(&mut g, typed);
         key(&mut g, Key::Enter);
         assert_eq!(line(&g), format!("Nice to meet you, {shown}!"));
+        key(&mut g, Key::Space); // the player's own line: the name plate is the typed name
+        assert_eq!(g.view().dialogue.as_ref().and_then(|d| d.speaker.clone()).as_deref(), Some(shown));
         key(&mut g, Key::Space);
         assert!(line(&g).contains(shown), "{}", line(&g));
         key(&mut g, Key::Space);

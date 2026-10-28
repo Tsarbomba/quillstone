@@ -7,7 +7,7 @@
 
 use quillstone_script::{HudKind, Op, Catalog, Vars};
 
-use crate::{interpolate, visible_options, Cmd, ItemInfo, Logged, Session};
+use crate::{fill_name, interpolate, speaker_name, visible_options, Cmd, ItemInfo, Logged, Session};
 
 /// The item with its name and description translated.
 pub fn localize_item(info: &mut ItemInfo, cat: &Catalog) {
@@ -34,10 +34,11 @@ impl Session<'_> {
 
     fn say_in(&self, pc: usize, vars: &Vars, speaker: &Option<String>, cat: &Catalog) -> Option<(Option<String>, String)> {
         let Some(Op::Say { speaker: s, text, .. }) = self.program.ops.get(pc) else { return None };
-        if s != speaker {
+        if &speaker_name(self.program, s, vars) != speaker {
             return None; // not the line this was made from (the script changed): leave it
         }
-        let name = s.as_deref().map(|n| cat.text(None, n).to_string());
+        // The catalog is keyed on the raw name template; the translated template is then filled in.
+        let name = s.as_deref().map(|n| fill_name(cat.text(None, n), vars));
         Some((name, interpolate(cat.text(s.as_deref(), text), vars)))
     }
 

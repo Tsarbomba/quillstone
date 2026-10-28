@@ -33,6 +33,8 @@ mod timed_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
+#[cfg(test)]
+mod name_tests;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
@@ -605,8 +607,9 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
     match (&state.pending, program.ops.get(state.pc)) {
         (Some(Cmd::Say { .. }), Some(Op::Say { speaker, color, text })) => {
             let text = interpolate(text, &state.vars);
+            let speaker = speaker_name(program, speaker, &state.vars);
             state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
-            state.pending = Some(Cmd::Say { speaker: speaker.clone(), color: *color, text });
+            state.pending = Some(Cmd::Say { speaker, color: *color, text });
         }
         (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. }))
         | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. }))
@@ -652,6 +655,25 @@ fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
     } else {
         Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&options[i].text, vars)).collect() }
     }
+}
+
+/// The name shown for a line's speaker: a character's display name is a template, so `{hero.name}`
+/// becomes the variable's value now (typed text shows as typed, never as tags). Other speaker text
+/// (an undeclared `**Name:**`) and plain names are left exactly as written.
+pub fn speaker_name(program: &Program, speaker: &Option<String>, vars: &Vars) -> Option<String> {
+    let name = speaker.as_deref()?;
+    if !name.contains('{') || !program.characters.values().any(|c| c.name == name) {
+        return Some(name.to_string());
+    }
+    Some(fill_name(name, vars))
+}
+
+/// A name template with its variables put in (see [`speaker_name`]).
+pub(crate) fn fill_name(template: &str, vars: &Vars) -> String {
+    if !template.contains('{') {
+        return template.to_string();
+    }
+    quillstone_script::markup::plain(&interpolate(template, vars))
 }
 
 /// Replace `{name}` with the variable's value. `{name}` for an unknown variable
@@ -849,8 +871,9 @@ pub(crate) fn step_traced(
             Op::Say { speaker, color, text } => {
                 show_textbox(state, &mut out);
                 let text = interpolate(text, &state.vars);
+                let speaker = speaker_name(program, speaker, &state.vars);
                 state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
-                return block(state, &mut out, Cmd::Say { speaker: speaker.clone(), color: *color, text });
+                return block(state, &mut out, Cmd::Say { speaker, color: *color, text });
             }
             Op::Video { src, fit, looped, skippable } => {
                 state.line = None;

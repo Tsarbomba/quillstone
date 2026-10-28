@@ -4,7 +4,7 @@ A lightweight, fast visual novel engine in Rust: one that
 keeps what a visual novel needs and leaves out the bloat. Scripts are plain
 markdown, and seamless video playback is a first-class feature.
 
-**What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, layered sprites (swap an expression or outfit layer by layer), frame animations (blinking, talking) and looping moves, ambient snow, rain or falling petals, a colour wash over the stage (`::tint`, for night or a memory), music, sound effects,
+**What it does:** characters (a name can come from a variable, such as one the player typed) and sprites (placed anywhere on screen, layered with `z`) with fades, layered sprites (swap an expression or outfit layer by layer), frame animations (blinking, talking) and looping moves, ambient snow, rain or falling petals, a colour wash over the stage (`::tint`, for night or a memory), music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
 conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), stories split over several files (`::include`), translations (players switch language in Settings; translators work in plain `lang/<code>.txt` files and never touch the script), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery, music

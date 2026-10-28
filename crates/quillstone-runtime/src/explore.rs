@@ -467,7 +467,11 @@ impl Explorer<'_> {
                         read.extend(names(|out| value.vars_read(out)).into_iter().map(|n| (at, n, false)));
                     }
                 }
-                Op::Say { text, .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
+                Op::Say { speaker, text, .. } => {
+                    read.extend(braces(text).into_iter().map(|n| (at, n, true)));
+                    // a character's name may hold `{variable}`s too
+                    read.extend(speaker.iter().flat_map(|s| braces(s)).map(|n| (at, n, true)));
+                }
                 // A HUD element reads its variables every time it is drawn.
                 Op::Hud { elem, .. } => {
                     for e in elem.exprs() {

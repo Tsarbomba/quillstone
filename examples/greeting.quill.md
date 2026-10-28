@@ -8,6 +8,8 @@ vars: { hero.name: "Alex" }
      Whatever is typed shows exactly as typed, even if it has braces or stars. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
+<!-- A name may hold `{var}`: the name plate shows what the player typed. -->
+::character{id=hero name="{hero.name}" color=#9cc8ff}
 
 # start
 
@@ -20,6 +22,7 @@ vars: { hero.name: "Alex" }
 
 ::show{mika happy}
 **Mika:** Nice to meet you, {hero.name}!
+**hero:** Thanks, Mika. Happy to be here.
 **Mika:** Welcome to the rooftop club, {hero.name}. We don't have many rules.
 
 ::choice
