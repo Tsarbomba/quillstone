@@ -283,15 +283,38 @@ pub enum Row {
     Voice,
     Fullscreen,
     QuickMenu,
+    /// Only for a game with several languages (`languages:` in the front matter).
+    Language,
 }
 
 pub const ROWS: [Row; 8] =
     [Row::TextSpeed, Row::AutoDelay, Row::SkipUnread, Row::Music, Row::Sfx, Row::Voice, Row::Fullscreen, Row::QuickMenu];
 
+const ROWS_WITH_LANGUAGE: [Row; 9] = [
+    Row::TextSpeed,
+    Row::AutoDelay,
+    Row::SkipUnread,
+    Row::Music,
+    Row::Sfx,
+    Row::Voice,
+    Row::Fullscreen,
+    Row::QuickMenu,
+    Row::Language,
+];
+
+/// The rows of the settings screen: the Language row only when the game has several languages.
+pub fn rows(language: bool) -> &'static [Row] {
+    if language {
+        &ROWS_WITH_LANGUAGE
+    } else {
+        &ROWS
+    }
+}
+
 impl Row {
     /// Rows that are a button (on/off, or a list the button cycles through) rather than sliders.
     pub fn is_toggle(self) -> bool {
-        matches!(self, Row::SkipUnread | Row::Fullscreen | Row::QuickMenu)
+        matches!(self, Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language)
     }
 }
 
@@ -320,25 +343,31 @@ pub enum SettingsHit {
     Button(SettingsButton),
 }
 
-const ROW_Y: f32 = 190.0;
-const ROW_H: f32 = 72.0;
+/// Top and height of a row: tighter with nine rows so the buttons still clear the hint line.
+fn row_y(n: usize) -> f32 {
+    if n > 8 { 170.0 } else { 190.0 }
+}
+
+fn row_h(n: usize) -> f32 {
+    if n > 8 { 66.0 } else { 72.0 }
+}
 const TRACK_X: f32 = 880.0;
 const TRACK_W: f32 = 440.0;
 
-pub fn row_rect(i: usize) -> Rect {
-    Rect::new(400.0, ROW_Y + i as f32 * ROW_H, 1120.0, ROW_H - 12.0)
+pub fn row_rect(i: usize, n: usize) -> Rect {
+    Rect::new(400.0, row_y(n) + i as f32 * row_h(n), 1120.0, row_h(n) - 12.0)
 }
 
 /// The visible slider track of row `i`.
-pub fn track_rect(i: usize) -> Rect {
-    Rect::new(TRACK_X, row_rect(i).y + 24.0, TRACK_W, 12.0)
+pub fn track_rect(i: usize, n: usize) -> Rect {
+    Rect::new(TRACK_X, row_rect(i, n).y + 24.0, TRACK_W, 12.0)
 }
 
 /// Where a row's control reacts to the mouse (taller than the thin track).
-pub fn control_rect(i: usize) -> Rect {
-    let row = row_rect(i);
-    if ROWS[i].is_toggle() {
-        let w = if ROWS[i] == Row::QuickMenu { 260.0 } else { 160.0 };
+pub fn control_rect(i: usize, rows: &[Row]) -> Rect {
+    let row = row_rect(i, rows.len());
+    if rows[i].is_toggle() {
+        let w = if matches!(rows[i], Row::QuickMenu | Row::Language) { 260.0 } else { 160.0 };
         Rect::new(TRACK_X, row.y + 4.0, w, 52.0)
     } else {
         Rect::new(TRACK_X - 12.0, row.y, TRACK_W + 24.0, row.h)
@@ -346,29 +375,29 @@ pub fn control_rect(i: usize) -> Rect {
 }
 
 /// Where button `b` sits; the buttons are centred side by side.
-pub fn button_rect(b: SettingsButton, in_story: bool) -> Rect {
+pub fn button_rect(b: SettingsButton, in_story: bool, n: usize) -> Rect {
     let buttons = settings_buttons(in_story);
     let i = buttons.iter().position(|x| *x == b).unwrap_or(0);
     let (w, gap) = (240.0, 40.0);
     let total = buttons.len() as f32 * w + (buttons.len() - 1) as f32 * gap;
-    let y = ROW_Y + ROWS.len() as f32 * ROW_H + 60.0;
+    let y = row_y(n) + n as f32 * row_h(n) + 60.0;
     Rect::new((VIRTUAL.w - total) / 2.0 + i as f32 * (w + gap), y, w, 80.0)
 }
 
-pub fn settings_at(x: f32, y: f32, in_story: bool) -> Option<SettingsHit> {
-    if let Some(i) = (0..ROWS.len()).find(|&i| control_rect(i).contains(x, y)) {
+pub fn settings_at(x: f32, y: f32, in_story: bool, rows: &[Row]) -> Option<SettingsHit> {
+    if let Some(i) = (0..rows.len()).find(|&i| control_rect(i, rows).contains(x, y)) {
         return Some(SettingsHit::Control(i));
     }
     settings_buttons(in_story)
         .iter()
         .copied()
-        .find(|&b| button_rect(b, in_story).contains(x, y))
+        .find(|&b| button_rect(b, in_story, rows.len()).contains(x, y))
         .map(SettingsHit::Button)
 }
 
 /// Slider position (0..1) for a mouse x over row `i`'s track.
-pub fn slider_pos_at(i: usize, x: f32) -> f32 {
-    let t = track_rect(i);
+pub fn slider_pos_at(x: f32) -> f32 {
+    let t = track_rect(0, 8);
     ((x - t.x) / t.w).clamp(0.0, 1.0)
 }
 
@@ -380,7 +409,7 @@ pub fn row_slider(s: &Settings, row: Row) -> Option<f32> {
         Row::Music => Some(s.music_volume),
         Row::Sfx => Some(s.sfx_volume),
         Row::Voice => Some(s.voice_volume),
-        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => None,
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => None,
     }
 }
 
@@ -392,7 +421,7 @@ pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
         Row::Music => s.music_volume = volume_from_slider(pos),
         Row::Sfx => s.sfx_volume = volume_from_slider(pos),
         Row::Voice => s.voice_volume = volume_from_slider(pos),
-        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => {}
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => {}
     }
 }
 
@@ -406,10 +435,12 @@ fn row_label(row: Row) -> &'static str {
         Row::Voice => "Voice volume",
         Row::Fullscreen => "Fullscreen",
         Row::QuickMenu => "Quick menu",
+        Row::Language => "Language",
     }
 }
 
-pub fn row_value(s: &Settings, row: Row) -> String {
+/// The text of a row's value; `language` is the name of the language in use (for the Language row).
+pub fn row_value(s: &Settings, row: Row, language: &str) -> String {
     match row {
         Row::TextSpeed if s.text_speed <= 0.0 => "Instant".into(),
         Row::TextSpeed => format!("{} chars/s", s.text_speed.round()),
@@ -419,6 +450,7 @@ pub fn row_value(s: &Settings, row: Row) -> String {
         Row::Voice => format!("{}%", (s.voice_volume * 100.0).round()),
         Row::SkipUnread => if s.skip_unread { "On" } else { "Off" }.into(),
         Row::Fullscreen => if s.fullscreen { "On" } else { "Off" }.into(),
+        Row::Language => language.to_string(),
         Row::QuickMenu => match s.quick_menu {
             QuickMenuSetting::Default => "Game default",
             QuickMenuSetting::Visible => "Always",
@@ -430,8 +462,8 @@ pub fn row_value(s: &Settings, row: Row) -> String {
 }
 
 /// A slider row's value column, with a margin before the row's right edge.
-pub fn value_rect(i: usize) -> Rect {
-    let row = row_rect(i);
+pub fn value_rect(i: usize, n: usize) -> Rect {
+    let row = row_rect(i, n);
     let x = TRACK_X + TRACK_W + 20.0;
     Rect::new(x, row.y + 6.0, row.x + row.w - 20.0 - x, 48.0)
 }
@@ -453,32 +485,36 @@ pub fn draw_settings(
     in_story: bool,
     focus: usize,
     hover: Option<SettingsHit>,
+    language: Option<&str>,
 ) {
+    let rows = rows(language.is_some());
+    let language = language.unwrap_or("");
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     text(out, "Settings", Rect::new(0.0, 90.0, VIRTUAL.w, 80.0), 56.0, theme.text_color, Align::Center);
 
-    for (i, &row) in ROWS.iter().enumerate() {
-        let r = row_rect(i);
+    let n = rows.len();
+    for (i, &row) in rows.iter().enumerate() {
+        let r = row_rect(i, n);
         if i == focus {
             out.push(Draw::Rect { rect: r, color: FOCUS });
         }
         text(out, row_label(row), Rect::new(r.x + 30.0, r.y + 6.0, 440.0, 48.0), 36.0, theme.text_color, Align::Left);
         match row_slider(s, row) {
             Some(pos) => {
-                let t = track_rect(i);
+                let t = track_rect(i, n);
                 out.push(Draw::Rect { rect: t, color: TRACK });
                 let fill = [theme.button_hover_color[0], theme.button_hover_color[1], theme.button_hover_color[2], 1.0];
                 out.push(Draw::Rect { rect: Rect::new(t.x, t.y, t.w * pos, t.h), color: fill });
                 out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0, r.y + 10.0, 20.0, 40.0), color: theme.text_color });
-                let value = value_rect(i);
-                let (shown, size) = fit_value(&row_value(s, row), 32.0, value.w);
+                let value = value_rect(i, n);
+                let (shown, size) = fit_value(&row_value(s, row, language), 32.0, value.w);
                 text(out, shown, value, size, theme.dim_color, Align::Left);
             }
             None => {
-                let c = control_rect(i);
+                let c = control_rect(i, rows);
                 let color = if hover == Some(SettingsHit::Control(i)) { theme.button_hover_color } else { theme.button_color };
                 out.push(Draw::Rect { rect: c, color });
-                text(out, row_value(s, row), c, 32.0, theme.text_color, Align::Center);
+                text(out, row_value(s, row, language), c, 32.0, theme.text_color, Align::Center);
             }
         }
     }
@@ -489,7 +525,7 @@ pub fn draw_settings(
             SettingsButton::MainMenu => "Main menu",
             SettingsButton::Quit => "Quit",
         };
-        let r = button_rect(b, in_story);
+        let r = button_rect(b, in_story, n);
         let color = if hover == Some(SettingsHit::Button(b)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
         text(out, label, r, 36.0, theme.text_color, Align::Center);
@@ -802,30 +838,35 @@ mod tests {
 
     #[test]
     fn settings_controls_and_buttons_are_found() {
-        for i in 0..ROWS.len() {
-            let (x, y) = centre(control_rect(i));
-            assert_eq!(settings_at(x, y, true), Some(SettingsHit::Control(i)));
-        }
-        for in_story in [true, false] {
-            for &b in settings_buttons(in_story) {
-                let (x, y) = centre(button_rect(b, in_story));
-                assert_eq!(settings_at(x, y, in_story), Some(SettingsHit::Button(b)));
+        for language in [false, true] {
+            let rows = rows(language);
+            for i in 0..rows.len() {
+                let (x, y) = centre(control_rect(i, rows));
+                assert_eq!(settings_at(x, y, true, rows), Some(SettingsHit::Control(i)));
             }
+            for in_story in [true, false] {
+                for &b in settings_buttons(in_story) {
+                    let (x, y) = centre(button_rect(b, in_story, rows.len()));
+                    assert_eq!(settings_at(x, y, in_story, rows), Some(SettingsHit::Button(b)));
+                }
+            }
+            let (x, y) = centre(button_rect(SettingsButton::MainMenu, true, rows.len()));
+            assert_eq!(settings_at(x, y, false, rows), None, "no Main menu button at the main menu");
+            let n = rows.len();
+            assert!(button_rect(SettingsButton::Back, true, n).y > row_rect(n - 1, n).y);
+            assert!(button_rect(SettingsButton::Back, true, n).y + 80.0 < 960.0, "clear of the hint line");
+            assert!(row_rect(0, n).y >= 160.0, "clear of the title");
+            assert_eq!(settings_at(5.0, 5.0, true, rows), None);
         }
-        let (x, y) = centre(button_rect(SettingsButton::MainMenu, true));
-        assert_eq!(settings_at(x, y, false), None, "no Main menu button at the main menu");
-        assert!(button_rect(SettingsButton::Back, true).y > row_rect(ROWS.len() - 1).y);
-        assert!(button_rect(SettingsButton::Back, true).y + 80.0 < 960.0, "clear of the hint line");
-        assert_eq!(settings_at(5.0, 5.0, true), None);
     }
 
     #[test]
     fn slider_positions_follow_the_track() {
-        let t = track_rect(2);
-        assert_eq!(slider_pos_at(2, t.x), 0.0);
-        assert_eq!(slider_pos_at(2, t.x + t.w), 1.0);
-        assert!((slider_pos_at(2, t.x + t.w / 4.0) - 0.25).abs() < 1e-5);
-        assert_eq!(slider_pos_at(2, -100.0), 0.0);
+        let t = track_rect(2, 8);
+        assert_eq!(slider_pos_at(t.x), 0.0);
+        assert_eq!(slider_pos_at(t.x + t.w), 1.0);
+        assert!((slider_pos_at(t.x + t.w / 4.0) - 0.25).abs() < 1e-5);
+        assert_eq!(slider_pos_at(-100.0), 0.0);
     }
 
     #[test]
@@ -833,11 +874,11 @@ mod tests {
         let mut s = Settings::default();
         set_row_slider(&mut s, Row::Music, 0.3);
         assert_eq!(s.music_volume, 0.3);
-        assert_eq!(row_value(&s, Row::Music), "30%");
+        assert_eq!(row_value(&s, Row::Music, ""), "30%");
         set_row_slider(&mut s, Row::TextSpeed, 1.0);
-        assert_eq!(row_value(&s, Row::TextSpeed), "Instant");
+        assert_eq!(row_value(&s, Row::TextSpeed, ""), "Instant");
         assert_eq!(row_slider(&s, Row::Fullscreen), None);
-        assert_eq!(row_value(&s, Row::Fullscreen), "Off");
+        assert_eq!(row_value(&s, Row::Fullscreen, ""), "Off");
     }
 
     fn line(t: &str) -> Logged {
@@ -954,18 +995,18 @@ mod tests {
     #[test]
     fn a_settings_value_stays_inside_its_row_with_a_margin_and_shrinks_to_fit() {
         for i in 0..ROWS.len() {
-            let (v, row) = (value_rect(i), row_rect(i));
+            let (v, row) = (value_rect(i, 8), row_rect(i, 8));
             assert!(v.x + v.w <= row.x + row.w - 20.0 + 1e-3, "row {i}: value column ends before the row does");
             assert!(v.x >= TRACK_X + TRACK_W, "row {i}: and starts after the track");
         }
-        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0).w);
-        assert_eq!(estimate_lines(&text, size, value_rect(0).w), 1);
+        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, 8).w);
+        assert_eq!(estimate_lines(&text, size, value_rect(0, 8).w), 1);
         assert!(size >= 32.0 * 0.6 && text == "60 chars/s");
-        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0).w);
-        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0).w) == 1);
+        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, 8).w);
+        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, 8).w) == 1);
         let mut out = Vec::new();
-        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None);
-        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0))), "drawn in its column");
+        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None, None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, 8))), "drawn in its column");
     }
 
     #[test]

@@ -99,6 +99,11 @@ impl Game<'_> {
 
     pub(super) fn draw_input_screen(&self, out: &mut Vec<Draw>) {
         let Some((prompt, default, max)) = self.asking() else { return };
+        let shown = self.pending_shown();
+        let prompt = match &shown {
+            Some(Cmd::AskInput { prompt, .. }) => prompt.as_str(),
+            _ => prompt,
+        };
         let hover_ok = self.pointer().is_some_and(|(x, y)| input::ok_at(x, y)) && self.can_confirm_input();
         let screen = InputScreen {
             prompt,

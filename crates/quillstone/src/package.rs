@@ -84,6 +84,13 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
             }
         }
     }
+    // Translations (a language without a file just shows the script's text, which `check` warns about).
+    for lang in program.languages.iter().skip(1) {
+        let file = quillstone_script::language_file(&lang.code);
+        if root.join(&file).is_file() {
+            files.insert(file);
+        }
+    }
     for f in &files {
         if f.contains('\\') {
             return Err(format!("can't package `{f}`: write `/` between folders, which works on every system"));

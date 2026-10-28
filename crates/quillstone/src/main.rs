@@ -10,6 +10,7 @@ use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
 use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
 
+mod lang;
 mod package;
 mod pattern;
 mod picture;
@@ -27,6 +28,10 @@ USAGE:
                                 (only part of the story explored) unless --allow-partial
     quillstone voices <script>  list every line's auto-voice file name, speaker and text
                                 (tab-separated, for a spreadsheet: the recording script)
+    quillstone lang export <script> <code>
+                                create or update lang/<code>.txt for a language listed in the
+                                script's `languages:`: new texts are added, texts no longer in
+                                the script are flagged obsolete (translations are never deleted)
     quillstone dump  <script>   print the compiled ops and labels
     quillstone run   <script>   play the script in the terminal
     quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>]
@@ -52,6 +57,7 @@ fn main() -> ExitCode {
         }
         ["dump", file] => dump(Path::new(file)),
         ["voices", file] => voices(Path::new(file)),
+        ["lang", "export", file, code] => load(Path::new(file)).and_then(|p| lang::export(Path::new(file), &p, code)),
         ["run", file] => run(Path::new(file)),
         ["package", file, rest @ ..] => package_cmd(Path::new(file), rest),
         _ => {
@@ -185,6 +191,7 @@ fn check(path: &Path) -> Result<(), String> {
     for (line, msg) in replay_warnings(&program) {
         eprintln!("{}: warning: {msg}", at(&program, path, line));
     }
+    missing += lang::check(path, &program);
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
         return Err(format!("{missing} problem(s) (paths are relative to the script's folder)"));
@@ -778,6 +785,10 @@ fn dump(path: &Path) -> Result<(), String> {
     let program = load(path)?;
     if let Some(title) = &program.title {
         println!("title: {title}");
+    }
+    if !program.languages.is_empty() {
+        let list: Vec<String> = program.languages.iter().map(|l| format!("{}={}", l.code, l.name)).collect();
+        println!("languages: {}", list.join(", "));
     }
     if !program.vars.is_empty() {
         println!("vars:  {:?}", program.vars);

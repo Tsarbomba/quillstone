@@ -68,6 +68,9 @@ pub struct Settings {
     pub skip_unread: bool,
     /// When the quick menu under the textbox shows.
     pub quick_menu: QuickMenuSetting,
+    /// The language chosen in Settings (a code from the script's `languages:`); `None` is the
+    /// script's own. Kept as text: a code the game doesn't offer (an old file) is simply ignored.
+    pub language: Option<String>,
 }
 
 impl Default for Settings {
@@ -81,6 +84,7 @@ impl Default for Settings {
             fullscreen: false,
             skip_unread: false,
             quick_menu: QuickMenuSetting::Default,
+            language: None,
         }
     }
 }
@@ -119,6 +123,10 @@ impl Settings {
                 "fullscreen" => s.fullscreen = value.parse().unwrap_or(s.fullscreen),
                 "skip_unread" => s.skip_unread = value.parse().unwrap_or(s.skip_unread),
                 "quick_menu" => s.quick_menu = QuickMenuSetting::from_name(value).unwrap_or_default(),
+                "language" => {
+                    let ok = !value.is_empty() && value.len() <= 16 && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+                    s.language = ok.then(|| value.to_string());
+                }
                 _ => {}
             }
         }
@@ -127,6 +135,7 @@ impl Settings {
 
     /// The settings as file text; [`Settings::parse`] reads it back unchanged.
     pub fn to_text(&self) -> String {
+        let language = self.language.as_ref().map(|l| format!("language = {l}\n")).unwrap_or_default();
         format!(
             "# Quillstone settings\n\
              text_speed = {}\n\
@@ -136,7 +145,7 @@ impl Settings {
              voice_volume = {}\n\
              fullscreen = {}\n\
              skip_unread = {}\n\
-             quick_menu = {}\n",
+             quick_menu = {}\n{}",
             self.text_speed,
             self.auto_delay,
             self.music_volume,
@@ -144,7 +153,8 @@ impl Settings {
             self.voice_volume,
             self.fullscreen,
             self.skip_unread,
-            self.quick_menu.name()
+            self.quick_menu.name(),
+            language
         )
     }
 }
@@ -198,6 +208,7 @@ mod tests {
             fullscreen: true,
             skip_unread: true,
             quick_menu: QuickMenuSetting::Hover,
+            language: Some("sv".into()),
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse(&Settings::default().to_text()), Settings::default());
@@ -225,6 +236,16 @@ mod tests {
         let old = "text_speed = 40\nauto_delay = 2\nmusic_volume = 0.5\nsfx_volume = 1\nvoice_volume = 1\nfullscreen = true\nskip_unread = false\n";
         let s = Settings::parse(old);
         assert_eq!((s.quick_menu, s.text_speed, s.fullscreen), (QuickMenuSetting::Default, 40.0, true));
+    }
+
+    #[test]
+    fn the_language_setting_is_kept_and_a_bad_code_is_ignored() {
+        assert_eq!(Settings::parse("language = pt-BR\n").language.as_deref(), Some("pt-BR"));
+        assert_eq!(Settings::parse(&Settings::default().to_text()).language, None);
+        assert!(!Settings::default().to_text().contains("language"), "nothing written for the script's own language");
+        for bad in ["language =\n", "language = ../../x\n", "language = a b\n", "language = aaaaaaaaaaaaaaaaaaaa\n"] {
+            assert_eq!(Settings::parse(bad).language, None, "{bad:?}");
+        }
     }
 
     #[test]

@@ -30,6 +30,9 @@ mod particles_tests;
 mod tint_tests;
 #[cfg(test)]
 mod timed_tests;
+mod localize;
+#[cfg(test)]
+mod localize_tests;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
@@ -39,6 +42,7 @@ pub use quillstone_script::DEFAULT_SEED;
 pub fn next_seed(seed: &mut u64) -> u64 {
     quillstone_script::splitmix64(seed)
 }
+pub use localize::localize_item;
 pub use persist::{read_persistent, write_persistent, REPLAY, UNLOCKED};
 pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, MAX_SAVE_BYTES, SAVE_HISTORY};
 

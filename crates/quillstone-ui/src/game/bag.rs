@@ -122,7 +122,14 @@ impl Game<'_> {
     fn shelf(&self) -> Shelf {
         let info_detail = |i: &ItemInfo, price: Option<String>| Detail { name: i.name.clone(), text: i.text.clone(), price };
         let price_line = |p: i64| format!("Price: {p}");
-        match (self.bag_screen().unwrap_or(self.screen), &self.session.state().pending) {
+        let shown = self.pending_shown();
+        let localize = |mut i: ItemInfo| {
+            if let Some(cat) = self.catalog() {
+                quillstone_runtime::localize_item(&mut i, cat);
+            }
+            i
+        };
+        match (self.bag_screen().unwrap_or(self.screen), &shown) {
             (Screen::Shop, Some(Cmd::ShowShop { pay, money, items })) => {
                 let label = self.theme().shop_currency.clone().unwrap_or_else(|| pay.clone());
                 let cells = items
@@ -145,7 +152,7 @@ impl Game<'_> {
             }
             (Screen::Shop, _) => Shelf { cells: Vec::new(), details: Vec::new(), shop: None },
             _ => {
-                let items = inventory_items(self.program, &self.session.state().vars);
+                let items: Vec<ItemInfo> = inventory_items(self.program, &self.session.state().vars).into_iter().map(localize).collect();
                 let cells = items
                     .iter()
                     .map(|i| BagCell { name: i.name.clone(), icon: i.icon.clone(), price: None, state: CellState::Normal })

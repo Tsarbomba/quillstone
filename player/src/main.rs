@@ -146,10 +146,18 @@ fn main() {
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
     game.set_voice_files(voice_files(program, &root));
     game.set_theme(theme);
+    let (translations, problems) = quillstone_ui::source::load_translations(&path, program);
+    for p in &problems {
+        eprintln!("warning: {p}");
+    }
+    game.set_translations(translations);
+    if let Some(first) = problems.first() {
+        game.show_notice(format!("Translation not loaded: {first}"));
+    }
     // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
     game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
     let mut app = App {
-        title: program.title.clone().unwrap_or_else(|| "Quillstone".to_string()),
+        title: game.title(),
         game,
         gamepads: gamepad::Gamepads::new(),
         watch: reload::Watch::new(&path, program, &root),
@@ -326,11 +334,19 @@ impl App {
         // Each version lives as long as the app (a few kilobytes per edit, while developing).
         let program: &'static Program = Box::leak(Box::new(program));
         let theme = load_theme(program, &self.root);
+        let (translations, problems) = quillstone_ui::source::load_translations(&self.script_path, program);
+        for p in &problems {
+            eprintln!("warning: {p}");
+        }
         match self.game.reload(program) {
             Ok(()) => {
                 self.game.set_theme(theme);
+                self.game.set_translations(translations);
                 self.game.set_voice_files(voice_files(program, &self.root));
-                self.game.show_notice("Script reloaded");
+                match problems.first() {
+                    Some(first) => self.game.show_notice(format!("Script reloaded; translation not loaded: {first}")),
+                    None => self.game.show_notice("Script reloaded"),
+                }
             }
             Err(e) => self.game.show_notice(format!("Not reloaded: {e}")),
         }
@@ -354,6 +370,16 @@ impl App {
     /// Carry out whatever the game asked for since the last call.
     fn pump(&mut self, event_loop: &ActiveEventLoop) {
         self.play_audio();
+        // The title comes in the language in use (a game with one language never changes it).
+        if !self.game.languages().is_empty() {
+            let title = self.game.title();
+            if title != self.title {
+                if let Some(window) = &self.window {
+                    window.set_title(&title);
+                }
+                self.title = title;
+            }
+        }
         for request in self.game.take_requests() {
             match request {
                 Request::Quit => event_loop.exit(),

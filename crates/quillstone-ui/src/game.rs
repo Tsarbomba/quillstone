@@ -18,6 +18,7 @@ use crate::slots::{Page, SlotInfo, Storage};
 mod bag;
 mod extras;
 mod input;
+mod lang;
 mod replay;
 mod saves;
 mod skip;
@@ -126,6 +127,8 @@ pub struct Game<'p> {
     view: View,
     mixer: Mixer,
     settings: Settings,
+    /// Translations by language code (see [`Game::set_translations`]).
+    translations: std::collections::BTreeMap<String, quillstone_script::Catalog>,
     screen: Screen,
     auto: bool,
     /// Time the current line has been ready for auto-forward.
@@ -217,6 +220,7 @@ impl<'p> Game<'p> {
             mixer: Mixer::new(),
             settings_before: settings.clone(),
             settings,
+            translations: std::collections::BTreeMap::new(),
             screen: Screen::Story,
             under: None,
             auto: false,
@@ -363,7 +367,7 @@ impl<'p> Game<'p> {
             // the edit may finish the story (or hit `::end_replay`) right where the player is
             self.replay_check(&cmds);
             if self.screen == Screen::Backlog {
-                self.backlog = self.session.backlog();
+                self.backlog = self.backlog_now();
             }
         } else {
             self.program = program;
@@ -604,7 +608,7 @@ impl<'p> Game<'p> {
             let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
             let menu = self.screen == Screen::MainMenu;
             let hover = self.pointer().filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons));
-            let title = self.program.title.as_deref().unwrap_or("Quillstone");
+            let title = self.tr(self.program.title.as_deref().unwrap_or("Quillstone"));
             let mut out = Vec::new();
             if menu {
                 draw_main_menu(&mut out, theme, title, &buttons, self.menu_focus, hover, image_size);
@@ -632,8 +636,9 @@ impl<'p> Game<'p> {
         match self.screen {
             Screen::MainMenu | Screen::Story => {}
             Screen::Settings => {
-                let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story));
-                draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover);
+                let rows = rows(self.has_language_row());
+                let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story, rows));
+                draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover, self.has_language_row().then(|| self.language_name()));
             }
             Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll),
             Screen::Save | Screen::Load => {
@@ -972,6 +977,8 @@ impl<'p> Game<'p> {
     }
 
     fn show(&mut self, cmds: &[Cmd]) {
+        let localized = self.localized(cmds);
+        let cmds = localized.as_deref().unwrap_or(cmds);
         let voiced = self.with_auto_voice(cmds);
         let cmds = voiced.as_deref().unwrap_or(cmds);
         if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
@@ -1117,20 +1124,22 @@ impl<'p> Game<'p> {
     }
 
     fn settings_event(&mut self, event: Event) {
+        let rows = rows(self.has_language_row());
+        self.focus = self.focus.min(rows.len() - 1);
         match event {
             Event::CursorMoved(Some((x, _))) => {
                 if let Some(i) = self.dragging {
-                    self.set_slider(i, slider_pos_at(i, x));
+                    self.set_slider(i, slider_pos_at(x));
                 }
             }
-            Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| settings_at(x, y, self.in_story)) {
+            Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| settings_at(x, y, self.in_story, rows)) {
                 Some(SettingsHit::Control(i)) => {
                     self.focus = i;
-                    match (ROWS[i].is_toggle(), self.cursor) {
-                        (true, _) => self.toggle_row(ROWS[i]),
+                    match (rows[i].is_toggle(), self.cursor) {
+                        (true, _) => self.toggle_row(rows[i]),
                         (false, Some((x, _))) => {
                             self.dragging = Some(i);
-                            self.set_slider(i, slider_pos_at(i, x));
+                            self.set_slider(i, slider_pos_at(x));
                         }
                         _ => {}
                     }
@@ -1158,19 +1167,21 @@ impl<'p> Game<'p> {
             Event::Release(Button::Left) => self.dragging = None,
             Event::Press(Button::Right) | Event::Key(Key::Escape) => self.close_settings(),
             Event::Key(Key::Up) => self.focus = self.focus.saturating_sub(1),
-            Event::Key(Key::Down) => self.focus = (self.focus + 1).min(ROWS.len() - 1),
-            Event::Key(Key::Left) if ROWS[self.focus] == Row::QuickMenu => self.cycle_quick_menu(true),
+            Event::Key(Key::Down) => self.focus = (self.focus + 1).min(rows.len() - 1),
+            Event::Key(Key::Left) if rows[self.focus] == Row::QuickMenu => self.cycle_quick_menu(true),
+            Event::Key(Key::Left) if rows[self.focus] == Row::Language => self.cycle_language(true),
             Event::Key(Key::Left) => self.nudge(-SLIDER_STEP),
             Event::Key(Key::Right) => self.nudge(SLIDER_STEP),
-            Event::Key(Key::Enter | Key::Space) if ROWS[self.focus].is_toggle() => self.toggle_row(ROWS[self.focus]),
+            Event::Key(Key::Enter | Key::Space) if rows[self.focus].is_toggle() => self.toggle_row(rows[self.focus]),
             _ => {}
         }
     }
 
     fn nudge(&mut self, delta: f32) {
-        match row_slider(&self.settings, ROWS[self.focus]) {
+        let row = rows(self.has_language_row())[self.focus];
+        match row_slider(&self.settings, row) {
             Some(pos) => self.set_slider(self.focus, pos + delta),
-            None => self.toggle_row(ROWS[self.focus]),
+            None => self.toggle_row(row),
         }
     }
 
@@ -1179,6 +1190,7 @@ impl<'p> Game<'p> {
             Row::Fullscreen => self.toggle_fullscreen(),
             Row::SkipUnread => self.settings.skip_unread = !self.settings.skip_unread,
             Row::QuickMenu => self.cycle_quick_menu(false),
+            Row::Language => self.cycle_language(false),
             _ => {}
         }
     }
@@ -1189,14 +1201,14 @@ impl<'p> Game<'p> {
     }
 
     fn set_slider(&mut self, i: usize, pos: f32) {
-        let row = ROWS[i];
+        let row = rows(self.has_language_row())[i];
         set_row_slider(&mut self.settings, row, pos);
         let channel = match row {
             Row::TextSpeed => return self.view.set_speed(self.settings.text_speed),
             Row::Music => Channel::Music,
             Row::Sfx => Channel::Sfx,
             Row::Voice => Channel::Voice,
-            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen | Row::QuickMenu => return,
+            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => return,
         };
         self.audio.push(Action::SetChannelVolume { channel, volume: self.channel_volume(channel) });
     }
@@ -1215,7 +1227,7 @@ impl<'p> Game<'p> {
         self.stop_skip();
         self.cover_bag();
         // The story can't move while the backlog is up, so a snapshot is enough.
-        self.backlog = self.session.backlog();
+        self.backlog = self.backlog_now();
         self.backlog_scroll = 0;
         self.screen = Screen::Backlog;
     }
@@ -1257,3 +1269,5 @@ mod tint_tests;
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod lang_tests;

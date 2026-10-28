@@ -3,7 +3,9 @@
 use std::io::Read;
 use std::path::Path;
 
-use quillstone_script::{parse_files, ParseError, Program, MAX_INCLUDE_BYTES};
+use std::collections::BTreeMap;
+
+use quillstone_script::{language_file, parse_files, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES};
 
 /// The text of an included file: `rel` (a game-folder path the parser has already checked) under `root`.
 /// At most [`MAX_INCLUDE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
@@ -37,6 +39,50 @@ pub fn error_lines(script: &Path, errors: &[ParseError]) -> Vec<String> {
 pub fn script_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf> {
     let root = script.parent().unwrap_or_else(|| Path::new("."));
     std::iter::once(script.to_path_buf()).chain(program.included_files().map(|f| root.join(f))).collect()
+}
+
+/// The text of `lang/<code>.txt` under the game folder `root`: `Ok(None)` when there is no such
+/// file. At most [`MAX_FILE_BYTES`] + 1 are read, so a huge file can't fill memory (the parser then refuses it).
+pub fn read_translation(root: &Path, code: &str) -> Result<Option<String>, String> {
+    let file = match std::fs::File::open(root.join(language_file(code))) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map(Some).map_err(|_| "the file is not UTF-8 text".to_string())
+}
+
+/// Every translation the game has (its `languages:` after the first, from the script's folder), and
+/// one `lang/<code>.txt:line: message` per problem. A file with problems is left out: that language
+/// shows the script's own text.
+pub fn load_translations(script: &Path, program: &Program) -> (BTreeMap<String, Catalog>, Vec<String>) {
+    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    let (mut found, mut problems) = (BTreeMap::new(), Vec::new());
+    for lang in program.languages.iter().skip(1) {
+        let file = language_file(&lang.code);
+        match read_translation(root, &lang.code) {
+            Ok(None) => {}
+            Ok(Some(text)) => match Catalog::parse(&text) {
+                Ok(cat) => {
+                    found.insert(lang.code.clone(), cat);
+                }
+                Err(errors) => problems.extend(errors.iter().map(|e| match e.line {
+                    0 => format!("{file}: {}", e.message),
+                    n => format!("{file}:{n}: {}", e.message),
+                })),
+            },
+            Err(e) => problems.push(format!("cannot read {file}: {e}")),
+        }
+    }
+    (found, problems)
+}
+
+/// The translation files a running game depends on (they may not exist yet).
+pub fn translation_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf> {
+    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    program.languages.iter().skip(1).map(|l| root.join(language_file(&l.code))).collect()
 }
 
 #[cfg(test)]
@@ -92,6 +138,24 @@ mod tests {
         let script = dir.join("main.quill.md");
         let e = parse_script(&script, &std::fs::read_to_string(&script).unwrap()).unwrap_err();
         assert!(e[0].message.contains("too much"), "{e:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn translations_are_read_from_lang_and_problems_name_file_and_line() {
+        let head = "---\nlanguages: en=English, sv=Svenska, es=Espanol\n---\nHi.\n";
+        let dir = game(&[("main.quill.md", head), ("lang/sv.txt", "> Hi.\n= Hej.\n"), ("lang/es.txt", "> Hi.\noops\n")]);
+        let script = dir.join("main.quill.md");
+        let p = parse_script(&script, head).unwrap();
+        let (found, problems) = load_translations(&script, &p);
+        assert_eq!(found["sv"].get(None, "Hi."), Some("Hej."));
+        assert!(!found.contains_key("es"));
+        assert!(problems[0].starts_with("lang/es.txt:2: "), "{problems:?}");
+        assert_eq!(translation_files(&script, &p), [dir.join("lang/sv.txt"), dir.join("lang/es.txt")]);
+        assert_eq!(read_translation(&dir, "fr").unwrap(), None);
+        std::fs::write(dir.join("lang/sv.txt"), vec![b'#'; MAX_FILE_BYTES + 50]).unwrap();
+        assert_eq!(read_translation(&dir, "sv").unwrap().unwrap().len(), MAX_FILE_BYTES + 1);
+        assert!(load_translations(&script, &p).1.iter().any(|m| m.contains("larger than")));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

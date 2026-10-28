@@ -1,0 +1,60 @@
+# Quillstone translation: Svenska
+# `>` is the game's text, `=` your translation (leave `=` empty to use the original).
+# Keep {names} and {tags} as they are. Add `@ Speaker` above a `>` for a speaker-specific version.
+
+#: title
+> Two Languages
+= Två språk
+
+#: character mika
+> Mika
+= Mika
+
+#: item lamp
+> Brass lamp
+= Mässingslampa
+
+#: item lamp
+> Burns for hours.
+= Brinner i timmar.
+
+#: start:17
+> Gold: {gold}
+= Guld: {gold}
+
+#: start:23
+> Hello, {name}! You carry {gold} gold and a lamp. {w=0.5}Look: **it still glows**.
+= Hej, {name}! Du har {gold} guld och en lampa. {w=0.5}Titta: **den lyser fortfarande**.
+
+#: start:25
+> What should I call you?
+= Vad ska jag kalla dig?
+
+#: start:27
+> Nice to meet you, {name}.
+= Trevligt att träffas, {name}.
+
+#: start:29
+> Yes.
+= Ja.
+
+# Mika agrees warmly, which Swedish says differently from a plain yes.
+@ Mika
+> Yes.
+= Jo, absolut.
+
+#: start:34
+> Open the door
+= Öppna dörren
+
+#: start:35
+> Stay on the roof
+= Stanna på taket
+
+#: door:42
+> The door opens onto the stairs. Here, take {gold} gold with you.
+= Dörren leder ut till trappan. Här, ta med dig {gold} guld.
+
+#: roof:48
+> We watch the lights come on. That cost 2 gold, but it was worth it.
+= Vi ser ljusen tändas. Det kostade 2 guld, men det var värt det.

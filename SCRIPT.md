@@ -32,7 +32,7 @@ She looks away.
 
 - **Front matter** (optional, between `---` lines): `title:` (also shown on the
   main menu), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
-  `inventory:` (see [Inventory](#inventory)), and `persistent:`, `gallery:`,
+  `inventory:` (see [Inventory](#inventory)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
   and [Scene replays](#scene-replays)).
 - **Headings** (`#` to `######`) are *labels*: places to jump to. `# The Roof` is
@@ -1104,6 +1104,82 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
   unlocked"), and `quillstone check` warns when no `::end_replay` follows a scene, so it
   would run to the end of the game (a scan along every jump and choice, so approximate).
   The demo `examples/replay.quill.md` has two scenes.
+
+## Translating a game
+
+````markdown
+---
+title: My Story
+languages: en=English, sv=Svenska
+---
+````
+
+`languages:` lists the languages the game is offered in as `code=Name`. The **first** is the
+one the script is written in; every other language gets a translation file. Codes are short
+(letters, digits, `-` and `_`, at most 16), at most 16 languages. The name is what the player sees
+in Settings, so write it in that language itself. Without `languages:` nothing changes anywhere.
+
+With more than one language, Settings gets a **Language** row (click, Left/Right or the gamepad
+cycle it). The choice applies at once to the line on screen, the choices, the history and every
+other text, and is kept with the player's other settings. Saves and rollback never contain translated
+text or the language, so they work the same whichever language is chosen.
+
+### The translation file
+
+Each language besides the first has `lang/<code>.txt` in the game folder (`lang/sv.txt`; the same
+folder rules as every other game file apply: inside the script's folder, no `..`). Let the tool create it:
+
+```
+quillstone lang export my_story.quill.md sv
+```
+
+It writes every translatable text of the script, once each, in script order. Run it again whenever the
+script changes: new texts are added, texts that are gone are marked `! obsolete` and kept (with their
+translation, which comes back if the text returns), and nothing a translator wrote is removed.
+
+A file is plain lines that start with a marker. Nothing needs escaping: texts are written exactly as in the script.
+
+```
+# Notes for the translator start with #; lines starting #: say where a text is used.
+#: rooftop:12
+> Hello, {name}! {w=0.5}You came after all.
+= Hej, {name}! {w=0.5}Du kom ändå.
+
+# Words that need a different translation for one speaker: add @ Speaker above the >.
+@ Mika
+> Yes.
+= Jo, absolut.
+
+> Yes.
+= Ja.
+
+> Open the door
+=
+```
+
+- `>` is the script's text, `=` the translation. A text can span several lines (repeat the marker).
+  An empty `=` means "not translated yet": the original shows.
+- The `>` text is the **exact** script text before `{name}` values go in, tags included.
+- `@ Name` (the speaker's display name) makes an entry apply only to lines said by that character; an entry
+  without it applies everywhere, and is the fallback.
+- `! obsolete` (above the `>`) marks a text the script no longer has.
+- Blank lines separate entries and are ignored otherwise. A line starting with anything else is an error.
+
+What can be translated: dialogue and narration, choice and hotspot texts, character names, item names
+and descriptions, `::hud` texts, `::input` prompts, the title, `replays:` titles and the file names listed in `gallery:` and
+`music_room:`. A text with no translation shows in the script's language, without any message. The
+game's own buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.
+
+Keep every `{name}` and every text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}` and their
+closing tags) in the translation, as often as in the original: `{name}` values are put in after the
+translation is chosen, and `{nw}` must still end the line. A tag's own value (a colour, a pause) may differ.
+The theme's `font` has to cover the characters the translations use.
+
+`quillstone check` reads every translation file: syntax errors with `file:line`, a translation that
+drops, adds or misspells a `{name}` or tag is an error, texts the script no longer has are warnings,
+and a count of untranslated texts is printed for each language. `quillstone package` ships the
+`lang/*.txt` files of the languages the script lists. Translation files are limited to 8 MB, 100,000 entries and 16 KB
+per text.
 
 ## What rollback restores
 

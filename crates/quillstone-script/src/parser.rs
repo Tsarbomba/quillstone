@@ -512,6 +512,7 @@ impl Parser {
                 "persistent" => self.front_vars(line, val, true),
                 "gallery" | "music_room" => self.front_list(line, key, val),
                 "replays" => self.front_replays(line, val),
+                "languages" => self.front_languages(line, val),
                 "inventory" => match unquote(val) {
                     name if is_ident(name) => inventory = Some((line, name.to_string())),
                     _ => self.err(line, "`inventory` names a list variable, like `inventory: bag`"),
@@ -580,6 +581,34 @@ impl Parser {
             if !list.iter().any(|p| p == item) {
                 list.push(item.to_string());
             }
+        }
+    }
+
+    /// `languages: en=English, sv=Svenska`: code `=` name, the script's own language first.
+    fn front_languages(&mut self, line: usize, val: &str) {
+        if !self.program.languages.is_empty() {
+            return self.err(line, "`languages` is given twice");
+        }
+        for part in val.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let Some((code, name)) = part.split_once('=') else {
+                self.err(line, format!("bad language `{part}` (expected `code=Name`, like `languages: en=English, sv=Svenska`)"));
+                continue;
+            };
+            let (code, name) = (code.trim(), unquote(name.trim()).trim());
+            if let Some(why) = crate::translate::bad_code(code) {
+                self.err(line, format!("bad language code `{code}`: {why}"));
+            } else if name.is_empty() || name.chars().any(char::is_control) || name.chars().count() > 40 {
+                self.err(line, format!("the name of language `{code}` must be 1 to 40 characters, no control characters"));
+            } else if self.program.languages.iter().any(|l| l.code.eq_ignore_ascii_case(code)) {
+                self.err(line, format!("language `{code}` is listed twice"));
+            } else if self.program.languages.len() >= crate::ops::MAX_LANGUAGES {
+                return self.err(line, format!("at most {} languages", crate::ops::MAX_LANGUAGES));
+            } else {
+                self.program.languages.push(crate::ops::Language { code: code.to_string(), name: name.to_string() });
+            }
+        }
+        if self.program.languages.is_empty() {
+            self.err(line, "`languages` needs entries like `languages: en=English, sv=Svenska`");
         }
     }
 

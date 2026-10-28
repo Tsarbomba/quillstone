@@ -6,7 +6,7 @@ markdown, and seamless video playback is a first-class feature.
 
 **What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, layered sprites (swap an expression or outfit layer by layer), frame animations (blinking, talking) and looping moves, ambient snow, rain or falling petals, a colour wash over the stage (`::tint`, for night or a memory), music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
-conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), stories split over several files (`::include`), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
+conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), stories split over several files (`::include`), translations (players switch language in Settings; translators work in plain `lang/<code>.txt` files and never touch the script), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery, music
 room and scene replays, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
@@ -205,7 +205,7 @@ variable as an inventory in a shop; `examples/market.quill.md` and `examples/mar
 show items, the built-in inventory and shop screens, and a theme that restyles them;
 `examples/staging.quill.md` shows sprite height and layering, text sizes, `{nw}` and a `::tint` colour wash;
 `examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
-`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer; `examples/weather.quill.md` shows ambient snow, rain and falling petals; `examples/chapters.quill.md` and `examples/chapters/` show a story split over several files with `::include`).
+`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer; `examples/weather.quill.md` shows ambient snow, rain and falling petals; `examples/chapters.quill.md` and `examples/chapters/` show a story split over several files with `::include`; `examples/lang.quill.md` and `examples/lang/sv.txt` show a game in English and Swedish).
 
 ## Layout
 
@@ -216,7 +216,7 @@ show items, the built-in inventory and shop screens, and a theme that restyles t
 | `quillstone-video` | `Decoder` trait, decoder threads + frame queue (`Clip`), which clips play (`Videos`), a test-pattern decoder |
 | `quillstone-render` | virtual 1920x1080 screen, letterboxing, `View` (sprites, fades, typewriter) + `Draw` list, `build_frame` (quads + text jobs), image prep (mipmaps, alpha bleeding) |
 | `quillstone-audio` | `Mixer`: runtime commands -> audio actions (music crossfades, voice per line, rollback-safe) on music/sfx/voice channels |
-| `quillstone` | the CLI (`check`, `test`, `voices`, `dump`, `package`, text-mode `run`) |
+| `quillstone` | the CLI (`check`, `test`, `voices`, `lang export`, `dump`, `package`, text-mode `run`) |
 | `quillstone-ui` | `Game`: input routing per screen, settings (+ file), backlog, quick menu, auto-forward, skip mode, save/load slots, confirm dialogs |
 | `player/` | the window: winit + wgpu draws the frame, cosmic-text rasterizes text, kira plays sound, FFmpeg decodes video |
 

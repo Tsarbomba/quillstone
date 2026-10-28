@@ -118,10 +118,10 @@ impl Game<'_> {
         let per = ex::per_page(self.extras.tab);
         if self.extras.tab == Tab::Scenes {
             let rows = self.program.replays.iter().skip(self.extras.page * per).take(per);
-            return rows.map(|r| (r.title.as_str(), self.session.replay_unlocked(&r.label))).collect();
+            return rows.map(|r| (self.tr(r.title.as_str()), self.session.replay_unlocked(&r.label))).collect();
         }
         let list = self.extras_list();
-        list.iter().skip(self.extras.page * per).take(per).map(|s| (s.as_str(), self.session.unlocked(s))).collect()
+        list.iter().skip(self.extras.page * per).take(per).map(|s| (self.tr(s.as_str()), self.session.unlocked(s))).collect()
     }
 
     fn extras_pages(&self) -> usize {

@@ -21,11 +21,12 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 impl Watch {
-    /// Watch the script, the files it includes and the theme file it names.
+    /// Watch the script, the files it includes, the theme file it names and the translation files.
     pub fn new(script: &Path, program: &Program, root: &Path) -> Watch {
         let mut watch = Watch { files: Vec::new(), last: Instant::now() };
         watch.add(quillstone_ui::source::script_files(script, program));
         watch.add(program.theme.as_ref().map(|t| root.join(t)));
+        watch.add(quillstone_ui::source::translation_files(script, program));
         watch
     }
 

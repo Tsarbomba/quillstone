@@ -558,7 +558,22 @@ pub struct Program {
     /// [`SourceSpan`]), so `lines` and every other line number stay plain numbers.
     /// Use [`Program::locate`] to turn one back into a file and a line.
     pub sources: Vec<SourceSpan>,
+    /// The languages the game is offered in (front matter `languages:`). The first is the one
+    /// the script is written in; the others are translated from `lang/<code>.txt`. Empty: one language.
+    pub languages: Vec<Language>,
 }
+
+/// A language the game is offered in (see [`Program::languages`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Language {
+    /// A safe file-name fragment: the translation file is `lang/<code>.txt`.
+    pub code: String,
+    /// What the Settings screen shows, in that language itself.
+    pub name: String,
+}
+
+/// Most languages a game may list.
+pub const MAX_LANGUAGES: usize = 16;
 
 /// Where an included file's lines sit in a [`Program`]'s line numbering: its line `n` is
 /// numbered `base + n`.
