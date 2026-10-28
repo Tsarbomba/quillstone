@@ -205,7 +205,7 @@ variable as an inventory in a shop; `examples/market.quill.md` and `examples/mar
 show items, the built-in inventory and shop screens, and a theme that restyles them;
 `examples/staging.quill.md` shows sprite height and layering, text sizes and `{nw}`;
 `examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
-`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves).
+`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables).
 
 ## Layout
 

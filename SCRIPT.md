@@ -47,7 +47,8 @@ She looks away.
   folder or below it (no `..`, no drive letters, no backslashes), with `/` between
   folders. The script is refused with a line-numbered error when a `src=`, `icon=`,
   `image=`, `sprites=`, inline image, `gallery:`, `music_room:` or `theme:` path breaks that
-  (otherwise its saves could never be loaded again).
+  (otherwise its saves could never be loaded again). Braces can't be part of a file name
+  (see [Picture names from variables](#picture-names-from-variables) for the one place a `{variable}` may stand in a name).
 
 ## Variables
 
@@ -309,6 +310,60 @@ The cover is drawn over the stage, inline images, video and hotspot pictures, un
 past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
 through a fade, and roll forward does the same. The last line stays on screen while the
 screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
+
+## Picture names from variables
+
+A picture name may hold `{variable}` parts, so a variable can choose the picture: a
+`place` variable picks the background, a `mood` variable picks a pose.
+
+```
+vars: { place: "rooftop", mood: "happy" }
+...
+::bg{src="assets/places/{place}.png"}
+::show{mika {mood}}
+![](assets/items/{item}.png)
+```
+
+**Where it works:** the pose of `::show` (`::show{mika {mood}}`, also joined to other
+letters, like `a_{mood}`: it goes through the character's `sprites=` pattern exactly like
+a written pose), `src=` of `::show` (which then needs a sprite name, `::show{mika
+src="x/{mood}.png"}`), `src=` of `::bg`, and inline images. Sounds, voices, videos, HUD
+pictures, item icons, animation frames and the gallery take plain file names only (a brace
+there is an error), and `anim=` and `color=` take no variables.
+
+**The variable** is a text variable; dotted names work (`{hero.mood}`). Only a whole
+`{name}` is replaced: no spaces inside the braces, no calculations. A variable that is
+not declared in `vars:` is allowed (a `::set` may create it, and `quillstone test` warns
+when nothing ever sets it), but a declared number, `true`/`false` or list is an error. The
+name needs a written-out extension (`.png`, `.jpg`, `.webp`), at most four variables
+fit in one name, and a name with a `{variable}` can only be a picture, not a video.
+Braces cannot be part of any file name: there is no way to write a literal one.
+
+**What a value may be.** The text is put into a file name, and players can type text
+(`::input`) or share saves, so only a safe fragment is used: 1 to 64 characters, made of
+letters (any alphabet), digits, `_`, `-`, spaces and dots, where a dot or a space is never
+the first or last character and `..` never appears. Anything else (a `/`, `\`, `:`, a control
+character, an empty text, a longer one, or a name Windows keeps for devices such as `con`
+or `nul`) does not make a path at all: the picture is treated as a file that is not there.
+It draws nothing, and the game shows a short notice once saying which variable and picture name
+were involved (it never prints the value). A variable that holds a number or is unset
+counts the same way. Nothing outside the game folder can ever be reached this way.
+
+**When the name is built.** At the moment the command runs, from the variables as they
+are then. The game, its saves and rollback keep the finished file name, so a save
+loads as before and going back shows the picture that was shown.
+
+**`check`, `package` and loading.** A name with `{variable}` stands for every file it
+could build, so it is read as a pattern where each `{variable}` stands for one safe
+fragment inside its own folder (never across `/`). `quillstone check` reports an error
+when a pattern matches no file (`assets/places/{place}.png matches no file`),
+checks that every match is a picture the player can show, and warns when a pattern
+matches more than 200 files. `quillstone package` ships **every** file a pattern matches,
+so keep unrelated files out of the folder, or name them so the pattern cannot match them
+(`places/rooftop.png` is matched by `assets/places/{place}.png`; `assets/places/old/x.png`
+and `assets/places/notes.txt` are not). The game cannot know the value ahead of time, so
+it loads these pictures when they are first shown instead of in advance; a short pause the
+first time a picture appears is possible with very large files.
 
 ## Frame animations
 

@@ -15,6 +15,8 @@ mod hardening;
 #[cfg(test)]
 mod anim_tests;
 #[cfg(test)]
+mod dynpic_tests;
+#[cfg(test)]
 mod hud_tests;
 mod persist;
 mod save;
@@ -126,6 +128,10 @@ pub enum Cmd {
     /// The story was stopped by a safety valve (a mistake in the script), and
     /// [`Cmd::Finished`] follows. Says what happened, for the author.
     Stopped { reason: String },
+    /// Something in the story could not be done, but it goes on (a picture whose
+    /// name couldn't be built from a variable). Says what, for the player and the
+    /// author; the frontend shows it once.
+    Warning { message: String },
     Finished,
 }
 
@@ -616,6 +622,24 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
     out
 }
 
+/// The file a picture name stands for right now: a plain path as it is, a pattern
+/// (`assets/places/{place}.png`) with its variables put in. When that can't be done
+/// (a variable holds no text, or text that isn't a safe file-name fragment) the
+/// picture is [`MISSING_PICTURE`] (nothing is drawn, like a file that isn't there) and a
+/// [`Cmd::Warning`] is added. The result is always inside the game folder.
+fn picture_path(src: &str, vars: &Vars, out: &mut Vec<Cmd>) -> String {
+    if !quillstone_script::is_pattern(src) {
+        return src.to_string();
+    }
+    match quillstone_script::resolve(src, vars) {
+        Ok(path) => path,
+        Err(why) => {
+            out.push(Cmd::Warning { message: format!("A picture is not shown: {why}.") });
+            quillstone_script::MISSING_PICTURE.to_string()
+        }
+    }
+}
+
 /// Advance the script. Call once with `None` to start, then with the player's input.
 ///
 /// Input that doesn't match what the script is waiting for is ignored and returns
@@ -751,11 +775,13 @@ pub(crate) fn step_traced(
                 return block(state, &mut out, cmd);
             }
             Op::Image { src, alt } => {
+                let src = picture_path(src, &state.vars, &mut out);
                 state.inline.push((src.clone(), alt.clone()));
-                out.push(Cmd::ShowImage { src: src.clone(), alt: alt.clone() });
+                out.push(Cmd::ShowImage { src, alt: alt.clone() });
                 state.pc += 1;
             }
             Op::Bg { src, fade, wipe } => {
+                let src = &picture_path(src, &state.vars, &mut out);
                 state.background = Some(src.clone());
                 out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe });
                 state.pc += 1;
@@ -781,6 +807,7 @@ pub(crate) fn step_traced(
             }
             Op::Show { id, src, at, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
                 let (y, scale) = (*y_given, *scale_given);
+                let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);

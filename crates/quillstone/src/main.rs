@@ -11,6 +11,7 @@ use quillstone_script::markup::plain;
 use quillstone_script::{kind_from_path, parse, AssetKind, Op, Program};
 
 mod package;
+mod pattern;
 mod picture;
 
 const USAGE: &str = "\
@@ -116,9 +117,17 @@ fn check(path: &Path) -> Result<(), String> {
 
     let mut missing = 0;
     let hot = hotspot_images(&program);
+    let mut checked: HashSet<String> = HashSet::new();
     for (line, kind, asset) in program.assets_with_lines() {
         if hot.contains(&(line, asset)) {
             continue; // below, as pictures
+        }
+        if quillstone_script::is_pattern(asset) {
+            for (error, msg) in check_pattern(path, root, line, asset, &mut checked) {
+                missing += usize::from(error);
+                eprintln!("{msg}");
+            }
+            continue;
         }
         let file = root.join(asset);
         if !quillstone_script::is_inside(asset) {
@@ -170,6 +179,38 @@ fn check(path: &Path) -> Result<(), String> {
     }
     println!("ok: {} ops, {} labels{voiced}", program.ops.len(), program.labels.len());
     Ok(())
+}
+
+/// More files than this behind one picture name `{variable}` is probably a folder of unrelated art:
+/// every one of them ships with the game.
+const MANY_MATCHES: usize = 200;
+
+/// A picture name with `{variable}` parts stands for every file it can build: there must
+/// be at least one, and each must be a picture the player can show (`checked` skips files
+/// another line already looked at).
+fn check_pattern(script: &Path, root: &Path, line: usize, pattern: &str, checked: &mut HashSet<String>) -> Vec<Finding> {
+    let at = format!("{}:{line}", script.display());
+    let files = pattern::expand(root, pattern);
+    if files.is_empty() {
+        let msg = format!("{at}: error: `{pattern}` matches no file (each `{{variable}}` stands for a file-name part in that folder; keep the files beside or below the script)");
+        return vec![(true, msg)];
+    }
+    let mut out = Vec::new();
+    if files.len() > MANY_MATCHES {
+        out.push((
+            false,
+            format!(
+                "{at}: warning: `{pattern}` matches {} files, and all of them ship with the game: keep unrelated files out of that folder",
+                files.len()
+            ),
+        ));
+    }
+    for file in files.iter().filter(|f| checked.insert((*f).clone())) {
+        if let Some(why) = unplayable(&root.join(file), AssetKind::Image) {
+            out.push((true, format!("{at}: error: `{file}` (matched by `{pattern}`) won't show in a shipped game: {why}")));
+        }
+    }
+    out
 }
 
 /// Ops of `::hotspots` blocks whose regions are all `hidden`.
@@ -419,7 +460,7 @@ fn voices(path: &Path) -> Result<(), String> {
 /// really shows (or nothing would ever unlock them). Returns how many problems.
 fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
     use quillstone_script::Op;
-    let shown = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Bg { src: s, .. } | Op::Image { src: s, .. } if s == src));
+    let shown = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Bg { src: s, .. } | Op::Image { src: s, .. } if s == src || quillstone_script::pattern_matches(s, src)));
     let played = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } if s == src));
     let mut count = 0;
     let mut problem = |msg: String| {
@@ -751,6 +792,7 @@ fn print_cmds(cmds: &[Cmd]) {
             }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
+            Cmd::Warning { message } => eprintln!("warning: {message}"),
         }
     }
 }
@@ -792,6 +834,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         for (name, bytes) in files {
+            std::fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
             std::fs::write(dir.join(name), bytes).unwrap();
         }
         std::fs::write(dir.join("s.quill.md"), script).unwrap();
@@ -887,6 +930,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         for (name, bytes) in files {
+            std::fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
             std::fs::write(dir.join(name), bytes).unwrap();
         }
         let out = f(&dir);
@@ -1113,5 +1157,56 @@ mod tests {
         assert_eq!(small.len(), 1, "{small:?}");
         let padded = warns("textbox_rect = 160, 780, 800, 260\ntextbox_padding = 40, 36, 300, 20\n");
         assert_eq!(padded.len(), 1, "padding narrows the text area: {padded:?}");
+    }
+
+    #[test]
+    fn check_looks_at_every_file_a_picture_pattern_can_build() {
+        let png = picture::fake_png(10, 10);
+        let script = "---\nvars: { place: \"a\" }\n---\n::bg{src=\"assets/places/{place}.png\"}\nHi.\n";
+        assert!(checked(script, &[]).unwrap_err().contains("1 problem"), "no match is an error");
+        assert!(checked(script, &[("assets/places/a.png", &png)]).is_ok());
+        let found = in_dir(&[], |dir| check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{place}.png", &mut HashSet::new()));
+        assert_eq!(found.len(), 1);
+        assert!(found[0].0 && found[0].1.contains(":4:") && found[0].1.contains("`assets/places/{place}.png` matches no file"), "{}", found[0].1);
+        let files: &[(&str, &[u8])] = &[("assets/places/a.png", &png), ("assets/places/b.png", &png)];
+        let ok = in_dir(files, |dir| check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{place}.png", &mut HashSet::new()));
+        assert!(ok.is_empty(), "{ok:?}");
+        // Every match must be a picture: one bad file is one error naming it.
+        let files: &[(&str, &[u8])] = &[("assets/places/a.png", &png), ("assets/places/b.png", b"not a picture")];
+        let bad = in_dir(files, |dir| check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{place}.png", &mut HashSet::new()));
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].0 && bad[0].1.contains("assets/places/b.png") && bad[0].1.contains("won't show"), "{}", bad[0].1);
+        // A file another pattern already checked isn't read twice.
+        let mut seen = HashSet::new();
+        in_dir(files, |dir| {
+            check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{p}.png", &mut seen);
+            assert!(check_pattern(&dir.join("s.quill.md"), dir, 5, "assets/places/{q}.png", &mut seen).is_empty());
+        });
+    }
+
+    #[test]
+    fn a_pattern_matching_many_files_gets_a_warning_and_exactly_200_does_not() {
+        let png = picture::fake_png(4, 4);
+        let names: Vec<String> = (0..201).map(|i| format!("assets/p/f{i}.png")).collect();
+        let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), png.as_slice())).collect();
+        let many = in_dir(&files, |dir| check_pattern(&dir.join("s.quill.md"), dir, 1, "assets/p/{x}.png", &mut HashSet::new()));
+        assert_eq!(many.len(), 1, "{many:?}");
+        assert!(!many[0].0 && many[0].1.contains("matches 201 files") && many[0].1.contains("all of them ship"), "{}", many[0].1);
+        let exactly = in_dir(&files[..200], |dir| check_pattern(&dir.join("s.quill.md"), dir, 1, "assets/p/{x}.png", &mut HashSet::new()));
+        assert!(exactly.is_empty(), "{exactly:?}");
+    }
+
+    #[test]
+    fn a_gallery_picture_can_be_unlocked_by_a_pattern() {
+        let png = picture::fake_png(10, 10);
+        let script = "---\nvars: { place: \"a\" }\ngallery: [assets/places/a.png]\n---\n::bg{src=\"assets/places/{place}.png\"}\nHi.\n";
+        let ok = in_dir(&[("assets/places/a.png", &png)], |dir| check_extras(&parse(script).unwrap(), &dir.join("s.quill.md"), dir));
+        assert_eq!(ok, 0);
+    }
+
+    #[test]
+    fn the_places_demo_passes_check() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/places.quill.md");
+        assert!(check(&path).is_ok());
     }
 }

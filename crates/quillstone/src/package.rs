@@ -41,7 +41,18 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
     let mut files: BTreeSet<String> = BTreeSet::new();
     files.insert(script_name.to_string());
-    files.extend(program.assets().map(|(_, _, a)| a.to_string()));
+    for (_, _, asset) in program.assets() {
+        if quillstone_script::is_pattern(asset) {
+            // A picture named from variables: every file it can build ships.
+            let matches = crate::pattern::expand(root, asset);
+            if matches.is_empty() {
+                return Err(format!("can't package `{asset}`: it matches no file"));
+            }
+            files.extend(matches);
+        } else {
+            files.insert(asset.to_string());
+        }
+    }
     files.extend(program.extra_assets().map(|(_, a)| a.to_string()));
     files.extend(program.item_icons().map(|(_, a)| a.to_string()));
     if let Some(theme_file) = &program.theme {
@@ -261,6 +272,36 @@ mod tests {
         assert!(!out.join("avfilter-11.dll").exists() && !out.join("game/assets/unused.png").exists());
         assert!(std::fs::read_to_string(out.join("licenses/FFmpeg.txt")).unwrap().contains("LGPL TEXT"));
         assert!(package(&opts, &program).unwrap_err().contains("isn't empty"), "never overwrites");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packages_every_file_a_picture_pattern_can_build_and_nothing_else() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-pattern-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets/places/sub")).unwrap();
+        for f in ["places/rooftop.png", "places/night.png", "places/sub/deep.png", "places/readme.txt", "other.png", "mika_happy.png", "mika_sad.png", "ren_happy.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "---\nvars: { place: \"rooftop\", mood: \"happy\" }\n---\n::character{id=mika sprites=assets/mika_{pose}.png}\n::bg{src=\"assets/places/{place}.png\"}\n::show{mika {mood}}\nHi.\n";
+        std::fs::write(src.join("p.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
+        for f in ["places/rooftop.png", "places/night.png", "mika_happy.png", "mika_sad.png"] {
+            assert!(out.join("game/assets").join(f).is_file(), "{f} ships");
+        }
+        for f in ["places/sub/deep.png", "places/readme.txt", "other.png", "ren_happy.png"] {
+            assert!(!out.join("game/assets").join(f).exists(), "{f} does not");
+        }
+        // A pattern that matches nothing can't be packaged.
+        let lonely = "::bg{src=\"assets/nowhere/{p}.png\"}\nHi.\n";
+        std::fs::write(src.join("l.quill.md"), lonely).unwrap();
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None };
+        let err = package(&opts, &quillstone_script::parse(lonely).unwrap()).unwrap_err();
+        assert!(err.contains("matches no file"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -440,6 +440,10 @@ impl Explorer<'_> {
                     }
                 }
                 Op::Input { prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
+                // A picture named from variables (`assets/{place}.png`).
+                Op::Bg { src, .. } | Op::Show { src, .. } | Op::Image { src, .. } => {
+                    read.extend(quillstone_script::pattern_vars(src).into_iter().map(|n| (at, n, false)));
+                }
                 Op::Shop { pay, into, stock } => {
                     set.insert(into);
                     read.push((at, pay, false));
@@ -1104,6 +1108,23 @@ mod tests {
         let src = "---\nvars: { a: 0, b: 0, c: 0 }\n---\n::set{a = random(1, 12), b = random(1, 12), c = random(1, 12)}\nHi.\n::end\n";
         let r = explore(&parse(src).unwrap(), 100);
         assert!(r.partial && r.situations <= 100, "{} {}", r.partial, r.situations);
+    }
+
+    #[test]
+    fn a_variable_in_a_picture_name_counts_as_read() {
+        let src = "---\nvars: { place: \"a\" }\n---\n::character{id=mika sprites=m_{pose}.png}\n::bg{src=\"bg/{place}.png\"}\n::show{mika {mood}}\n![](i/{item}.png)\nHi.\n::end\n";
+        let w = messages(&test(src).warnings);
+        let said = |needle: &str| w.iter().filter(|m| m.contains(needle)).count();
+        assert_eq!(said("`mood` is never set"), 1, "{w:?}");
+        assert_eq!(said("`item` is never set"), 1, "{w:?}");
+        assert_eq!(said("`place`"), 0, "{w:?}");
+    }
+
+    #[test]
+    fn the_tester_walks_a_story_with_unsafe_picture_names_without_trouble() {
+        let src = "---\nvars: { place: \"../x\" }\n---\n::bg{src=\"bg/{place}.png\"}\nHi.\n::end\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && !r.partial, "{:?}", r.errors);
     }
 
     #[test]

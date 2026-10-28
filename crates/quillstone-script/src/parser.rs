@@ -598,7 +598,7 @@ impl Parser {
             self.err(line, "image has no path");
             return;
         }
-        if let Err(m) = check_inside("path", path) {
+        if let Err(m) = self.picture_path("path", path) {
             self.err(line, format!("image {m}"));
             return;
         }
@@ -1259,7 +1259,12 @@ impl Parser {
                 (self.sprite_id(&who), self.anim_ref(line, &anim)?)
             }
             (Some(src), None) => {
-                let id = id_attr.or_else(|| bare.first().cloned()).unwrap_or_else(|| src.clone());
+                let named = id_attr.or_else(|| bare.first().cloned());
+                if named.is_none() && crate::is_pattern(&src) {
+                    self.err(line, "a `src=` with a `{variable}` needs a sprite name, like `::show{mika src=\"assets/{place}.png\"}`");
+                    return None;
+                }
+                let id = named.unwrap_or_else(|| src.clone());
                 (id, src)
             }
             (None, None) => {
@@ -1282,7 +1287,7 @@ impl Parser {
         };
 
         if !is_anim {
-            if let Err(m) = check_inside("src", &src) {
+            if let Err(m) = self.picture_path("src", &src) {
                 self.err(line, m);
                 return None;
             }
@@ -1378,7 +1383,7 @@ impl Parser {
             self.err(line, format!("character `{id}` is declared twice"));
             return;
         }
-        if let Some(Err(m)) = sprites.as_deref().map(|t| check_inside("sprites", t)) {
+        if let Some(Err(m)) = sprites.as_deref().map(|t| check_inside("sprites", &t.replace("{pose}", "x"))) {
             self.err(line, m);
             return;
         }
@@ -1822,9 +1827,46 @@ impl Parser {
         Some((Op::Hud { elem: Box::new(HudElem { id, at, anchor, cond, kind }), fade }, None))
     }
 
+    /// A picture name: a plain path inside the game folder, or a pattern whose
+    /// `{variable}` parts name text variables (see `dynpath`). A variable the front
+    /// matter doesn't declare is allowed, like in dialogue (a `::set` can create it;
+    /// `quillstone test` warns when nothing sets it); a declared non-text one can never fit.
+    fn picture_path(&self, key: &str, path: &str) -> Result<(), String> {
+        if !crate::is_pattern(path) {
+            return check_inside(key, path);
+        }
+        let parts = crate::pieces(path).map_err(|m| format!("`{key}`: {m}"))?;
+        if kind_from_path(path) != AssetKind::Image {
+            return Err(format!("`{key}={path}`: a name with a `{{variable}}` can only be a picture (.png, .jpg, .webp), not a video or sound"));
+        }
+        let mut sample = String::new();
+        for part in parts {
+            match part {
+                crate::Piece::Lit(l) => sample.push_str(l),
+                crate::Piece::Var(v) => {
+                    match self.program.vars.get(v) {
+                        Some(Value::Str(_)) | None => {}
+                        Some(_) => {
+                            return Err(format!(
+                                "`{key}={path}`: `{v}` must be a text variable (the picture name is built from its text; \
+                                 declare it with a text default, like `vars: {{ {v}: \"rooftop\" }}`)"
+                            ))
+                        }
+                    }
+                    sample.push('x');
+                }
+            }
+        }
+        if is_inside(&sample) {
+            Ok(())
+        } else {
+            Err(format!("`{key}={path}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"))
+        }
+    }
+
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
         match a.value(key) {
-            Some(v) if !v.is_empty() => match check_inside(key, &v) {
+            Some(v) if !v.is_empty() => match if cmd == "bg" { self.picture_path(key, &v) } else { check_inside(key, &v) } {
                 Ok(()) => Some(v),
                 Err(m) => {
                     self.err(line, m);
@@ -2179,7 +2221,12 @@ fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String>
 /// A file named by the script must be relative and inside the game folder, or a save
 /// that mentions it can't be loaded again (and the game can't be packaged).
 fn check_inside(key: &str, path: &str) -> Result<(), String> {
-    if is_inside(path) {
+    if path.contains(['{', '}']) {
+        Err(format!(
+            "`{key}={path}`: braces can't be part of a file name; a `{{variable}}` in a name works only for pictures \
+             (`::show`, `::bg` and inline images)"
+        ))
+    } else if is_inside(path) {
         Ok(())
     } else {
         Err(format!(
@@ -4208,5 +4255,132 @@ mod tests {
         assert!(p.anims["talk"].looped && !p.anims["arrive"].looped);
         assert!(p.ops.iter().any(|o| matches!(o, Op::Bg { src, .. } if src == "anim:flicker")));
         assert!(p.ops.iter().filter(|o| matches!(o, Op::Move { looped: true, .. })).count() >= 3);
+    }
+
+    // ---- picture names from variables ------------------------------------------
+
+    const VARS: &str = "---\nvars: { place: \"rooftop\", mood: \"happy\", hero.mood: \"sad\", n: 3, flag: true, bag: [] }\n---\n";
+
+    fn with_vars(body: &str) -> String {
+        format!("{VARS}{MIKA}{body}")
+    }
+
+    /// The (line, message) of the only error in `body`, which follows the front matter (3 lines) and MIKA (1).
+    fn only_error(body: &str) -> (usize, String) {
+        let e = errs(&with_vars(body));
+        assert_eq!(e.len(), 1, "{e:?}");
+        (e[0].line - 4, e[0].message.clone())
+    }
+
+    #[test]
+    fn patterns_are_accepted_in_bg_show_pose_and_inline_images() {
+        let p = ok(&with_vars(
+            "::bg{src=\"assets/places/{place}.png\"}\n::show{mika {mood}}\n::show{mika src=\"x/{hero.mood}.png\"}\n::show{src=\"y/{mood}.jpg\" id=a}\n![alt](items/{place}.webp)\n::show{mika a{mood}b}\n",
+        ));
+        let srcs: Vec<&str> = p.ops.iter().filter_map(|o| o.asset().map(|(_, s)| s)).collect();
+        assert_eq!(
+            srcs,
+            ["assets/places/{place}.png", "art/mika_{mood}.png", "x/{hero.mood}.png", "y/{mood}.jpg", "items/{place}.webp", "art/mika_a{mood}b.png"]
+        );
+        // The pose goes through the sprites template like a literal one.
+        assert!(matches!(&p.ops[1], Op::Show { id, src, .. } if id == "mika" && src == "art/mika_{mood}.png"));
+        // `bg` accepts the unquoted form too.
+        assert!(parse(&with_vars("::bg{src=a/{place}.png}\n")).is_ok());
+    }
+
+    #[test]
+    fn pattern_errors_name_the_line() {
+        let cases: [(&str, &str); 14] = [
+            ("::bg{src=\"a/{place.png\"}", "without a closing"),
+            ("::bg{src=\"a/place}.png\"}", "without a `{`"),
+            ("::bg{src=\"a/{}.png\"}", "empty `{}`"),
+            ("::bg{src=\"a/{ place }.png\"}", "isn't a variable name"),
+            ("::bg{src=\"a/{n}.png\"}", "must be a text variable"),
+            ("::bg{src=\"a/{flag}.png\"}", "must be a text variable"),
+            ("::bg{src=\"a/{bag}.png\"}", "must be a text variable"),
+            ("::bg{src=\"a/{place}\"}", "extension"),
+            ("::bg{src=\"a/{place}.{mood}\"}", "extension"),
+            ("::bg{src=\"a/{place}.webm\"}", "can only be a picture"),
+            ("![](a/{place}.webm)", "can only be a picture"),
+            ("::bg{src=\"../{place}.png\"}", "inside the game folder"),
+            ("::bg{src=\"a\\\\{place}.png\"}", "inside the game folder"),
+            ("::bg{src=\"a/{place}/..\\{mood}.png\"}", "inside the game folder"),
+        ];
+        for (body, needle) in cases {
+            let (line, msg) = only_error(&format!("One.\n{body}\n"));
+            assert_eq!(line, 2, "{body}");
+            assert!(msg.contains(needle), "{body}: {msg}");
+        }
+        let (line, msg) = only_error("::show{mika {mood\n");
+        assert_eq!(line, 1);
+        assert!(msg.contains("expected `{...}`") || msg.contains("{"), "{msg}");
+        let (_, msg) = only_error("::show{mika a}b}\n");
+        assert!(msg.contains("without a `{`"), "{msg}");
+        let (_, msg) = only_error("::show{mika {}}\n");
+        assert!(msg.contains("empty `{}`"), "{msg}");
+        let (_, msg) = only_error("::show{mika {n}}\n");
+        assert!(msg.contains("must be a text variable"), "{msg}");
+        let (_, msg) = only_error("::show{src=\"a/{place}.png\"}\n");
+        assert!(msg.contains("needs a sprite name"), "{msg}");
+        let (_, msg) = only_error("::show{mika happy {mood}}\n");
+        assert!(msg.contains("takes a character and a pose"), "{msg}");
+    }
+
+    #[test]
+    fn an_undeclared_variable_is_allowed_like_in_dialogue() {
+        // A `::set` can create it, and `quillstone test` warns when nothing does.
+        let p = ok("::bg{src=\"a/{later}.png\"}\nHi.\n");
+        assert_eq!(p.assets().next().map(|(_, _, a)| a), Some("a/{later}.png"));
+    }
+
+    #[test]
+    fn patterns_mean_nothing_with_anim_color_or_for_other_commands() {
+        for body in [
+            "::bg{anim=\"{place}\"}",
+            "::bg{color=\"{place}\"}",
+            "::bg{src=\"a/{place}.png\" anim=x}",
+            "::bg{src=\"a/{place}.png\" color=#fff}",
+            "::show{mika anim=\"{mood}\"}",
+            "::show{mika anim=blink {mood}}",
+            "::show{mika src=\"a/{mood}.png\" anim=blink}",
+            "::sfx{src=\"a/{place}.ogg\"}",
+            "::music{src=\"a/{place}.ogg\"}",
+            "::voice{src=\"a/{place}.ogg\"}",
+            "::video{src=\"a/{place}.webm\"}",
+            "::hud{id=h image=\"a/{place}.png\"}",
+            "::character{id=bob sprites=a/{pose}/{place}.png}",
+            "::bg{src=\"a{b.png\"}",
+        ] {
+            let e = errs(&with_vars(&format!("::anim{{id=blink frames=\"a.png 1\" loop}}\n{body}\n")));
+            assert!(!e.is_empty(), "{body} should be refused");
+            assert!(e.iter().all(|e| e.line == 6), "{body}: {e:?}");
+        }
+        let e = errs(&with_vars("::sfx{src=\"a/{place}.ogg\"}\n"));
+        assert!(e[0].message.contains("only for pictures"), "{}", e[0].message);
+    }
+
+    #[test]
+    fn a_pattern_is_listed_as_an_asset_with_its_line_and_never_loaded_ahead() {
+        let p = ok(&with_vars("::bg{src=\"assets/places/{place}.png\"}\n::bg{src=plain.png}\n::show{mika {mood}}\n"));
+        let found: Vec<_> = p.assets_with_lines().map(|(l, _, a)| (l, a)).collect();
+        assert_eq!(found, [(5, "assets/places/{place}.png"), (6, "plain.png"), (7, "art/mika_{mood}.png")]);
+        assert_eq!(p.assets().count(), 3);
+        assert_eq!(p.images_ahead(0, 10), ["plain.png"], "nothing to load for a name that isn't known yet");
+    }
+
+    #[test]
+    fn braces_cannot_be_part_of_any_other_file_name() {
+        for body in ["::sfx{src=a{b}.ogg}", "::hud{id=h image=a{b}.png}", "::item{id=k icon=i{x}.png}"] {
+            assert!(parse(body).is_err(), "{body}");
+        }
+        assert!(parse("::character{id=bob sprites=a{x}.png}\n").is_err(), "only `{{pose}}` may appear in a template");
+        assert!(parse("::character{id=bob sprites=a_{pose}.png}\n").is_ok());
+    }
+
+    #[test]
+    fn the_places_demo_parses() {
+        let p = ok(include_str!("../../../examples/places.quill.md"));
+        let pats: Vec<&str> = p.assets().map(|(_, _, a)| a).filter(|a| crate::is_pattern(a)).collect();
+        assert!(pats.contains(&"assets/places/{place}.png") && pats.contains(&"assets/mika_{mood}.png"), "{pats:?}");
     }
 }

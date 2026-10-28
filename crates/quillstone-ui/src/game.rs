@@ -130,6 +130,8 @@ pub struct Game<'p> {
     cursor: Option<(f32, f32)>,
     /// A key moved the keyboard focus: the cursor's hover look stays off until the mouse moves again.
     hover_muted: bool,
+    /// Warnings from the story already shown as a notice (each shows once per run of the program).
+    warned: std::collections::HashSet<String>,
     /// The settings row whose slider is being dragged.
     dragging: Option<usize>,
     /// Wheel movement not yet a whole notch (see [`Event::Wheel`]).
@@ -211,6 +213,7 @@ impl<'p> Game<'p> {
             auto_elapsed: 0.0,
             cursor: None,
             hover_muted: false,
+            warned: std::collections::HashSet::new(),
             dragging: None,
             wheel: 0.0,
             focus: 0,
@@ -921,6 +924,14 @@ impl<'p> Game<'p> {
         if let Some(Cmd::Stopped { reason }) = cmds.iter().find(|c| matches!(c, Cmd::Stopped { .. })) {
             self.notify(format!("The story was stopped: {reason}"));
         }
+        for message in cmds.iter().filter_map(|c| match c {
+            Cmd::Warning { message } => Some(message),
+            _ => None,
+        }) {
+            if self.warned.insert(message.clone()) {
+                self.notify(message.clone());
+            }
+        }
         self.view.apply(cmds);
         if !self.view.hud().is_empty() {
             self.view.set_vars(&self.session.state().vars); // the HUD shows them live
@@ -1161,5 +1172,7 @@ mod tests;
 mod input_tests;
 #[cfg(test)]
 mod anim_tests;
+#[cfg(test)]
+mod dynpic_tests;
 #[cfg(test)]
 mod hud_tests;

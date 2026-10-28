@@ -553,6 +553,7 @@ impl Program {
 
     /// The images the story may show within `steps` ops of `pc`, nearest first,
     /// following jumps, calls and every choice (for loading them before they're needed).
+    /// Picture names with `{variable}` parts are left out: they load when shown.
     pub fn images_ahead(&self, pc: usize, steps: usize) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for at in self.ops_ahead(pc, steps) {
@@ -563,7 +564,8 @@ impl Program {
             };
             let frames = anim.into_iter().flat_map(|a| a.frames.iter().map(|f| (AssetKind::Image, f.file.as_str())));
             for (kind, src) in op.all_assets().into_iter().chain(frames) {
-                if kind == AssetKind::Image && !out.contains(&src) {
+                // A name with `{variable}` parts is built when it is shown: nothing to load ahead.
+                if kind == AssetKind::Image && !crate::is_pattern(src) && !out.contains(&src) {
                     out.push(src);
                 }
             }
