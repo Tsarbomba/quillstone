@@ -93,6 +93,10 @@ mod real {
         sfx_loops: HashMap<String, StreamingSoundHandle<FromFileError>>,
         /// Loops that failed to start or died, not yet told to the mixer.
         failed_loops: Vec<String>,
+        /// The last music request could not be played (a file that won't open, a
+        /// device error, the loop after a started intro): `update` reports it like a
+        /// track that ended, so the mixer forgets the music and a later `::music` restarts it.
+        music_failed: bool,
         /// One-shot sound effects that may still be playing, so `stop=` can cut them.
         sfx_shots: Vec<(String, StaticSoundHandle)>,
         /// Files we already complained about, so a missing file warns once.
@@ -128,6 +132,7 @@ mod real {
                 sfx: HashMap::new(),
                 sfx_loops: HashMap::new(),
                 failed_loops: Vec::new(),
+                music_failed: false,
                 sfx_shots: Vec::new(),
                 warned: HashSet::new(),
             };
@@ -144,7 +149,8 @@ mod real {
             Some(audio)
         }
 
-        /// Call every frame. `true` once when a one-shot music track has ended.
+        /// Call every frame. `true` once when a one-shot music track has ended, or when
+        /// the music could not be started (the mixer then forgets it).
         pub fn update(&mut self) -> bool {
             self.forget_finished_sfx();
             if self.voice.as_ref().is_some_and(|v| v.state() == PlaybackState::Stopped) {
@@ -157,7 +163,7 @@ mod real {
             if ended {
                 self.music = None;
             }
-            ended
+            ended | std::mem::take(&mut self.music_failed)
         }
 
         /// Whether a voice clip is still playing (auto-forward waits for it).
@@ -241,7 +247,11 @@ mod real {
         /// exactly one intro-length after it, so the loop begins as the intro ends.
         /// An intro that cannot be opened is skipped (warned once): the loop plays alone.
         fn play_music(&mut self, src: &str, intro: Option<&str>, fade: f32, looped: bool, volume: f32) {
-            let Some(main) = self.stream(src) else { return };
+            self.music_failed = false;
+            let Some(main) = self.stream(src) else {
+                self.music_failed = true;
+                return;
+            };
             let gain = amplitude_to_db(volume);
             let mut main = main.volume(gain);
             if looped {
@@ -254,7 +264,10 @@ mod real {
                 }
                 match self.music_track.play(main) {
                     Ok(handle) => self.music = Some(handle),
-                    Err(e) => self.warn(src, e),
+                    Err(e) => {
+                        self.warn(src, e);
+                        self.music_failed = true;
+                    }
                 }
                 return;
             };
@@ -267,11 +280,22 @@ mod real {
             let main = main.start_time(join);
             match self.music_track.play(intro) {
                 Ok(handle) => self.music_intro = Some(handle),
-                Err(e) => return self.warn(intro_name, e),
+                Err(e) => {
+                    self.warn(intro_name, e);
+                    self.music_failed = true;
+                    return;
+                }
             }
             match self.music_track.play(main) {
                 Ok(handle) => self.music = Some(handle),
-                Err(e) => self.warn(src, e),
+                Err(e) => {
+                    self.warn(src, e);
+                    // the intro alone would end in silence the mixer doesn't know about
+                    if let Some(mut intro) = self.music_intro.take() {
+                        intro.stop(tween(DECLICK));
+                    }
+                    self.music_failed = true;
+                }
             }
         }
 

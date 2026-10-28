@@ -471,6 +471,25 @@ fn a_script_reload_during_a_replay_goes_on_or_leaves_for_extras() {
 }
 
 #[test]
+fn a_reload_that_ends_the_replay_at_the_current_spot_leaves_for_extras() {
+    let p = parse(SRC).unwrap();
+    let storage = Shared::default();
+    for edit in [("**A:** kind\n::end_replay", "::end_replay\n::end_replay"), ("**A:** kind\n::end_replay\n::jump{to=finale}", "::end")] {
+        let edited = parse(&SRC.replace(edit.0, edit.1)).unwrap();
+        let mut g = after_the_roof(&p, &storage);
+        to_scenes(&mut g);
+        click(&mut g, track_rect(0));
+        key(&mut g, Key::Space);
+        key(&mut g, Key::Char('1'));
+        assert_eq!(line(&g), "kind");
+        g.reload(&edited).unwrap();
+        assert!(!g.in_replay(), "{edit:?}: the replay is over, not stuck on an empty screen");
+        assert_eq!(g.screen(), Screen::Extras);
+        assert_eq!(g.extras.tab, Tab::Scenes);
+    }
+}
+
+#[test]
 fn end_replay_in_a_real_game_is_a_no_op_for_the_game_too() {
     let p = parse(SRC).unwrap();
     let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));

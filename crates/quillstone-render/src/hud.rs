@@ -178,30 +178,41 @@ fn anchored(x: f32, w: f32, anchor: HudAnchor) -> f32 {
 /// Line height the player's text engine uses (see `quillstone-render` `TextJob`s: 1.35 x size).
 const LINE: f32 = 1.35;
 
-/// A cautious width of one line of text at `size`: generous, so a panel built from it never
-/// makes the text wrap (the real text engine is not visible from here).
-fn line_width(line: &str, size: f32, scale_at: &dyn Fn(usize) -> f32, offset: usize) -> f32 {
-    let w: f32 = line
-        .char_indices()
-        .map(|(at, c)| {
-            size * scale_at(offset + at) * if is_wide(c) {
-                1.0
-            } else if c.is_whitespace() {
-                0.3
-            } else if "il.,:;'!|jt".contains(c) {
-                0.32
-            } else if "mwMW@".contains(c) {
-                0.9
-            } else if c.is_uppercase() {
-                0.7
-            } else if c.is_ascii_digit() {
-                0.62
-            } else {
-                0.55
-            }
-        })
-        .sum();
-    w * 1.06 + 2.0
+/// A cautious width of the widest line of `text` at `size`: generous, so a panel built
+/// from it never makes the text wrap (the real text engine is not visible from here).
+/// `runs` are the `(start, end, size scale)` stretches of the text in order (bytes); one
+/// pass walks the text and the runs together.
+fn widest_line(text: &str, size: f32, runs: &[(usize, usize, f32)]) -> f32 {
+    let mut cursor = 0;
+    let mut widest = 0.0f32;
+    let mut line = 0.0f32;
+    for (at, c) in text.char_indices() {
+        if c == '\n' {
+            widest = widest.max(line * 1.06 + 2.0);
+            line = 0.0;
+            continue;
+        }
+        while runs.get(cursor).is_some_and(|r| r.1 <= at) {
+            cursor += 1;
+        }
+        let scale = runs.get(cursor).filter(|r| r.0 <= at).map_or(1.0, |r| r.2);
+        line += size * scale * if is_wide(c) {
+            1.0
+        } else if c.is_whitespace() {
+            0.3
+        } else if "il.,:;'!|jt".contains(c) {
+            0.32
+        } else if "mwMW@".contains(c) {
+            0.9
+        } else if c.is_uppercase() {
+            0.7
+        } else if c.is_ascii_digit() {
+            0.62
+        } else {
+            0.55
+        };
+    }
+    widest.max(line * 1.06 + 2.0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -219,7 +230,7 @@ fn draw_text(
     // `{size=..}` runs make characters (and so lines) bigger than the base size.
     let run_size = |run: &quillstone_script::markup::TextRun| run.style.size.map_or(size, |s| s.resolve(size));
     let tallest = r.runs.iter().map(run_size).fold(size, f32::max);
-    let scale_at = |byte: usize| r.runs.iter().find(|run| run.start <= byte && byte < run.end).map_or(1.0, |run| run_size(run) / size.max(1.0));
+    let scales: Vec<(usize, usize, f32)> = r.runs.iter().map(|run| (run.start, run.end, run_size(run) / size.max(1.0))).collect();
     let lines = r.text.split('\n').count().max(1) as f32;
     let height = lines * tallest * LINE + 2.0 * pad;
     let align = match anchor {
@@ -230,12 +241,7 @@ fn draw_text(
     let rect = match back {
         // A panel is as wide as the text is estimated to be, so it can be drawn behind it.
         Some(back) => {
-            let mut offset = 0;
-            let mut widest = 0.0f32;
-            for l in r.text.split('\n') {
-                widest = widest.max(line_width(l, size, &scale_at, offset));
-                offset += l.len() + 1;
-            }
+            let widest = widest_line(&r.text, size, &scales);
             let panel = Rect::new(anchored(px, widest + 2.0 * pad, anchor), py, widest + 2.0 * pad, height);
             out.push(Draw::Rect { rect: panel, color: back });
             Rect::new(panel.x + pad, panel.y + pad, panel.w - 2.0 * pad, panel.h - 2.0 * pad)
@@ -403,6 +409,29 @@ mod tests {
         let (p1, _) = find("::hud{id=t text=Hello size=40 back=#000}\n");
         let (p2, _) = find("::hud{id=t text=\"{size=100}Hello{/size}\" size=40 back=#000}\n");
         assert!(p2.unwrap().w > p1.unwrap().w * 2.0);
+    }
+
+    #[test]
+    fn a_panel_is_sized_in_one_pass_over_the_text_and_its_runs() {
+        // a run's scale counts for exactly its own characters, in any line
+        let plain = widest_line("Hello", 30.0, &[]);
+        let doubled = widest_line("Hello", 30.0, &[(0, 5, 2.0)]);
+        assert!((doubled - 2.0) / (plain - 2.0) > 1.99 && (doubled - 2.0) / (plain - 2.0) < 2.01);
+        let half = widest_line("Hello", 30.0, &[(0, 2, 2.0)]);
+        assert!(half > plain && half < doubled);
+        let two_lines = widest_line("Hi\nHello", 30.0, &[(3, 8, 2.0)]);
+        assert!((two_lines - doubled).abs() < 0.01, "the run is found past the first line: {two_lines} {doubled}");
+        assert!((widest_line("Hello\nHi", 30.0, &[(0, 5, 2.0)]) - doubled).abs() < 0.01);
+        // a long text of many runs, drawn as many elements: linear, not runs x characters
+        let text = "*a*".repeat(666);
+        let started = std::time::Instant::now();
+        let mut out = Vec::new();
+        for _ in 0..256 {
+            out.clear();
+            draw_text(&mut out, &text, (10.0, 10.0), HudAnchor::Left, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0);
+        }
+        assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
+        assert_eq!(out.len(), 2, "a panel and the text");
     }
 
     #[test]

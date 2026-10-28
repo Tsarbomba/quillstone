@@ -85,12 +85,22 @@ pub fn is_keyword(s: &str) -> bool {
     matches!(s, "true" | "false" | "and" | "or" | "not")
 }
 
+/// Deepest nesting of parentheses, function calls, `-` and `not` chains: the parser
+/// is recursive and expressions come from saves (untrusted).
+pub const MAX_NESTING: usize = 64;
+/// Most tokens in one expression, so long flat chains (`1+1+1+...`) can't build trees
+/// deep enough to overflow a stack in eval, clone or drop.
+pub const MAX_TOKENS: usize = 512;
+
 fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = s.chars().collect();
     let at = |i: usize| chars.get(i).copied();
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
+        if out.len() > MAX_TOKENS {
+            return Err(format!("expression is too long (at most {MAX_TOKENS} parts)"));
+        }
         let c = chars[i];
         match c {
             c if c.is_whitespace() => i += 1,
@@ -246,9 +256,19 @@ struct Parser {
     pos: usize,
     /// `random(lo, hi)` is accepted (the right side of an assignment).
     allow_random: bool,
+    depth: usize,
 }
 
 impl Parser {
+    /// Count one level of nesting; the caller undoes it with `self.depth -= 1`.
+    fn nest(&mut self) -> Result<(), String> {
+        if self.depth >= MAX_NESTING {
+            return Err("expression is nested too deeply".into());
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
     }
@@ -274,7 +294,10 @@ impl Parser {
     fn not(&mut self) -> Result<Expr, String> {
         if self.peek() == Some(&Tok::Not) {
             self.pos += 1;
-            return Ok(Expr::Not(Box::new(self.not()?)));
+            self.nest()?;
+            let inner = self.not();
+            self.depth -= 1;
+            return Ok(Expr::Not(Box::new(inner?)));
         }
         self.comparison()
     }
@@ -338,7 +361,10 @@ impl Parser {
             self.pos += 1;
             return Ok(Expr::Lit(Value::Int(i64::MIN)));
         }
-        Ok(match self.unary()? {
+        self.nest()?;
+        let inner = self.unary();
+        self.depth -= 1;
+        Ok(match inner? {
             Expr::Lit(Value::Int(n)) => Expr::Lit(Value::Int(n.saturating_neg())),
             other => Expr::Neg(Box::new(other)),
         })
@@ -346,6 +372,13 @@ impl Parser {
 
     /// `name(args)`, after the name; the `(` is next.
     fn function(&mut self, name: &str) -> Result<Expr, String> {
+        self.nest()?;
+        let r = self.function_inner(name);
+        self.depth -= 1;
+        r
+    }
+
+    fn function_inner(&mut self, name: &str) -> Result<Expr, String> {
         self.pos += 1;
         // no rolls inside a roll's own bounds
         let allowed = self.allow_random;
@@ -430,7 +463,10 @@ impl Parser {
             }),
             Some(Tok::Seen(label)) => Ok(Expr::Var(format!("{SEEN}{label}"))),
             Some(Tok::LParen) => {
-                let inner = self.or()?;
+                self.nest()?;
+                let inner = self.or();
+                self.depth -= 1;
+                let inner = inner?;
                 if self.peek() == Some(&Tok::RParen) {
                     self.pos += 1;
                     Ok(inner)
@@ -454,7 +490,7 @@ fn parse_expr_with(s: &str, allow_random: bool) -> Result<Expr, String> {
     if s.trim().is_empty() {
         return Err("expected a condition, found nothing".into());
     }
-    let mut p = Parser { toks: tokenize(s)?, pos: 0, allow_random };
+    let mut p = Parser { toks: tokenize(s)?, pos: 0, allow_random, depth: 0 };
     let expr = p.or()?;
     match p.toks.get(p.pos) {
         None => Ok(expr),
@@ -532,11 +568,16 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     let mut start = 0;
     for (i, c) in s.char_indices() {
         match quote {
+            // a backslash inside quotes keeps the next character (`\"`) from closing them
+            Some(_) if escaped => escaped = false,
             Some(q) => {
-                if c == q {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == q {
                     quote = None;
                 }
             }
@@ -969,5 +1010,60 @@ mod tests {
         let e = parse_expr("a + b * count(inv) - min(c, 2)").unwrap();
         e.vars_read(&mut names);
         assert_eq!(names, ["a", "b", "inv", "c"]);
+    }
+
+    // ---- depth and size limits (expressions come from saves) -----------------------
+
+    /// Run on a thread with a small stack (a Windows main thread has 1 MB).
+    fn small_stack<F: FnOnce() + Send + 'static>(f: F) {
+        std::thread::Builder::new().stack_size(512 * 1024).spawn(f).unwrap().join().expect("overflowed or panicked");
+    }
+
+    #[test]
+    fn hostile_nesting_is_an_error_not_a_stack_overflow() {
+        small_stack(|| {
+            let shapes = [
+                format!("{}1{}", "(".repeat(5000), ")".repeat(5000)),
+                format!("{}x", "-".repeat(5000)),
+                format!("{}x", "not ".repeat(5000)),
+                format!("{}1{}", "abs(".repeat(5000), ")".repeat(5000)),
+                format!("{}1{}", "min(1,".repeat(5000), ")".repeat(5000)),
+            ];
+            for src in &shapes {
+                let e = parse_expr(src).unwrap_err();
+                assert!(e.contains("too deeply") || e.contains("too long"), "{e}");
+            }
+            // just inside the limit still works
+            let ok = format!("{}1{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
+            assert!(parse_expr(&ok).is_ok());
+            let over = format!("{}1{}", "(".repeat(MAX_NESTING + 1), ")".repeat(MAX_NESTING + 1));
+            assert!(parse_expr(&over).unwrap_err().contains("nested too deeply"));
+            let nots = format!("{}x", "not ".repeat(MAX_NESTING + 1));
+            assert!(parse_expr(&nots).unwrap_err().contains("nested too deeply"));
+            let neg = format!("{}x", "-".repeat(MAX_NESTING + 1));
+            assert!(parse_expr(&neg).unwrap_err().contains("nested too deeply"));
+        });
+    }
+
+    #[test]
+    fn a_long_flat_chain_is_refused_and_the_longest_allowed_one_is_safe_to_use() {
+        small_stack(|| {
+            let long = vec!["1"; 5000].join("+");
+            assert!(parse_expr(&long).unwrap_err().contains("too long"));
+            // the longest chain that is accepted: evaluate, clone, walk and drop it
+            let n = MAX_TOKENS.div_ceil(2);
+            let chain = vec!["x"; n].join("+");
+            let e = parse_expr(&chain).unwrap();
+            let vars: Vars = [("x".to_string(), Value::Int(2))].into_iter().collect();
+            assert_eq!(e.eval(&vars), Value::Int(2 * n as i64));
+            let copy = e.clone();
+            assert!(!copy.has_random());
+            let mut out = Vec::new();
+            copy.vars_read(&mut out);
+            assert_eq!(out.len(), n);
+            drop(copy);
+            let mixed = format!("{}x{}", "-(".repeat(MAX_NESTING / 2), ")".repeat(MAX_NESTING / 2));
+            parse_expr(&mixed).unwrap().eval(&vars);
+        });
     }
 }

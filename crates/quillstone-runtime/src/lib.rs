@@ -13,6 +13,8 @@ mod explore;
 #[cfg(test)]
 mod hardening;
 #[cfg(test)]
+mod review3_tests;
+#[cfg(test)]
 mod anim_tests;
 #[cfg(test)]
 mod dynpic_tests;
@@ -28,7 +30,7 @@ pub fn next_seed(seed: &mut u64) -> u64 {
     quillstone_script::splitmix64(seed)
 }
 pub use persist::{read_persistent, write_persistent, REPLAY, UNLOCKED};
-pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, SAVE_HISTORY};
+pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, MAX_SAVE_BYTES, SAVE_HISTORY};
 
 /// Something the frontend should do.
 #[derive(Debug, Clone, PartialEq)]

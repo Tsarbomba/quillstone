@@ -140,6 +140,18 @@ impl<'p> Session<'p> {
                 }
                 continue;
             }
+            // An animation as the background shows each of its frames: the ones the gallery
+            // lists unlock (a sprite animation doesn't count, only backgrounds).
+            if let Cmd::SetBackground { src, .. } = cmd {
+                if let Some(anim) = quillstone_script::anim_id(src).and_then(|id| self.program.anims.get(id)) {
+                    for frame in anim.frames.iter().filter(|f| self.program.gallery.contains(&f.file)) {
+                        if self.persistent.insert(format!("{UNLOCKED}{}", frame.file), Value::Bool(true)).is_none() {
+                            self.persistent_changed = true;
+                        }
+                    }
+                    continue;
+                }
+            }
             let (src, list) = match cmd {
                 Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } => (src, &self.program.gallery),
                 Cmd::PlayMusic { src, .. } => (src, &self.program.music_room),

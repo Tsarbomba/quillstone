@@ -336,7 +336,7 @@ there is an error), and `anim=` and `color=` take no variables.
 `{name}` is replaced: no spaces inside the braces, no calculations. A variable that is
 not declared in `vars:` is allowed (a `::set` may create it, and `quillstone test` warns
 when nothing ever sets it), but a declared number, `true`/`false` or list is an error. The
-name needs a written-out extension (`.png`, `.jpg`, `.webp`), at most four variables
+name needs a written-out extension (`.png`, `.jpg`, `.jpeg` or `.webp`; nothing else), at most four variables
 fit in one name, and a name with a `{variable}` can only be a picture, not a video.
 Braces cannot be part of any file name: there is no way to write a literal one.
 
@@ -878,7 +878,8 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   back doesn't undo it. Replaying a line that *adds* to one adds again, so
   yes/no flags are the safe kind.
 - **`gallery:`** lists pictures for the main menu's **Extras** screen; each one
-  unlocks the first time the story shows it (`::bg` or an inline image).
+  unlocks the first time the story shows it (`::bg` or an inline image; a `::bg{anim=...}` unlocks
+  every listed picture that is one of its frames).
   **`music_room:`** does the same for `::music` tracks (named after their file:
   `rainy_day.ogg` shows as "Rainy day"). The keys may repeat to make long lists.
   `quillstone check` complains about entries the story never shows or plays,
@@ -903,7 +904,8 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 - **`replays:`** lists scenes the player can watch again. Each entry is a label (written the
   way a `::jump` writes it: `# The rooftop` is `the-rooftop`; spaces and underscores
   become dashes) and the title shown in the menu. The label must exist and
-  take no parameters; titles must be different and not empty; there can be up to 64.
+  take no parameters; titles must be different and not empty, at most 60 characters (write `\"` for a quote
+  mark inside one); there can be up to 64.
   Entries show in the order written (several `replays:` lines add up).
 - A scene **unlocks** the first time the story reaches its label, however it gets there
   (falling in from above, `::jump`, `::call`, a choice). Like gallery pictures, it stays

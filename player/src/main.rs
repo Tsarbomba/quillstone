@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
 use quillstone_script::{parse, AssetKind, Op, Program};
-use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp};
+use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -285,7 +285,13 @@ struct FileStorage {
 
 impl Storage for FileStorage {
     fn read(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(self.dir.as_ref()?.join(name)).ok()
+        // At most one byte past the limit is read: a huge file is not loaded into memory,
+        // and `SaveFile::parse` refuses what is over the limit ("Unreadable save").
+        use std::io::Read;
+        let file = std::fs::File::open(self.dir.as_ref()?.join(name)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(MAX_SAVE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
+        String::from_utf8(bytes).ok()
     }
 
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {

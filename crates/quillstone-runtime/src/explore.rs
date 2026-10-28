@@ -47,6 +47,9 @@ pub struct Report {
     /// Stopped at the limit, so some situations weren't explored (and the checks
     /// that need every branch were skipped).
     pub partial: bool,
+    /// Steps re-run to follow a `random` fork: they count against the limit with the
+    /// situations.
+    pub reruns: usize,
 }
 
 /// Play every branch of `program`, exploring at most `limit` situations.
@@ -64,6 +67,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         endings: BTreeSet::new(),
         report: Report::default(),
         caps: seen_caps(program),
+        reruns: 0,
     };
     for (origin, kept) in playthroughs(program) {
         let mut state = State::new(program);
@@ -161,6 +165,9 @@ struct Explorer<'p> {
     report: Report,
     /// The most each `seen:` count can matter (see the module notes).
     caps: Vec<(String, i64)>,
+    /// Steps re-run to follow a `random` fork, each charged against `limit` together
+    /// with the situations found (so rolls can't cost more than the limit allows).
+    reruns: usize,
 }
 
 impl Explorer<'_> {
@@ -172,6 +179,14 @@ impl Explorer<'_> {
         let mut done = Vec::new();
         let mut work: Vec<Vec<i64>> = vec![Vec::new()];
         while let Some(fixed) = work.pop() {
+            // Every step run after the first is a re-simulation: it costs like a situation.
+            if !fixed.is_empty() {
+                if self.nodes.len() + self.reruns >= self.limit {
+                    self.report.partial = true;
+                    break;
+                }
+                self.reruns += 1;
+            }
             let mut state = from.clone();
             let mut trace = Vec::new();
             let at = Cell::new(from.pc);
@@ -212,7 +227,8 @@ impl Explorer<'_> {
                 vec![lo, lo + (hi - lo) / 2, hi]
             };
             // never more branches than the situation limit (but always one way on)
-            let room = self.limit.saturating_sub(done.len() + work.len()).max(1);
+            let spent = self.nodes.len() + self.reruns + done.len() + work.len();
+            let room = self.limit.saturating_sub(spent).max(1);
             let mut values = values;
             if values.len() > room {
                 self.report.partial = true;
@@ -251,7 +267,7 @@ impl Explorer<'_> {
         if let Some(&id) = self.index.get(&key) {
             return Some(id);
         }
-        if self.nodes.len() >= self.limit {
+        if self.nodes.len() + self.reruns >= self.limit {
             self.report.partial = true;
             return None;
         }
@@ -313,6 +329,7 @@ impl Explorer<'_> {
         self.unadded_items();
         let mut r = self.report;
         r.situations = self.nodes.len();
+        r.reruns = self.reruns;
         r.endings = self.endings.into_iter().collect();
         r.errors.sort_by_key(|f| f.line);
         r.warnings.sort_by_key(|f| f.line);
@@ -762,6 +779,7 @@ fn short(text: &str) -> String {
 mod tests {
     use super::*;
     use quillstone_script::parse;
+    use std::time::Instant;
 
     fn test(src: &str) -> Report {
         explore(&parse(src).unwrap(), 10_000)
@@ -1170,5 +1188,27 @@ mod tests {
         let src = "---\nvars: { bag: [] }\n---\n::set{n = count(bag) + count(bag.x)}\nHi.\n::end\n";
         // `count(bag.x)` isn't declared: the compiler already refuses it
         assert!(parse(src).is_err());
+    }
+
+    #[test]
+    fn re_simulated_rolls_are_charged_to_the_limit() {
+        // five d6 in one step: 7,776 outcomes, 9,331 step runs, every time round the loop
+        let src = "---\nvars: { a: 0, b: 0, c: 0, d: 0, e: 0 }\n---\n# loop\n::set{a=random(1,6), b=random(1,6), c=random(1,6), d=random(1,6), e=random(1,6)}\nRoll {a} {b} {c} {d} {e}.\n::choice\n- [Again](#loop)\n- [Stop](#fin)\n::\n# fin\n::end\n";
+        let started = Instant::now();
+        let r = explore(&parse(src).unwrap(), 2_000);
+        assert!(r.partial);
+        assert!(r.situations + r.reruns <= 2_001, "{} situations + {} re-runs", r.situations, r.reruns);
+        assert!(started.elapsed().as_secs() < 5);
+        // without rolls nothing is re-run
+        assert_eq!(test("Hi.\n::end\n").reruns, 0);
+    }
+
+    #[test]
+    fn the_room_for_a_fork_is_what_is_left_of_the_budget() {
+        let src = "---\nvars: { a: 0, b: 0, c: 0 }\n---\n# loop\n::set{a=random(1,12), b=random(1,12), c=random(1,12)}\nRoll {a} {b} {c}.\n::end\n";
+        for limit in [5, 40, 300] {
+            let r = explore(&parse(src).unwrap(), limit);
+            assert!(r.partial && r.situations + r.reruns <= limit + 1, "limit {limit}: {} + {}", r.situations, r.reruns);
+        }
     }
 }

@@ -450,13 +450,15 @@ impl Parser {
                 continue;
             };
             let label = slug(unquote(key.trim()));
-            let title = unquote(title.trim()).trim().to_string();
+            let title = unescape_title(unquote(title.trim()).trim());
             if label.is_empty() {
                 self.err(line, format!("bad replay `{part}`: the label is empty"));
             } else if title.is_empty() {
                 self.err(line, format!("replay `{label}` needs a title, like `{label}: \"The rooftop\"`"));
             } else if title.chars().any(char::is_control) {
                 self.err(line, format!("the title of replay `{label}` can't hold control characters"));
+            } else if title.chars().count() > MAX_REPLAY_TITLE {
+                self.err(line, format!("the title of replay `{label}` is longer than {MAX_REPLAY_TITLE} characters (it has to fit on a row of the Scenes list)"));
             } else if self.replay_decls.iter().any(|(_, l, _)| *l == label) {
                 self.err(line, format!("replay `{label}` is listed twice"));
             } else if self.replay_decls.iter().any(|(_, _, t)| *t == title) {
@@ -2452,6 +2454,25 @@ pub(crate) fn slug(s: &str) -> String {
     out
 }
 
+/// The longest replay title, in characters (a row of the Scenes list is about this wide).
+const MAX_REPLAY_TITLE: usize = 60;
+
+/// `\"` and `\\` inside a quoted title are the character itself; any other backslash stays.
+fn unescape_title(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(&n)) if matches!(n, '"' | '\'' | '\\') => {
+                out.push(n);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn unquote(s: &str) -> &str {
     for q in ['"', '\''] {
         if let Some(inner) = s.strip_prefix(q).and_then(|x| x.strip_suffix(q)) {
@@ -4354,8 +4375,8 @@ mod tests {
             ("::bg{src=\"a/{bag}.png\"}", "must be a text variable"),
             ("::bg{src=\"a/{place}\"}", "extension"),
             ("::bg{src=\"a/{place}.{mood}\"}", "extension"),
-            ("::bg{src=\"a/{place}.webm\"}", "can only be a picture"),
-            ("![](a/{place}.webm)", "can only be a picture"),
+            ("::bg{src=\"a/{place}.webm\"}", "must end in a picture extension"),
+            ("![](a/{place}.webm)", "must end in a picture extension"),
             ("::bg{src=\"../{place}.png\"}", "inside the game folder"),
             ("::bg{src=\"a\\\\{place}.png\"}", "inside the game folder"),
             ("::bg{src=\"a/{place}/..\\{mood}.png\"}", "inside the game folder"),
@@ -4489,6 +4510,21 @@ mod tests {
         assert_eq!(ok(&many(64)).replays.len(), 64);
         let e = errs(&many(65));
         assert!(e.iter().any(|e| e.line == 2 && e.message.contains("at most 64")), "{e:?}");
+    }
+
+    #[test]
+    fn replay_titles_are_unescaped_and_capped() {
+        let src = |title: &str| format!("---\nreplays: {{ a: {title}, b: \"Two\" }}\n---\n# a\nHi.\n# b\nHo.\n");
+        let p = parse(&src("\"Q\\\"uote, \\\\ ok\"")).unwrap();
+        assert_eq!(p.replays[0].title, "Q\"uote, \\ ok");
+        assert_eq!(p.replays[1].title, "Two");
+        let sixty = "x".repeat(60);
+        assert!(parse(&src(&format!("\"{sixty}\""))).is_ok());
+        let errors = parse(&src(&format!("\"{}\"", "x".repeat(61)))).unwrap_err();
+        assert!(errors.iter().any(|e| e.line == 2 && e.message.contains("longer than 60")), "{errors:?}");
+        // an escaped quote doesn't end the title, so a comma after it doesn't split it
+        let p = parse(&src("\"A\\\", B\"")).unwrap();
+        assert_eq!(p.replays[0].title, "A\", B");
     }
 
     #[test]

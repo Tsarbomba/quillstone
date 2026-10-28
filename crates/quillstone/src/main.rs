@@ -482,7 +482,16 @@ fn voices(path: &Path) -> Result<(), String> {
 /// really shows (or nothing would ever unlock them). Returns how many problems.
 fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
     use quillstone_script::Op;
-    let shown = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Bg { src: s, .. } | Op::Image { src: s, .. } if s == src || quillstone_script::pattern_matches(s, src)));
+    let shown = |src: &str| {
+        program.ops.iter().any(|op| match op {
+            Op::Bg { src: s, .. } | Op::Image { src: s, .. } => {
+                // an animation background shows each of its frames
+                let frame = quillstone_script::anim_id(s).and_then(|id| program.anims.get(id)).is_some_and(|a| a.frames.iter().any(|f| f.file == src));
+                s == src || quillstone_script::pattern_matches(s, src) || frame
+            }
+            _ => false,
+        })
+    };
     let played = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } if s == src));
     let mut count = 0;
     let mut problem = |msg: String| {
@@ -582,23 +591,34 @@ fn unplayable(file: &Path, used_as: AssetKind) -> Option<String> {
 
 const DEFAULT_LIMIT: usize = 100_000;
 
+/// What `test` prints about how far it got. A partial run never claims the story has
+/// no ending: it only says none was reached yet.
+fn test_summary(report: &quillstone_runtime::Report) -> Vec<String> {
+    let lines = |lines: &[usize]| lines.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
+    let endings = match (report.endings.as_slice(), report.partial) {
+        ([], false) => "no ending".to_string(),
+        ([], true) => "no ending reached yet".to_string(),
+        ([line], _) => format!("1 ending (line {line})"),
+        (found, _) => format!("{} endings (lines {})", found.len(), lines(found)),
+    };
+    if report.partial {
+        vec![
+            format!(
+                "stopped after {} situations and {} re-run steps (the limit is spent: variables keep changing, e.g. a counter that grows in a loop, a list with many items, or many `random` rolls in one step),",
+                report.situations, report.reruns
+            ),
+            format!("so this is only PARTIAL: the rest of the story was not explored, and there may be more endings (or none). Raise --limit to explore more (or pass --allow-partial to accept that, exit code 2 otherwise). So far: {endings}."),
+        ]
+    } else {
+        vec![format!("played every branch: {} situations, {endings}", report.situations)]
+    }
+}
+
 fn test(path: &Path, limit: usize) -> Result<Explored, String> {
     let program = load(path)?;
     let report = quillstone_runtime::explore(&program, limit);
-    let endings = match report.endings.as_slice() {
-        [] => "no ending".to_string(),
-        [line] => format!("1 ending (line {line})"),
-        lines => format!(
-            "{} endings (lines {})",
-            lines.len(),
-            lines.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")
-        ),
-    };
-    if report.partial {
-        println!("stopped after {} situations (variables keep changing, e.g. a counter that grows in a loop, or a list with many items),", report.situations);
-        println!("so this is only part of the story; raise --limit to explore more (or pass --allow-partial to accept that, exit code 2 otherwise). Found {endings}.");
-    } else {
-        println!("played every branch: {} situations, {endings}", report.situations);
+    for line in test_summary(&report) {
+        println!("{line}");
     }
     let show = |kind: &str, f: &quillstone_runtime::Finding| {
         let at = if f.line > 0 { format!("{}:{}: ", path.display(), f.line) } else { String::new() };
@@ -1239,8 +1259,29 @@ mod tests {
     }
 
     #[test]
+    fn a_gallery_picture_shown_only_as_a_background_animation_frame_can_unlock() {
+        let png = picture::fake_png(10, 10);
+        let files: &[(&str, &[u8])] = &[("assets/r1.png", &png), ("assets/r2.png", &png)];
+        let script = |bg: &str| format!("---\ngallery: [assets/r1.png]\n---\n::anim{{id=rain frames=\"assets/r1.png 1, assets/r2.png 1\" loop}}\n{bg}\nHi.\n");
+        let errors = |bg: &str| in_dir(files, |dir| check_extras(&parse(&script(bg)).unwrap(), &dir.join("s.quill.md"), dir));
+        assert_eq!(errors("::bg{anim=rain}"), 0);
+        assert_eq!(errors("::bg{color=#000000}"), 1, "nothing shows it");
+    }
+
+    #[test]
     fn the_places_demo_passes_check() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/places.quill.md");
         assert!(check(&path).is_ok());
+    }
+
+    #[test]
+    fn a_partial_summary_never_claims_there_is_no_ending() {
+        let src = "---\nvars: { a: 0, b: 0, c: 0, d: 0, e: 0 }\n---\n# loop\n::set{a=random(1,6), b=random(1,6), c=random(1,6), d=random(1,6), e=random(1,6)}\n::choice\n- [Again](#loop)\n- [Stop](#fin)\n::\n# fin\n::end\n";
+        let report = quillstone_runtime::explore(&parse(src).unwrap(), 40);
+        assert!(report.partial);
+        let text = test_summary(&report).join("\n");
+        assert!(text.contains("PARTIAL") && !text.contains("Found no ending") && !text.ends_with("no ending."), "{text}");
+        let done = quillstone_runtime::explore(&parse("Hi.\n").unwrap(), 40);
+        assert!(test_summary(&done)[0].starts_with("played every branch"));
     }
 }

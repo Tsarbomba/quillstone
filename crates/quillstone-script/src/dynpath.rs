@@ -16,6 +16,9 @@ use crate::{is_inside, is_ident, Value, Vars};
 /// simply isn't there, like a missing file.
 pub const MISSING_PICTURE: &str = ".missing.png";
 
+/// The picture file types a name with `{variable}` parts may end in.
+pub const PICTURE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+
 /// The most characters a substituted value may have.
 pub const MAX_FRAGMENT: usize = 64;
 
@@ -76,6 +79,10 @@ pub fn pieces(path: &str) -> Result<Vec<Piece<'_>>, String> {
         if ext.is_none_or(|e| e.is_empty() || e.contains(['{', '}'])) {
             return Err(format!("`{path}`: a name with a `{{variable}}` still needs a written-out extension, like `.png`"));
         }
+        let ext = ext.unwrap_or("").to_ascii_lowercase();
+        if !PICTURE_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(format!("`{path}`: a name with a `{{variable}}` must end in a picture extension (.png, .jpg, .jpeg or .webp), not `.{ext}`"));
+        }
     }
     Ok(out)
 }
@@ -119,13 +126,22 @@ pub fn unsafe_reason(value: &str) -> Option<&'static str> {
     if value.contains("..") {
         return Some("has two dots in a row");
     }
-    let stem = value.split('.').next().unwrap_or("").trim_end().to_ascii_lowercase();
-    let reserved = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
-        || ["com", "lpt"].iter().any(|p| stem.strip_prefix(p).is_some_and(|d| matches!(d.as_bytes(), [b'1'..=b'9'])));
-    if reserved {
+    if is_device_name(value) {
         return Some("a name Windows keeps for devices");
     }
     None
+}
+
+/// Whether Windows treats `part` (one file or folder name) as a device: the stem (up
+/// to the first dot, trailing spaces ignored) is `con`, `prn`, `aux`, `nul`, `com1-9` or `lpt1-9`.
+fn is_device_name(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or("").trim_end();
+    if !(stem.len() == 3 || stem.len() == 4) {
+        return false;
+    }
+    let stem = stem.to_ascii_lowercase();
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || ["com", "lpt"].iter().any(|p| stem.strip_prefix(p).is_some_and(|d| matches!(d.as_bytes(), [b'1'..=b'9'])))
 }
 
 /// Build the file name a pattern stands for. `Err` says why not: a variable that
@@ -133,6 +149,7 @@ pub fn unsafe_reason(value: &str) -> Option<&'static str> {
 /// A plain path comes back unchanged. The result is always inside the game folder.
 pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
     let parts = pieces(pattern)?;
+    let has_vars = parts.iter().any(|p| matches!(p, Piece::Var(_)));
     let mut out = String::with_capacity(pattern.len() + 16);
     for part in parts {
         match part {
@@ -146,6 +163,10 @@ pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
             },
         }
     }
+    // The name as a whole, not only each value: `c{a}.png` with `a = on` is `con.png`.
+    if has_vars && out.split('/').any(is_device_name) {
+        return Err(format!("{pattern} would make `{out}`, a name Windows keeps for devices"));
+    }
     if is_inside(&out) {
         Ok(out)
     } else {
@@ -155,16 +176,50 @@ pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
 }
 
 /// Whether `name` (one path part, no `/`) fits the pieces of one path part: each
-/// variable stands for one safe fragment.
+/// variable stands for one safe fragment. A position that failed once is not tried
+/// again, and a fragment is at most [`MAX_FRAGMENT`] characters, so a long name that
+/// doesn't fit costs little however many variables the pattern has.
 fn name_matches(pieces: &[Piece<'_>], name: &str) -> bool {
-    match pieces.split_first() {
-        None => name.is_empty(),
-        Some((Piece::Lit(l), rest)) => name.strip_prefix(l).is_some_and(|n| name_matches(rest, n)),
-        Some((Piece::Var(_), rest)) => name
-            .char_indices()
-            .map(|(i, c)| i + c.len_utf8())
-            .any(|end| unsafe_reason(&name[..end]).is_none() && name_matches(rest, &name[end..])),
+    let mut failed = std::collections::HashSet::new();
+    matches_from(pieces, 0, name, 0, &mut failed)
+}
+
+fn matches_from(pieces: &[Piece<'_>], i: usize, name: &str, at: usize, failed: &mut std::collections::HashSet<(usize, usize)>) -> bool {
+    if failed.contains(&(i, at)) {
+        return false;
     }
+    let rest = &name[at..];
+    let ok = match pieces.get(i) {
+        None => rest.is_empty(),
+        Some(Piece::Lit(l)) => rest.starts_with(l) && matches_from(pieces, i + 1, name, at + l.len(), failed),
+        Some(Piece::Var(_)) => {
+            // The candidate fragments are the prefixes `unsafe_reason` accepts, found in
+            // one pass: a character that is never allowed, a leading dot or space, or `..`
+            // rules out every longer prefix too.
+            let mut prev = None;
+            let mut found = false;
+            for (n, (k, c)) in rest.char_indices().enumerate().take(MAX_FRAGMENT) {
+                let allowed = c.is_alphanumeric() || matches!(c, '_' | '-' | ' ' | '.');
+                if !allowed || (n == 0 && matches!(c, '.' | ' ')) || (prev == Some('.') && c == '.') {
+                    break;
+                }
+                prev = Some(c);
+                let end = k + c.len_utf8();
+                if matches!(c, '.' | ' ') || is_device_name(&rest[..end]) {
+                    continue;
+                }
+                if matches_from(pieces, i + 1, name, at + end, failed) {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        }
+    };
+    if !ok {
+        failed.insert((i, at));
+    }
+    ok
 }
 
 /// Whether the game-folder path `candidate` is one a pattern can build.
@@ -235,6 +290,14 @@ mod tests {
         }
         assert!(pieces("{a}{b}{c}{d}.png").is_ok());
         assert!(pieces("a/{x}.tar.png").is_ok());
+        for ext in ["png", "jpg", "jpeg", "webp", "PNG", "Jpg", "WebP"] {
+            assert!(pieces(&format!("a/{{x}}.{ext}")).is_ok(), "{ext}");
+        }
+        for ext in ["txt", "exe", "svg", "gif", "x", "bmp", "ogg"] {
+            let e = pieces(&format!("a/{{x}}.{ext}")).unwrap_err();
+            assert!(e.contains(".png, .jpg, .jpeg or .webp"), "{ext}: {e}");
+        }
+        assert!(pieces("a/readme.txt").unwrap().len() == 1, "no variable, no rule");
     }
 
     #[test]
@@ -292,5 +355,39 @@ mod tests {
         assert!(m("art/{who}/face.png", "art/mika/face.png") && !m("art/{who}/face.png", "art/mika/x/face.png"));
         assert!(m("a/b.png", "a/b.png") && !m("a/b.png", "a/c.png"));
         assert!(m("a/{x}.png", "a/é.png"));
+    }
+
+    #[test]
+    fn a_device_name_made_of_pieces_is_refused() {
+        let v = vars(&[("a", text("on")), ("b", text("n")), ("c", text("co")), ("d", text("1")), ("ok", text("x"))]);
+        for pattern in ["assets/c{a}.png", "assets/{c}{b}.png", "{c}{b}.png", "assets/lpt{d}.png", "com{d}/{ok}.png", "assets/{c}{b}.x.png"] {
+            let e = resolve(pattern, &v).unwrap_err();
+            assert!(e.contains("devices"), "{pattern}: {e}");
+        }
+        assert_eq!(resolve("assets/c{ok}.png", &v).unwrap(), "assets/cx.png");
+        assert_eq!(resolve("assets/icon{ok}.png", &v).unwrap(), "assets/iconx.png");
+        assert_eq!(resolve("assets/con_{ok}.png", &v).unwrap(), "assets/con_x.png", "a stem that merely starts with con");
+        assert_eq!(resolve("assets/con.png", &v).unwrap(), "assets/con.png", "plain paths are left alone");
+    }
+
+    #[test]
+    fn matching_a_long_name_stays_fast() {
+        let started = std::time::Instant::now();
+        let miss = format!("assets/{}!.png", "a".repeat(150));
+        let too_long = format!("assets/{}.png", "a".repeat(300));
+        for pattern in ["assets/{a}{b}{c}{d}.png", "assets/{a}_{b}_{c}_{d}.png", "assets/{a}{b}{c}{d}.jpg"] {
+            assert!(!pattern_matches(pattern, &miss) && !pattern_matches(pattern, &too_long));
+        }
+        // 150 characters do fit in four fragments of at most 64
+        assert!(pattern_matches("assets/{a}{b}{c}{d}.png", &format!("assets/{}.png", "a".repeat(150))));
+        assert!(started.elapsed().as_millis() < 50, "{:?}", started.elapsed());
+        // a fragment is at most 64 characters, even for a single variable
+        assert!(pattern_matches("assets/{a}.png", &format!("assets/{}.png", "a".repeat(64))));
+        assert!(!pattern_matches("assets/{a}.png", &format!("assets/{}.png", "a".repeat(65))));
+        assert!(pattern_matches("assets/{a}{b}.png", &format!("assets/{}.png", "a".repeat(128))));
+        // the one-pass scan accepts exactly the fragments `unsafe_reason` accepts
+        for v in ["rooftop", "a", "Night 2", "a.b", "é", "x1", ".h", "a.", " a", "a ", "a..b", "a\nb", "con", "NUL", "Com1", "aux.x", "com10", "icon", "a*b"] {
+            assert_eq!(pattern_matches("{a}.png", &format!("{v}.png")), unsafe_reason(v).is_none(), "{v:?}");
+        }
     }
 }

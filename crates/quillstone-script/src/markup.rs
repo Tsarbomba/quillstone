@@ -78,6 +78,9 @@ pub struct Rich {
     pub no_wait: bool,
 }
 
+/// Deepest nesting of `{color}` tags and of `{size}` tags (each counted alone).
+pub const MAX_TAG_NESTING: usize = 64;
+
 /// Longest `{w=...}` pause, in seconds.
 pub const MAX_PAUSE: f32 = 10.0;
 
@@ -132,6 +135,9 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     style.color = previous;
                 } else if let Some(value) = tag.strip_prefix("color=") {
                     let color = crate::parser::parse_color(value.trim())?;
+                    if colors.len() >= MAX_TAG_NESTING {
+                        return Err("`{color=...}` tags are nested too deeply".into());
+                    }
                     colors.push(style.color);
                     close_run(out.text.len(), style);
                     style.color = Some(color);
@@ -141,6 +147,9 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     style.size = previous;
                 } else if let Some(value) = tag.strip_prefix("size=") {
                     let size = parse_size(value.trim())?;
+                    if sizes.len() >= MAX_TAG_NESTING {
+                        return Err("`{size=...}` tags are nested too deeply".into());
+                    }
                     sizes.push(style.size);
                     close_run(out.text.len(), style);
                     style.size = Some(size.within(style.size));
@@ -431,5 +440,15 @@ mod tests {
         assert!(check_markup("a{p}b").is_ok());
         assert!(check_option_markup("a{p}b").unwrap_err().contains("not in a choice"));
         assert!(check_option_markup("{p}a").is_ok(), "a leading one is ignored, so harmless");
+    }
+
+    #[test]
+    fn tags_nested_too_deeply_are_refused() {
+        let open = "{color=#fff}".repeat(MAX_TAG_NESTING + 1);
+        assert!(parse_markup(&format!("{open}a{}", "{/color}".repeat(MAX_TAG_NESTING + 1))).unwrap_err().contains("too deeply"));
+        let open = "{size=+1}".repeat(MAX_TAG_NESTING + 1);
+        assert!(parse_markup(&format!("{open}a{}", "{/size}".repeat(MAX_TAG_NESTING + 1))).unwrap_err().contains("too deeply"));
+        let ok = "{color=#fff}".repeat(MAX_TAG_NESTING);
+        assert!(parse_markup(&format!("{ok}a{}", "{/color}".repeat(MAX_TAG_NESTING))).is_ok());
     }
 }

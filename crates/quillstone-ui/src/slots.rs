@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 
 use quillstone_render::{clip, Draw, Rect, Size, View, VIRTUAL};
-use quillstone_runtime::{quote, tokens, Session, State};
+use quillstone_runtime::{quote, tokens, Session, State, MAX_SAVE_BYTES};
 use quillstone_script::Program;
 
 /// The current time, as the frontend knows it.
@@ -127,7 +127,12 @@ impl SaveFile {
         )
     }
 
+    /// `None` for a file that isn't a save, is damaged, or is larger than
+    /// [`MAX_SAVE_BYTES`] (never parsed: a hostile file costs a multiple of its size).
     pub fn parse(text: &str) -> Option<SaveFile> {
+        if text.len() > MAX_SAVE_BYTES {
+            return None;
+        }
         let mut lines = text.lines();
         if lines.next()?.trim() != MAGIC {
             return None;
@@ -281,6 +286,43 @@ mod tests {
         assert!(Session::load(&p, &back.session).is_ok());
         assert!(SaveFile::parse("nonsense").is_none());
         assert!(SaveFile::parse("quillstone-save 1\nseq x\n").is_none());
+    }
+
+    #[test]
+    fn hostile_slot_files_show_as_unreadable_without_crashing() {
+        let p = parse("---\nvars: { gold: 2 }\n---\n# a\nHi.\n::hud{id=g text=\"Gold {gold}\"}\nBye.\n").unwrap();
+        let (session, _) = Session::start(&p);
+        let good = SaveFile::new(&session, Timestamp { millis: 42, text: "now".into() });
+        let slot = Slot { page: Page::Numbered(1), index: 0 };
+        let mut storage = MemoryStorage::default();
+        // a file over the size limit: unreadable, and never parsed
+        let big = format!("{}{}", good.to_text(), "\n".repeat(MAX_SAVE_BYTES));
+        storage.write(&slot.file_name(), &big).unwrap();
+        assert!(SaveFile::parse(&big).is_none());
+        let info = read_slot(&storage, &p, slot).unwrap();
+        assert_eq!((info.preview.as_str(), info.seq, info.scene.is_none()), ("Unreadable save", 0, true));
+        // a save whose hud expression nests 990 deep, read on a small stack (the Load screen
+        // reads every slot of a page)
+        let deep = format!("{}1{}", "(".repeat(990), ")".repeat(990));
+        let evil = good.to_text().replace("rng ", &format!("hud text \"a\" 0 0 left \"{deep}\" \"x\" - - - 0\nrng "));
+        // and one whose hud records add up to more text than a state may hold
+        let text = "x".repeat(1500);
+        let lots: String = (0..100).map(|i| format!("hud text \"e{i}\" 0 0 left \"\" \"{text}\" - - - 0\n")).collect();
+        let heavy = good.to_text().replace("rng ", &format!("{lots}rng "));
+        for (n, file) in [evil, heavy].into_iter().enumerate() {
+            let mut storage = MemoryStorage::default();
+            storage.write(&slot.file_name(), &file).unwrap();
+            let info = std::thread::Builder::new()
+                .stack_size(512 * 1024)
+                .spawn(move || {
+                    let p = parse("---\nvars: { gold: 2 }\n---\n# a\nHi.\n::hud{id=g text=\"Gold {gold}\"}\nBye.\n").unwrap();
+                    read_slot(&storage, &p, slot).unwrap().preview
+                })
+                .unwrap()
+                .join()
+                .expect("no stack overflow");
+            assert_eq!(info, "This save doesn't fit the current script", "file {n}");
+        }
     }
 
     #[test]

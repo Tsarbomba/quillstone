@@ -39,6 +39,15 @@ const MAX_STACK_RECORDS: usize = crate::MAX_CALL_DEPTH;
 /// text or expression one may hold.
 const MAX_HUD_RECORDS: usize = 256;
 const MAX_HUD_TEXT: usize = 2_000;
+/// Most source text (texts, expressions, ids) all the `hud` records of ONE state may
+/// hold together (a save with more is refused). Per state, not per save: the history
+/// repeats the same HUD in every state.
+const MAX_HUD_TOTAL: usize = 64 * 1024;
+
+/// The largest save the game reads (the whole file, header included): a hostile or
+/// damaged file costs several times its size in memory while it is parsed. A real
+/// save is tens of kilobytes. Bigger is refused ("unreadable" on the Load screen).
+pub const MAX_SAVE_BYTES: usize = 8 * 1024 * 1024;
 
 const MAGIC: &str = "quillstone-session 1";
 
@@ -90,6 +99,9 @@ impl<'p> Session<'p> {
     }
 
     fn load_impl(program: &'p Program, text: &str, edited: bool) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        if text.len() > MAX_SAVE_BYTES {
+            return Err(format!("the save is larger than {} MB, so it is not read", MAX_SAVE_BYTES / (1024 * 1024)));
+        }
         let mut lines = text.lines().enumerate().map(|(n, l)| (n + 1, l)).filter(|(_, l)| !l.trim().is_empty());
         match lines.next() {
             Some((_, l)) if l.trim() == MAGIC => {}
@@ -323,6 +335,17 @@ fn hud_record(h: &HudElem) -> String {
         }
         HudKind::Image { src, scale } => format!("{head} {} {scale}", q(src)),
     }
+}
+
+/// The text a `hud` element keeps (what a save stores as source).
+fn hud_source_bytes(h: &HudElem) -> usize {
+    let cond = h.cond.as_ref().map_or(0, |c| c.src.len());
+    cond + h.id.len()
+        + match &h.kind {
+            HudKind::Text { text, .. } => text.len(),
+            HudKind::Bar { value, max, .. } => value.src.len() + max.src.len(),
+            HudKind::Image { src, .. } => src.len(),
+        }
 }
 
 fn parse_rgba(s: &str, n: usize) -> Result<[f32; 4], String> {
@@ -637,7 +660,12 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 if s.hud.len() >= MAX_HUD_RECORDS {
                     return Err(format!("line {n}: more than {MAX_HUD_RECORDS} `hud` records in a state"));
                 }
-                s.set_hud(read_hud(&t, n)?);
+                let elem = read_hud(&t, n)?;
+                let total: usize = s.hud.iter().chain(std::iter::once(&elem)).map(hud_source_bytes).sum();
+                if total > MAX_HUD_TOTAL {
+                    return Err(format!("line {n}: the `hud` records of a state hold more than {MAX_HUD_TOTAL} bytes of text"));
+                }
+                s.set_hud(elem);
             }
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),

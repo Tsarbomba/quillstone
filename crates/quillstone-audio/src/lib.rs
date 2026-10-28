@@ -302,6 +302,19 @@ mod tests {
     }
 
     #[test]
+    fn music_the_backend_could_not_start_is_forgotten_so_the_next_request_restarts_it() {
+        // the backend reports a failed start (the loop after an intro, an unopenable
+        // file) like a track that ended: `music_ended`
+        let mut mixer = Mixer::new();
+        let with_intro = Cmd::PlayMusic { src: "loop.ogg".into(), intro: Some("intro.ogg".into()), fade: 0.0, looped: true, volume: 1.0 };
+        assert_eq!(mixer.apply(std::slice::from_ref(&with_intro)).len(), 1);
+        assert!(mixer.apply(std::slice::from_ref(&with_intro)).is_empty(), "the mixer thinks it is playing");
+        mixer.music_ended();
+        let again = mixer.apply(&[with_intro]);
+        assert!(matches!(again.as_slice(), [Action::PlayMusic { intro: Some(_), .. }]), "{again:?}");
+    }
+
+    #[test]
     fn voice_stops_when_the_player_moves_on() {
         let p = parse("::voice{src=v1.ogg}\n**A:** one\n**A:** two\n::voice{src=v3.ogg}\n**A:** three\n").unwrap();
         let (mut game, first) = Session::start(&p);

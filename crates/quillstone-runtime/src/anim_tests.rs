@@ -339,3 +339,18 @@ fn the_animation_demo_plays_through_with_the_right_scene_at_every_step() {
     assert_eq!(loops, 3);
     assert!(game.state().sprites.iter().all(|s| s.looped.is_none()), "the last move is a plain one");
 }
+
+#[test]
+fn an_animation_background_unlocks_the_gallery_pictures_that_are_its_frames() {
+    let src = "---\ngallery: [r1.png, r2.png, other.png, a.png]\n---\n::anim{id=rain frames=\"r1.png 1, r2.png 1\" loop}\n::anim{id=blink frames=\"a.png 1, b.png 1\"}\n::character{id=mika sprites=m_{pose}.png}\n::show{mika anim=blink}\nOne.\n::bg{anim=rain}\nTwo.\n";
+    let p = parse(src).unwrap();
+    let (mut game, _) = Session::start(&p);
+    let kept = |g: &Session| {
+        let mut k: Vec<String> = g.persistent().keys().filter_map(|k| k.strip_prefix(crate::UNLOCKED).map(String::from)).collect();
+        k.sort();
+        k
+    };
+    assert!(kept(&game).is_empty(), "a sprite animation unlocks nothing: {:?}", kept(&game));
+    game.input(Input::Advance);
+    assert_eq!(kept(&game), ["r1.png", "r2.png"], "every listed frame, and not the other pictures");
+}

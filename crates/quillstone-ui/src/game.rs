@@ -353,6 +353,8 @@ impl<'p> Game<'p> {
             self.session = session;
             self.fresh_view();
             self.show(&cmds);
+            // the edit may finish the story (or hit `::end_replay`) right where the player is
+            self.replay_check(&cmds);
             if self.screen == Screen::Backlog {
                 self.backlog = self.session.backlog();
             }
