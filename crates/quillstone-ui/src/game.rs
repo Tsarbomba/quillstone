@@ -1250,6 +1250,8 @@ mod dynpic_tests;
 #[cfg(test)]
 mod hud_tests;
 #[cfg(test)]
+mod particles_tests;
+#[cfg(test)]
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;

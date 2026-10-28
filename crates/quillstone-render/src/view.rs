@@ -15,6 +15,7 @@ pub use quillstone_script::markup::TextRun;
 use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 
 use crate::hud::HudLayer;
+use crate::particles::ParticleLayer;
 use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 
@@ -624,6 +625,7 @@ pub struct View {
     flash: Option<Flash>,
     cover: Option<Cover>,
     hud: HudLayer,
+    particles: ParticleLayer,
     /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
     /// how fast it fades (per second; 0 = at once).
     box_hidden: bool,
@@ -665,6 +667,7 @@ impl View {
             flash: None,
             cover: None,
             hud: HudLayer::default(),
+            particles: ParticleLayer::default(),
             box_hidden: false,
             box_alpha: 1.0,
             box_rate: 0.0,
@@ -721,8 +724,8 @@ impl View {
     }
 
     /// Whether any picture on stage changes by itself: a multi-frame animation that
-    /// is still running (a one-shot one that reached its last frame is still), or a
-    /// sprite in a looping move.
+    /// is still running (a one-shot one that reached its last frame is still), a
+    /// sprite in a looping move, or ambient particles.
     pub fn animating(&self) -> bool {
         let sprite = |s: &SpriteView| {
             s.is_looping()
@@ -736,6 +739,7 @@ impl View {
         self.background.as_ref().is_some_and(|b| self.playing(&b.src, self.bg_clock))
             || self.previous_background.as_deref().is_some_and(|p| self.playing(p, self.previous_bg_clock))
             || self.sprites.iter().any(sprite)
+            || self.particles.active()
     }
 
     /// Draw with this theme's colours, sizes and textbox image.
@@ -793,6 +797,7 @@ impl View {
                     self.flash = None;
                     self.cover = None;
                     self.hud.clear_all();
+                    self.particles.clear();
                     self.box_hidden = false;
                     self.box_alpha = 1.0;
                 }
@@ -862,6 +867,7 @@ impl View {
                     }
                 }
                 Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } => self.hud.apply(cmd),
+                Cmd::Particles { set, fade } => self.particles.apply(set, *fade),
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
@@ -1103,6 +1109,7 @@ impl View {
         }
         self.sprites.retain(|s| !s.is_gone());
         self.hud.tick(dt);
+        self.particles.tick(dt, animate);
         let target = if self.box_hidden { 0.0 } else { 1.0 };
         if self.box_rate > 0.0 {
             let step = self.box_rate * dt;
@@ -1240,6 +1247,7 @@ impl View {
                 }
             }
         }
+        let bg_end = stage.len();
         // Back to front by z; the sort is stable, so equal z keeps the order sprites were shown in.
         let mut order: Vec<&SpriteView> = self.sprites.iter().collect();
         order.sort_by_key(|s| s.z);
@@ -1264,19 +1272,28 @@ impl View {
                 push_sprite(&mut stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, image_size);
             }
         }
+        // Particles are screen space: `layer=back` ones go between the background and the sprites, the
+        // rest over the sprites; neither follows the camera or the shake.
+        let sprites = stage.split_off(bg_end);
         let view = self.stage_transform();
-        for draw in stage {
-            match draw {
-                Draw::Image { src, dest, uv, alpha } => {
-                    if let Some((dest, uv)) = clip(view(dest), uv, screen) {
-                        out.push(Draw::Image { src, dest, uv, alpha });
-                    }
+        let place = |out: &mut Vec<Draw>, draw: Draw| match draw {
+            Draw::Image { src, dest, uv, alpha } => {
+                if let Some((dest, uv)) = clip(view(dest), uv, screen) {
+                    out.push(Draw::Image { src, dest, uv, alpha });
                 }
-                // A solid colour fills the screen whatever the camera and shake do.
-                rect @ Draw::Rect { .. } => out.push(rect),
-                Draw::Text { .. } => {}
             }
+            // A solid colour fills the screen whatever the camera and shake do.
+            rect @ Draw::Rect { .. } => out.push(rect),
+            Draw::Text { .. } => {}
+        };
+        for draw in stage {
+            place(&mut out, draw);
         }
+        self.particles.draw(true, image_size, &mut out);
+        for draw in sprites {
+            place(&mut out, draw);
+        }
+        self.particles.draw(false, image_size, &mut out);
 
         let textbox = textbox_rect(&self.theme);
         let stage = Rect::new(0.0, 0.0, VIRTUAL.w, textbox.y);

@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{bg_color, is_inside, Fit, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Value, Vars};
+use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
 use quillstone_script::{Ease, ANIM_PREFIX};
@@ -458,6 +458,15 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
     }
+    // Saves from before `::particles` existed have no such record: they load with none.
+    if let Some(p) = &s.particles {
+        let (kind, src) = match &p.kind {
+            ParticleKind::Snow => ("snow", String::new()),
+            ParticleKind::Rain => ("rain", String::new()),
+            ParticleKind::Image(src) => ("image", format!(" {}", q(src))),
+        };
+        w(format!("particles {kind} {} {} {} {}{src}", p.amount, p.speed, p.wind, p.back));
+    }
     // Saves from before `::textbox` existed have no such record: they load with the box shown.
     if s.textbox_hidden {
         w("textbox hidden".to_string());
@@ -735,6 +744,27 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 });
             }
             "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },
+            "particles" => {
+                let kind = match arg(1)? {
+                    "snow" => ParticleKind::Snow,
+                    "rain" => ParticleKind::Rain,
+                    "image" => {
+                        let src = path(6)?;
+                        if kind_from_path(&src) != AssetKind::Image {
+                            return Err(format!("line {n}: `{src}` is not a picture"));
+                        }
+                        ParticleKind::Image(src)
+                    }
+                    other => return Err(format!("line {n}: unknown particle kind `{other}`")),
+                };
+                s.particles = Some(Particles {
+                    kind,
+                    amount: num::<i64>(arg(2)?, n)?.clamp(1, MAX_PARTICLES as i64) as u32,
+                    speed: sane(f(3)?, *PARTICLE_SPEED.start(), *PARTICLE_SPEED.end(), 1.0),
+                    wind: sane(f(4)?, *PARTICLE_WIND.start(), *PARTICLE_WIND.end(), 0.0),
+                    back: b(5)?,
+                });
+            }
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {
                 let intro = if t.len() > 4 { Some(path(4)?) } else { None };

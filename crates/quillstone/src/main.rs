@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
-use quillstone_script::{kind_from_path, parse, AssetKind, Op, Program};
+use quillstone_script::{kind_from_path, parse, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
 
 mod package;
 mod pattern;
@@ -285,6 +285,9 @@ fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
 /// Icons are drawn at about 100 px; bigger files only cost load time and memory.
 const BIG_ICON_SIDE: u32 = 512;
 
+/// A particle picture is drawn up to `MAX_PARTICLES` times at its own size.
+const BIG_PARTICLE_SIDE: u32 = 256;
+
 /// Frames of an animation are loaded together; past this many `check` warns.
 const MANY_FRAMES: usize = 64;
 
@@ -323,6 +326,22 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
                 anim.frames.len()
             ),
         ));
+    }
+    // A particle picture is also checked as any asset (it exists, it is a picture): only its size is left.
+    for (pc, op) in program.ops.iter().enumerate() {
+        let Op::Particles { set: Some(Particles { kind: ParticleKind::Image(asset), .. }), .. } = op else { continue };
+        if let Ok((w, h)) = picture::read_picture(&root.join(asset)) {
+            if w.max(h) > BIG_PARTICLE_SIDE {
+                let at = format!("{}:{}", script.display(), program.lines.get(pc).copied().unwrap_or(0));
+                out.push((
+                    false,
+                    format!(
+                        "{at}: warning: `{asset}` is {w}x{h}: a particle is drawn at its pixel size, up to {MAX_PARTICLES} at once; \
+                         a picture over {BIG_PARTICLE_SIDE} px is far too big for one"
+                    ),
+                ));
+            }
+        }
     }
     for (line, asset, noun) in spots.chain(icons).chain(frames) {
         let at = format!("{}:{line}", script.display());
@@ -864,6 +883,12 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::FadeOut { .. } => println!("[the screen is covered]"),
             Cmd::FadeIn { .. } => println!("[the screen fades in]"),
             Cmd::Textbox { .. } => {} // nothing to show in text mode
+            Cmd::Particles { set: Some(p), .. } => match &p.kind {
+                ParticleKind::Snow => println!("[particles: snow]"),
+                ParticleKind::Rain => println!("[particles: rain]"),
+                ParticleKind::Image(src) => println!("[particles: {src}]"),
+            },
+            Cmd::Particles { set: None, .. } => println!("[particles stop]"),
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
             Cmd::StopMusic { .. } => println!("[music stops]"),
@@ -1168,6 +1193,23 @@ mod tests {
         assert!(found[1].1.contains(":5:") && found[1].1.contains("1024x1024"));
         assert!(found[1].1.contains("icons are drawn at about 100 px; a smaller file loads faster and saves memory"));
         assert!(checked(script, files).is_ok(), "warnings don't fail check");
+    }
+
+    #[test]
+    fn check_looks_at_the_particle_picture_and_warns_when_it_is_big() {
+        let script = "::particles{snow}\n::particles{src=assets/petal.png}\nHi.\n";
+        let small: &[(&str, &[u8])] = &[("assets/petal.png", &picture::fake_png(32, 24))];
+        assert!(checked(script, small).is_ok());
+        let found = in_dir(small, |dir| picture_findings(&parse(script).unwrap(), &dir.join("s.quill.md"), dir));
+        assert!(found.is_empty(), "{found:?}");
+        let err = checked(script, &[]).unwrap_err();
+        assert!(err.contains("1 problem"), "{err}");
+        assert!(checked(script, &[("assets/petal.png", b"not a picture")]).is_err(), "must be a real picture");
+        let big: &[(&str, &[u8])] = &[("assets/petal.png", &picture::fake_png(300, 40))];
+        let found = in_dir(big, |dir| picture_findings(&parse(script).unwrap(), &dir.join("s.quill.md"), dir));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].0 && found[0].1.contains(":2:") && found[0].1.contains("300x40") && found[0].1.contains("256 px"), "{found:?}");
+        assert!(checked(script, big).is_ok(), "only a warning");
     }
 
     #[test]

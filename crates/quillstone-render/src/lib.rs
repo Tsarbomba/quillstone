@@ -8,6 +8,7 @@
 //!   animates backgrounds and the typewriter text, and produces a [`Draw`] list.
 //! - [`batch`]: converts a draw list into clip-space [`Quad`]s for a window size.
 //! - [`theme`]: colours, font, sizes and images of a game, from its theme file.
+//! - [`particles`]: ambient snow, rain or a picture falling, from the time alone.
 //! - [`pixels`]: prepares decoded images for upload (alpha bleeding, mipmaps).
 //! - [`image_probe`]: whether an image file is one the player can show.
 //!
@@ -19,6 +20,7 @@ pub mod batch;
 pub mod hud;
 pub mod image_probe;
 pub mod layout;
+pub mod particles;
 pub mod pixels;
 pub mod theme;
 pub mod view;

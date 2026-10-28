@@ -229,6 +229,26 @@ mod tests {
     }
 
     #[test]
+    fn packages_a_particle_picture() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-particles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        for f in ["petal.png", "unused.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "::particles{snow}\n::particles{src=assets/petal.png}\nHi.\n";
+        std::fs::write(src.join("p.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
+        assert!(out.join("game/assets/petal.png").is_file());
+        assert!(!out.join("game/assets/unused.png").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn packages_the_demo_with_only_what_it_uses() {
         let base = std::env::temp_dir().join(format!("quillstone-package-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

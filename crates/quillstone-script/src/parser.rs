@@ -46,7 +46,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, particles, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -62,6 +62,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "flash" => &["time", "color"],
         "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
+        "particles" => &["snow", "rain", "none", "off", "src", "amount", "speed", "wind", "fade", "layer"],
         "textbox" => &["hide", "show", "fade"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
@@ -1072,6 +1073,7 @@ impl Parser {
                 };
                 Some((op, None))
             }
+            "particles" => self.particles(line, a).map(|op| (op, None)),
             "textbox" => {
                 let (hide, show) = (a.flag("hide"), a.flag("show"));
                 let fade = match a.value("fade") {
@@ -2049,6 +2051,81 @@ impl Parser {
         } else {
             Err(format!("`{key}={path}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"))
         }
+    }
+
+    /// `::particles{snow}`, `{rain}`, `{src=file.png}`, with `amount=`, `speed=`, `wind=`, `layer=back`
+    /// and `fade=`; `{none}` (or `off`) stops them.
+    fn particles(&mut self, line: usize, a: &mut Attrs) -> Option<Op> {
+        let kinds = ["snow", "rain", "none", "off"];
+        let mut words = a.take_bare();
+        if let Some(w) = words.iter().find(|w| !kinds.contains(&w.as_str())) {
+            self.err(line, format!("`{w}` is not a kind of particle: use `snow`, `rain`, `src=<picture>` or `none`"));
+            return None;
+        }
+        let src = a.value("src");
+        if src.is_some() {
+            words.push("src".into());
+        }
+        if words.len() > 1 {
+            self.err(line, format!("`::particles` takes one of `snow`, `rain`, `src=` or `none`, not {}", words.join(" and ")));
+            return None;
+        }
+        let fade = self.seconds(line, a, "fade", 1.0)?;
+        if fade > 10.0 {
+            self.err(line, format!("`fade={fade}` must be at most 10 seconds"));
+            return None;
+        }
+        let kind = match (words.first().map(String::as_str), src) {
+            (Some("none" | "off"), _) => {
+                if let Some(extra) = ["amount", "speed", "wind", "layer"].into_iter().find(|k| a.0.iter().any(|(x, _)| x == k)) {
+                    self.err(line, format!("`::particles{{none}}` takes only `fade=`, not `{extra}=`"));
+                    return None;
+                }
+                return Some(Op::Particles { set: None, fade });
+            }
+            (Some("snow"), _) => ParticleKind::Snow,
+            (Some("rain"), _) => ParticleKind::Rain,
+            (_, Some(src)) if src.is_empty() => {
+                self.err(line, "`::particles` needs a picture in `src=...`");
+                return None;
+            }
+            (_, Some(src)) if src.contains(['{', '}']) => {
+                self.err(line, format!("`src={src}`: `::particles` can't use a `{{variable}}` in the picture name"));
+                return None;
+            }
+            (_, Some(src)) => match check_image_path(&src, "src", "a particle picture") {
+                Ok(src) => ParticleKind::Image(src),
+                Err(m) => {
+                    self.err(line, m);
+                    return None;
+                }
+            },
+            _ => {
+                self.err(line, "`::particles` needs `snow`, `rain`, `src=<picture>` or `none` (to stop them)");
+                return None;
+            }
+        };
+        let amount = match a.value("amount") {
+            None => DEFAULT_PARTICLES,
+            Some(v) => match v.parse::<u32>() {
+                Ok(n) if (1..=MAX_PARTICLES).contains(&n) => n,
+                _ => {
+                    self.err(line, format!("`amount={v}` must be a whole number from 1 to {MAX_PARTICLES}"));
+                    return None;
+                }
+            },
+        };
+        let speed = self.number(line, a, "speed", PARTICLE_SPEED)?.unwrap_or(1.0);
+        let wind = self.number(line, a, "wind", PARTICLE_WIND)?.unwrap_or(0.0);
+        let back = match a.value("layer").as_deref() {
+            None | Some("front") => false,
+            Some("back") => true,
+            Some(v) => {
+                self.err(line, format!("`layer={v}` must be `front` (over the sprites) or `back` (behind them)"));
+                return None;
+            }
+        };
+        Some(Op::Particles { set: Some(Particles { kind, amount, speed, wind, back }), fade })
     }
 
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {

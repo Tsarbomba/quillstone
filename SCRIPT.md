@@ -296,6 +296,7 @@ rest were not tried.
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
+| `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites. Doesn't wait. See [Ambient particles](#ambient-particles). |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
@@ -313,6 +314,36 @@ The cover is drawn over the stage, inline images, video and hotspot pictures, un
 past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
 through a fade, and roll forward does the same. The last line stays on screen while the
 screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
+
+## Ambient particles
+
+`::particles` is cheap weather: no spawning, no physics, never more than 200 particles.
+
+```
+::particles{snow}
+::particles{rain amount=120 wind=0.6}
+::particles{src=assets/petal.png amount=24 speed=0.9 wind=0.3}
+::particles{snow layer=back}
+::particles{none fade=2}
+```
+
+- **Snow** is small soft white squares of a few pixels, with different sizes (the bigger ones are
+  nearer: they fall faster and are brighter) that sway as they fall. **Rain** is thin, faint
+  streaks that fall fast and lean with the wind. A **picture** (`src=`, a .png, .jpg or .webp inside
+  the game folder; no `{variable}` in the name) falls and drifts like snow, at its own pixel size
+  scaled a little for each particle and without turning. Keep it small: 32 px or so is plenty,
+  and `quillstone check` warns about one over 256 px.
+- Using `::particles` again changes the settings; going from one kind to another crossfades,
+  and a change of `speed` or `wind` is smooth. `fade=` is how long it takes to ease in (or, with
+  `none`, out); `fade=0` is at once.
+- They are drawn over the background and the sprites and under the inline images, video, `::fade`
+  cover, `::flash`, the HUD, the textbox and every menu. With `layer=back` they go between the
+  background and the sprites instead.
+- They belong to the screen, not the stage: the camera and `::shake` don't move them.
+- They animate with the same clock as other animations: they stand still while a menu or
+  Settings is open and don't run ahead in skip mode.
+- Where each particle is isn't saved, only the settings, so rollback, saves and replays bring the
+  weather back (starting from a fresh sky). A save from before `::particles` loads without any.
 
 ## Picture names from variables
 
@@ -1019,7 +1050,7 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

@@ -797,6 +797,44 @@ impl Axis {
     }
 }
 
+/// Most particles `::particles` draws at once.
+pub const MAX_PARTICLES: u32 = 200;
+/// How many it draws when `amount=` is left out.
+pub const DEFAULT_PARTICLES: u32 = 60;
+/// Allowed `speed=` and `wind=` of `::particles`.
+pub const PARTICLE_SPEED: std::ops::RangeInclusive<f32> = 0.2..=5.0;
+pub const PARTICLE_WIND: std::ops::RangeInclusive<f32> = -2.0..=2.0;
+
+/// What falls in `::particles`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParticleKind {
+    Snow,
+    Rain,
+    /// A picture file (inside the game folder), falling and drifting like snow.
+    Image(String),
+}
+
+/// The settings of the ambient particles (`::particles`). Where each particle is
+/// is never stored: the view works it out from the time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Particles {
+    pub kind: ParticleKind,
+    /// How many are drawn, 1 to [`MAX_PARTICLES`].
+    pub amount: u32,
+    /// Fall speed multiplier (see [`PARTICLE_SPEED`]).
+    pub speed: f32,
+    /// Sideways push, negative to the left (see [`PARTICLE_WIND`]).
+    pub wind: f32,
+    /// Drawn between the background and the sprites instead of over them.
+    pub back: bool,
+}
+
+impl Particles {
+    pub fn new(kind: ParticleKind) -> Particles {
+        Particles { kind, amount: DEFAULT_PARTICLES, speed: 1.0, wind: 0.0, back: false }
+    }
+}
+
 /// The direction a wipe's edge travels (`wipe=` on `::bg`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wipe {
@@ -1057,6 +1095,9 @@ pub enum Op {
     /// Pan and zoom the stage: `zoom` (1 = whole stage) centred on the point
     /// `x`, `y` (0..1 across and down the stage). `None` keeps the current value.
     Camera { zoom: Option<f32>, x: Option<f32>, y: Option<f32>, time: f32, ease: Ease },
+    /// Start, change (`Some`) or stop (`None`) the ambient particles, easing over `fade`
+    /// seconds. Doesn't wait.
+    Particles { set: Option<Particles>, fade: f32 },
     /// Background music. With an `intro`, that file plays once and `src` then loops.
     Music { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
@@ -1164,6 +1205,7 @@ impl Op {
             Op::Bg { src, .. } if bg_color(src).is_some() || anim_id(src).is_some() => None,
             Op::Bg { src, .. } => Some((kind_from_path(src), src)),
             Op::Hud { elem, .. } => elem.image().map(|i| (AssetKind::Image, i)),
+            Op::Particles { set: Some(Particles { kind: ParticleKind::Image(src), .. }), .. } => Some((AssetKind::Image, src)),
             Op::Show { src, .. } if src.is_empty() || anim_id(src).is_some() => None,
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
             Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {

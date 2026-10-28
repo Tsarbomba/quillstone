@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Program, ShopEntry, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Particles, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -22,6 +22,8 @@ mod dynpic_tests;
 mod layers_tests;
 #[cfg(test)]
 mod hud_tests;
+#[cfg(test)]
+mod particles_tests;
 #[cfg(test)]
 mod timed_tests;
 mod persist;
@@ -97,6 +99,9 @@ pub enum Cmd {
     HudHide { id: String, fade: f32 },
     /// Remove every HUD element.
     HudClear { fade: f32 },
+    /// Start or change (`Some`) the ambient particles, or stop them (`None`), easing over
+    /// `fade` seconds. Part of the scene: see [`State::particles`].
+    Particles { set: Option<Particles>, fade: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
     /// With an `intro`, that file plays once and `src` then loops.
@@ -320,6 +325,9 @@ pub struct State {
     pub background: Option<String>,
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
+    /// The ambient particles (`::particles`): only their settings. Where each one is
+    /// belongs to the view, which works it out from the time.
+    pub particles: Option<Particles>,
     /// `::textbox{hide}` is in effect: the dialogue box stays hidden until
     /// `::textbox{show}` or the next line or choice.
     pub textbox_hidden: bool,
@@ -365,6 +373,7 @@ impl State {
             background: None,
             sprites: Vec::new(),
             camera: Camera::default(),
+            particles: None,
             textbox_hidden: false,
             cover: None,
             hud: Vec::new(),
@@ -387,6 +396,9 @@ impl State {
         }
         if self.camera != Camera::default() {
             out.push(Cmd::Camera { camera: self.camera, time: 0.0, ease: Ease::Linear });
+        }
+        if let Some(p) = &self.particles {
+            out.push(Cmd::Particles { set: Some(p.clone()), fade: 0.0 });
         }
         if let Some(color) = self.cover {
             out.push(Cmd::FadeOut { time: 0.0, color });
@@ -1004,6 +1016,14 @@ pub(crate) fn step_traced(
                 let c = &mut state.camera;
                 *c = Camera { zoom: zoom.unwrap_or(c.zoom), x: x.unwrap_or(c.x), y: y.unwrap_or(c.y) };
                 out.push(Cmd::Camera { camera: *c, time: *time, ease: *ease });
+                state.pc += 1;
+            }
+            Op::Particles { set, fade } => {
+                // Stopping what isn't running says nothing.
+                if set.is_some() || state.particles.is_some() {
+                    state.particles = set.clone();
+                    out.push(Cmd::Particles { set: set.clone(), fade: *fade });
+                }
                 state.pc += 1;
             }
             Op::Music { src, intro, fade, looped, volume } => {
