@@ -48,7 +48,16 @@ impl<'p> Session<'p> {
     /// [`Session::load`], keeping `persistent` (the save's own copies of persistent
     /// variables may be older).
     pub fn load_with(program: &'p Program, text: &str, persistent: Vars) -> Result<(Session<'p>, Vec<Cmd>), String> {
-        let (mut session, mut cmds) = Session::load(program, text)?;
+        Session::load_with_edit(program, text, persistent, false)
+    }
+
+    /// [`Session::load_with`] for a hot reload: see [`Session::load_edited`].
+    pub fn reload_with(program: &'p Program, text: &str, persistent: Vars) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        Session::load_with_edit(program, text, persistent, true)
+    }
+
+    fn load_with_edit(program: &'p Program, text: &str, persistent: Vars, edited: bool) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        let (mut session, mut cmds) = if edited { Session::load_edited(program, text)? } else { Session::load(program, text)? };
         session.persistent = persistent;
         if session.overlay() {
             // a kept value differs from the save's: the screen was rebuilt with it

@@ -121,7 +121,7 @@ impl Game<'_> {
             _ => self.stop_skip(),            // a choice, or the end
         }
         if self.skip.is_some() {
-            self.view.tick(SETTLE);
+            self.view.settle(SETTLE); // fades and slides finish; animations keep their own pace
         }
     }
 

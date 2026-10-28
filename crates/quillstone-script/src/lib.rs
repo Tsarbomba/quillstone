@@ -12,7 +12,7 @@ mod parser;
 
 pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value};
 pub use ops::{
-    is_inside, kind_from_path, bg_color, bg_color_src, AssetKind, AssignOp, Area, BinOp, Character, ChoiceOption, Cmp, Cond, Ease, Effect, Expr,
+    is_inside, kind_from_path, anim_id, anim_src, bg_color, bg_color_src, Anim, AnimFrame, AssetKind, ANIM_FRAME_SECONDS, ANIM_PREFIX, AssignOp, Area, BinOp, Character, ChoiceOption, Cmp, Cond, Ease, Effect, Expr,
     Axis, Fit, Func, HudAnchor, HudElem, HudExpr, HudKind, Item, Op, Program, ShopEntry, Value, Vars, Wipe, BG_COLOR_PREFIX, DEFAULT_SEED, FUNCTIONS, INPUT_MAX_DEFAULT, INPUT_MAX_LIMIT, ONCE, SEEN,
     roll, splitmix64,
 };

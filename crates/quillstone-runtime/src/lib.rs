@@ -13,6 +13,8 @@ mod explore;
 #[cfg(test)]
 mod hardening;
 #[cfg(test)]
+mod anim_tests;
+#[cfg(test)]
 mod hud_tests;
 mod persist;
 mod save;
@@ -59,6 +61,10 @@ pub enum Cmd {
     /// Animate a sprite to position `x`, `y` and sizes `scale`, `xscale`, `yscale`
     /// over `time` seconds. `flip` is what the sprite is from the start of the move.
     MoveSprite { id: String, x: f32, y: f32, scale: f32, flip: bool, xscale: f32, yscale: f32, time: f32, ease: Ease },
+    /// A looping move: glide to these values over `time` seconds, then back to the
+    /// values the sprite rests at (its last `ShowSprite`/`MoveSprite`) and forth, for
+    /// ever. Any `MoveSprite` or a `ShowSprite` that changes where the sprite rests ends it.
+    LoopSprite { id: String, x: f32, y: f32, scale: f32, flip: bool, xscale: f32, yscale: f32, time: f32, ease: Ease },
     /// Shake the stage for `time` seconds by up to `strength` pixels along `axis`.
     Shake { time: f32, strength: f32, axis: Axis },
     /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
@@ -205,6 +211,37 @@ pub struct SpriteState {
     /// Stretch along one axis, multiplied with `scale`.
     pub xscale: f32,
     pub yscale: f32,
+    /// A looping move: the sprite oscillates between the values above (where it
+    /// starts) and these. The oscillation's phase is not state: it restarts on a redraw.
+    pub looped: Option<SpriteLoop>,
+}
+
+/// The far end of a looping `::move`, with the time of one leg and its easing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpriteLoop {
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub xscale: f32,
+    pub yscale: f32,
+    pub time: f32,
+    pub ease: Ease,
+}
+
+impl SpriteState {
+    fn loop_cmd(&self, l: &SpriteLoop) -> Cmd {
+        Cmd::LoopSprite {
+            id: self.id.clone(),
+            x: l.x,
+            y: l.y,
+            scale: l.scale,
+            flip: self.flip,
+            xscale: l.xscale,
+            yscale: l.yscale,
+            time: l.time,
+            ease: l.ease,
+        }
+    }
 }
 
 /// What part of the stage is in view: `zoom` 1 shows all of it; the point
@@ -350,6 +387,9 @@ impl State {
                 yscale: s.yscale,
                 fade: 0.0,
             });
+            if let Some(l) = &s.looped {
+                out.push(s.loop_cmd(l));
+            }
         }
         match &self.music {
             Some(m) => out.push(Cmd::PlayMusic {
@@ -739,7 +779,8 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Show { id, src, at, y, z, scale, flip, xscale, yscale, fade } => {
+            Op::Show { id, src, at, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
+                let (y, scale) = (*y_given, *scale_given);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
@@ -747,14 +788,22 @@ pub(crate) fn step_traced(
                 let y = y.or(existing.map(|i| state.sprites[i].y)).unwrap_or(1.0);
                 let z = z.or(existing.map(|i| state.sprites[i].z)).unwrap_or(0);
                 let keep = |given: Option<f32>, of: fn(&SpriteState) -> f32| given.or(existing.map(|i| of(&state.sprites[i]))).unwrap_or(1.0);
-                let (xscale, yscale) = (keep(*xscale, |s| s.xscale), keep(*yscale, |s| s.yscale));
+                let (xscale, yscale) = (keep(*xscale_given, |s| s.xscale), keep(*yscale_given, |s| s.yscale));
                 let flip = flip.or(existing.map(|i| state.sprites[i].flip)).unwrap_or(false);
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale };
+                // A loop goes on through a new pose, unless the show sets position or size values.
+                let sets_values = at.is_some() || y_given.is_some() || scale_given.is_some() || xscale_given.is_some() || yscale_given.is_some();
+                let old_loop = existing.and_then(|i| state.sprites[i].looped);
+                let looped = if sets_values { None } else { old_loop };
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale, looped };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
                 out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale, fade: *fade });
+                if old_loop.is_some() && looped.is_none() {
+                    // The view would keep a loop whose resting values did not change: end it.
+                    out.push(Cmd::MoveSprite { id: id.clone(), x, y, scale, flip, xscale, yscale, time: 0.0, ease: Ease::Linear });
+                }
                 state.pc += 1;
             }
             Op::Hide { id, fade } => {
@@ -773,8 +822,27 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease } => {
+            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped: true } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
+                    // The sprite keeps the values it has (where each leg back ends); the far end is new.
+                    s.flip = flip.unwrap_or(s.flip);
+                    let far = SpriteLoop {
+                        x: at.unwrap_or(s.x),
+                        y: y.unwrap_or(s.y),
+                        scale: scale.unwrap_or(s.scale),
+                        xscale: xscale.unwrap_or(s.xscale),
+                        yscale: yscale.unwrap_or(s.yscale),
+                        time: *time,
+                        ease: *ease,
+                    };
+                    s.looped = Some(far);
+                    out.push(s.loop_cmd(&far));
+                }
+                state.pc += 1;
+            }
+            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped: false } => {
+                if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
+                    s.looped = None; // a plain move ends a loop (the view glides on from where the sprite is)
                     s.x = at.unwrap_or(s.x);
                     s.y = y.unwrap_or(s.y);
                     s.scale = scale.unwrap_or(s.scale);

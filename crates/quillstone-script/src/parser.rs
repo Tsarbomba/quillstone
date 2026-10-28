@@ -46,17 +46,18 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, fade, camera, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
-        "bg" => &["src", "color", "fade", "wipe", "through"],
+        "anim" => &["id", "frames", "loop"],
+        "bg" => &["src", "color", "anim", "fade", "wipe", "through"],
         "hud" => &["id", "text", "bar", "max", "image", "at", "anchor", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear"],
-        "show" => &["src", "id", "at", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
+        "show" => &["src", "anim", "id", "at", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease"],
+        "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease", "loop"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "fade" => &["out", "in", "time", "color"],
@@ -667,6 +668,10 @@ impl Parser {
                 self.character(line, inner);
                 return i;
             }
+            "anim" => {
+                self.anim(line, inner);
+                return i;
+            }
             "if" => {
                 self.if_start(line, inner);
                 return i;
@@ -771,7 +776,15 @@ impl Parser {
         match name {
             "bg" => {
                 let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
+                if has(a, "anim") && (has(a, "src") || has(a, "color")) {
+                    self.err(line, "`::bg` takes one of `src=`, `color=` or `anim=`");
+                    return None;
+                }
                 let src = match (has(a, "src"), has(a, "color")) {
+                    _ if has(a, "anim") => {
+                        let id = a.value("anim").unwrap_or_default();
+                        self.anim_ref(line, &id)?
+                    }
                     (true, true) => {
                         self.err(line, "`::bg` takes `src=` (a picture or video) or `color=` (a solid colour), not both");
                         return None;
@@ -788,7 +801,7 @@ impl Parser {
                         }
                     },
                     (false, false) => {
-                        self.err(line, "`::bg` needs `src=file` or `color=#rrggbb`");
+                        self.err(line, "`::bg` needs `src=file`, `color=#rrggbb` or `anim=id`");
                         return None;
                     }
                     (true, false) => self.require(line, name, a, "src")?,
@@ -855,7 +868,17 @@ impl Parser {
             }
             "move" => {
                 let flip = opt_flag(a, "flip");
+                let loop_attr = a.take("loop"); // before the bare words: a bare `loop` is no sprite name
                 let bare = a.take_bare();
+                let looped = match loop_attr {
+                    None => None,
+                    Some(None) => Some(true),
+                    Some(Some(v)) if v == "pingpong" => Some(true),
+                    Some(Some(v)) => {
+                        self.err(line, format!("`loop={v}` must be `pingpong` (or just `loop`: back and forth forever)"));
+                        return None;
+                    }
+                };
                 self.extra_words(line, "move", &bare, 1)?;
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
                     self.err(line, "`::move` needs a sprite, like `::move{mika at=left time=0.5}`");
@@ -881,7 +904,18 @@ impl Parser {
                 }
                 let time = self.seconds(line, a, "time", 0.5)?;
                 let ease = self.ease(line, a)?;
-                Some((Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease }, None))
+                let looped = looped.is_some();
+                if looped {
+                    if time <= 0.0 {
+                        self.err(line, "a `loop` move needs `time=` above 0 (the seconds one leg takes)");
+                        return None;
+                    }
+                    if at.is_none() && y.is_none() && scale.is_none() && xscale.is_none() && yscale.is_none() {
+                        self.err(line, "a `loop` move needs something to animate: `at=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)");
+                        return None;
+                    }
+                }
+                Some((Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped }, None))
             }
             "shake" => {
                 let time = self.seconds(line, a, "time", 0.4)?;
@@ -1207,14 +1241,28 @@ impl Parser {
         let bare = a.take_bare();
         let src_attr = a.value("src");
         let id_attr = a.value("id");
+        let anim_attr = a.value("anim");
+        let is_anim = anim_attr.is_some();
+        if anim_attr.is_some() && src_attr.is_some() {
+            self.err(line, "`::show` takes `src=` (a picture) or `anim=` (an animation), not both");
+            return None;
+        }
 
-        self.extra_words(line, "show", &bare, if src_attr.is_some() { 1 } else { 2 })?;
-        let (id, src) = match src_attr {
-            Some(src) => {
+        self.extra_words(line, "show", &bare, if src_attr.is_some() || anim_attr.is_some() { 1 } else { 2 })?;
+        let (id, src) = match (src_attr, anim_attr) {
+            (_, Some(anim)) => {
+                // Like a pose sprite, a character's name addresses the character's sprite.
+                let Some(who) = id_attr.or_else(|| bare.first().cloned()) else {
+                    self.err(line, "`::show{anim=...}` needs a sprite name, like `::show{mika anim=blink}`");
+                    return None;
+                };
+                (self.sprite_id(&who), self.anim_ref(line, &anim)?)
+            }
+            (Some(src), None) => {
                 let id = id_attr.or_else(|| bare.first().cloned()).unwrap_or_else(|| src.clone());
                 (id, src)
             }
-            None => {
+            (None, None) => {
                 let Some(who) = bare.first() else {
                     self.err(line, "`::show` needs a character (`::show{mika happy}`) or `src=...`");
                     return None;
@@ -1233,9 +1281,11 @@ impl Parser {
             }
         };
 
-        if let Err(m) = check_inside("src", &src) {
-            self.err(line, m);
-            return None;
+        if !is_anim {
+            if let Err(m) = check_inside("src", &src) {
+                self.err(line, m);
+                return None;
+            }
         }
         let at = match a.value("at") {
             None => None,
@@ -1272,7 +1322,7 @@ impl Parser {
             Some(extra) => {
                 let what = match (command, allowed) {
                     ("show", 2) => "a character and a pose",
-                    ("show", _) => "one sprite name (with `src=`)",
+                    ("show", _) => "one sprite name (with `src=` or `anim=`, no pose)",
                     (_, 0) => "no sprite name with `all`",
                     _ => "one sprite name",
                 };
@@ -1334,6 +1384,66 @@ impl Parser {
         }
         let name = name.unwrap_or_else(|| id.clone());
         self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites });
+    }
+
+    /// `::anim{id=blink frames="open.png 3, closed.png 0.12" loop}`: a named frame animation.
+    fn anim(&mut self, line: usize, inner: &str) {
+        let mut a = match Attrs::parse(inner) {
+            Ok(a) => a,
+            Err(m) => return self.err(line, m),
+        };
+        let (id, frames) = (a.value("id"), a.value("frames"));
+        let looped = a.flag("loop");
+        if let Some(extra) = a.leftover(&[]) {
+            let msg = format!("unknown attribute `{extra}` for `::anim` (it takes: id, frames, loop)");
+            return self.err(line, msg);
+        }
+        let Some(id) = id else { return self.err(line, "`::anim` needs `id=...`") };
+        if !is_plain_ident(&id) {
+            return self.err(line, format!("animation id `{id}` must be letters, digits and `_`"));
+        }
+        let Some(frames) = frames else {
+            return self.err(line, "`::anim` needs `frames=\"file.png seconds, file.png seconds\"` (in quotes)");
+        };
+        let mut list = Vec::new();
+        for part in frames.split(',') {
+            let words: Vec<&str> = part.split_whitespace().collect();
+            let [file, seconds] = words[..] else {
+                let shown = part.trim();
+                let msg = if shown.is_empty() {
+                    "`frames=` has an empty entry (an extra comma?): write `file.png seconds, file.png seconds`".to_string()
+                } else {
+                    format!("bad frame `{shown}`: each frame is a picture and how many seconds it stays, like `eyes_open.png 3`")
+                };
+                return self.err(line, msg);
+            };
+            if let Err(m) = check_image_path(file, "frames", "an animation frame") {
+                return self.err(line, m);
+            }
+            let seconds = match seconds.parse::<f32>() {
+                Ok(s) if s.is_finite() && ANIM_FRAME_SECONDS.contains(&s) => s,
+                _ => {
+                    let (lo, hi) = (ANIM_FRAME_SECONDS.start(), ANIM_FRAME_SECONDS.end());
+                    return self.err(line, format!("frame `{file} {seconds}`: the time must be a number of seconds from {lo} to {hi}"));
+                }
+            };
+            list.push(AnimFrame { file: file.to_string(), seconds });
+        }
+        if self.program.anims.contains_key(&id) {
+            return self.err(line, format!("animation `{id}` is declared twice"));
+        }
+        self.program.anims.insert(id.clone(), Anim { id, frames: list, looped, line });
+    }
+
+    /// The picture `src` for `anim=id`: the animation must be declared before this line.
+    fn anim_ref(&mut self, line: usize, id: &str) -> Option<String> {
+        if !self.program.anims.contains_key(id) {
+            let known: Vec<&str> = self.program.anims.keys().map(String::as_str).collect();
+            let hint = if known.is_empty() { "declare it first with `::anim`".to_string() } else { format!("declared: {}", known.join(", ")) };
+            self.err(line, format!("unknown animation `{id}` ({hint})"));
+            return None;
+        }
+        Some(anim_src(id))
     }
 
     /// `::item{id=key name="Brass key" icon=assets/key.png price=15 text="..."}`
@@ -2434,7 +2544,7 @@ mod tests {
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out, looped: false });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
         assert_eq!(
@@ -2663,7 +2773,7 @@ mod tests {
         assert_eq!(show(1), (Some(0.9), Some(-100)));
         assert_eq!(show(2), (Some(-0.5), Some(100)));
         assert_eq!(show(3), (Some(1.5), None));
-        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out });
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out, looped: false });
         assert!(matches!(&p.ops[5], Op::Move { at: Some(_), y: Some(y), .. } if *y == 1.5));
         // not given: `None`, so the sprite keeps its own
         let q = ok(&format!("{MIKA}::show{{mika}}\n"));
@@ -2694,8 +2804,8 @@ mod tests {
         let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika at=right time=1}}\n::move{{mika at=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut, looped: false });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut, looped: false });
     }
 
     #[test]
@@ -2768,7 +2878,7 @@ mod tests {
         assert_eq!(e.len(), 1, "the unread `wipe` isn't reported: {e:?}");
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
-        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, fade, wipe, through)"));
+        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, anim, fade, wipe, through)"));
         assert!(has_err("::frobnicate\n", "shake, flash, fade, camera"));
     }
 
@@ -3919,7 +4029,7 @@ mod tests {
     #[test]
     fn a_background_is_a_file_or_a_colour() {
         assert!(has_err("::bg{src=a.png color=#fff}\n", "not both"));
-        assert!(has_err("::bg{fade=1}\n", "needs `src=file` or `color=#rrggbb`"));
+        assert!(has_err("::bg{fade=1}\n", "needs `src=file`, `color=#rrggbb` or `anim=id`"));
         assert!(has_err("::bg{color=blue}\n", "bad colour"));
         assert!(has_err("::bg{color=#fff wipe=left}\n", "needs a duration"));
         assert!(has_err("::bg{color}\n", "needs a colour"));
@@ -3930,5 +4040,173 @@ mod tests {
         let p = ok(include_str!("../../../examples/hud.quill.md"));
         assert!(p.ops.iter().any(|o| matches!(o, Op::HudClear { .. })));
         assert_eq!(p.ops.iter().filter(|o| matches!(o, Op::Hud { .. })).count(), 7);
+    }
+
+    const ANIMS: &str = "::anim{id=blink frames=\"eyes_open.png 3, eyes_closed.png 0.12\" loop}\n";
+
+    #[test]
+    fn an_animation_lists_frames_and_may_loop() {
+        let p = ok(ANIMS);
+        let a = &p.anims["blink"];
+        assert_eq!(a.id, "blink");
+        assert_eq!(a.frames, [AnimFrame { file: "eyes_open.png".into(), seconds: 3.0 }, AnimFrame { file: "eyes_closed.png".into(), seconds: 0.12 }]);
+        assert!(a.looped && a.line == 1 && a.is_animated());
+        assert!((a.total() - 3.12).abs() < 1e-6);
+        let once = ok("::anim{id=once frames=\"a.png 1, sub/b.webp 2.5,c.jpg 60 ,d.jpeg 0.02\"}\n");
+        let a = &once.anims["once"];
+        assert!(!a.looped);
+        assert_eq!(a.frames.len(), 4, "spaces around commas don't matter");
+        assert_eq!((a.frames[1].file.as_str(), a.frames[2].seconds, a.frames[3].seconds), ("sub/b.webp", 60.0, 0.02));
+        let single = ok("::anim{id=still frames=\"a.png 1\"}\n");
+        assert!(!single.anims["still"].is_animated(), "one frame: allowed, and static");
+        assert!(!ok("::anim{id=l frames=\"a.png 1\" loop=false}\n").anims["l"].looped);
+    }
+
+    #[test]
+    fn animation_errors_name_the_line() {
+        for (src, needle) in [
+            ("::anim{frames=\"a.png 1\"}\n", "needs `id="),
+            ("::anim{id=x}\n", "needs `frames="),
+            ("::anim{id=\"a b\" frames=\"a.png 1\"}\n", "must be letters, digits"),
+            ("::anim{id=x frames=\"\"}\n", "empty entry"),
+            ("::anim{id=x frames=\"a.png 1,\"}\n", "empty entry"),
+            ("::anim{id=x frames=\"a.png\"}\n", "bad frame `a.png`"),
+            ("::anim{id=x frames=\"a.png 1 2\"}\n", "bad frame"),
+            ("::anim{id=x frames=\"a.png soon\"}\n", "number of seconds from 0.02 to 60"),
+            ("::anim{id=x frames=\"a.png 0.01\"}\n", "from 0.02 to 60"),
+            ("::anim{id=x frames=\"a.png 60.5\"}\n", "from 0.02 to 60"),
+            ("::anim{id=x frames=\"a.png -1\"}\n", "from 0.02 to 60"),
+            ("::anim{id=x frames=\"a.png NaN\"}\n", "from 0.02 to 60"),
+            ("::anim{id=x frames=\"a.txt 1\"}\n", "must be a .png, .jpg or .webp"),
+            ("::anim{id=x frames=\"a.webm 1\"}\n", "must be a .png, .jpg or .webp"),
+            ("::anim{id=x frames=\"../a.png 1\"}\n", "inside the game folder"),
+            ("::anim{id=x frames=\"/a.png 1\"}\n", "inside the game folder"),
+            ("::anim{id=x frames=\"a.png 1\" speed=2}\n", "unknown attribute `speed`"),
+            ("::anim{id=x frames=\"a.png 1\"\n", "expected `{...}`"),
+            ("::anim{id=x frames=\"a.png 1}\n", "unterminated quote"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e.len(), 1, "{src}: {e:?}");
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+        let e = errs(&format!("{ANIMS}Hi.\n{ANIMS}"));
+        assert_eq!((e.len(), e[0].line), (1, 3));
+        assert!(e[0].message.contains("declared twice"));
+    }
+
+    #[test]
+    fn a_picture_that_is_an_animation_is_shown_with_anim() {
+        let chars = "::character{id=mika sprites=m_{pose}.png}\n";
+        let p = ok(&format!("{ANIMS}{chars}::show{{mika anim=blink at=left y=0.9 z=2 scale=0.8 flip fade=0.5}}\n::show{{ghost anim=blink}}\n::show{{Mika anim=blink}}\n::bg{{anim=blink fade=1 wipe=left}}\n::bg{{anim=blink fade=1 through=#000}}\n"));
+        let shows: Vec<_> = p.ops.iter().filter_map(|o| if let Op::Show { id, src, at, y, z, scale, flip, fade, .. } = o { Some((id.as_str(), src.as_str(), *at, *y, *z, *scale, *flip, *fade)) } else { None }).collect();
+        assert_eq!(shows[0], ("mika", "anim:blink", Some(0.28), Some(0.9), Some(2), Some(0.8), Some(true), 0.5));
+        assert_eq!((shows[1].0, shows[1].1), ("ghost", "anim:blink"), "any name makes a sprite");
+        assert_eq!(shows[2].0, "mika", "a character's name finds the character's sprite");
+        assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left) }));
+        assert!(p.ops.iter().any(|o| matches!(o, Op::FadeOut { .. })));
+        assert_eq!(anim_id("anim:blink"), Some("blink"));
+        assert_eq!((anim_id("anim:"), anim_id("blink"), anim_id("anim:a b"), anim_id("color:#fff")), (None, None, None, None));
+        assert!(!p.ops.iter().any(|o| o.asset().is_some_and(|(_, a)| a.starts_with("anim:"))), "an animation is no file");
+        // `id=` names the sprite, like with `src=`.
+        let q = ok(&format!("{ANIMS}::show{{id=hero anim=blink}}\n"));
+        assert!(matches!(&q.ops[0], Op::Show { id, src, .. } if id == "hero" && src == "anim:blink"));
+    }
+
+    #[test]
+    fn anim_errors_name_the_line() {
+        let chars = "::character{id=mika sprites=m_{pose}.png}\n";
+        for (src, needle) in [
+            ("::show{mika anim=nope}\n", "unknown animation `nope`"),
+            ("::bg{anim=nope}\n", "unknown animation `nope`"),
+            ("::bg{anim}\n", "unknown animation ``"),
+            ("::show{mika happy anim=blink}\n", "unexpected `happy`"),
+            ("::show{mika src=x.png anim=blink}\n", "not both"),
+            ("::show{anim=blink}\n", "needs a sprite name"),
+            ("::bg{src=a.png anim=blink}\n", "one of `src=`, `color=` or `anim=`"),
+            ("::bg{color=#fff anim=blink}\n", "one of `src=`, `color=` or `anim=`"),
+            ("::move{mika anim=blink at=left}\n", "unknown attribute `anim`"),
+            ("::hide{mika anim=blink}\n", "unknown attribute `anim`"),
+            ("::camera{anim=blink zoom=2}\n", "unknown attribute `anim`"),
+            ("::show{mika src=anim:blink}\n", "inside the game folder"),
+        ] {
+            let e = errs(&format!("{chars}{ANIMS}Hi.\n{src}"));
+            // the failing command is the first line of `src`, after the 3 lines of set-up
+            assert!(e.iter().any(|e| e.line == 4 && e.message.contains(needle)), "{src}: {e:?}");
+            assert!(e.iter().all(|e| e.line >= 4), "{src}: {e:?}");
+        }
+        let e = errs(&format!("{chars}{ANIMS}Hi.\n::show{{mika anim=nope}}\n"));
+        assert_eq!(e[0].line, 4);
+        let e = errs(&format!("{chars}::show{{mika anim=blink}}\n{ANIMS}"));
+        assert_eq!((e.len(), e[0].line), (1, 2), "an animation is declared before it is used");
+        assert!(e[0].message.contains("unknown animation `blink` (declare it first with `::anim`)"));
+    }
+
+    #[test]
+    fn animation_frames_are_assets_and_loaded_ahead() {
+        let p = ok(&format!("{ANIMS}::show{{x anim=blink}}\nHi.\n::bg{{src=far.png}}\n"));
+        let files: Vec<_> = p.assets().map(|(_, k, a)| (k, a)).collect();
+        assert_eq!(files, [(AssetKind::Image, "far.png"), (AssetKind::Image, "eyes_open.png"), (AssetKind::Image, "eyes_closed.png")]);
+        assert_eq!(p.images_ahead(0, 10), ["eyes_open.png", "eyes_closed.png", "far.png"]);
+        assert_eq!(p.anim_frames().collect::<Vec<_>>(), [(1, "blink", "eyes_open.png"), (1, "blink", "eyes_closed.png")]);
+        assert_eq!(p.assets_with_lines().count(), 1, "the check command reads the frames separately, as pictures");
+    }
+
+    #[test]
+    fn frame_selection_holds_or_loops_and_changes_exactly_at_boundaries() {
+        let p = ok("::anim{id=a frames=\"a.png 1, b.png 0.5, c.png 2\"}\n::anim{id=l frames=\"a.png 1, b.png 0.5\" loop}\n");
+        let (once, looped) = (&p.anims["a"], &p.anims["l"]);
+        for (t, want) in [(-1.0, "a.png"), (0.0, "a.png"), (0.99, "a.png"), (1.0, "b.png"), (1.49, "b.png"), (1.5, "c.png"), (3.49, "c.png"), (3.5, "c.png"), (1000.0, "c.png")] {
+            assert_eq!(once.frame_at(t), want, "one-shot at {t}");
+        }
+        for (t, want) in [(0.0, "a.png"), (0.99, "a.png"), (1.0, "b.png"), (1.49, "b.png"), (1.5, "a.png"), (2.49, "a.png"), (2.5, "b.png"), (30.2, "a.png")] {
+            assert_eq!(looped.frame_at(t), want, "loop at {t}");
+        }
+        assert!(once.running(3.49) && !once.running(3.5) && looped.running(1e6));
+        assert_eq!(looped.frame_at(f32::NAN), "a.png");
+        let still = ok("::anim{id=s frames=\"a.png 1\" loop}\n");
+        assert!(!still.anims["s"].running(0.0) && still.anims["s"].frame_at(5.0) == "a.png");
+    }
+
+    #[test]
+    fn a_move_may_loop_forever() {
+        let p = ok("::character{id=mika sprites=m_{pose}.png}\n::move{mika y=0.97 time=1.2 ease=inout loop}\n::move{mika scale=1.1 loop=pingpong}\n::move{mika at=left y=0.9 loop time=2}\n::move{loop mika at=right flip}\n::move{mika y=0.9}\n");
+        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), at: None, y: Some(0.97), scale: None, flip: None, xscale: None, yscale: None, time: 1.2, ease: Ease::InOut, looped: true });
+        assert!(matches!(&p.ops[1], Op::Move { scale: Some(s), looped: true, time, .. } if *s == 1.1 && *time == 0.5));
+        assert!(matches!(&p.ops[2], Op::Move { at: Some(_), y: Some(_), looped: true, time, .. } if *time == 2.0));
+        assert!(matches!(&p.ops[3], Op::Move { id, at: Some(_), flip: Some(true), looped: true, .. } if id == "mika"), "a flip may come along");
+        assert!(matches!(&p.ops[4], Op::Move { looped: false, .. }));
+        let all = ok("::move{a at=left y=0.9 scale=1.2 xscale=1.1 yscale=0.9 loop}\n");
+        assert!(matches!(&all.ops[0], Op::Move { looped: true, xscale: Some(_), yscale: Some(_), .. }));
+    }
+
+    #[test]
+    fn loop_errors_name_the_line() {
+        for (src, needle) in [
+            ("::move{a y=0.9 loop=forever}\n", "`loop=forever` must be `pingpong`"),
+            ("::move{a y=0.9 loop=repeat}\n", "must be `pingpong`"),
+            ("::move{a y=0.9 loop time=0}\n", "needs `time=` above 0"),
+            ("::move{a loop at=left}\n::move{a y=0.9 loop time=0}\n", "needs `time=` above 0"),
+            ("::move{a flip loop}\n", "needs something to animate"),
+            ("::move{a loop}\n", "needs `at=`, `y=`"),
+            ("::show{a src=x.png loop=pingpong}\n", "unknown attribute `loop`"),
+            ("::hide{a loop}\n", "unexpected `loop`"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert!(e.iter().all(|e| e.line >= 2), "{src}: {e:?}");
+            assert!(e.iter().any(|e| e.message.contains(needle)), "{src}: {e:?}");
+        }
+        let e = errs("Hi.\n::move{a y=0.9 loop=bounce}\n");
+        assert_eq!((e.len(), e[0].line), (1, 2));
+        ok("::move{a y=0.9 loop time=0.02}\n");
+    }
+
+    #[test]
+    fn the_animation_demo_parses() {
+        let p = ok(include_str!("../../../examples/anim.quill.md"));
+        assert_eq!(p.anims.len(), 3);
+        assert!(p.anims["talk"].looped && !p.anims["arrive"].looped);
+        assert!(p.ops.iter().any(|o| matches!(o, Op::Bg { src, .. } if src == "anim:flicker")));
+        assert!(p.ops.iter().filter(|o| matches!(o, Op::Move { looped: true, .. })).count() >= 3);
     }
 }

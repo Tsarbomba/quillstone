@@ -201,7 +201,7 @@ impl<'p> Game<'p> {
             program,
             storage,
             session,
-            view: View::new().with_speed(settings.text_speed),
+            view: View::new().with_speed(settings.text_speed).with_anims(&program.anims),
             mixer: Mixer::new(),
             settings_before: settings.clone(),
             settings,
@@ -295,7 +295,7 @@ impl<'p> Game<'p> {
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
         self.ui_hidden = false;
-        self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme);
+        self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme).with_anims(&self.program.anims);
     }
 
     /// Where closing a screen goes back to.
@@ -333,7 +333,7 @@ impl<'p> Game<'p> {
     pub fn reload(&mut self, program: &'p Program) -> Result<(), String> {
         let persistent = self.session.persistent().clone();
         if self.in_story {
-            let (session, cmds) = Session::load_with(program, &self.session.save(), persistent)?;
+            let (session, cmds) = Session::reload_with(program, &self.session.save(), persistent)?;
             self.program = program;
             self.session = session;
             self.fresh_view();
@@ -613,6 +613,12 @@ impl<'p> Game<'p> {
         }
         let pc = self.session.state().pc;
         let mut out = self.program.images_ahead(pc, AHEAD);
+        // Every frame of an animation on stage now: later frames are not in the draw list yet.
+        for id in self.view.shown_animations() {
+            if let Some(anim) = self.program.anims.get(id) {
+                out.extend(anim.frames.iter().map(|f| f.file.as_str()));
+            }
+        }
         // Item pictures: only those of a shop or inventory the story is about to open
         // (the ones a screen is showing come from its draw list), never the whole game's.
         let (inventory, shops) = self.program.bag_icons_ahead(pc, AHEAD);
@@ -1153,5 +1159,7 @@ impl<'p> Game<'p> {
 mod tests;
 #[cfg(test)]
 mod input_tests;
+#[cfg(test)]
+mod anim_tests;
 #[cfg(test)]
 mod hud_tests;

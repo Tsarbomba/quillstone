@@ -7,10 +7,12 @@
 //! What is actually in the scene lives in the runtime's `State`, and a rollback
 //! sends `Cmd::ClearScene` + the scene again, so the two never drift apart.
 
+use std::collections::BTreeMap;
+
 use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{Axis, Ease, Fit, Wipe};
+use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 
 use crate::hud::HudLayer;
 use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
@@ -147,6 +149,14 @@ pub struct SpriteView {
     move_time: f32,
     move_elapsed: f32,
     move_ease: Ease,
+    /// A looping move: the other end of the oscillation (x, y, scale, xscale, yscale);
+    /// the sprite rests at `x`, `y`, ... The current leg heads for it while `out`.
+    loop_far: Option<[f32; 5]>,
+    out: bool,
+    /// Seconds since this sprite's picture started being shown (an animation's clock),
+    /// and the same for the outgoing picture of a pose change.
+    anim_time: f32,
+    previous_anim_time: f32,
 }
 
 impl SpriteView {
@@ -173,7 +183,39 @@ impl SpriteView {
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
+            loop_far: None,
+            out: false,
+            anim_time: 0.0,
+            previous_anim_time: 0.0,
         }
+    }
+
+    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale.
+    fn target(&self) -> [f32; 5] {
+        match (&self.loop_far, self.out) {
+            (Some(far), true) => *far,
+            _ => [self.x, self.y, self.scale, self.xscale, self.yscale],
+        }
+    }
+
+    /// Where the current leg started.
+    fn from(&self) -> [f32; 5] {
+        [self.from_x, self.from_y, self.from_scale, self.from_xscale, self.from_yscale]
+    }
+
+    fn set_from(&mut self, v: [f32; 5]) {
+        [self.from_x, self.from_y, self.from_scale, self.from_xscale, self.from_yscale] = v;
+    }
+
+    /// Whether the sprite oscillates (a looping move is running).
+    pub fn is_looping(&self) -> bool {
+        self.loop_far.is_some()
+    }
+
+    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale) right now.
+    fn now(&self, k: usize) -> f32 {
+        let (from, to) = (self.from()[k], self.target()[k]);
+        from + (to - from) * self.move_progress()
     }
 
     /// Progress through the current move, eased (1 when not moving).
@@ -187,17 +229,17 @@ impl SpriteView {
 
     /// How big the sprite is right now (growing towards `scale` during a move).
     pub fn current_scale(&self) -> f32 {
-        self.from_scale + (self.scale - self.from_scale) * self.move_progress()
+        self.now(2)
     }
 
     /// The horizontal stretch right now (moving towards `xscale` during a move).
     pub fn current_xscale(&self) -> f32 {
-        self.from_xscale + (self.xscale - self.from_xscale) * self.move_progress()
+        self.now(3)
     }
 
     /// The vertical stretch right now (moving towards `yscale` during a move).
     pub fn current_yscale(&self) -> f32 {
-        self.from_yscale + (self.yscale - self.from_yscale) * self.move_progress()
+        self.now(4)
     }
 
     /// Size, stretch and mirroring right now.
@@ -217,17 +259,37 @@ impl SpriteView {
 
     /// Where the sprite is right now (sliding towards `x` while a move runs).
     pub fn current_x(&self) -> f32 {
-        self.from_x + (self.x - self.from_x) * self.move_progress()
+        self.now(0)
     }
 
     /// Where the bottom edge is right now (sliding towards `y` while a move runs).
     pub fn current_y(&self) -> f32 {
-        self.from_y + (self.y - self.from_y) * self.move_progress()
+        self.now(1)
     }
 
-    fn tick(&mut self, dt: f32) {
+    /// Advance by `dt`. With `animate` off (settling a skipped scene) a loop and the
+    /// picture's clock stand still: they have no end to settle at.
+    fn tick(&mut self, dt: f32, animate: bool) {
         self.elapsed += dt;
-        if self.move_time > 0.0 {
+        if animate {
+            self.anim_time += dt;
+            self.previous_anim_time += dt;
+        }
+        if self.loop_far.is_some() {
+            if animate && self.move_time > 0.0 {
+                self.move_elapsed += dt;
+                if self.move_elapsed >= self.move_time {
+                    // Every leg that ended turns the sprite round; the rest is progress into the next.
+                    let legs = (self.move_elapsed / self.move_time).floor();
+                    self.move_elapsed = (self.move_elapsed - legs * self.move_time).max(0.0);
+                    if legs % 2.0 == 1.0 {
+                        self.out = !self.out;
+                    }
+                    let start = if self.out { [self.x, self.y, self.scale, self.xscale, self.yscale] } else { self.loop_far.unwrap_or_default() };
+                    self.set_from(start);
+                }
+            }
+        } else if self.move_time > 0.0 {
             self.move_elapsed += dt;
             if self.move_elapsed >= self.move_time {
                 self.move_time = 0.0;
@@ -485,6 +547,11 @@ pub struct View {
     wait: Option<f32>,
     chars_per_sec: f32,
     theme: Theme,
+    /// The script's frame animations (a picture `anim:<id>` plays one).
+    anims: BTreeMap<String, Anim>,
+    /// Seconds since the background / the outgoing background started being shown.
+    bg_clock: f32,
+    previous_bg_clock: f32,
 }
 
 impl Default for View {
@@ -517,7 +584,66 @@ impl View {
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
+            anims: BTreeMap::new(),
+            bg_clock: 0.0,
+            previous_bg_clock: 0.0,
         }
+    }
+
+    /// Know the script's frame animations (`anim:<id>` pictures play them). Clocks
+    /// are visual state: every animation starts at its first frame when it appears.
+    pub fn with_anims(mut self, anims: &BTreeMap<String, Anim>) -> View {
+        self.set_anims(anims);
+        self
+    }
+
+    pub fn set_anims(&mut self, anims: &BTreeMap<String, Anim>) {
+        self.anims = anims.clone();
+    }
+
+    /// The picture file to draw for `src` at `t` seconds into it: the file itself, or
+    /// the frame of an animation (nothing for one this view doesn't know).
+    fn picture<'a>(&'a self, src: &'a str, t: f32) -> &'a str {
+        match anim_id(src) {
+            Some(id) => self.anims.get(id).map_or("", |a| a.frame_at(t)),
+            None => src,
+        }
+    }
+
+    /// Whether `src` is an animation that can still change `t` seconds in.
+    fn playing(&self, src: &str, t: f32) -> bool {
+        anim_id(src).and_then(|id| self.anims.get(id)).is_some_and(|a| a.running(t))
+    }
+
+    /// The ids of the animations on stage (background, sprites, outgoing pictures), each once.
+    pub fn shown_animations(&self) -> Vec<&str> {
+        let srcs = self
+            .background
+            .iter()
+            .map(|b| b.src.as_str())
+            .chain(self.previous_background.as_deref())
+            .chain(self.sprites.iter().flat_map(|s| std::iter::once(s.src.as_str()).chain(s.previous_src.as_deref())));
+        let mut out: Vec<&str> = Vec::new();
+        for id in srcs.filter_map(anim_id) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// Whether any picture on stage changes by itself: a multi-frame animation that
+    /// is still running (a one-shot one that reached its last frame is still), or a
+    /// sprite in a looping move.
+    pub fn animating(&self) -> bool {
+        let sprite = |s: &SpriteView| {
+            s.is_looping()
+                || self.playing(&s.src, s.anim_time)
+                || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
+        };
+        self.background.as_ref().is_some_and(|b| self.playing(&b.src, self.bg_clock))
+            || self.previous_background.as_deref().is_some_and(|p| self.playing(p, self.previous_bg_clock))
+            || self.sprites.iter().any(sprite)
     }
 
     /// Draw with this theme's colours, sizes and textbox image.
@@ -591,14 +717,27 @@ impl View {
                     self.show_sprite(id, src, (*x, *y), *z, look, *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
+                Cmd::LoopSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
+                    if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
+                        // The first leg glides from wherever the sprite is to the far values; the
+                        // resting values (x, y, ...) stay where they are.
+                        let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
+                        s.set_from(here);
+                        s.loop_far = Some([*x, *y, *scale, *xscale, *yscale]);
+                        s.out = true;
+                        s.flip = *flip;
+                        s.move_time = *time;
+                        s.move_elapsed = 0.0;
+                        s.move_ease = *ease;
+                    }
+                }
                 Cmd::MoveSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
-                        s.from_x = s.current_x();
-                        s.from_y = s.current_y();
+                        let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
+                        s.set_from(here);
+                        s.loop_far = None; // a plain move ends a loop
+                        s.out = false;
                         s.y = *y;
-                        s.from_scale = s.current_scale();
-                        s.from_xscale = s.current_xscale();
-                        s.from_yscale = s.current_yscale();
                         s.x = *x;
                         s.scale = *scale;
                         s.flip = *flip; // mirroring can't be animated: it switches as the move starts
@@ -683,6 +822,8 @@ impl View {
             return;
         }
         self.previous_background = if fade > 0.0 { self.background.take().map(|b| b.src) } else { None };
+        self.previous_bg_clock = self.bg_clock;
+        self.bg_clock = 0.0;
         self.background = Some(Background { src: src.to_string(), fade, wipe, elapsed: 0.0 });
     }
 
@@ -768,9 +909,20 @@ impl View {
                 if s.src != src {
                     let old = std::mem::replace(&mut s.src, src.to_string());
                     s.previous_src = if fade > 0.0 { Some(old) } else { None };
+                    s.previous_anim_time = s.anim_time;
+                    s.anim_time = 0.0;
                     s.elapsed = 0.0;
                     s.fade = fade;
                 }
+                // A new pose that leaves the resting values alone does not disturb a loop.
+                let rest = [s.x, s.y, s.scale, s.xscale, s.yscale];
+                if s.loop_far.is_some() && rest == [x, y, look.scale, look.xscale, look.yscale] {
+                    s.z = z;
+                    s.flip = look.flip;
+                    return;
+                }
+                s.loop_far = None;
+                s.out = false;
                 s.from_x = here;
                 s.from_y = here_y;
                 s.x = x;
@@ -802,6 +954,20 @@ impl View {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        self.advance(dt, true);
+    }
+
+    /// Run out what has an end (fades, slides, typing) as [`View::tick`] with a long `dt`
+    /// would, but leave animation clocks and loops where they are (skip mode uses this).
+    pub fn settle(&mut self, dt: f32) {
+        self.advance(dt, false);
+    }
+
+    fn advance(&mut self, dt: f32, animate: bool) {
+        if animate {
+            self.bg_clock += dt;
+            self.previous_bg_clock += dt;
+        }
         if let Some(bg) = &mut self.background {
             bg.elapsed += dt;
             if bg.progress() >= 1.0 {
@@ -809,7 +975,7 @@ impl View {
             }
         }
         for s in &mut self.sprites {
-            s.tick(dt);
+            s.tick(dt, animate);
         }
         self.camera.elapsed += dt;
         if let Some(shake) = &mut self.shake {
@@ -859,7 +1025,8 @@ impl View {
 
     /// Whether time matters even when nothing on screen moves: a `::wait`
     /// counting down, a flash fading, or a typewriter that is still typing (or
-    /// paused at `{w=}`). Other animations show up as a changing draw list anyway.
+    /// paused at `{w=}`), or a frame animation or looping move that is running.
+    /// Other animations show up as a changing draw list anyway.
     pub fn busy(&self) -> bool {
         self.wait.is_some()
             || self.flash.is_some()
@@ -867,6 +1034,7 @@ impl View {
             || self.hud.fading()
             || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
+            || self.animating()
     }
 
     /// `true` exactly once when a `::wait` has run out: send `Input::Advance`.
@@ -951,11 +1119,11 @@ impl View {
         // The stage: background and sprites, seen through the camera and shake.
         let mut stage = Vec::new();
         if let Some(prev) = &self.previous_background {
-            push_backdrop(&mut stage, prev, screen, 1.0, image_size);
+            push_backdrop(&mut stage, self.picture(prev, self.previous_bg_clock), screen, 1.0, image_size);
         }
         if let Some(bg) = &self.background {
             let mut picture = Vec::new();
-            push_backdrop(&mut picture, &bg.src, screen, bg.alpha(), image_size);
+            push_backdrop(&mut picture, self.picture(&bg.src, self.bg_clock), screen, bg.alpha(), image_size);
             for draw in picture {
                 match (draw, bg.revealed()) {
                     (Draw::Image { src, dest, uv, alpha }, Some(part)) => {
@@ -978,9 +1146,9 @@ impl View {
         for s in order {
             let (x, y, look) = (s.current_x(), s.current_y(), s.look());
             if let Some(prev) = &s.previous_src {
-                push_sprite(&mut stage, prev, (x, y), look, 1.0, image_size);
+                push_sprite(&mut stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, image_size);
             }
-            push_sprite(&mut stage, &s.src, (x, y), look, s.alpha(), image_size);
+            push_sprite(&mut stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), image_size);
         }
         let view = self.stage_transform();
         for draw in stage {
@@ -1278,6 +1446,9 @@ fn push_image(
     alpha: f32,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
+    if src.is_empty() {
+        return; // an animation this view doesn't know
+    }
     if let Some(size) = image_size(src) {
         let p = place(size, container, fit);
         out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha });
@@ -1293,7 +1464,7 @@ fn push_sprite(
     alpha: f32,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
-    let Some(size) = image_size(src) else { return };
+    let Some(size) = image_size(src).filter(|_| !src.is_empty()) else { return };
     if size.w <= 0.0 || size.h <= 0.0 {
         return;
     }
@@ -1304,6 +1475,9 @@ fn push_sprite(
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
     out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x * VIRTUAL.w - w / 2.0, y * VIRTUAL.h - h, w, h), uv, alpha });
 }
+
+#[cfg(test)]
+mod anim_tests;
 
 #[cfg(test)]
 mod tests {

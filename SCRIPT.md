@@ -270,6 +270,7 @@ rest were not tried.
 | --- | --- |
 | `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped). |
 | `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
+| `::bg{anim=rain fade=1}` | An **animation** (see "Frame animations" below) as the background, instead of `src=`/`color=`: exactly one of the three. `fade`, `wipe` and `through` work as for a picture. |
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
@@ -277,11 +278,13 @@ rest were not tried.
 | `::show{mika happy y=0.9 z=2}` | `y`: where the sprite's **bottom edge** is, as a fraction of the screen height (a number or `N%`, from -0.5 to 1.5; default 1, the bottom of the screen). Less than 1 lifts the sprite, more than 1 sinks it below the screen edge; the screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps standing on its `y` line and stays centred on `at`. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
 | `::show{src=assets/ghost.png id=ghost at=center}` | A sprite that isn't a character. |
+| `::show{mika anim=blink at=left}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`at`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
 | `::move{mika at=right time=0.8}` | Slide a sprite. |
 | `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `at` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
 | `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `at`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
+| `::move{mika y=0.97 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
@@ -306,6 +309,85 @@ The cover is drawn over the stage, inline images, video and hotspot pictures, un
 past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
 through a fade, and roll forward does the same. The last line stays on screen while the
 screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
+
+## Frame animations
+
+A frame animation is a list of pictures with the time each one stays up, like an eye
+that is open for three seconds and closed for a moment. Declare it once, before it is
+used, then use it wherever a picture goes:
+
+```
+::anim{id=blink frames="eyes_open.png 3, eyes_closed.png 0.12" loop}
+::anim{id=rain frames="rain1.png 0.1, rain2.png 0.1, rain3.png 0.1" loop}
+::anim{id=arrive frames="door_shut.png 0.6, door_open.png 0.1"}
+
+::bg{anim=rain fade=1}
+::show{mika anim=blink at=left}
+```
+
+- `id` is letters, digits and `_`; declaring an id twice is an error. Animations are
+  global, like characters, and can be shown more than once at the same time.
+- `frames` is a comma-separated list of `picture seconds` pairs, in quotes because of
+  the spaces. At least one frame; each picture is a `.png`, `.jpg`, `.jpeg` or `.webp`
+  inside the game folder (so file names have no spaces), and each time is from 0.02 to
+  60 seconds. A frame is shown from its start up to, but not including, the next frame's start.
+- `loop` (on its own) starts over from the first frame after the last one. Without it
+  the animation plays once and **stays on its last frame**.
+- A one-frame animation is allowed: it is just a picture.
+- `anim=` goes on `::show` (a sprite) and `::bg`. Anywhere else it is an error, and so
+  is an animation that is not declared above the line that uses it.
+
+An animation sprite is an ordinary sprite: it can be moved, scaled, flipped, faded, put
+behind another, given a `y`, hidden, rolled back and saved. Showing another picture on
+the same sprite (`::show{mika happy}`) replaces the animation with a crossfade, and
+the old animation keeps playing while it fades out. Frames may differ in size; each
+is drawn as a sprite (or background) picture of its own size.
+
+**Timing.** The animation starts at its first frame when it starts being shown. Time
+counts in seconds of the story's own clock, the same as fades and waits: it stands still
+under Settings, History, the save screens and dialogs, and skip mode does not speed it
+up (it runs at normal speed while lines go by). Where an animation is in its run is not
+part of a save or of rollback: after loading a save, rolling back or reloading the
+script it starts again from its first frame. Saves remember *which* animation each
+sprite or background shows (a save that names an animation the script does not declare
+is refused, like one naming a file outside the game folder; a hot reload instead drops
+the picture of an animation you removed: a background goes, a sprite leaves the stage).
+
+**Cost.** Every frame is loaded as an ordinary picture, all of them together, a few
+lines before the animation can appear (and as long as it is on screen), so a short
+loop of well-sized pictures is best. `quillstone check` reports a frame that is missing
+or is not a picture as an error, and warns about an animation of more than 64 frames or a
+frame bigger than 2048 pixels on a side. `quillstone package` includes every frame.
+Frames of an animation are not crossfaded into each other.
+
+## Looping moves
+
+Add `loop` to a `::move` and the sprite keeps going back and forth:
+
+```
+::move{mika y=0.97 time=1.2 ease=inout loop}
+::move{mika scale=1.04 time=2 loop=pingpong}
+```
+
+- The sprite glides to the target as for any move, then back to where the move started,
+  then to the target again, for ever. `time` is the time of **one leg** (it must be above
+  0), and `ease` applies to each leg.
+- `loop` alone and `loop=pingpong` mean the same; there is no other kind of loop.
+- It animates any mix of `at`, `y`, `scale`, `xscale` and `yscale`; a move that changes
+  none of them (only `flip`, say) can't loop. `flip` may be added: it switches at the start.
+- "Where it started" is the sprite's resting values: what it had when the move was given.
+  The loop doesn't change them, so a pose change (`::show{mika happy}`) keeps the loop going.
+- The loop ends when the sprite gets another `::move`, a `::show` that **sets** `at`, `y`,
+  `scale`, `xscale` or `yscale` (whether or not the value differs), or `::hide`. A plain
+  `::move` (without `loop`) glides from wherever the sprite is at that moment to its new
+  values; anything it doesn't name goes back to the resting value. A second `::move{... loop}`
+  replaces the loop.
+- It never holds up the story: the next line shows at once, rollback goes back one line
+  as always, and the last line of the story ends with the sprite still bobbing.
+
+Like animations, where a loop is in its cycle is not part of the state: a save, rollback or
+reload restarts the sprite at its resting values and heading for the target. A loop stands still while a menu is open,
+and skip mode does not speed it up.
 
 ## HUD: text, bars and pictures over the story
 
@@ -750,7 +832,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch and mirroring, the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

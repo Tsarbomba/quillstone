@@ -218,6 +218,12 @@ fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
 /// Icons are drawn at about 100 px; bigger files only cost load time and memory.
 const BIG_ICON_SIDE: u32 = 512;
 
+/// Frames of an animation are loaded together; past this many `check` warns.
+const MANY_FRAMES: usize = 64;
+
+/// A frame bigger than this on a side is more than any screen shows.
+const BIG_FRAME_SIDE: u32 = 2048;
+
 /// `(line, path)` of every hotspot region's image.
 fn hotspot_images(program: &Program) -> HashSet<(usize, &str)> {
     let regions = program.ops.iter().filter_map(|op| match op {
@@ -236,8 +242,22 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
     let hot = hotspot_images(program);
     let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, "hotspot image"));
     let icons = program.item_icons().map(|(l, a)| (l, a, "item icon"));
+    let frames = program.anim_frames().map(|(l, _, a)| (l, a, "animation frame"));
     let mut out = Vec::new();
-    for (line, asset, noun) in spots.chain(icons) {
+    // Animations with a great many frames cost load time and memory all at once.
+    for anim in program.anims.values().filter(|a| a.frames.len() > MANY_FRAMES) {
+        out.push((
+            false,
+            format!(
+                "{}:{}: warning: animation `{}` has {} frames (more than {MANY_FRAMES}): every frame is loaded when it is shown; fewer, or a shorter loop, loads faster",
+                script.display(),
+                anim.line,
+                anim.id,
+                anim.frames.len()
+            ),
+        ));
+    }
+    for (line, asset, noun) in spots.chain(icons).chain(frames) {
         let at = format!("{}:{line}", script.display());
         let file = root.join(asset);
         if !quillstone_script::is_inside(asset) {
@@ -247,7 +267,11 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
         } else {
             match picture::read_picture(&file) {
                 Err(why) => out.push((true, format!("{at}: error: `{asset}` won't show in a shipped game: {why}"))),
-                Ok((w, h)) if w.max(h) > BIG_ICON_SIDE => out.push((
+                Ok((w, h)) if noun == "animation frame" && w.max(h) > BIG_FRAME_SIDE => out.push((
+                    false,
+                    format!("{at}: warning: `{asset}` is {w}x{h}: frames beyond {BIG_FRAME_SIDE} px only cost load time and memory (the screen is 1920x1080)"),
+                )),
+                Ok((w, h)) if noun != "animation frame" && w.max(h) > BIG_ICON_SIDE => out.push((
                     false,
                     format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
                 )),
@@ -680,6 +704,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::ShowSprite { id, src, x, y, .. } => println!("[show {id}: {src} at {:.0}%,{:.0}%]", x * 100.0, y * 100.0),
             Cmd::HideSprite { id, .. } => println!("[hide {id}]"),
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
+            Cmd::LoopSprite { id, x, y, scale, .. } => println!("[loop {id} between here and {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
             Cmd::HudShow { elem, .. } => println!("[hud: {}]", elem.id),
@@ -978,6 +1003,55 @@ mod tests {
         assert!(found[1].1.contains(":5:") && found[1].1.contains("1024x1024"));
         assert!(found[1].1.contains("icons are drawn at about 100 px; a smaller file loads faster and saves memory"));
         assert!(checked(script, files).is_ok(), "warnings don't fail check");
+    }
+
+    #[test]
+    fn check_validates_every_animation_frame_as_a_picture() {
+        let script = "::anim{id=blink frames=\"assets/o.png 3, assets/c.png 0.1\" loop}\n::show{a anim=blink}\nHi.\n";
+        assert!(checked(script, &[("assets/o.png", KEY), ("assets/c.png", KEY)]).is_ok());
+        let err = checked(script, &[("assets/o.png", KEY)]).unwrap_err();
+        assert!(err.contains("1 problem"), "a frame is missing: {err}");
+        let err = checked(script, &[("assets/o.png", KEY), ("assets/c.png", b"not a picture")]).unwrap_err();
+        assert!(err.contains("1 problem"), "a frame is no picture: {err}");
+        // Frames the story never shows are checked too: they are declared, so they ship.
+        let unused = "::anim{id=blink frames=\"assets/o.png 3\"}\nHi.\n";
+        assert!(checked(unused, &[]).unwrap_err().contains("1 problem"));
+        // The findings name the declaration's line and the frame.
+        let program = parse(&format!("Hi.\n{script}")).unwrap();
+        let found = in_dir(&[("assets/o.png", KEY), ("assets/c.png", b"nope")], |dir| picture_findings(&program, &dir.join("s.quill.md"), dir));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0 && found[0].1.contains(":2:") && found[0].1.contains("`assets/c.png` won't show in a shipped game"), "{}", found[0].1);
+        let err = checked("::anim{id=a frames=\"assets/x.webm 1\"}\nHi.\n", &[]);
+        assert!(err.is_err(), "the parser refuses non-pictures before check looks");
+    }
+
+    #[test]
+    fn long_animations_and_huge_frames_get_warnings_not_errors() {
+        let many: Vec<String> = (0..65).map(|_| "assets/s.png 0.1".to_string()).collect();
+        let script = format!("::anim{{id=many frames=\"{}\"}}\n::anim{{id=fine frames=\"assets/s.png 1, assets/t.png 1\"}}\nHi.\n", many.join(", "));
+        let program = parse(&script).unwrap();
+        let files: &[(&str, &[u8])] = &[("assets/s.png", &picture::fake_png(100, 100)), ("assets/t.png", &picture::fake_png(2048, 1080))];
+        let found = in_dir(files, |dir| picture_findings(&program, &dir.join("s.quill.md"), dir));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(!found[0].0 && found[0].1.contains(":1:") && found[0].1.contains("65 frames") && found[0].1.contains("`many`"), "{}", found[0].1);
+        let exactly: Vec<String> = (0..64).map(|_| "assets/s.png 0.1".to_string()).collect();
+        let ok = parse(&format!("::anim{{id=many frames=\"{}\"}}\nHi.\n", exactly.join(", "))).unwrap();
+        assert!(in_dir(files, |dir| picture_findings(&ok, &dir.join("s.quill.md"), dir)).is_empty(), "64 is allowed");
+        // A frame past 2048 px on a side warns, at the declaration's line.
+        let huge = "Hi.\n::anim{id=h frames=\"assets/s.png 1, assets/h.png 1\"}\n";
+        let program = parse(huge).unwrap();
+        let files: &[(&str, &[u8])] = &[("assets/s.png", &picture::fake_png(100, 100)), ("assets/h.png", &picture::fake_png(2049, 100))];
+        let found = in_dir(files, |dir| picture_findings(&program, &dir.join("s.quill.md"), dir));
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].0 && found[0].1.contains(":2:") && found[0].1.contains("2049x100") && found[0].1.contains("assets/h.png"), "{}", found[0].1);
+        assert!(checked(huge, files).is_ok(), "warnings don't fail check");
+        assert!(checked(&script, &[("assets/s.png", &picture::fake_png(100, 100)), ("assets/t.png", &picture::fake_png(2048, 1080))]).is_ok());
+    }
+
+    #[test]
+    fn the_animation_demo_passes_check() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/anim.quill.md");
+        assert!(check(&path).is_ok());
     }
 
     #[test]

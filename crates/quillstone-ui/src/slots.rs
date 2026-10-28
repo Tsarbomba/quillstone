@@ -193,7 +193,7 @@ pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option
         return Some(SlotInfo { seq: 0, time: String::new(), preview: "Unreadable save".into(), scene: None });
     };
     let scene = Session::load(program, &file.session).ok().map(|(_, cmds)| {
-        let mut view = View::new().with_speed(0.0);
+        let mut view = View::new().with_speed(0.0).with_anims(&program.anims);
         view.apply(&cmds);
         view
     });
@@ -327,6 +327,19 @@ mod tests {
         let info = read_slot(&storage, &p, slot).unwrap();
         assert!(info.scene.is_none());
         assert_eq!(info.preview, "This save doesn't fit the current script");
+    }
+
+    #[test]
+    fn a_slot_thumbnail_shows_the_first_frame_of_an_animation() {
+        let p = parse("::anim{id=sky frames=\"day.png 1, night.png 1\" loop}\n::bg{anim=sky}\n**A:** hi\n").unwrap();
+        let mut storage = MemoryStorage::default();
+        let slot = Slot { page: Page::Numbered(1), index: 0 };
+        let (session, _) = Session::start(&p);
+        storage.write(&slot.file_name(), &SaveFile::new(&session, storage.now()).to_text()).unwrap();
+        let scene = read_slot(&storage, &p, slot).unwrap().scene.unwrap();
+        let draws = thumbnail(&scene, &|_| Some(Size::new(1920.0, 1080.0)), Rect::new(0.0, 0.0, 192.0, 108.0));
+        let files: Vec<&str> = draws.iter().filter_map(|d| if let Draw::Image { src, .. } = d { Some(src.as_str()) } else { None }).collect();
+        assert_eq!(files, ["day.png"]);
     }
 
     #[test]

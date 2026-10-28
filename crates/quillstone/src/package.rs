@@ -196,6 +196,28 @@ mod tests {
     }
 
     #[test]
+    fn packages_every_animation_frame() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-anim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        for f in ["o.png", "c.png", "rain1.png", "rain2.png", "unused.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "::anim{id=blink frames=\"assets/o.png 3, assets/c.png 0.1\" loop}\n::anim{id=rain frames=\"assets/rain1.png 1, assets/rain2.png 1\" loop}\n::character{id=a sprites=assets/{pose}.png}\n::bg{anim=rain}\n::show{a anim=blink}\nHi.\n";
+        std::fs::write(src.join("anim.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("anim.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
+        for f in ["o.png", "c.png", "rain1.png", "rain2.png"] {
+            assert!(out.join("game/assets").join(f).is_file(), "{f}");
+        }
+        assert!(!out.join("game/assets/unused.png").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn packages_the_demo_with_only_what_it_uses() {
         let base = std::env::temp_dir().join(format!("quillstone-package-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

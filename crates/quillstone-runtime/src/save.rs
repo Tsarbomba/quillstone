@@ -13,7 +13,11 @@ use std::collections::HashSet;
 use quillstone_script::{bg_color, is_inside, Fit, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
-use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteState, State};
+use quillstone_script::{Ease, ANIM_PREFIX};
+use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
+
+/// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
+const MAX_LOOP_LEG: f32 = 3600.0;
 
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
@@ -75,6 +79,17 @@ impl<'p> Session<'p> {
     /// Restore a session from [`Session::save`] text. Returns the session and the
     /// commands that draw its screen (as after a rollback).
     pub fn load(program: &'p Program, text: &str) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        Session::load_impl(program, text, false)
+    }
+
+    /// [`Session::load`] for a script that was edited under a running game (hot reload): a
+    /// picture that is an animation the script no longer declares is dropped (a background
+    /// goes, a sprite leaves the stage) instead of making the whole load fail.
+    pub fn load_edited(program: &'p Program, text: &str) -> Result<(Session<'p>, Vec<Cmd>), String> {
+        Session::load_impl(program, text, true)
+    }
+
+    fn load_impl(program: &'p Program, text: &str, edited: bool) -> Result<(Session<'p>, Vec<Cmd>), String> {
         let mut lines = text.lines().enumerate().map(|(n, l)| (n + 1, l)).filter(|(_, l)| !l.trim().is_empty());
         match lines.next() {
             Some((_, l)) if l.trim() == MAGIC => {}
@@ -88,7 +103,7 @@ impl<'p> Session<'p> {
                     if states.len() >= MAX_SAVE_STATES {
                         return Err(format!("line {n}: the save holds more than {MAX_SAVE_STATES} states"));
                     }
-                    states.push((read_state(&mut lines, program)?, None));
+                    states.push((read_state(&mut lines, program, edited)?, None));
                 }
                 Some("input") => {
                     let last = states.last_mut().ok_or(format!("line {n}: input before any state"))?;
@@ -407,6 +422,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.xscale,
             sp.yscale
         ));
+        // A looping move is a record of its own, so older saves and readers are unaffected.
+        if let Some(l) = &sp.looped {
+            w(format!("loop {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name()));
+        }
     }
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
@@ -546,9 +565,10 @@ fn num<T: std::str::FromStr>(s: &str, line: usize) -> Result<T, String> {
     s.parse().map_err(|_| format!("line {line}: `{s}` is not a number"))
 }
 
-fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &Program) -> Result<State, String> {
+fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &Program, edited: bool) -> Result<State, String> {
     let mut s = State::new(program); // starts from the script's defaults, so new variables exist
     let mut saw_at = false;
+    let mut dropped: Vec<String> = Vec::new(); // sprites an edit took the picture of
     for (n, line) in lines.by_ref() {
         let t = tokens(line).map_err(|e| format!("line {n}: {e}"))?;
         let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: `{line}` is too short"));
@@ -559,7 +579,20 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             let p = arg(i)?;
             if is_inside(p) { Ok(p.to_string()) } else { Err(format!("line {n}: unsafe file path `{p}`")) }
         };
+        // A picture: a file, or an animation the script declares.
+        let pic = |i: usize| -> Result<String, String> {
+            let p = arg(i)?;
+            match p.strip_prefix(ANIM_PREFIX) {
+                Some(id) if program.anims.contains_key(id) => Ok(p.to_string()),
+                Some(id) => Err(format!("line {n}: unknown animation `{id}` (the script no longer declares it)")),
+                None => path(i),
+            }
+        };
+        // After a script edit, a picture that is an animation no longer declared is dropped.
+        let gone = |i: usize| edited && t.get(i).and_then(|p| p.strip_prefix(ANIM_PREFIX)).is_some_and(|id| !program.anims.contains_key(id));
         match arg(0)? {
+            "bg" if gone(1) => {}
+            "sprite" if gone(2) => dropped.push(arg(1)?.to_string()),
             "end" if saw_at => {
                 // A save whose script changed so the op is gone is dealt with by the caller
                 // (`consistent`): the placeholder stays and the story re-runs from the spot.
@@ -599,7 +632,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "rng" => s.rng = num(arg(1)?, n)?,
             // A solid colour is `color:#rrggbb`; anything else is a file and must be inside the game folder.
             "bg" if bg_color(arg(1)?).is_some() => s.background = Some(arg(1)?.to_string()),
-            "bg" => s.background = Some(path(1)?),
+            "bg" => s.background = Some(pic(1)?),
             "hud" => {
                 if s.hud.len() >= MAX_HUD_RECORDS {
                     return Err(format!("line {n}: more than {MAX_HUD_RECORDS} `hud` records in a state"));
@@ -608,7 +641,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             }
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
-                src: path(2)?,
+                src: pic(2)?,
                 x: sane(f(3)?, 0.0, 1.0, 0.5),
                 scale: sane(f(4)?, 0.05, 10.0, 1.0),
                 y: if t.len() > 5 { sane(f(5)?, -0.5, 1.5, 1.0) } else { 1.0 },
@@ -617,7 +650,26 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 flip: t.get(7).is_some_and(|v| v == "true"),
                 xscale: if t.len() > 8 { sane(f(8)?, 0.05, 10.0, 1.0) } else { 1.0 },
                 yscale: if t.len() > 9 { sane(f(9)?, 0.05, 10.0, 1.0) } else { 1.0 },
+                looped: None,
             }),
+            "loop" => {
+                let id = arg(1)?;
+                let Some(sprite) = s.sprites.iter_mut().find(|sp| sp.id == id) else {
+                    if dropped.iter().any(|d| d == id) {
+                        continue;
+                    }
+                    return Err(format!("line {n}: a `loop` for the sprite `{id}`, which is not on stage"));
+                };
+                sprite.looped = Some(SpriteLoop {
+                    x: sane(f(2)?, 0.0, 1.0, 0.5),
+                    y: sane(f(3)?, -0.5, 1.5, 1.0),
+                    scale: sane(f(4)?, 0.05, 10.0, 1.0),
+                    xscale: sane(f(5)?, 0.05, 10.0, 1.0),
+                    yscale: sane(f(6)?, 0.05, 10.0, 1.0),
+                    time: sane(f(7)?, 0.02, MAX_LOOP_LEG, 1.0),
+                    ease: Ease::parse(arg(8)?).unwrap_or_default(),
+                });
+            }
             "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {

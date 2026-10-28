@@ -386,6 +386,75 @@ pub struct Character {
     pub sprites: Option<String>,
 }
 
+/// One picture of a frame animation and how long it stays up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimFrame {
+    pub file: String,
+    pub seconds: f32,
+}
+
+/// A frame animation declared with `::anim`. Shown like a picture (`anim=id`); the
+/// runtime and the view refer to it as the `src` text `anim:<id>` (see [`anim_id`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Anim {
+    pub id: String,
+    pub frames: Vec<AnimFrame>,
+    /// Starts over after the last frame (otherwise the last frame stays).
+    pub looped: bool,
+    /// Source line (1-based) of the declaration.
+    pub line: usize,
+}
+
+/// The shortest and longest time one frame may be shown, in seconds.
+pub const ANIM_FRAME_SECONDS: std::ops::RangeInclusive<f32> = 0.02..=60.0;
+
+impl Anim {
+    /// How long one run through the frames takes.
+    pub fn total(&self) -> f32 {
+        self.frames.iter().map(|f| f.seconds).sum()
+    }
+
+    /// Whether the picture ever changes (more than one frame).
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
+
+    /// Whether, `t` seconds after it started, the picture can still change.
+    pub fn running(&self, t: f32) -> bool {
+        self.is_animated() && (self.looped || t < self.total())
+    }
+
+    /// The index of the frame shown `t` seconds after the animation started. A
+    /// frame's last instant belongs to the next frame; a looping animation wraps,
+    /// a one-shot one stays on its last frame.
+    pub fn frame_index(&self, t: f32) -> usize {
+        let total = self.total();
+        if self.frames.len() < 2 || !t.is_finite() || t <= 0.0 || total <= 0.0 {
+            return 0;
+        }
+        let t = if self.looped {
+            t % total
+        } else if t >= total {
+            return self.frames.len() - 1;
+        } else {
+            t
+        };
+        let mut end = 0.0;
+        for (i, f) in self.frames.iter().enumerate() {
+            end += f.seconds;
+            if t < end {
+                return i;
+            }
+        }
+        self.frames.len() - 1 // rounding at the very end of a lap
+    }
+
+    /// The picture file shown `t` seconds after the animation started.
+    pub fn frame_at(&self, t: f32) -> &str {
+        self.frames.get(self.frame_index(t)).map_or("", |f| f.file.as_str())
+    }
+}
+
 /// An item declared with `::item`. Its `id` is the text a list variable holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
@@ -422,6 +491,8 @@ pub struct Program {
     /// Initial variable values from the front matter.
     pub vars: Vars,
     pub characters: BTreeMap<String, Character>,
+    /// Frame animations declared with `::anim`, by id.
+    pub anims: BTreeMap<String, Anim>,
     /// Items declared with `::item`, by id.
     pub items: BTreeMap<String, Item>,
     /// The list variable the inventory screen shows (front matter `inventory:`).
@@ -485,7 +556,13 @@ impl Program {
     pub fn images_ahead(&self, pc: usize, steps: usize) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for at in self.ops_ahead(pc, steps) {
-            for (kind, src) in self.ops[at].all_assets() {
+            let op = &self.ops[at];
+            let anim = match op {
+                Op::Bg { src, .. } | Op::Show { src, .. } => anim_id(src).and_then(|id| self.anims.get(id)),
+                _ => None,
+            };
+            let frames = anim.into_iter().flat_map(|a| a.frames.iter().map(|f| (AssetKind::Image, f.file.as_str())));
+            for (kind, src) in op.all_assets().into_iter().chain(frames) {
                 if kind == AssetKind::Image && !out.contains(&src) {
                     out.push(src);
                 }
@@ -579,10 +656,18 @@ impl Program {
 
     /// Every asset the script references, as `(op index, kind, path)`.
     pub fn assets(&self) -> impl Iterator<Item = (usize, AssetKind, &str)> {
-        self.ops
+        let ops = self
+            .ops
             .iter()
             .enumerate()
-            .flat_map(|(i, op)| op.all_assets().into_iter().map(move |(kind, path)| (i, kind, path)))
+            .flat_map(|(i, op)| op.all_assets().into_iter().map(move |(kind, path)| (i, kind, path)));
+        // The pictures of every declared animation (op index 0: they belong to no op).
+        ops.chain(self.anim_frames().map(|(_, _, file)| (0, AssetKind::Image, file)))
+    }
+
+    /// The picture files of every `::anim` frame, as `(declaration line, animation id, file)`.
+    pub fn anim_frames(&self) -> impl Iterator<Item = (usize, &str, &str)> {
+        self.anims.values().flat_map(|a| a.frames.iter().map(move |f| (a.line, a.id.as_str(), f.file.as_str())))
     }
 }
 
@@ -690,6 +775,20 @@ impl Wipe {
             _ => None,
         }
     }
+}
+
+/// Prefix of a picture (background or sprite) that is a frame animation: `anim:<id>`.
+/// (`:` can't be in a game-folder path, so it never collides with a file.)
+pub const ANIM_PREFIX: &str = "anim:";
+
+/// The `src` that names the animation `id`.
+pub fn anim_src(id: &str) -> String {
+    format!("{ANIM_PREFIX}{id}")
+}
+
+/// The animation a picture `src` names, or `None` for a file or a colour.
+pub fn anim_id(src: &str) -> Option<&str> {
+    src.strip_prefix(ANIM_PREFIX).filter(|id| crate::is_plain_ident(id))
 }
 
 /// Prefix of a background that is a solid colour instead of a file: `color:#rrggbb`.
@@ -896,6 +995,9 @@ pub enum Op {
         yscale: Option<f32>,
         time: f32,
         ease: Ease,
+        /// `loop`: after the move, go back and forth between the start and the end
+        /// values until something else moves, shows or hides the sprite. `time` is one leg.
+        looped: bool,
     },
     /// Shake the stage (background and sprites) for `time` seconds, by up to
     /// `strength` pixels (at 1920x1080) along `axis`. Doesn't wait.
@@ -996,9 +1098,10 @@ impl Op {
     pub fn asset(&self) -> Option<(AssetKind, &str)> {
         match self {
             Op::Image { src, .. } => Some((AssetKind::Image, src)),
-            Op::Bg { src, .. } if bg_color(src).is_some() => None,
+            Op::Bg { src, .. } if bg_color(src).is_some() || anim_id(src).is_some() => None,
             Op::Bg { src, .. } => Some((kind_from_path(src), src)),
             Op::Hud { elem, .. } => elem.image().map(|i| (AssetKind::Image, i)),
+            Op::Show { src, .. } if anim_id(src).is_some() => None,
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
             Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {
                 Some((AssetKind::Audio, src))
