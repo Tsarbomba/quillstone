@@ -24,7 +24,7 @@ pub mod view;
 
 pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
 pub use layout::{
-    clip, estimate_lines, letterbox, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
+    clip, estimate_lines, estimate_lines_styled, letterbox, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
 };
 pub use theme::{CellStyle, Theme};
 pub use view::{

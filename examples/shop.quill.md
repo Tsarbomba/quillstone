@@ -5,11 +5,18 @@ vars: { gold: 30, inventory: [] }
 
 <!-- A list variable is a set of items: `inventory += "key"` adds one (twice does
      nothing), `inventory -= "key"` removes it, `inventory has "key"` asks, and
-     `{inventory}` shows the items in the order they were added. -->
+     `{inventory}` shows the items in the order they were added.
+     `# price_line(item, cost)` is a label with parameters: `::call{to=price_line
+     item="lamp" cost=10}` sets `item` and `cost` (ordinary variables) and comes
+     back at the `::return`. -->
 
 # start
 
 You push open the door of a cramped little shop. The keeper nods without looking up.
+
+Two things are priced on the shelf behind the counter.
+::call{to=price_line item="brass key" cost=15}
+::call{to=price_line item="lamp" cost=10}
 
 # shop
 
@@ -50,3 +57,9 @@ Outside, the old gate is locked tight. Perhaps the shop sold something for it.
 ::if{inventory has "lamp" and inventory has "map"}
 With the lamp lit and the map in your hand, you will not get lost in the tunnels.
 ::endif
+::end
+
+# price_line(item, cost)
+
+The {item} costs {cost} gold.
+::return

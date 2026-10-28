@@ -2,8 +2,8 @@
 title: Staging
 ---
 
-<!-- Vertical placement (`y=`), drawing order (`z=`) and the `{size}` and `{nw}`
-     text tags. See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
+<!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{p}` and `{nw}`
+     text tags, `::flash`, and a looping `::sfx` that is started and later stopped. See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
 ::character{id=ren name=Ren color=#9ad1ff sprites=assets/ren_{pose}.png}
@@ -11,6 +11,7 @@ title: Staging
 # stage
 
 ::bg{src=assets/rooftop.png fade=0.5}
+::sfx{src=assets/calm.ogg loop volume=0.4 fade=1}
 ::show{mika neutral at=0.3 scale=0.8 fade=0.4}
 **Mika:** Sprites stand on the bottom edge. That is `y=1`, the default.
 
@@ -21,6 +22,7 @@ title: Staging
 **Mika:** And now I'm sinking below the floor. The screen cuts me off.
 
 ::move{mika y=1 time=0.4 ease=out}
+::flash{time=0.5}
 ::show{ren happy at=0.42 scale=0.8 z=1 fade=0.4}
 **Ren:** I'm standing in front of you, because my `z` is higher.
 
@@ -28,10 +30,15 @@ title: Staging
 **Mika:** Not any more. My `z` is higher now; equal ones go by who arrived first.
 
 ::hide{ren fade=0.3}
+**Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
+
+**Mika:** A paragraph break starts a new line inside one line of dialogue.{p}It never waits, and it works with {color=#ffd98c}colour{/color} and {size=+14}size{/size} too.
+
 **Mika:** Text can change size too: {size=+14}bigger{/size}, {size=24}smaller{/size}, and {size=+14}big {color=#ff8080}and red{/color}{/size} together.
 
 **Mika:** This line moves on by itself once it is typed, with no click...{nw}
 
+::sfx{stop=assets/calm.ogg fade=1.5}
 ::choice
 - [Replay the staging](#stage)
 - [That's all](#done)

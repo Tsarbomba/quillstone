@@ -35,14 +35,19 @@ She looks away.
   `inventory:` (see [Inventory](#inventory)), and `persistent:`, `gallery:` and
   `music_room:` (see [Kept across playthroughs](#kept-across-playthroughs)).
 - **Headings** (`#` to `######`) are *labels*: places to jump to. `# The Roof` is
-  the label `the-roof` (lowercase, words joined by dashes).
+  the label `the-roof` (lowercase, words joined by dashes). A heading like
+  `# heal(amount, who)` is a label with parameters, see
+  [Labels with parameters](#labels-with-parameters).
 - **`**Name:** text`** is dialogue. Any other prose is narration. Consecutive
   lines join into one paragraph; a blank line, a new `**Name:**` or a command ends it.
 - **`<!-- comments -->`** may span several lines and are ignored. Inside a
   `::choice` block they must fit on one line.
 - **Commands** are one line: `::name{key=value key="text with spaces" flag}`.
   Times are in seconds. Paths are relative to the script file and must stay in its
-  folder or below it (no `..`, no drive letters), with `/` between folders.
+  folder or below it (no `..`, no drive letters, no backslashes), with `/` between
+  folders. The script is refused with a line-numbered error when a `src=`, `icon=`,
+  `image=`, `sprites=`, inline image, `gallery:`, `music_room:` or `theme:` path breaks that
+  (otherwise its saves could never be loaded again).
 
 ## Variables
 
@@ -91,6 +96,9 @@ The key turns in the lock.
 - `{inventory}` shows the items joined with `, ` (an empty list shows nothing).
   A bare `inventory` in a condition means "is not empty". `==` and `!=` between
   two lists compare their items, ignoring order.
+- A bare list can't be used as a value: `copy = inventory`, `x += inventory` and
+  `::call{to=heal who=inventory}` are errors (they would be silently ignored). Ask
+  with `inventory has "key"` instead.
 - Lists change only with `+=` and `-=` of text. `inventory = "x"`, adding a
   number, and `has` on a variable that isn't a declared list are errors that
   `quillstone check` reports with their line. (A computed value that isn't text
@@ -112,16 +120,25 @@ Inside lines and choice texts:
 | `{color=#ff8080}words{/color}` | words in that colour (`#rrggbb` or `#rgb`; they nest) |
 | `{size=+10}big{/size}` | text 10 pixels bigger than the text around it (`{size=-8}` smaller); they nest, so `{size=+10}a{size=+4}b{/size}{/size}` makes `b` 14 bigger |
 | `{size=24}small{/size}` | text exactly 24 pixels tall (on the 1920x1080 screen; 8 to 200, as is the result of a relative size) |
+| `First.{p}Second.` | a line break inside the line (a paragraph break); it doesn't wait. A `{p}` at the very start or end of a line is ignored. Not allowed in a choice text |
 | `Well...{w=0.5} no.` | the typing pauses for half a second there (up to 10; a click skips it) |
 | `Hold on.{nw}` | "no wait": once the line has finished typing the story goes on by itself, without a click or the auto-forward delay. It must be the very last thing in a dialogue line (not a choice text) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
 A `{` with no `}` after it is just a brace, and an unknown `{name}` is left as
-written. Mistakes (an unclosed `**` or `{size=..}`, a size outside 8 to 200, `{nw}`
-in the middle of a line, an unknown tag like `{huge=40}`) are errors with the line number. A variable's value always shows as it is, even if it
+written. `{p}` and `{nw}` are tags, so a variable with one of those names can't be
+shown with `{p}` / `{nw}`. Mistakes (an unclosed `**` or `{size=..}`, a size outside 8
+to 200, `{nw}` in the middle of a line, `{p}` in a choice, an unknown tag like
+`{huge=40}`) are errors with the line number. A variable's value always shows as it is, even if it
 contains `*` or braces. The history and save previews show the words without
-styling or tags. A line with `{size=..}` is as tall as its biggest text, so a bigger
+styling or tags (the history keeps a `{p}` break; a save preview shows it as a space). A line with `{size=..}` is as tall as its biggest text, so a bigger
 word makes its line taller.
+
+`{nw}` waits for the typing and for any `{w=..}` pause, including one at the very
+end (`Well...{w=3}{nw}` stays three seconds, even with instant text); a click
+still shows everything and cancels the pause. It does not wait for a voice clip:
+the next line's batch stops the voice (a deliberate choice; put a `{w=..}` at the
+end if the clip must play out).
 
 With `{nw}` the line is still added to the history, and a `::choice` after it
 appears once the line is typed (the line stays above the choices). It waits while
@@ -159,13 +176,15 @@ Rollback and saves keep the counts; they belong to one playthrough.
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. |
+| `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
 Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
 940 px tall at `scale=1` (on a 1920x1080 screen), and the text box draws over their
 lower part. The camera, sprite sizes, heights and `z` are
 part of the scene, so rollback and saves restore
-them; a shake is a moment and isn't replayed.
+them; a shake or a flash is a moment and isn't replayed. A flash stands still while
+a menu is open and ends at once when the player skips.
 
 ## Sound and video
 
@@ -174,6 +193,9 @@ them; a shake is a moment and isn't replayed.
 | `::music{src=... fade=1 volume=0.8 loop=false}` | Background music; loops unless `loop=false`. `volume` 0 to 1. A different track crossfades over `fade` seconds. |
 | `::music{stop fade=2}` | Stop it. |
 | `::sfx{src=door.ogg volume=0.5}` | One-shot sound effect. |
+| `::sfx{src=rain.ogg loop volume=0.6 fade=1}` | A **looping** sound effect, fading in over `fade` seconds. It belongs to the scene, like music. |
+| `::sfx{stop=rain.ogg fade=1}` | Stop that loop (and a one-shot of that file that is still playing), fading out over `fade`. The file must be one some `::sfx` plays. |
+| `::sfx{stop}` | Stop everything on the sound-effect channel: all loops and all one-shots playing. |
 | `::voice{src=line1.ogg}` | Voice clip for the **next** line; stops when the player advances. |
 | `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
 | `::wait{time=1.5}` | Pause; a click skips it. |
@@ -204,7 +226,18 @@ How sound behaves:
   `::music` line. A `loop=false` track that has finished does start again.
 - Rollback keeps the music going if the earlier moment had the same track, and
   switches or stops it otherwise. A voiced line's clip plays again when you roll
-  back to it. Sound effects are never replayed by rollback.
+  back to it. One-shot sound effects are never replayed by rollback.
+- A looping `::sfx` is part of the scene, like the music: starting a loop that is
+  **already playing** doesn't restart it (only its `volume` changes), so repeating a
+  scene's `::sfx{... loop}` line is safe. Rollback, loading a save and reloading the
+  script keep the loops the earlier moment had playing and stop the others. Loops
+  follow the sound volume slider; skipping mutes one-shots but not loops. A loop
+  keeps playing until a `::sfx{stop}`, and the main menu ends it. `loop` needs a
+  file that exists and plays, like music, and `quillstone package` includes it.
+  Loops are streamed from disk, like music, so a long ambience costs no memory or
+  start-up time. If a loop can't start (a missing or damaged file) it is tried again
+  at the next `::sfx{loop}` of it, or when the scene is redrawn (rollback, load).
+  There are no other channels: one-shots, loops and `stop` all use the sound channel.
 
 Image formats: **PNG**, **JPEG** or **WebP**, at most 8192 pixels on a side;
 `quillstone check` refuses anything else.
@@ -224,6 +257,7 @@ is really playing, so a file that can't be decoded never traps the player.
 ::jump{to=ending}                       jump to a label
 ::jump{to=ending if="trust > 1"}        only if true
 ::call{to=flashback}                    run a label like a subroutine...
+::call{to=heal amount=5 who="Mika"}     ...which may take parameters (see below)
 ::return                                ...and come back after the ::call
 ::end                                   finish the story
 
@@ -253,6 +287,51 @@ is really playing, so a file that can't be decoded never traps the player.
 - Falling off the end of a label continues into the next one, so end each scene
   with `::jump`, `::return` or `::end` when that isn't what you want.
 - `::call` can nest up to 256 deep. `::return` with nothing to return to ends the story.
+
+### Labels with parameters
+
+A label can take values from the `::call` that runs it:
+
+````markdown
+::call{to=heal amount=5 who="Mika"}
+::call{to=heal amount=gold who=name}
+::end
+
+# heal(amount, who)
+{who} recovers {amount} points.
+::set{hp += amount}
+::return
+````
+
+- Write the parameter names after the label in parentheses, separated by commas:
+  letters, digits and `_`, with no defaults and no types. The label is still `heal`
+  (the heading text before the parenthesis), so `seen(heal)` works as usual.
+- **The rule for parentheses in a heading.** The `(` must touch the name *and* the
+  heading must end with `)` for it to be a parameter list. `# Round 1(a)` and
+  `# Café(night)` are therefore labels with parameters (`round-1` taking `a`,
+  `café` taking `night`). With a space before the `(`, like `# Chapter 1 (the start)`
+  or `# heal (amount)`, the whole heading is just a title, and its label is the slug of
+  all of it: `chapter-1-the-start`, `heal-amount` (the parentheses and spaces turn into
+  dashes). If you meant a plain title and wrote `# Round 1(a)`, the errors that follow
+  ("can run into", "can only be reached by `::call`") say so: put a space before the `(`.
+- A `::call` passes every parameter as `name=value`, with exactly the names the
+  heading lists. The value is an ordinary expression, as on the right of a `::set`:
+  a number, `"text"` in quotes, `true`/`false`, a variable, or a parenthesised
+  condition. Spaces are fine inside quotes or parentheses (`who="Mika Tanaka"`,
+  `ok=(gold >= 5 and met)`); elsewhere a space starts the next argument.
+- **Parameters are ordinary variables.** At the call, every value is worked out
+  first (so `a=b b=a` swaps them) and then stored into the variables of those names
+  before the label runs. Nothing is restored at `::return`: they keep their values
+  afterwards, rollback and saves treat them like any variable, and `{amount}` in a
+  line shows them. Pick parameter names that don't clash with variables the story
+  uses for something else. A list variable can't be a parameter.
+- A label with parameters can only be reached by `::call`. `quillstone check`
+  reports, with the line: a call that leaves out a parameter, passes one the
+  label doesn't have (a misspelling shows up as both), or passes arguments to a label
+  without parameters; a `::jump`, choice link or hotspot link to it; and a label
+  above it that runs on into it. End the label above with `::jump`, `::return` or
+  `::end` (put subroutines after the story, as in `examples/shop.quill.md`).
+  `quillstone test` plays them like any other label.
 
 ## Hotspots
 
@@ -318,6 +397,9 @@ used, like characters:
 - A list may hold an id that was never declared: the screens show it under its id
   with no picture. `quillstone check` warns about a `+= "x"` or `has "x"` on the
   inventory list that names no item (usually a typo) and checks the icons.
+  It also warns about an icon wider or taller than 512 px (icons are drawn at about
+  100 px, so a smaller file loads faster and saves memory) and about a description
+  too long for the description box.
 
 ## Inventory
 
@@ -344,7 +426,8 @@ You pick up a brass key.
 - Opened by the player, it sits over the story, which waits: a `::wait` doesn't run
   out and nothing is skipped. Esc, a right click, the I key or the Close button closes it.
 - `::inventory` opens the same screen from the script. The story waits until the player
-  closes it and then carries on. Rollback, saves and hot reload work with it like with
+  presses its Close button (or I, or Backspace) and then carries on; Esc or a right click opens the
+  settings instead, which return to the inventory, and S, L, H, F5 and F9 work there too. Rollback, saves and hot reload work with it like with
   any other waiting step, and `quillstone test` treats it as one click.
 
 ## Shop
@@ -371,8 +454,11 @@ vars: { gold: 40, pack: [], polite: false }
   the condition is true. A line needs a price from one place or the other. An item may
   appear once per shop.
 - The story waits at the shop, which shows every offered item with its picture, name
-  and price, and how much the player has. The Leave button, Esc or a right click
-  ends the block and the story continues after it. If no item is on offer the block
+  and price, and how much the player has. The Leave button (or Backspace, the gamepad's X) ends the
+  block and the story continues after it. Esc or a right click opens the settings
+  instead, as everywhere else, and closing them returns to the shop (page, selection
+  and purchases kept); S, L, H, F5 and F9 work there too (save, load, history, quick
+  save and load). If no item is on offer the block
   is skipped.
 - An item the player can buy is bought by clicking it, or by moving to it with the
   arrow keys and pressing Enter or Space: the price is taken from `pay`, the item is
@@ -380,6 +466,10 @@ vars: { gold: 40, pack: [], polite: false }
   new money. An item already in the list is marked **Owned** and can't be bought again;
   an item that costs more than the player has is greyed out and a click only says
   "Not enough gold". Money can never go below zero.
+- `pay` and `into` must both be `persistent:` or both ordinary variables
+  (`quillstone check` reports the line). A persistent list with ordinary money, or the
+  reverse, would give the item twice or lose both the money and the item when a purchase
+  is rolled back, because rollback hands persistent values back but not ordinary ones.
 - Purchases are ordinary variable changes, so rollback, saves, hot reload and
   `persistent:` variables work with them. A shop is an auto save point like a choice
   and stops skip and auto-forward; what the player buys isn't added to the history.
@@ -417,8 +507,16 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 ## What rollback restores
 
 Going back one step restores variables, the call stack, background, sprites and
-their positions, heights, depths and sizes, the camera, music, the inline images and voice of the line, and the line
-itself. Sound effects are not replayed.
+their positions, heights, depths and sizes, the camera, music, looping sound effects, the inline images and voice of the line, and the line
+itself. One-shot sound effects, shakes and flashes are not replayed.
+
+Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;
+going back further simply stops there, and the backlog lists what that history holds.
+Roll forward is dropped when the state rolled back to moves on by itself (a
+`::wait`, a video or a line ending in `{nw}`): rollback goes past those, so there is
+nothing to come back to. Persistent variables are never rolled back: a rollback or a
+loaded save shows the screen (choices, hotspots, shop stock, a line's `{variables}`)
+rebuilt with their current values.
 
 ## Saves and edits
 
@@ -429,14 +527,24 @@ script (say, a line was inserted just before it), the game picks up from that
 spot instead. A save whose label was renamed or removed can't be loaded. Skip
 mode remembers read lines by their label and text, so rewording a line makes it
 "unread" again. The same rules apply when the player reloads a script you just
-saved (hot reload): it carries on where you are.
+saved (hot reload): it carries on where you are. A save that was waiting at a
+choice, hotspot block or shop where nothing is on offer any more (an edited
+condition) carries on past it. Choice texts, hotspots and shop stock always come from
+the script, never from the save.
+
+Saves are shared between players, so loading is strict: a file path outside the game
+folder, a list of more than 10,000 items, more than 1,000 stored states or more than 256
+return addresses makes the save unloadable; a variable of the wrong kind (a list where
+the script declares a number, or the reverse) is ignored; numbers like positions,
+sizes, volumes and waits are clamped to what the language allows.
 
 ## Themes
 
 The look of the game lives in a small text file named by `theme:` in the front
 matter. Every line is optional; anything left out keeps the built-in look.
 Paths are relative to the script. `quillstone check` validates the file and
-checks that everything it names exists.
+checks that everything it names exists, is inside the game's folder, and is the right
+kind of file (fonts are `.ttf` or `.otf`; pictures are PNG, JPEG or WebP).
 
 ```text
 font = assets/fonts/MyFont.ttf      # used for all text; else the system font
@@ -472,7 +580,7 @@ shop_background = assets/gui/stall.png      # the shop's own background, if diff
 inventory_panel = assets/gui/panel.png      # stretched over the panel, under the grid
 inventory_panel_rect = 160, 70, 1600, 940   # x, y, width, height of the panel (default 210, 90, 1500, 900)
 inventory_columns = 4                       # cells per row (1 to 12; fewer if they don't fit)
-inventory_cell_size = 270, 210              # width, height (or one number for a square); 48 to 600
+inventory_cell_size = 270, 210              # width, height (or one number for a square); width 48 to 600, height 120 to 600
 inventory_cell_gap = 24
 inventory_icon_size = 104                   # the icon is drawn in a square this big
 inventory_cell = #4a3020                    # a cell: a colour #rrggbb[aa] ...

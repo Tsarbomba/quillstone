@@ -9,6 +9,7 @@ dependencies = [
  "quillstone-render",
  "quillstone-runtime",
  "quillstone-script",
+ "quillstone-ui",
  "quillstone-video",
 ]
 

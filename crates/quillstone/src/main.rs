@@ -1,7 +1,7 @@
 //! Quillstone command line: `check`, `test`, `voices`, `dump`, a text-mode `run`, and `package`.
 //! The windowed player is its own crate, in `player/`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
@@ -11,16 +11,19 @@ use quillstone_script::markup::plain;
 use quillstone_script::{kind_from_path, parse, AssetKind, Op, Program};
 
 mod package;
+mod picture;
 
 const USAGE: &str = "\
 Quillstone
 
 USAGE:
     quillstone check <script>   validate a script and that its assets exist
-    quillstone test  <script> [--limit <n>]
+    quillstone test  <script> [--limit <n>] [--allow-partial]
                                 play every branch: find endless loops, places the story
                                 can't end from, unreachable parts, options never offered
-                                and variables never set (explores up to n situations, 100000)
+                                and variables never set (explores up to n situations, 100000).
+                                Exits 1 for a real problem, 2 if it stopped at the limit
+                                (only part of the story explored) unless --allow-partial
     quillstone voices <script>  list every line's auto-voice file name, speaker and text
                                 (tab-separated, for a spreadsheet: the recording script)
     quillstone dump  <script>   print the compiled ops and labels
@@ -36,11 +39,16 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
         ["check", file] => check(Path::new(file)),
-        ["test", file] => test(Path::new(file), DEFAULT_LIMIT),
-        ["test", file, "--limit", n] => match n.parse() {
-            Ok(n) if n > 0 => test(Path::new(file), n),
-            _ => Err(format!("--limit needs a positive number, not `{n}`")),
-        },
+        ["test", file, flags @ ..] => {
+            let run = test_flags(flags).and_then(|(limit, allow)| Ok((test(Path::new(file), limit)?, allow)));
+            return match run {
+                Ok((outcome, allow_partial)) => ExitCode::from(test_exit_code(outcome, allow_partial)),
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         ["dump", file] => dump(Path::new(file)),
         ["voices", file] => voices(Path::new(file)),
         ["run", file] => run(Path::new(file)),
@@ -57,6 +65,37 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--limit <n>` and `--allow-partial`, in any order: (limit, allow partial).
+fn test_flags(flags: &[&str]) -> Result<(usize, bool), String> {
+    let (mut limit, mut allow) = (DEFAULT_LIMIT, false);
+    let mut it = flags.iter();
+    while let Some(&flag) = it.next() {
+        match flag {
+            "--allow-partial" => allow = true,
+            "--limit" => {
+                let n = it.next().ok_or("--limit needs a number")?;
+                limit = n.parse().ok().filter(|&n| n > 0).ok_or(format!("--limit needs a positive number, not `{n}`"))?;
+            }
+            _ => return Err(format!("unknown option `{flag}`\n\n{USAGE}")),
+        }
+    }
+    Ok((limit, allow))
+}
+
+/// How a `test` run that found no error ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Explored {
+    Everything,
+    /// Stopped at `--limit`: the rest of the story was not looked at.
+    Part,
+}
+
+/// The process exit code of a `test` run that found no error: 0, or 2 for a partial
+/// run (1 is for real problems) unless the caller accepts that.
+fn test_exit_code(outcome: Explored, allow_partial: bool) -> u8 {
+    if outcome == Explored::Part && !allow_partial { 2 } else { 0 }
 }
 
 fn load(path: &Path) -> Result<Program, String> {
@@ -76,33 +115,27 @@ fn check(path: &Path) -> Result<(), String> {
     let root = path.parent().unwrap_or_else(|| Path::new("."));
 
     let mut missing = 0;
-    for (idx, kind, asset) in program.assets() {
+    let hot = hotspot_images(&program);
+    for (line, kind, asset) in program.assets_with_lines() {
+        if hot.contains(&(line, asset)) {
+            continue; // below, as pictures
+        }
         let file = root.join(asset);
         if !quillstone_script::is_inside(asset) {
             // Saves refuse such paths (a shared save must not reach outside the game), so the game would break.
             missing += 1;
-            let at = program.lines[idx];
-            eprintln!("{}:{at}: error: `{asset}` is outside the script's folder (keep assets beside or below it)", path.display());
+            eprintln!("{}:{line}: error: `{asset}` is outside the script's folder (keep assets beside or below it)", path.display());
         } else if !file.exists() {
             missing += 1;
-            eprintln!("{}:{}: error: missing asset `{asset}`", path.display(), program.lines[idx]);
+            eprintln!("{}:{line}: error: missing asset `{asset}`", path.display());
         } else if let Some(why) = unplayable(&file, kind) {
             missing += 1;
-            eprintln!("{}:{}: error: `{asset}` won't play in a shipped game: {why}", path.display(), program.lines[idx]);
+            eprintln!("{}:{line}: error: `{asset}` won't play in a shipped game: {why}", path.display());
         }
     }
-    for (line, icon) in program.item_icons() {
-        let file = root.join(icon);
-        if !quillstone_script::is_inside(icon) {
-            missing += 1;
-            eprintln!("{}:{line}: error: `{icon}` is outside the script's folder (keep assets beside or below it)", path.display());
-        } else if !file.exists() {
-            missing += 1;
-            eprintln!("{}:{line}: error: missing item icon `{icon}`", path.display());
-        } else if let Some(why) = unplayable(&file, AssetKind::Image) {
-            missing += 1;
-            eprintln!("{}:{line}: error: `{icon}` won't show in a shipped game: {why}", path.display());
-        }
+    for (error, msg) in picture_findings(&program, path, root) {
+        missing += usize::from(error);
+        eprintln!("{msg}");
     }
     for (pc, text) in program.unknown_items() {
         eprintln!(
@@ -112,7 +145,10 @@ fn check(path: &Path) -> Result<(), String> {
         );
     }
     if let Some(theme_path) = &program.theme {
-        missing += check_theme(&root.join(theme_path), root);
+        for msg in theme_problems(&root.join(theme_path), root) {
+            missing += 1;
+            eprintln!("{msg}");
+        }
     }
     missing += check_extras(&program, path, root);
     for (pc, msg) in hidden_hotspots(&program) {
@@ -125,7 +161,9 @@ fn check(path: &Path) -> Result<(), String> {
             program.lines[pc]
         );
     }
-    check_line_lengths(&program, path, root);
+    for (line, msg) in line_warnings(&program, root) {
+        eprintln!("{}:{line}: warning: {msg}", path.display());
+    }
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
         return Err(format!("{missing} problem(s) (paths are relative to the script's folder)"));
@@ -177,28 +215,116 @@ fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
     out
 }
 
-/// Warn about lines clearly too long for the textbox. The player shrinks text that
-/// doesn't fit, so this is a warning; the estimate errs long, so only clear cases count.
-fn check_line_lengths(program: &Program, path: &Path, root: &Path) {
+/// Icons are drawn at about 100 px; bigger files only cost load time and memory.
+const BIG_ICON_SIDE: u32 = 512;
+
+/// `(line, path)` of every hotspot region's image.
+fn hotspot_images(program: &Program) -> HashSet<(usize, &str)> {
+    let regions = program.ops.iter().filter_map(|op| match op {
+        Op::Choice { options } => Some(options),
+        _ => None,
+    });
+    regions.flatten().filter_map(|o| Some((o.line, o.area.as_ref()?.image.as_deref()?))).collect()
+}
+
+/// A problem (`true`) or warning (`false`), already formatted with its file and line.
+type Finding = (bool, String);
+
+/// Hotspot images (script order, each at its region's own line), then item icons (declaration order):
+/// pictures whatever their extension, at a sensible size.
+fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> {
+    let hot = hotspot_images(program);
+    let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, "hotspot image"));
+    let icons = program.item_icons().map(|(l, a)| (l, a, "item icon"));
+    let mut out = Vec::new();
+    for (line, asset, noun) in spots.chain(icons) {
+        let at = format!("{}:{line}", script.display());
+        let file = root.join(asset);
+        if !quillstone_script::is_inside(asset) {
+            out.push((true, format!("{at}: error: `{asset}` is outside the script's folder (keep assets beside or below it)")));
+        } else if !file.exists() {
+            out.push((true, format!("{at}: error: missing {noun} `{asset}`")));
+        } else {
+            match picture::read_picture(&file) {
+                Err(why) => out.push((true, format!("{at}: error: `{asset}` won't show in a shipped game: {why}"))),
+                Ok((w, h)) if w.max(h) > BIG_ICON_SIDE => out.push((
+                    false,
+                    format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
+                )),
+                Ok(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// Text clearly too long for where it is drawn: `(line, message)`. The player shrinks text that
+/// doesn't fit, so these are warnings; the estimate errs long, so only clear cases count.
+/// Covers dialogue lines, item descriptions and (non-hotspot) choice options.
+fn line_warnings(program: &Program, root: &Path) -> Vec<(usize, String)> {
     let theme = program
         .theme
         .as_ref()
         .and_then(|t| std::fs::read_to_string(root.join(t)).ok())
         .map(|text| quillstone_render::Theme::parse(&text).0)
         .unwrap_or_default();
+    let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
-        let Op::Say { speaker, text, .. } = op else { continue };
-        let words = plain(text);
-        let (lines, fit) = quillstone_render::view::dialogue_lines(&words, speaker.is_some(), theme.text_size);
-        if lines > fit + 1 {
-            eprintln!(
-                "{}:{}: warning: this line takes about {lines} lines and the textbox fits {fit}; it will be shown \
-                 smaller, or cut off if very long (split it into two lines?)",
-                path.display(),
-                program.lines[pc]
-            );
+        match op {
+            Op::Say { speaker, text, .. } => {
+                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(text, speaker.is_some(), theme.text_size);
+                if lines > fit + 1 {
+                    out.push((
+                        program.lines[pc],
+                        format!(
+                            "this line takes about {lines} lines and the textbox fits {fit}; it will be shown \
+                             smaller, or cut off if very long (split it into two lines?)"
+                        ),
+                    ));
+                }
+            }
+            Op::Choice { options } => {
+                let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none()).collect();
+                let Some(rect) = quillstone_render::view::choice_rects(buttons.len()).first().copied() else { continue };
+                let size = theme.text_size.min(rect.h * 0.5); // as the player draws it
+                let fit = (rect.h / (size * 1.35).round().max(1.0)).floor() as usize;
+                for o in buttons {
+                    let lines = quillstone_render::estimate_lines(&plain(&o.text), size, rect.w);
+                    if lines > fit + 1 {
+                        out.push((
+                            o.line,
+                            format!(
+                                "this choice takes about {lines} lines and its button fits {fit}; it will be shown \
+                                 smaller, or cut off if very long (shorten it?)"
+                            ),
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
     }
+    // The description box: name above, price below (when the item has one), text between (26 px).
+    let d = quillstone_ui::bag::description_rect(&theme);
+    let mut items: Vec<_> = program.items.values().filter(|i| !i.text.is_empty()).collect();
+    items.sort_by_key(|i| i.line);
+    for item in items {
+        let below = if item.price.is_some() { 38.0 } else { 0.0 };
+        let body_h = (d.h - 20.0 - 46.0 - below).max(20.0);
+        let fit = (body_h / (26.0f32 * 1.35).round()).floor() as usize;
+        let lines = quillstone_render::estimate_lines(&plain(&item.text), 26.0, d.w - 48.0);
+        if lines > fit + 1 {
+            out.push((
+                item.line,
+                format!(
+                    "the description of `{}` takes about {lines} lines and the description box fits {fit}; it will be shown \
+                     smaller, or cut off if very long (shorten it?)",
+                    item.id
+                ),
+            ));
+        }
+    }
+    out
 }
 
 /// Every line's auto-voice name, in script order: (op index, name).
@@ -284,7 +410,7 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
             problem(format!("missing {place} file `{asset}`"));
         } else if in_gallery && kind != AssetKind::Image {
             problem(format!("`{asset}` in the gallery isn't a picture"));
-        } else if let Some(why) = unplayable(&file, kind) {
+        } else if let Some(why) = if in_gallery { picture::read_picture(&file).err() } else { unplayable(&file, kind) } {
             problem(format!("`{asset}` won't play in a shipped game: {why}"));
         } else if in_gallery && !shown(asset) {
             problem(format!("`{asset}` is in the gallery, but no `::bg` or image shows it, so it can never unlock"));
@@ -295,31 +421,43 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
     count
 }
 
-/// Check a theme file and the files it names; returns how many problems were found.
-fn check_theme(file: &Path, root: &Path) -> usize {
+/// Check a theme file and the files it names: one message per problem.
+fn theme_problems(file: &Path, root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("{}: error: cannot read the theme: {e}", file.display());
-            return 1;
+            return vec![format!("{}: error: cannot read the theme: {e}", file.display())];
         }
     };
     let (theme, problems) = quillstone_render::Theme::parse(&text);
-    for p in &problems {
-        eprintln!("{}: error: {p}", file.display());
-    }
-    let mut count = problems.len();
+    found.extend(problems.iter().map(|p| format!("{}: error: {p}", file.display())));
+    // The line of the theme file that names `asset`, for the message.
+    let at = |asset: &str| {
+        let line = text.lines().position(|l| l.split_once('=').is_some_and(|(_, v)| v.trim() == asset));
+        line.map_or_else(|| file.display().to_string(), |i| format!("{}:{}", file.display(), i + 1))
+    };
+    let fonts = theme.fonts();
     for asset in theme.assets() {
-        let kind = if theme.menu_music.as_deref() == Some(asset) { AssetKind::Audio } else { AssetKind::Image };
-        if !root.join(asset).exists() {
-            count += 1;
-            eprintln!("{}: error: missing theme asset `{asset}`", file.display());
-        } else if let Some(why) = unplayable(&root.join(asset), kind) {
-            count += 1;
-            eprintln!("{}: error: `{asset}` won't play in a shipped game: {why}", file.display());
+        let target = root.join(asset);
+        let is_font = fonts.contains(&asset);
+        let is_music = theme.menu_music.as_deref() == Some(asset);
+        let kind = if is_music { "theme asset" } else if is_font { "theme font" } else { "theme picture" };
+        let why = if !quillstone_script::is_inside(asset) {
+            Err(format!("`{asset}` is outside the script's folder (keep assets beside or below it)"))
+        } else if !target.exists() {
+            Err(format!("missing {kind} `{asset}`"))
+        } else if is_font {
+            picture::font_problem(&target).map_or(Ok(()), |why| Err(format!("`{asset}` can't be used as a font: {why}")))
+        } else {
+            let why = if is_music { unplayable(&target, AssetKind::Audio) } else { picture::read_picture(&target).err() };
+            why.map_or(Ok(()), |why| Err(format!("`{asset}` won't play in a shipped game: {why}")))
+        };
+        if let Err(msg) = why {
+            found.push(format!("{}: error: {msg}", at(asset)));
         }
     }
-    count
+    found
 }
 
 /// Why a video or sound file won't play in a shipped game (videos must suit the
@@ -357,7 +495,7 @@ fn unplayable(file: &Path, used_as: AssetKind) -> Option<String> {
 
 const DEFAULT_LIMIT: usize = 100_000;
 
-fn test(path: &Path, limit: usize) -> Result<(), String> {
+fn test(path: &Path, limit: usize) -> Result<Explored, String> {
     let program = load(path)?;
     let report = quillstone_runtime::explore(&program, limit);
     let endings = match report.endings.as_slice() {
@@ -371,7 +509,7 @@ fn test(path: &Path, limit: usize) -> Result<(), String> {
     };
     if report.partial {
         println!("stopped after {} situations (variables keep changing, e.g. a counter that grows in a loop, or a list with many items),", report.situations);
-        println!("so this is only part of the story; raise --limit to explore more. Found {endings}.");
+        println!("so this is only part of the story; raise --limit to explore more (or pass --allow-partial to accept that, exit code 2 otherwise). Found {endings}.");
     } else {
         println!("played every branch: {} situations, {endings}", report.situations);
     }
@@ -395,14 +533,15 @@ fn test(path: &Path, limit: usize) -> Result<(), String> {
     for f in &report.warnings {
         show("warning", f);
     }
+    let explored = if report.partial { Explored::Part } else { Explored::Everything };
     match (report.errors.len(), report.warnings.len()) {
         (0, 0) => {
             println!("ok");
-            Ok(())
+            Ok(explored)
         }
         (0, w) => {
             println!("{w} warning(s)");
-            Ok(())
+            Ok(explored)
         }
         (e, w) => Err(format!("{e} error(s), {w} warning(s)")),
     }
@@ -525,10 +664,14 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::HideSprite { id, .. } => println!("[hide {id}]"),
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
+            Cmd::Flash { .. } => println!("[the screen flashes]"),
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
             Cmd::StopMusic { .. } => println!("[music stops]"),
             Cmd::PlaySfx { src, .. } => println!("[sfx: {src}]"),
+            Cmd::PlaySfxLoop { src, .. } => println!("[sfx loop: {src}]"),
+            Cmd::StopSfx { src: Some(src), .. } => println!("[sfx stops: {src}]"),
+            Cmd::StopSfx { src: None, .. } => println!("[sfx stops]"),
             Cmd::PlayVoice { src } => println!("[voice: {src}]"),
             Cmd::Wait { seconds } => println!("[wait {seconds}s]"),
             Cmd::PlayVideo { src, .. } => println!("[video: {src}]"),
@@ -622,8 +765,186 @@ mod tests {
     }
 
     #[test]
+    fn check_validates_looping_sound_effects_like_other_sounds() {
+        const CALM: &[u8] = include_bytes!("../../../examples/assets/calm.ogg");
+        let script = "::sfx{src=assets/rain.ogg loop volume=0.5}\nHi.\n::sfx{stop=assets/rain.ogg}\n";
+        assert!(checked(script, &[("assets/rain.ogg", CALM)]).is_ok());
+        let err = checked(script, &[]).unwrap_err();
+        assert!(err.contains("1 problem"), "a missing loop file: {err}");
+        let err = checked(script, &[("assets/rain.ogg", b"definitely not a sound")]).unwrap_err();
+        assert!(err.contains("1 problem"), "an unplayable loop file: {err}");
+        let m4a = script.replace("rain.ogg", "rain.m4a");
+        let err = checked(&m4a, &[("assets/rain.m4a", CALM)]).unwrap_err();
+        assert!(err.contains("1 problem"), "AAC isn't shipped: {err}");
+        // a `stop` names a file but plays nothing, so it needs no file of its own
+        assert!(checked("::sfx{src=assets/rain.ogg loop}\n::sfx{stop}\nHi.\n", &[("assets/rain.ogg", CALM)]).is_ok());
+    }
+
+    #[test]
+    fn a_paragraph_break_counts_as_a_line_in_the_long_line_estimate() {
+        let words = plain("one{p}two{p}three{p}four{p}five{p}six");
+        let (lines, fit) = quillstone_render::view::dialogue_lines(&words, true, 38.0);
+        assert_eq!(lines, 6);
+        assert!(lines > fit + 1, "six short paragraphs don't fit the textbox: {fit}");
+    }
+
+    #[test]
     fn the_market_demo_passes_check() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
         check(&root.join("market.quill.md")).unwrap();
+    }
+
+    /// Run `f` on a fresh folder holding `files` (and an `assets/` folder).
+    fn in_dir<T>(files: &[(&str, &[u8])], f: impl FnOnce(&Path) -> T) -> T {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("quillstone-check-dir-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        let out = f(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        out
+    }
+
+    const FONT: &[u8] = &[0, 1, 0, 0, 0, 0, 0, 0];
+    const KEY: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+
+    fn themed(theme: &str, files: &[(&str, &[u8])]) -> Vec<String> {
+        let mut files = files.to_vec();
+        files.push(("t.txt", theme.as_bytes()));
+        in_dir(&files, |dir| theme_problems(&dir.join("t.txt"), dir))
+    }
+
+    #[test]
+    fn a_theme_font_is_checked_as_a_font_not_as_a_picture() {
+        let ok = themed("font = assets/f.ttf\nfont_bold = assets/f.ttf\nfont_italic = assets/g.otf\n", &[("assets/f.ttf", FONT), ("assets/g.otf", b"OTTO....")]);
+        assert!(ok.is_empty(), "{ok:?}");
+        let missing = themed("font = assets/f.ttf\n", &[]);
+        assert!(missing.len() == 1 && missing[0].contains("t.txt:1:") && missing[0].contains("missing theme font"), "{missing:?}");
+        let fake = themed("font = assets/f.ttf\n", &[("assets/f.ttf", b"not a font at all")]);
+        assert!(fake.len() == 1 && fake[0].contains("can't be used as a font"), "{fake:?}");
+        let wrong = themed("font = assets/f.png\n", &[("assets/f.png", FONT)]);
+        assert!(wrong.len() == 1 && wrong[0].contains(".ttf or .otf"), "{wrong:?}");
+        let script = "---\ntheme: t.txt\n---\nHi.\n";
+        assert!(checked(script, &[("t.txt", b"font = assets/f.ttf"), ("assets/f.ttf", FONT)]).is_ok());
+        assert!(checked(script, &[("t.txt", b"font = assets/f.ttf")]).is_err());
+    }
+
+    #[test]
+    fn theme_paths_outside_the_game_folder_are_rejected_in_every_form() {
+        let key: &[(&str, &[u8])] = &[("assets/key.png", KEY), ("assets/f.ttf", FONT)];
+        for bad in ["../x.png", "/x.png", "assets\\key.png", "C:\\x.png", "C:/x.png", "\\\\host\\share\\x.png", "//host/share/x.png", "assets/../../x.png"] {
+            for line in [format!("textbox_image = {bad}"), format!("inventory_panel = {bad}"), format!("font = {bad}")] {
+                let found = themed(&format!("# a comment\n{line}\n"), key);
+                assert!(
+                    found.len() == 1 && found[0].contains("t.txt:2:") && found[0].contains("is outside the script's folder"),
+                    "{line}: {found:?}"
+                );
+            }
+        }
+        let found = themed("menu_music = ../m.ogg\n", key);
+        assert!(found[0].contains("outside the script's folder"), "{found:?}");
+        assert!(themed("textbox_image = ./assets/key.png\n", key).is_empty());
+    }
+
+    #[test]
+    fn gallery_and_music_room_paths_outside_the_game_folder_fail_check() {
+        for bad in ["../x.png", "/x.png", "assets\\x.png", "C:\\x.png", "\\\\host\\x.png"] {
+            let err = checked(&format!("---\ngallery: [\"{bad}\"]\n---\n::bg{{src=assets/key.png}}\n"), &[("assets/key.png", KEY)]).unwrap_err();
+            assert!(err.contains("inside the game folder") && err.contains(":2:"), "{bad}: {err}");
+            let err = checked(&format!("---\nmusic_room: [\"{bad}\"]\n---\nHi.\n"), &[]).unwrap_err();
+            assert!(err.contains("inside the game folder"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn icons_and_hotspot_images_must_be_pictures_whatever_their_extension() {
+        for ext in ["webm", "mp4", "ogg"] {
+            let script = format!(
+                "---\ninventory: bag\nvars: {{ bag: [] }}\n---\n::item{{id=k icon=assets/k.{ext}}}\n# a\n::hotspots\n- [Go](#a){{rect=0,0.5,0.5,0.5 image=assets/h.{ext}}}\n::\n"
+            );
+            // the parser already refuses these names; `check` must not rely on that alone
+            assert!(parse(&script).is_err());
+            let mut program = parse(&script.replace(&format!(".{ext}"), ".png")).unwrap();
+            program.items.get_mut("k").unwrap().icon = Some(format!("assets/k.{ext}"));
+            for op in &mut program.ops {
+                if let Op::Choice { options } = op {
+                    options[0].area.as_mut().unwrap().image = Some(format!("assets/h.{ext}"));
+                }
+            }
+            let found = in_dir(&[(&format!("assets/k.{ext}"), KEY), (&format!("assets/h.{ext}"), KEY)], |dir| {
+                picture_findings(&program, &dir.join("s.quill.md"), dir)
+            });
+            assert_eq!(found.len(), 2, "{found:?}");
+            for (error, msg) in &found {
+                assert!(*error && msg.contains("must be a PNG, JPEG or WebP picture"), "{msg}");
+            }
+            assert!(checked(&script, &[(&format!("assets/k.{ext}"), KEY), (&format!("assets/h.{ext}"), KEY)]).is_err());
+        }
+    }
+
+    #[test]
+    fn hotspot_images_report_their_own_line_and_icons_come_in_declaration_order() {
+        let script = "---\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=zed icon=assets/z.png}\n::item{id=alpha icon=assets/a.png}\n# m\n::hotspots\n- [One](#m){rect=0,0,.5,.5 image=assets/one.png}\n\n- [Two](#m){rect=0,0,.5,.5}\n- [Three](#m){rect=0,0,.5,.5 image=assets/three.png}\n::\n";
+        let program = parse(script).unwrap();
+        let found = in_dir(&[], |dir| picture_findings(&program, &dir.join("s.quill.md"), dir));
+        let lines: Vec<(usize, &str)> = found
+            .iter()
+            .map(|(_, m)| {
+                let line: usize = m.split(':').nth(1).unwrap().parse().unwrap();
+                (line, m.split('`').nth(1).unwrap())
+            })
+            .collect();
+        assert_eq!(lines, [(9, "assets/one.png"), (12, "assets/three.png"), (5, "assets/z.png"), (6, "assets/a.png")]);
+        assert!(found[0].1.contains("hotspot image") && found[2].1.contains("item icon"));
+    }
+
+    #[test]
+    fn oversized_icons_and_hotspot_images_get_a_warning_not_an_error() {
+        let script = "---\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=big icon=assets/big.png}\n::item{id=ok icon=assets/ok.png}\n# m\n::hotspots\n- [One](#m){rect=0,0,.5,.5 image=assets/wide.png}\n::\n";
+        let program = parse(script).unwrap();
+        let files: &[(&str, &[u8])] = &[
+            ("assets/big.png", &picture::fake_png(1024, 1024)),
+            ("assets/ok.png", &picture::fake_png(512, 512)),
+            ("assets/wide.png", &picture::fake_png(900, 100)),
+        ];
+        let found = in_dir(files, |dir| picture_findings(&program, &dir.join("s.quill.md"), dir));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().all(|(error, _)| !error));
+        assert!(found[0].1.contains(":9:") && found[0].1.contains("900x100"), "{}", found[0].1);
+        assert!(found[1].1.contains(":5:") && found[1].1.contains("1024x1024"));
+        assert!(found[1].1.contains("icons are drawn at about 100 px; a smaller file loads faster and saves memory"));
+        assert!(checked(script, files).is_ok(), "warnings don't fail check");
+    }
+
+    #[test]
+    fn a_partial_test_run_exits_2_unless_allowed() {
+        assert_eq!(test_exit_code(Explored::Everything, false), 0);
+        assert_eq!(test_exit_code(Explored::Part, false), 2);
+        assert_eq!(test_exit_code(Explored::Part, true), 0);
+        assert_eq!(test_flags(&[]), Ok((DEFAULT_LIMIT, false)));
+        assert_eq!(test_flags(&["--allow-partial", "--limit", "50"]), Ok((50, true)));
+        assert!(test_flags(&["--limit", "0"]).is_err() && test_flags(&["--limit"]).is_err() && test_flags(&["--bogus"]).is_err());
+        // end to end through `test`: a counter that grows forever stops at the limit
+        let outcome = in_dir(&[("s.quill.md", b"# a\n::set{n+=1}\nLine {n}.\n::jump{to=a}\n")], |dir| test(&dir.join("s.quill.md"), 50));
+        assert_eq!(outcome, Ok(Explored::Part));
+        let done = in_dir(&[("s.quill.md", b"Hi.\n")], |dir| test(&dir.join("s.quill.md"), 50));
+        assert_eq!(done, Ok(Explored::Everything));
+    }
+
+    #[test]
+    fn item_descriptions_and_choice_texts_too_long_for_their_boxes_are_warned_about() {
+        let long = "word ".repeat(300);
+        let script = format!(
+            "---\ninventory: bag\nvars: {{ bag: [] }}\n---\n::item{{id=a text=\"short\"}}\n::item{{id=b text=\"{long}\"}}\n::choice\n- [Fine](#x)\n- [{long}](#x)\n::\n# x\nHi.\n"
+        );
+        let program = parse(&script).unwrap();
+        let found = line_warnings(&program, Path::new("."));
+        let at: Vec<usize> = found.iter().map(|(l, _)| *l).collect();
+        assert_eq!(at, [9, 6], "the choice option's line, then the item's declaration line: {found:?}");
+        assert!(found[0].1.contains("button") && found[1].1.contains("description of `b`"));
     }
 }

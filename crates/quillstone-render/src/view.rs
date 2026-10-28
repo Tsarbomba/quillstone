@@ -249,8 +249,19 @@ impl Dialogue {
     fn new(speaker: Option<String>, color: Option<[f32; 3]>, tagged: &str, instant: bool) -> Dialogue {
         let Rich { text, runs, pauses, no_wait } = rich(tagged);
         let total = text.chars().count();
-        let revealed = if instant { total as f32 } else { 0.0 };
-        Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed, auto_advance: no_wait }
+        let mut d = Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait };
+        if instant {
+            d.show_text();
+        }
+        d
+    }
+
+    /// Instant text: every word is shown at once, but a pause at the very end
+    /// still counts (so `Well...{w=3}{nw}` waits).
+    fn show_text(&mut self) {
+        self.revealed = self.total as f32;
+        let total = self.total;
+        self.pauses.retain(|&(at, _)| at >= total);
     }
 
     /// Type on for `dt` seconds at `speed` characters a second, stopping at pauses.
@@ -292,8 +303,9 @@ impl Dialogue {
         &self.text[..end]
     }
 
+    /// Everything typed and no pause (`{w=..}`) left to sit through.
     pub fn is_complete(&self) -> bool {
-        self.visible_chars() >= self.total
+        self.visible_chars() >= self.total && self.pauses.is_empty() && self.hold <= 0.0
     }
 
     pub fn reveal_all(&mut self) {
@@ -341,6 +353,20 @@ impl Shake {
     }
 }
 
+/// A full-screen flash in progress: full strength at the start, gone after `time`.
+#[derive(Debug, Clone, PartialEq)]
+struct Flash {
+    time: f32,
+    color: [f32; 3],
+    elapsed: f32,
+}
+
+impl Flash {
+    fn alpha(&self) -> f32 {
+        (1.0 - self.elapsed / self.time).clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View {
     pub background: Option<Background>,
@@ -356,6 +382,7 @@ pub struct View {
     pub finished: bool,
     camera: CameraMove,
     shake: Option<Shake>,
+    flash: Option<Flash>,
     /// Seconds left of a `::wait`, if one is running.
     wait: Option<f32>,
     chars_per_sec: f32,
@@ -382,6 +409,7 @@ impl View {
             finished: false,
             camera: CameraMove { from: Camera::default(), to: Camera::default(), time: 0.0, elapsed: 0.0, ease: Ease::Linear },
             shake: None,
+            flash: None,
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
@@ -437,6 +465,7 @@ impl View {
                     self.sprites.clear();
                     self.set_camera(Camera::default(), 0.0, Ease::Linear);
                     self.shake = None;
+                    self.flash = None;
                 }
                 Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
                 Cmd::ShowSprite { id, src, x, y, z, scale, fade } => self.show_sprite(id, src, (*x, *y), *z, *scale, *fade),
@@ -457,6 +486,9 @@ impl View {
                 Cmd::Shake { time, strength } => {
                     self.shake = Some(Shake { time: *time, strength: *strength, elapsed: 0.0 });
                 }
+                Cmd::Flash { time, color } => {
+                    self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
+                }
                 Cmd::Camera { camera, time, ease } => self.set_camera(*camera, *time, *ease),
                 Cmd::ShowImage { src, alt } => {
                     self.images.push(InlineImage { src: src.clone(), alt: alt.clone() });
@@ -468,6 +500,11 @@ impl View {
                         text,
                         redraw || self.chars_per_sec <= 0.0,
                     ));
+                    if redraw {
+                        if let Some(d) = &mut self.dialogue {
+                            d.reveal_all();
+                        }
+                    }
                 }
                 Cmd::ShowChoices { options } => self.choices = options.clone(),
                 Cmd::ShowHotspots { spots } => self.hotspots = spots.clone(),
@@ -486,7 +523,12 @@ impl View {
                 // The inventory and shop are screens of their own (see quillstone-ui).
                 Cmd::ShowInventory | Cmd::ShowShop { .. } => {}
                 // Audio is not the view's business.
-                Cmd::PlayMusic { .. } | Cmd::StopMusic { .. } | Cmd::PlaySfx { .. } | Cmd::PlayVoice { .. } => {}
+                Cmd::PlayMusic { .. }
+                | Cmd::StopMusic { .. }
+                | Cmd::PlaySfx { .. }
+                | Cmd::PlaySfxLoop { .. }
+                | Cmd::StopSfx { .. }
+                | Cmd::PlayVoice { .. } => {}
             }
         }
     }
@@ -503,6 +545,11 @@ impl View {
     fn set_camera(&mut self, to: Camera, time: f32, ease: Ease) {
         let from = self.camera.current();
         self.camera = CameraMove { from, to, time, elapsed: 0.0, ease };
+    }
+
+    /// End a flash that is running (skipping doesn't wait for one).
+    pub fn end_flash(&mut self) {
+        self.flash = None;
     }
 
     /// Where the camera is right now.
@@ -564,6 +611,12 @@ impl View {
                 self.shake = None;
             }
         }
+        if let Some(flash) = &mut self.flash {
+            flash.elapsed += dt;
+            if flash.elapsed >= flash.time {
+                self.flash = None;
+            }
+        }
         self.sprites.retain(|s| !s.is_gone());
         if let Some(left) = &mut self.wait {
             *left -= dt;
@@ -572,16 +625,17 @@ impl View {
             if self.chars_per_sec > 0.0 {
                 d.type_on(dt, self.chars_per_sec);
             } else {
-                d.reveal_all();
+                d.show_text();
+                d.type_on(dt, 1.0);
             }
         }
     }
 
     /// Whether time matters even when nothing on screen moves: a `::wait`
-    /// counting down, or a typewriter that is still typing (or paused at `{w=}`).
-    /// Visible animations show up as a changing draw list anyway.
+    /// counting down, a flash fading, or a typewriter that is still typing (or
+    /// paused at `{w=}`). Other animations show up as a changing draw list anyway.
     pub fn busy(&self) -> bool {
-        self.wait.is_some() || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
+        self.wait.is_some() || self.flash.is_some() || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
     }
 
     /// `true` exactly once when a `::wait` has run out: send `Input::Advance`.
@@ -642,6 +696,23 @@ impl View {
         image_size: &dyn Fn(&str) -> Option<Size>,
         hover: Option<usize>,
         pointer: Option<(f32, f32)>,
+    ) -> Vec<Draw> {
+        self.draw_list_ui(image_size, hover, pointer, true)
+    }
+
+    /// Only the picture: stage, inline images, video, flash and hotspot art, without
+    /// the textbox, choices, hotspot outline or tooltip. What a full-screen overlay
+    /// (settings, backlog, ...) leaves under its dim.
+    pub fn draw_scene(&self, image_size: &dyn Fn(&str) -> Option<Size>) -> Vec<Draw> {
+        self.draw_list_ui(image_size, None, None, false)
+    }
+
+    fn draw_list_ui(
+        &self,
+        image_size: &dyn Fn(&str) -> Option<Size>,
+        hover: Option<usize>,
+        pointer: Option<(f32, f32)>,
+        ui: bool,
     ) -> Vec<Draw> {
         let mut out = Vec::new();
         let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
@@ -709,13 +780,19 @@ impl View {
             }
         }
 
+        // The flash is over the whole picture (video included) but under the textbox and the UI.
+        if let Some(flash) = &self.flash {
+            let [r, g, b] = flash.color;
+            out.push(Draw::Rect { rect: screen, color: [r, g, b, flash.alpha()] });
+        }
+
         let theme = &self.theme;
         for (i, spot) in self.hotspots.iter().enumerate() {
             let rect = hotspot_rect(spot);
             if let Some(src) = &spot.image {
                 push_image(&mut out, src, rect, Fit::Stretch, 1.0, image_size);
             }
-            if hover == Some(i) && !spot.hidden {
+            if ui && hover == Some(i) && !spot.hidden {
                 let [r, g, b, _] = theme.accent_color;
                 out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
                 let t = HOTSPOT_OUTLINE;
@@ -730,7 +807,7 @@ impl View {
             }
         }
 
-        if let Some(d) = &self.dialogue {
+        if let Some(d) = self.dialogue.as_ref().filter(|_| ui) {
             // The theme's textbox picture if it is loaded, else a plain panel.
             let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
             match picture {
@@ -766,7 +843,8 @@ impl View {
             });
         }
 
-        for (i, (rect, label)) in choice_rects(self.choices.len()).into_iter().zip(&self.choices).enumerate() {
+        let choices = if ui { self.choices.as_slice() } else { &[] };
+        for (i, (rect, label)) in choice_rects(choices.len()).into_iter().zip(choices).enumerate() {
             let color = if hover == Some(i) { theme.button_hover_color } else { theme.button_color };
             out.push(Draw::Rect { rect, color });
             let Rich { text, runs, .. } = rich(label);
@@ -782,7 +860,7 @@ impl View {
         }
 
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
-        if let Some(spot) = hover.and_then(|i| self.hotspots.get(i)).filter(|s| !s.hidden) {
+        if let Some(spot) = hover.filter(|_| ui).and_then(|i| self.hotspots.get(i)).filter(|s| !s.hidden) {
             let Rich { text, runs, .. } = rich(&spot.label);
             let size = (theme.text_size * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
@@ -836,9 +914,16 @@ pub fn dialogue_body(with_speaker: bool) -> Rect {
 /// About how many textbox lines `text` (tags removed) takes at `size` px, and how
 /// many fit. A line that doesn't fit is drawn smaller by the player.
 pub fn dialogue_lines(text: &str, with_speaker: bool, size: f32) -> (usize, usize) {
+    dialogue_lines_tagged(text, with_speaker, size)
+}
+
+/// [`dialogue_lines`] for a line as written (with its `{size}` tags): a bigger run
+/// is counted as wide as it will really be drawn. Plain text works too.
+pub fn dialogue_lines_tagged(tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
     let body = dialogue_body(with_speaker);
     let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
-    (crate::estimate_lines(text, size, body.w), (body.h / line_h).floor() as usize)
+    let Rich { text, runs, .. } = rich(tagged);
+    (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
 }
 
 /// A hotspot's region in virtual coordinates.
@@ -998,6 +1083,45 @@ mod tests {
         v.tick(0.3);
         assert!(!v.press_advance(), "the first press finishes the line");
         assert!(v.dialogue.as_ref().unwrap().is_complete());
+    }
+
+    #[test]
+    fn a_trailing_pause_must_run_out_before_the_line_is_complete() {
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "Well{w=2}{nw}")]);
+        let done = |v: &View| v.dialogue.as_ref().unwrap().is_complete();
+        v.tick(0.5);
+        assert!(!done(&v), "typed, now pausing");
+        v.tick(1.0);
+        assert!(!done(&v));
+        v.tick(1.0);
+        assert!(done(&v), "the pause has run out");
+        // a plain line ending in a pause too, and a click still skips it
+        v.apply(&[say(None, "Hm{w=5}")]);
+        v.tick(1.0);
+        assert!(!done(&v));
+        assert!(!v.press_advance(), "the click only cancels the pause");
+        assert!(done(&v));
+        assert!(v.press_advance());
+    }
+
+    #[test]
+    fn instant_text_still_honours_a_trailing_pause() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[say(None, "Well...{w=3}{nw}")]);
+        let done = |v: &View| v.dialogue.as_ref().unwrap().is_complete();
+        assert!(!done(&v));
+        v.tick(2.0);
+        assert!(!done(&v));
+        v.tick(1.5);
+        assert!(done(&v));
+        // a pause in the middle is not waited for
+        v.apply(&[say(None, "A{w=3}B")]);
+        assert!(done(&v));
+        // a redraw shows the line at once, trailing pause included
+        v.set_speed(10.0);
+        v.apply(&[Cmd::ClearScene, say(None, "Back{w=3}")]);
+        assert!(done(&v));
     }
 
     #[test]
@@ -1394,6 +1518,107 @@ mod tests {
         v.tick(1.0);
         let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "back in place");
+    }
+
+    // ---- flash ------------------------------------------------------------------
+
+    /// The full-screen rectangle the flash draws, if any.
+    fn flash_rect(list: &[Draw]) -> Option<(usize, [f32; 4])> {
+        let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
+        list.iter().enumerate().find_map(|(i, d)| match d {
+            Draw::Rect { rect, color } if *rect == screen && color[3] < 1.0 + 1e-6 && color[..3] != [0.0, 0.0, 0.0] => Some((i, *color)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_flash_starts_at_full_strength_and_fades_out() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::Flash { time: 0.5, color: [1.0, 0.5, 0.0] }]);
+        assert!(v.busy(), "a fading flash needs ticks");
+        let (_, c) = flash_rect(&v.draw_list(&all_1080p, None)).unwrap();
+        assert_eq!(c, [1.0, 0.5, 0.0, 1.0], "jumps to full opacity");
+        v.tick(0.25);
+        let (_, c) = flash_rect(&v.draw_list(&all_1080p, None)).unwrap();
+        assert!(close(c[3], 0.5) && c[..3] == [1.0, 0.5, 0.0]);
+        v.tick(0.3);
+        assert!(flash_rect(&v.draw_list(&all_1080p, None)).is_none(), "gone after its time");
+        assert!(!v.busy());
+    }
+
+    #[test]
+    fn a_flash_is_over_the_stage_and_images_but_under_the_textbox_and_choices() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[
+            bg("bg.png", 0.0),
+            Cmd::ShowImage { src: "pic.png".into(), alt: String::new() },
+            say(Some("A"), "hi"),
+            Cmd::ShowChoices { options: vec!["Go".into()] },
+            Cmd::Flash { time: 1.0, color: [1.0; 3] },
+        ]);
+        let list = v.draw_list(&all_1080p, None);
+        let (at, _) = flash_rect(&list).unwrap();
+        let last_image = list.iter().rposition(|d| matches!(d, Draw::Image { .. })).unwrap();
+        let textbox = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)).unwrap();
+        let first_text = list.iter().position(|d| matches!(d, Draw::Text { .. })).unwrap();
+        assert!(last_image < at && at < textbox && textbox < first_text, "{at} {last_image} {textbox}");
+    }
+
+    #[test]
+    fn a_flash_is_a_moment_that_a_redraw_and_a_new_line_do_not_replay() {
+        let mut v = View::new();
+        v.apply(&[Cmd::Flash { time: 1.0, color: [1.0; 3] }]);
+        // the next batch (the player moved on) leaves a running flash alone...
+        v.apply(&[say(Some("A"), "next")]);
+        assert!(flash_rect(&v.draw_list(&all_1080p, None)).is_some());
+        // ...but a redraw (rollback, load, hot reload) clears it and never starts one
+        v.apply(&[Cmd::ClearScene, say(Some("A"), "back")]);
+        assert!(flash_rect(&v.draw_list(&all_1080p, None)).is_none() && !v.busy());
+        v.apply(&[Cmd::Flash { time: 1.0, color: [1.0; 3] }]);
+        v.end_flash();
+        assert!(flash_rect(&v.draw_list(&all_1080p, None)).is_none());
+        // a long tick (skip mode) finishes it at once
+        v.apply(&[Cmd::Flash { time: 10.0, color: [1.0; 3] }]);
+        v.tick(60.0);
+        assert!(flash_rect(&v.draw_list(&all_1080p, None)).is_none());
+    }
+
+    // ---- {p} --------------------------------------------------------------------
+
+    #[test]
+    fn a_paragraph_break_types_as_one_character_and_counts_as_a_line() {
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(Some("A"), "Hi.{p}{color=#f00}Ho.{/color}")]);
+        let d = v.dialogue.as_ref().unwrap();
+        assert_eq!(d.text, "Hi.\nHo.");
+        v.tick(0.35); // "Hi."
+        assert_eq!(v.dialogue.as_ref().unwrap().visible_text(), "Hi.");
+        v.tick(0.1); // the break itself
+        assert_eq!(v.dialogue.as_ref().unwrap().visible_text(), "Hi.\n");
+        assert!(!v.dialogue.as_ref().unwrap().is_complete());
+        v.tick(10.0);
+        assert!(v.dialogue.as_ref().unwrap().is_complete());
+        let list = v.draw_list(&no_images, None);
+        let body = list.iter().find_map(|d| match d {
+            Draw::Text { text, runs, visible_chars, .. } if text.contains('\n') => Some((text.clone(), runs.len(), *visible_chars)),
+            _ => None,
+        });
+        assert_eq!(body, Some(("Hi.\nHo.".to_string(), 2, 7)));
+        // the long-line estimate sees two lines where there is one short paragraph each
+        assert_eq!(dialogue_lines("Hi.\nHo.", true, 38.0).0, 2);
+        assert_eq!(dialogue_lines("Hi. Ho.", true, 38.0).0, 1);
+    }
+
+    #[test]
+    fn a_big_shout_is_not_under_counted_in_the_fit_estimate() {
+        let plain = "Stop right there, you are not going anywhere near that door tonight, not after what happened. ".repeat(2);
+        let plain = plain.as_str();
+        let shout = format!("{{size=+40}}{plain}{{/size}}");
+        assert!(dialogue_lines_tagged(plain, true, 38.0).0 <= 3, "the plain line fits");
+        let (small, fit) = dialogue_lines_tagged(plain, true, 38.0);
+        let (big, _) = dialogue_lines_tagged(&shout, true, 38.0);
+        assert!(big > small, "{small} vs {big}");
+        assert!(big > fit, "the shout cannot fit the textbox ({fit} lines)");
     }
 
     // ---- speaker colour -------------------------------------------------------

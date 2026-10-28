@@ -9,3 +9,4 @@ quillstone-script.workspace = true
 quillstone-runtime.workspace = true
 quillstone-render.workspace = true
 quillstone-video.workspace = true
+quillstone-ui.workspace = true

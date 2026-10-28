@@ -81,6 +81,7 @@ impl Game<'_> {
 
     pub(super) fn open_slots(&mut self, screen: Screen) {
         self.stop_skip();
+        self.cover_bag();
         self.screen = screen;
         self.slot_focus = None;
         if screen == Screen::Save && !matches!(self.page, Page::Numbered(_)) {
@@ -211,6 +212,7 @@ impl Game<'_> {
                 // A fresh view: nothing of the old scene (line, fades) may linger.
                 self.fresh_view();
                 self.in_story = true;
+                self.under = None;
                 self.screen = Screen::Story;
                 self.show(&cmds); // may open the screen the save was waiting at
                 self.auto = false;

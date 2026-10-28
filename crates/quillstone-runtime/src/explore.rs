@@ -343,6 +343,13 @@ impl Explorer<'_> {
                 Op::Jump { cond: Some(cond), .. } => {
                     read.extend(names(|out| cond.vars_read(out)).into_iter().map(|n| (at, n, false)));
                 }
+                // A call sets its label's parameters, from the values it passes.
+                Op::Call { args, .. } => {
+                    for (param, value) in args {
+                        set.insert(param);
+                        read.extend(names(|out| value.vars_read(out)).into_iter().map(|n| (at, n, false)));
+                    }
+                }
                 Op::Say { text, .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
                 Op::Shop { pay, into, stock } => {
                     set.insert(into);
@@ -482,6 +489,7 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
         match op {
             Op::Jump { cond: Some(c), .. } => tested(&mut caps, c),
             Op::Set(e) => uncapped(&mut caps, &e.value),
+            Op::Call { args, .. } => args.iter().for_each(|(_, e)| uncapped(&mut caps, e)),
             Op::Choice { options } => {
                 for o in options {
                     if let Some(c) = &o.cond {
@@ -492,6 +500,8 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
                     }
                 }
             }
+            Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).for_each(|c| tested(&mut caps, c)),
+            // no other op holds an expression (see `Op::exprs`)
             _ => {}
         }
     }
@@ -620,7 +630,7 @@ fn braces(text: &str) -> Vec<&str> {
         } else if let Some(after) = rest.strip_prefix('{') {
             let Some(end) = after.find('}') else { break };
             let name = after[..end].trim();
-            if is_ident(name) && name != "nw" {
+            if is_ident(name) && !matches!(name, "nw" | "p") {
                 out.push(name);
             }
             rest = &after[end + 1..];
@@ -788,6 +798,14 @@ mod tests {
     }
 
     #[test]
+    fn a_visit_count_read_only_by_a_shop_condition_stays_finite() {
+        let src = "---\ninventory: bag\nvars: { gold: 100, bag: [] }\n---\n::item{id=a price=1}\n# hub\n::shop{pay=gold into=bag}\n- a{if seen(hub) >= 2}\n::\n::choice\n- [Again](#hub)\n- [Leave](#bye)\n::\n# bye\nBye.\n";
+        let r = explore(&quillstone_script::parse(src).unwrap(), 200);
+        assert!(!r.partial, "{} situations: the count must be capped", r.situations);
+        assert!(r.situations < 40, "{}", r.situations);
+    }
+
+    #[test]
     fn once_only_options_disappear_until_none_are_left() {
         let src = "# hub\n::choice\n- [Ask about the scarf](#scarf){once}\n- [Ask about the city](#city){once}\n::\nNothing left to ask.\n::end\n# scarf\nIt was hers.\n::jump{to=hub}\n# city\nIt's big.\n::jump{to=hub}\n";
         let r = test(src);
@@ -895,5 +913,25 @@ mod tests {
         let r = test(include_str!("../../../examples/staging.quill.md"));
         assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
         assert!(!r.partial && r.endings.len() == 1);
+    }
+
+    #[test]
+    fn a_parameterized_hub_terminates_and_its_parameters_count_as_set() {
+        let src = "---\nvars: { gold: 3, item: \"\" }\n---\n# hub\n::choice\n- [Look at the lamp](#lamp)\n- [Look at the map](#map)\n- [Leave](#out)\n::\n# lamp\n::call{to=price_line item=\"lamp\" cost=gold}\n::jump{to=hub}\n# map\n::call{to=price_line item=\"map\" cost=5}\n::jump{to=hub}\n# price_line(item, cost)\n**A:** The {item} costs {cost}.\n::return\n# out\nBye.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty(), "{:?}", messages(&r.errors));
+        assert!(r.warnings.is_empty(), "nothing new to warn about: {:?}", messages(&r.warnings));
+        assert_eq!(r.endings.len(), 1);
+        assert!(r.situations >= 4, "the hub is seen with each parameter set: {}", r.situations);
+    }
+
+    #[test]
+    fn a_misspelt_variable_in_an_argument_is_still_a_typo_and_new_media_are_no_ops() {
+        let src = "::sfx{src=r.ogg loop}\n::flash{time=1}\n::call{to=f x=glod}\n::sfx{stop}\n**A:** {x}\n::end\n# f(x)\n::return\n";
+        let r = test(src);
+        assert!(r.errors.is_empty(), "{:?}", messages(&r.errors));
+        let w = messages(&r.warnings);
+        assert!(w.iter().any(|m| m.contains("`glod` is never set")), "{w:?}");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 }

@@ -42,6 +42,28 @@ mod real {
     use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
     use quillstone_render::Align;
 
+    /// Byte offset in `text` where each buffer line begins. Built from the buffer's own lines,
+    /// because cosmic-text splits paragraphs at more than `\n` (`\r`, U+0085, U+2029, ...) and
+    /// drops the separator: after a line comes one separator, `\r\n` counting as one.
+    /// (Plain text records its own line ending; rich text always says `\n` whatever it was.)
+    fn line_starts(buffer: &Buffer, text: &str, rich: bool) -> Vec<usize> {
+        let mut starts = Vec::with_capacity(buffer.lines.len());
+        let mut at = 0;
+        for line in &buffer.lines {
+            starts.push(at.min(text.len()));
+            at += line.text().len();
+            let rest = text.get(at..).unwrap_or("");
+            at += if !rich {
+                line.ending().as_str().len()
+            } else if rest.starts_with("\r\n") {
+                2
+            } else {
+                rest.chars().next().map_or(0, char::len_utf8)
+            };
+        }
+        starts
+    }
+
     pub struct TextRenderer {
         fonts: FontSystem,
         swash: SwashCache,
@@ -162,6 +184,10 @@ mod real {
                 .map(|(i, _)| i)
                 .unwrap_or(usize::MAX);
 
+            // A glyph's `start` counts from the beginning of its paragraph (cosmic-text keeps one
+            // buffer line per paragraph), so add where that paragraph begins in the text.
+            let line_starts = line_starts(buffer, &job.text, !job.runs.is_empty());
+
             let [r, g, b, a] = job.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
             let base = Color::rgba(r, g, b, 255);
 
@@ -189,7 +215,7 @@ mod real {
                 };
                 let line_y = (run.line_y + y_off).round() as i32;
                 for glyph in run.glyphs.iter() {
-                    if glyph.start >= byte_limit {
+                    if line_starts.get(run.line_i).copied().unwrap_or(0) + glyph.start >= byte_limit {
                         continue;
                     }
                     let physical = glyph.physical((x_off, 0.0), 1.0);
@@ -259,7 +285,7 @@ mod tests {
         let mut renderer = TextRenderer::new(Vec::new());
         let plain = renderer.rasterize(&job("Hello there friend")).unwrap();
         if bottom(&plain) == 0 {
-            eprintln!("no fonts here: size test skipped");
+            eprintln!("SKIPPED (no fonts on this machine): size test did not run");
             return;
         }
         let big = renderer.rasterize(&job("Hello {size=+40}there{/size} friend")).unwrap();
@@ -269,5 +295,81 @@ mod tests {
         assert!(lit(&big) > lit(&normal), "bigger letters cover more pixels");
         assert!(lit(&small) < lit(&normal));
         assert!(bottom(&big) > bottom(&normal), "the big word reaches lower");
+    }
+
+    #[test]
+    fn a_paragraph_break_is_a_real_line_break_and_types_in_order() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        let one = renderer.rasterize(&job("Hello there")).unwrap();
+        if bottom(&one) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): line break test did not run");
+            return;
+        }
+        let two = renderer.rasterize(&job("Hello{p}there")).unwrap();
+        assert!(bottom(&two) > bottom(&one) + 20, "the second paragraph sits on a new line");
+        // with {size}: runs and the break still line up (the break belongs to the first run)
+        let sized = renderer.rasterize(&job("{size=+10}Hello{p}{/size}there")).unwrap();
+        assert!(bottom(&sized) > bottom(&one) + 20);
+        // typewriter: only the first paragraph is shown until its characters are revealed
+        let r = rich("Hello{p}there");
+        let typed = |n: usize| {
+            let draw = Draw::Text {
+                text: r.text.clone(),
+                runs: r.runs.clone(),
+                visible_chars: n,
+                rect: Rect::new(0.0, 0.0, 1200.0, 400.0),
+                size: 40.0,
+                color: [1.0; 4],
+                align: Align::Left,
+            };
+            build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
+        };
+        let first_only = renderer.rasterize(&typed(6)).unwrap(); // "Hello" and the break
+        let all = renderer.rasterize(&typed(11)).unwrap();
+        assert!(bottom(&first_only) < bottom(&all), "the second line appears as it is typed");
+        assert_eq!(bottom(&first_only), bottom(&one), "the break itself leaves nothing to see");
+    }
+
+    fn typed(tagged: &str, n: usize) -> TextJob {
+        let r = rich(tagged);
+        let draw = Draw::Text {
+            text: r.text,
+            runs: r.runs,
+            visible_chars: n,
+            rect: Rect::new(0.0, 0.0, 1200.0, 400.0),
+            size: 40.0,
+            color: [1.0; 4],
+            align: Align::Left,
+        };
+        build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
+    }
+
+    #[test]
+    fn the_typewriter_follows_paragraphs_that_cosmic_text_splits_at_more_than_newline() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): paragraph separator test did not run");
+            return;
+        }
+        for sep in ["\u{2028}", "\u{2029}", "\u{85}", "\r", "\r\n"] {
+            let tagged = format!("Aa{sep}Bb{{p}}Cc");
+            let chars_before_c = rich(&tagged).text.chars().count() - 2;
+            let shown = renderer.rasterize(&typed(&tagged, chars_before_c)).unwrap();
+            let all = renderer.rasterize(&typed(&tagged, usize::MAX)).unwrap();
+            assert!(bottom(&shown) < bottom(&all), "the last paragraph must stay hidden until typed ({sep:?})");
+        }
+    }
+
+    #[test]
+    fn a_blank_paragraph_in_sized_text_is_as_tall_as_its_neighbours() {
+        // cosmic-text gives the empty line the run's metrics already; this guards against a regression
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): blank paragraph test did not run");
+            return;
+        }
+        let blank = renderer.rasterize(&job("{size=+30}A{p}{p}B{/size}")).unwrap();
+        let filled = renderer.rasterize(&job("{size=+30}A{p}x{p}B{/size}")).unwrap();
+        assert_eq!(bottom(&blank), bottom(&filled), "the empty line has the sized height");
     }
 }

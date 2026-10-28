@@ -137,31 +137,56 @@ pub fn clip(dest: Rect, uv: Rect, to: Rect) -> Option<(Rect, Rect)> {
 /// The real wrapping happens in the backend's text engine, which this crate can't
 /// see; over-guessing only leaves a little extra space between entries.
 pub fn estimate_lines(text: &str, size: f32, width: f32) -> usize {
-    let char_w = |c: char| if is_wide(c) { size } else { size * 0.55 };
-    let space = size * 0.3;
+    estimate_lines_styled(text, &[], size, width)
+}
+
+/// Like [`estimate_lines`] for text with `{size}` runs (see `quillstone_script::markup`):
+/// each character is as wide as its run's size says, so a `{size=+30}` shout takes
+/// the room it will really need.
+pub fn estimate_lines_styled(text: &str, runs: &[quillstone_script::markup::TextRun], size: f32, width: f32) -> usize {
+    // How much bigger than the base each character is.
+    let scale_at = |byte: usize| {
+        runs.iter()
+            .find(|r| r.start <= byte && byte < r.end)
+            .and_then(|r| r.style.size)
+            .map_or(1.0, |s| s.resolve(size) / size.max(1.0))
+    };
     let mut lines = 0;
-    for paragraph in text.split('\n') {
-        let mut line = 0.0f32;
-        let mut count = 1;
-        for word in paragraph.split_whitespace() {
-            let w: f32 = word.chars().map(char_w).sum();
-            if line > 0.0 && line + space + w > width {
-                count += 1;
-                line = 0.0;
-            }
-            if line > 0.0 {
-                line += space;
-            }
-            line += w;
-            while line > width {
-                // a word longer than a line (or CJK text without spaces) breaks anywhere
-                count += 1;
-                line -= width;
-            }
+    let (mut line, mut count, mut word) = (0.0f32, 1, 0.0f32);
+    // Close the word being read: put it on this line or the next.
+    let end_word = |line: &mut f32, count: &mut usize, word: &mut f32, space: f32| {
+        if *word == 0.0 {
+            return;
         }
-        lines += count;
+        if *line > 0.0 && *line + space + *word > width {
+            *count += 1;
+            *line = 0.0;
+        }
+        if *line > 0.0 {
+            *line += space;
+        }
+        *line += *word;
+        while *line > width {
+            // a word longer than a line (or CJK text without spaces) breaks anywhere
+            *count += 1;
+            *line -= width;
+        }
+        *word = 0.0;
+    };
+    for (at, c) in text.char_indices() {
+        let k = scale_at(at);
+        if c == '\n' {
+            end_word(&mut line, &mut count, &mut word, size * 0.3 * k);
+            lines += count;
+            (line, count) = (0.0, 1);
+        } else if c.is_whitespace() {
+            end_word(&mut line, &mut count, &mut word, size * 0.3 * k);
+        } else {
+            word += if is_wide(c) { size * k } else { size * 0.55 * k };
+        }
     }
-    lines.max(1)
+    end_word(&mut line, &mut count, &mut word, size * 0.3);
+    (lines + count).max(1)
 }
 
 pub(crate) fn is_wide(c: char) -> bool {
@@ -284,5 +309,19 @@ mod tests {
         assert!((10..=16).contains(&n), "{n}");
         // CJK has no spaces and wide glyphs: about width/size characters per line
         assert_eq!(estimate_lines(&"字".repeat(80), 32.0, 1280.0), 2);
+    }
+
+    #[test]
+    fn size_runs_widen_the_estimate() {
+        use quillstone_script::markup::rich;
+        let word = "wordy ".repeat(30); // 180 chars at 32 px: about 3 lines in 1260 px
+        let plain = estimate_lines_styled(&word, &[], 32.0, 1260.0);
+        let big = rich(&format!("{{size=+32}}{word}{{/size}}"));
+        let shout = estimate_lines_styled(&big.text, &big.runs, 32.0, 1260.0);
+        assert!(shout >= plain * 2 - 1, "doubling the size roughly doubles the lines: {plain} -> {shout}");
+        // text outside the run keeps its width
+        let part = rich(&format!("{word}{{size=+32}}x{{/size}}"));
+        assert_eq!(estimate_lines_styled(&part.text, &part.runs, 32.0, 1260.0), plain);
+        assert_eq!(estimate_lines(&word, 32.0, 1260.0), plain);
     }
 }

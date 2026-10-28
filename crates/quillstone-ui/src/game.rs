@@ -8,7 +8,7 @@
 use quillstone_audio::{Action, Channel, Mixer};
 use quillstone_render::{Draw, Size, Theme, View};
 use quillstone_runtime::{voice_name, Cmd, Input, Logged, Session, State};
-use quillstone_script::{kind_from_path, AssetKind, Program};
+use quillstone_script::{kind_from_path, AssetKind, Program, Value};
 use quillstone_video::Wanted;
 
 use crate::screens::*;
@@ -116,6 +116,8 @@ pub struct Game<'p> {
     /// Time the current line has been ready for auto-forward.
     auto_elapsed: f32,
     cursor: Option<(f32, f32)>,
+    /// A key moved the keyboard focus: the cursor's hover look stays off until the mouse moves again.
+    hover_muted: bool,
     /// The settings row whose slider is being dragged.
     dragging: Option<usize>,
     /// Wheel movement not yet a whole notch (see [`Event::Wheel`]).
@@ -163,6 +165,10 @@ pub struct Game<'p> {
     slot_focus: Option<usize>,
     /// The inventory or shop screen.
     bag: Bag,
+    /// The shop or inventory screen that Settings, the history or a save screen
+    /// is open over (or that is waiting for one to close after a reload): closing
+    /// that screen goes back to it instead of to the story.
+    under: Option<Screen>,
 }
 
 impl<'p> Game<'p> {
@@ -180,9 +186,11 @@ impl<'p> Game<'p> {
             settings_before: settings.clone(),
             settings,
             screen: Screen::Story,
+            under: None,
             auto: false,
             auto_elapsed: 0.0,
             cursor: None,
+            hover_muted: false,
             dragging: None,
             wheel: 0.0,
             focus: 0,
@@ -224,6 +232,7 @@ impl<'p> Game<'p> {
         self.fresh_view();
         self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }])); // the menu's music
         self.in_story = true;
+        self.under = None;
         self.screen = Screen::Story;
         self.show(&first);
     }
@@ -234,10 +243,14 @@ impl<'p> Game<'p> {
         self.stop_skip();
         self.auto = false;
         self.in_story = false;
+        self.under = None;
         self.screen = Screen::MainMenu;
         self.menu_focus = None;
         self.fresh_view();
         let mut cmds = vec![Cmd::StopMusic { fade: 1.0 }];
+        if self.mixer.has_sfx_loops() {
+            cmds.push(Cmd::StopSfx { src: None, fade: 1.0 }); // the story's ambience ends with it
+        }
         if let Some(src) = self.theme().menu_music.clone() {
             cmds.push(Cmd::PlayMusic { src, fade: 1.0, looped: true, volume: 1.0 });
         }
@@ -252,9 +265,9 @@ impl<'p> Game<'p> {
     }
 
     /// Where closing a screen goes back to.
-    fn home(&self) -> Screen {
+    fn home(&mut self) -> Screen {
         if self.in_story {
-            Screen::Story
+            self.under.take().unwrap_or(Screen::Story)
         } else {
             Screen::MainMenu
         }
@@ -352,6 +365,12 @@ impl<'p> Game<'p> {
         self.mixer.music_ended();
     }
 
+    /// The backend could not start the looping sound effect `src`, or lost it:
+    /// the mixer forgets it, so the next `::sfx{loop}` or redraw starts it again.
+    pub fn loop_failed(&mut self, src: &str) {
+        self.mixer.loop_failed(src);
+    }
+
     pub fn handle(&mut self, event: Event) {
         if event == Event::Key(Key::F11) {
             return self.toggle_fullscreen();
@@ -361,6 +380,7 @@ impl<'p> Game<'p> {
         }
         if let Event::CursorMoved(p) = event {
             self.cursor = p;
+            self.hover_muted = false;
         }
         if let Event::Wheel(dy) = event {
             // One step per whole notch; turning the other way starts afresh.
@@ -375,7 +395,22 @@ impl<'p> Game<'p> {
             }
             return;
         }
+        let before = self.focus_state();
         self.route(event);
+        if matches!(event, Event::Key(_)) && self.focus_state() != before {
+            self.hover_muted = true;
+        }
+    }
+
+    /// Every keyboard focus there is, to tell whether a key moved one.
+    #[allow(clippy::type_complexity)]
+    fn focus_state(&self) -> (Option<usize>, Option<usize>, Option<usize>, usize, Option<usize>, Option<usize>) {
+        (self.menu_focus, self.choice_focus, self.slot_focus, self.focus, self.bag.focus, self.extras.focus)
+    }
+
+    /// The cursor as far as hover looks go: none while the keyboard has the focus.
+    fn pointer(&self) -> Option<(f32, f32)> {
+        self.cursor.filter(|_| !self.hover_muted)
     }
 
     /// Send an event to the screen it is for.
@@ -458,24 +493,34 @@ impl<'p> Game<'p> {
         let theme = self.view.theme();
         let mut out = if self.in_story {
             let at = |x: f32, y: f32| self.view.choice_at(x, y).or_else(|| self.view.hotspot_at(x, y));
-            let hover_choice = self.cursor.filter(|_| story).and_then(|(x, y)| at(x, y));
+            let hover_choice = self.pointer().filter(|_| story).and_then(|(x, y)| at(x, y));
             let pointed = hover_choice.is_some();
             let hover_choice = hover_choice.or(self.choice_focus.filter(|_| story));
             // The tooltip of a hotspot follows the mouse, or sits by the region when the keyboard picked it.
-            let pointer = self.cursor.filter(|_| pointed);
-            self.view.draw_list_at(image_size, hover_choice, pointer)
+            let pointer = self.pointer().filter(|_| pointed);
+            if story || self.screen == Screen::MainMenu {
+                self.view.draw_list_at(image_size, hover_choice, pointer)
+            } else {
+                // A full-screen overlay is up: only the picture stays under its dim.
+                self.view.draw_scene(image_size)
+            }
         } else {
             let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
             let menu = self.screen == Screen::MainMenu;
-            let hover = self.cursor.filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons));
+            let hover = self.pointer().filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons));
             let title = self.program.title.as_deref().unwrap_or("Quillstone");
             let mut out = Vec::new();
-            draw_main_menu(&mut out, theme, title, &buttons, self.menu_focus, hover, image_size);
+            if menu {
+                draw_main_menu(&mut out, theme, title, &buttons, self.menu_focus, hover, image_size);
+            } else {
+                // Settings, Load or Extras opened from the menu: only its background stays under them.
+                draw_main_menu(&mut out, theme, "", &[], None, None, image_size);
+            }
             out
         };
-        if self.in_story && self.quick_menu_visible() {
+        if self.in_story && story && self.quick_menu_visible() {
             let inventory = self.has_inventory();
-            let hover = self.cursor.filter(|_| story).and_then(|(x, y)| quick_at(x, y, inventory));
+            let hover = self.pointer().filter(|_| story).and_then(|(x, y)| quick_at(x, y, inventory));
             draw_quick(&mut out, theme, hover, self.auto, self.skip.is_some(), inventory);
         }
         if self.skip.is_some() && story {
@@ -484,13 +529,13 @@ impl<'p> Game<'p> {
         match self.screen {
             Screen::MainMenu | Screen::Story => {}
             Screen::Settings => {
-                let hover = self.cursor.and_then(|(x, y)| settings_at(x, y, self.in_story));
+                let hover = self.pointer().and_then(|(x, y)| settings_at(x, y, self.in_story));
                 draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover);
             }
             Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll),
             Screen::Save | Screen::Load => {
                 let tabs = self.slot_tabs();
-                let hover = self.cursor.and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len()));
+                let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len()));
                 let hover = hover.or(self.slot_focus.map(SlotHit::Slot));
                 let title = if self.screen == Screen::Save { "Save" } else { "Load" };
                 let view = SlotScreen { title, tabs: &tabs, page: self.page, slots: &self.slots, hover };
@@ -500,7 +545,7 @@ impl<'p> Game<'p> {
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
         }
         if let Some(confirm) = &self.confirm {
-            let hover = self.cursor.and_then(|(x, y)| confirm_at(x, y));
+            let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
             draw_confirm(&mut out, theme, &confirm.message, hover);
         }
         if let Some((message, _)) = &self.notice {
@@ -516,9 +561,19 @@ impl<'p> Game<'p> {
         if !self.in_story {
             return Vec::new();
         }
-        let mut out = self.program.images_ahead(self.session.state().pc, AHEAD);
-        // Item pictures are small and the inventory can open any time.
-        out.extend(self.program.item_icons().map(|(_, icon)| icon));
+        let pc = self.session.state().pc;
+        let mut out = self.program.images_ahead(pc, AHEAD);
+        // Item pictures: only those of a shop or inventory the story is about to open
+        // (the ones a screen is showing come from its draw list), never the whole game's.
+        let (inventory, shops) = self.program.bag_icons_ahead(pc, AHEAD);
+        out.extend(shops);
+        if inventory {
+            let vars = &self.session.state().vars;
+            out.extend(self.program.inventory.iter().filter_map(|name| match vars.get(name) {
+                Some(Value::List(held)) => Some(held),
+                _ => None,
+            }).flatten().filter_map(|id| self.program.items.get(id)?.icon.as_deref()));
+        }
         out
     }
 
@@ -735,7 +790,10 @@ impl<'p> Game<'p> {
         self.bag_arrived(cmds);
         let mut actions = self.mixer.apply(cmds);
         if self.skip.is_some() {
-            // Skipping through dozens of lines a second: don't play their sounds.
+            // Skipping through dozens of lines a second: no flashes, and don't play
+            // one-shot sounds or voices. Looping sounds belong to the scene and are
+            // never muted, so what plays still agrees with the story afterwards.
+            self.view.end_flash();
             actions.retain(|a| !matches!(a, Action::PlaySfx { .. } | Action::PlayVoice { .. }));
         }
         self.audio.extend(actions);
@@ -823,6 +881,7 @@ impl<'p> Game<'p> {
 
     fn open_settings(&mut self) {
         self.stop_skip();
+        self.cover_bag();
         self.screen = Screen::Settings;
         self.dragging = None;
         self.settings_before = self.settings.clone();
@@ -922,6 +981,7 @@ impl<'p> Game<'p> {
 
     fn open_backlog(&mut self) {
         self.stop_skip();
+        self.cover_bag();
         // The story can't move while the backlog is up, so a snapshot is enough.
         self.backlog = self.session.backlog();
         self.backlog_scroll = 0;
@@ -939,7 +999,7 @@ impl<'p> Game<'p> {
             Event::Key(Key::PageDown) => self.backlog_scroll = scroll_by(self.backlog_scroll, -5),
             Event::Key(Key::Home) => self.backlog_scroll = max,
             Event::Key(Key::End) => self.backlog_scroll = 0,
-            Event::Key(Key::Escape | Key::Char('h' | 'H')) | Event::Press(_) => self.screen = Screen::Story,
+            Event::Key(Key::Escape | Key::Char('h' | 'H')) | Event::Press(_) => self.screen = self.home(),
             _ => {}
         }
     }

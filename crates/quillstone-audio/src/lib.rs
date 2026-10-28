@@ -7,7 +7,12 @@
 //! - Music keeps playing across a rollback redraw (or any `::music` of the track
 //!   already playing); only its volume follows. A different track crossfades.
 //! - A voice clip belongs to its line: it stops as soon as the player acts.
-//! - Sound effects are fire-and-forget (the runtime never replays them on redraw).
+//! - One-shot sound effects are fire-and-forget (the runtime never replays them on redraw).
+//! - A looping sound effect belongs to the scene, like music: starting one that is
+//!   already looping only changes its volume, and a redraw (rollback, load, hot
+//!   reload) keeps the loops the earlier moment had and stops the others. Skipping
+//!   mutes one-shots but not loops, so what plays always agrees with the story.
+//!   A loop the backend failed to start (or lost) is reported with [`Mixer::loop_failed`].
 //!
 //! Every sound plays on one of three [`Channel`]s, each with its own volume, so
 //! the player can offer music / sound / voice sliders.
@@ -34,6 +39,16 @@ pub enum Action {
     /// Change the current music track's volume without restarting it.
     SetMusicVolume { volume: f32, fade: f32 },
     PlaySfx { src: String, volume: f32 },
+    /// Start a looping sound effect on the sound channel, fading in over `fade`.
+    PlaySfxLoop { src: String, fade: f32, volume: f32 },
+    /// Change a playing loop's volume without restarting it.
+    SetSfxLoopVolume { src: String, volume: f32, fade: f32 },
+    /// Fade out the loop of `src` and any one-shot of it still playing; with
+    /// `None`, everything on the sound channel.
+    StopSfx { src: Option<String>, fade: f32 },
+    /// Fade out only the loop of `src` (a redraw dropped it); one-shots of the same
+    /// file play on.
+    StopSfxLoop { src: String, fade: f32 },
     PlayVoice { src: String },
     /// Cut the voice clip of the line the player has left.
     StopVoice,
@@ -49,10 +64,18 @@ struct Track {
     volume: f32,
 }
 
+/// A looping sound effect that is playing.
+#[derive(Debug, Clone, PartialEq)]
+struct SfxLoop {
+    src: String,
+    volume: f32,
+}
+
 /// What is playing, as far as the story is concerned.
 #[derive(Debug, Clone, Default)]
 pub struct Mixer {
     music: Option<Track>,
+    loops: Vec<SfxLoop>,
     voice: bool,
 }
 
@@ -66,6 +89,11 @@ impl Mixer {
         self.music.as_ref().map(|t| t.src.as_str())
     }
 
+    /// Whether any looping sound effect is playing.
+    pub fn has_sfx_loops(&self) -> bool {
+        !self.loops.is_empty()
+    }
+
     /// Apply one batch of commands from the runtime (the same batch the view gets).
     pub fn apply(&mut self, cmds: &[Cmd]) -> Vec<Action> {
         let mut out = Vec::new();
@@ -76,6 +104,10 @@ impl Mixer {
         // (A rollback redraw re-sends the voice of the line it returns to.)
         self.stop_voice(&mut out);
 
+        // A redraw says what the whole scene is: loops it doesn't list are over.
+        let redraw = cmds.first() == Some(&Cmd::ClearScene);
+        let mut listed: Vec<&str> = Vec::new();
+
         for cmd in cmds {
             match cmd {
                 Cmd::PlayMusic { src, fade, looped, volume } => self.play_music(&mut out, src, *fade, *looped, *volume),
@@ -85,12 +117,31 @@ impl Mixer {
                     }
                 }
                 Cmd::PlaySfx { src, volume } => out.push(Action::PlaySfx { src: src.clone(), volume: *volume }),
+                Cmd::PlaySfxLoop { src, fade, volume } => {
+                    listed.push(src);
+                    self.play_loop(&mut out, src, *fade, *volume);
+                }
+                Cmd::StopSfx { src, fade } => {
+                    match src {
+                        Some(src) => self.loops.retain(|l| l.src != *src),
+                        None => self.loops.clear(),
+                    }
+                    // One-shots aren't tracked (they end by themselves), so always tell the backend.
+                    out.push(Action::StopSfx { src: src.clone(), fade: *fade });
+                }
                 Cmd::PlayVoice { src } => {
                     self.stop_voice(&mut out);
                     out.push(Action::PlayVoice { src: src.clone() });
                     self.voice = true;
                 }
                 _ => {}
+            }
+        }
+        if redraw {
+            let gone: Vec<String> = self.loops.iter().filter(|l| !listed.contains(&l.src.as_str())).map(|l| l.src.clone()).collect();
+            for src in gone {
+                self.loops.retain(|l| l.src != src);
+                out.push(Action::StopSfxLoop { src, fade: 0.0 });
             }
         }
         out
@@ -100,6 +151,13 @@ impl Mixer {
     /// so asking for it again starts it over.
     pub fn music_ended(&mut self) {
         self.music = None;
+    }
+
+    /// The backend could not start the loop of `src` (a missing file, a decoder or
+    /// device error) or it ended without being stopped: forget it, so a later
+    /// `::sfx{loop}` or a redraw (rollback, load) starts it again.
+    pub fn loop_failed(&mut self, src: &str) {
+        self.loops.retain(|l| l.src != src);
     }
 
     fn play_music(&mut self, out: &mut Vec<Action>, src: &str, fade: f32, looped: bool, volume: f32) {
@@ -115,6 +173,21 @@ impl Mixer {
         }
         self.music = Some(Track { src: src.to_string(), looped, volume });
         out.push(Action::PlayMusic { src: src.to_string(), fade, looped, volume });
+    }
+
+    fn play_loop(&mut self, out: &mut Vec<Action>, src: &str, fade: f32, volume: f32) {
+        match self.loops.iter_mut().find(|l| l.src == src) {
+            Some(l) => {
+                if l.volume != volume {
+                    l.volume = volume;
+                    out.push(Action::SetSfxLoopVolume { src: src.to_string(), volume, fade });
+                }
+            }
+            None => {
+                self.loops.push(SfxLoop { src: src.to_string(), volume });
+                out.push(Action::PlaySfxLoop { src: src.to_string(), fade, volume });
+            }
+        }
     }
 
     fn stop_voice(&mut self, out: &mut Vec<Action>) {
@@ -272,5 +345,146 @@ mod tests {
         assert!((amplitude_to_db(0.5) + 6.0206).abs() < 1e-3);
         assert_eq!(amplitude_to_db(0.0), SILENCE_DB);
         assert_eq!(amplitude_to_db(0.0001), SILENCE_DB);
+    }
+
+    // ---- looping sound effects ------------------------------------------------
+
+    fn playing(mixer: &Mixer) -> Vec<&str> {
+        mixer.loops.iter().map(|l| l.src.as_str()).collect()
+    }
+
+    fn rain(fade: f32, volume: f32) -> Action {
+        Action::PlaySfxLoop { src: "rain.ogg".into(), fade, volume }
+    }
+
+    fn stop(src: Option<&str>, fade: f32) -> Action {
+        Action::StopSfx { src: src.map(String::from), fade }
+    }
+
+    fn stop_loop(src: &str) -> Action {
+        Action::StopSfxLoop { src: src.into(), fade: 0.0 }
+    }
+
+    const LOOPS: &str = "::sfx{src=rain.ogg loop volume=0.6 fade=1}\n**A:** one\n::sfx{src=rain.ogg loop volume=0.6}\n::sfx{src=wind.ogg loop}\n**A:** two\n::sfx{stop=rain.ogg fade=2}\n**A:** three\n::sfx{stop}\n**A:** four\n";
+
+    #[test]
+    fn a_loop_starts_once_and_starting_it_again_only_changes_its_volume() {
+        let mut mixer = Mixer::new();
+        let start = |fade, volume| Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade, volume };
+        assert_eq!(mixer.apply(&[start(1.0, 0.6)]), vec![rain(1.0, 0.6)]);
+        assert!(mixer.apply(&[start(1.0, 0.6)]).is_empty(), "idempotent");
+        assert_eq!(
+            mixer.apply(&[start(2.0, 0.3)]),
+            vec![Action::SetSfxLoopVolume { src: "rain.ogg".into(), volume: 0.3, fade: 2.0 }]
+        );
+        assert_eq!(playing(&mixer), ["rain.ogg"]);
+    }
+
+    #[test]
+    fn stopping_one_loop_or_all_of_them() {
+        let mut mixer = Mixer::new();
+        let start = |src: &str| Cmd::PlaySfxLoop { src: src.into(), fade: 0.0, volume: 1.0 };
+        mixer.apply(&[start("rain.ogg"), start("wind.ogg")]);
+        let out = mixer.apply(&[Cmd::StopSfx { src: Some("rain.ogg".into()), fade: 1.0 }]);
+        assert_eq!(out, vec![stop(Some("rain.ogg"), 1.0)]);
+        assert_eq!(playing(&mixer), ["wind.ogg"]);
+        assert_eq!(mixer.apply(&[Cmd::StopSfx { src: None, fade: 0.5 }]), vec![stop(None, 0.5)]);
+        assert!(!mixer.has_sfx_loops());
+        // a stop is passed on even when no loop plays: a one-shot of that file may be
+        assert_eq!(mixer.apply(&[Cmd::StopSfx { src: None, fade: 0.0 }]), vec![stop(None, 0.0)]);
+        // and a stopped loop can start again
+        assert_eq!(mixer.apply(&[start("rain.ogg")]).len(), 1);
+    }
+
+    #[test]
+    fn rollback_keeps_loops_that_were_playing_and_stops_the_others() {
+        let p = parse(LOOPS).unwrap();
+        let (mut game, first) = Session::start(&p);
+        let mut mixer = Mixer::new();
+        assert_eq!(mixer.apply(&first), vec![rain(1.0, 0.6)]);
+        assert_eq!(
+            mixer.apply(&game.input(Input::Advance)),
+            vec![Action::PlaySfxLoop { src: "wind.ogg".into(), fade: 0.0, volume: 1.0 }]
+        );
+        assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![stop(Some("rain.ogg"), 2.0)]);
+        // back on "two": the rain comes back (it had stopped), the wind plays on untouched
+        let back = mixer.apply(&game.rollback().unwrap());
+        assert_eq!(back, vec![rain(0.0, 0.6)]);
+        // back on "one": the wind hadn't started yet, so it stops; the rain is untouched
+        assert_eq!(mixer.apply(&game.rollback().unwrap()), vec![stop_loop("wind.ogg")]);
+        assert_eq!(playing(&mixer), ["rain.ogg"]);
+        // forward again to the end: `stop` clears the mixer too
+        for _ in 0..3 {
+            mixer.apply(&game.input(Input::Advance));
+        }
+        assert!(!mixer.has_sfx_loops());
+    }
+
+    #[test]
+    fn a_redraw_with_nothing_looping_stops_every_loop_and_loading_a_save_agrees() {
+        let p = parse(LOOPS).unwrap();
+        let (mut game, first) = Session::start(&p);
+        let mut mixer = Mixer::new();
+        mixer.apply(&first);
+        mixer.apply(&game.input(Input::Advance));
+        let save = game.save();
+        // load into a game whose mixer already plays what the save has: nothing to do
+        let (loaded, cmds) = Session::load(&p, &save).unwrap();
+        assert!(mixer.apply(&cmds).is_empty());
+        assert_eq!(loaded.state().sfx_loops.len(), 2);
+        // load a save from before any loop into the same mixer: both stop
+        let plain = parse("**A:** x\n").unwrap();
+        let (quiet, quiet_cmds) = Session::load(&plain, "quillstone-session 1\nstate\nat \"\" 0 0\nend\n").unwrap();
+        assert!(quiet.state().sfx_loops.is_empty());
+        assert_eq!(mixer.apply(&quiet_cmds), vec![stop_loop("rain.ogg"), stop_loop("wind.ogg")]);
+        // a fresh mixer (hot reload after a restart) starts them from the save
+        let mut fresh = Mixer::new();
+        let (_, cmds) = Session::load(&p, &save).unwrap();
+        assert_eq!(fresh.apply(&cmds).len(), 2);
+    }
+
+    #[test]
+    fn a_failed_loop_is_forgotten_so_it_starts_again() {
+        let mut mixer = Mixer::new();
+        let start = Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.5, volume: 0.6 };
+        assert_eq!(mixer.apply(std::slice::from_ref(&start)), vec![rain(0.5, 0.6)]);
+        assert!(mixer.apply(std::slice::from_ref(&start)).is_empty(), "believed to be playing");
+        mixer.loop_failed("rain.ogg");
+        assert!(!mixer.has_sfx_loops());
+        assert_eq!(mixer.apply(&[start]), vec![rain(0.5, 0.6)], "the next `::sfx{{loop}}` tries again");
+        mixer.loop_failed("never-started.ogg"); // unknown files are ignored
+        assert_eq!(playing(&mixer), ["rain.ogg"]);
+    }
+
+    #[test]
+    fn a_redraw_restarts_a_loop_the_backend_lost() {
+        let p = parse(LOOPS).unwrap();
+        let (game, first) = Session::start(&p);
+        let mut mixer = Mixer::new();
+        mixer.apply(&first);
+        mixer.loop_failed("rain.ogg");
+        let redraw = game.state().redraw();
+        assert_eq!(mixer.apply(&redraw), vec![rain(0.0, 0.6)]);
+    }
+
+    #[test]
+    fn a_redraw_drops_only_the_loop_not_a_one_shot_of_the_same_file() {
+        let mut mixer = Mixer::new();
+        mixer.apply(&[Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 1.0 }]);
+        let out = mixer.apply(&[Cmd::ClearScene]);
+        assert_eq!(out, vec![stop_loop("rain.ogg")]);
+        assert!(!out.iter().any(|a| matches!(a, Action::StopSfx { .. })));
+        // a script's `::sfx{stop=rain.ogg}` still cuts both
+        mixer.apply(&[Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 1.0 }]);
+        assert_eq!(mixer.apply(&[Cmd::StopSfx { src: Some("rain.ogg".into()), fade: 1.0 }]), vec![stop(Some("rain.ogg"), 1.0)]);
+    }
+
+    #[test]
+    fn one_shot_sound_effects_never_touch_the_loops() {
+        let mut mixer = Mixer::new();
+        mixer.apply(&[Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 1.0 }]);
+        let out = mixer.apply(&[Cmd::PlaySfx { src: "rain.ogg".into(), volume: 1.0 }]);
+        assert_eq!(out, vec![Action::PlaySfx { src: "rain.ogg".into(), volume: 1.0 }]);
+        assert!(mixer.has_sfx_loops());
     }
 }

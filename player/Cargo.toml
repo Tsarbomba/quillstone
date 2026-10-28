@@ -1,5 +1,6 @@
 [package]
 name = "quillstone-player"
+default-run = "quillstone-player"
 description = "Windowed Quillstone player (winit + wgpu)"
 version = "0.1.0"
 edition = "2021"

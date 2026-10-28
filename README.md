@@ -42,6 +42,11 @@ labels and lines no branch reaches, choice options whose condition is never
 true, and variables that are read but never set (usually typos). It exits with
 an error only for the first two; the rest are warnings.
 
+Exit codes: `0` when it finished and found no error, `1` for a real problem, and
+`2` when it stopped at the `--limit` (variables that keep growing can make the
+story endless), because then only part of the story was played. Raise `--limit`,
+or pass `--allow-partial` if a partial run is fine for you (the exit code is then `0`).
+
 ## Set up FFmpeg for video (one time)
 
 The player plays video with FFmpeg. Building it needs an FFmpeg 8.x *shared*
@@ -104,7 +109,7 @@ double-click the exe. If it can't start, the reason is also written to
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
 | Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, Main menu, Quit |
-| I | the inventory, in games that have one (Esc, right-click or I closes it) |
+| I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the settings (closing them returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
 | F11 | fullscreen |
 | Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
 

@@ -4,6 +4,7 @@
 //! - `{color=#ff8080}...{/color}` (they nest)
 //! - `{w=0.5}`: the typewriter pauses there for half a second
 //! - `{size=+10}`, `{size=-8}`, `{size=24}`...`{/size}`: relative or absolute text size (they nest)
+//! - `{p}`: a line break inside the line (a paragraph break); it doesn't wait
 //! - `{nw}` at the very end: the story goes on by itself once the line is typed
 //! - `\*`, `\{` and `\\` write the character itself; any other `\` is shown as is
 //!
@@ -37,9 +38,9 @@ impl TextSize {
     /// `self` written inside text already sized `outer`.
     fn within(self, outer: Option<TextSize>) -> TextSize {
         match (self, outer) {
-            (TextSize::Relative(d), Some(TextSize::Relative(c))) => TextSize::Relative((c + d).clamp(-MAX_SIZE, MAX_SIZE)),
+            (TextSize::Relative(d), Some(TextSize::Relative(c))) => TextSize::Relative(c.saturating_add(d).clamp(-MAX_SIZE, MAX_SIZE)),
             (TextSize::Relative(d), Some(TextSize::Absolute(c))) => {
-                TextSize::Absolute((c + d).clamp(MIN_SIZE, MAX_SIZE))
+                TextSize::Absolute(c.saturating_add(d).clamp(MIN_SIZE, MAX_SIZE))
             }
             (size, _) => size,
         }
@@ -154,12 +155,18 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                         return Err(format!("`{{w={value}}}`: a pause is more than 0 and at most {MAX_PAUSE} seconds"));
                     }
                     out.pauses.push((shown, seconds));
+                } else if tag == "p" {
+                    // A break at the very start would only leave an empty first line.
+                    if shown > 0 {
+                        out.text.push('\n');
+                        shown += 1;
+                    }
                 } else if is_ident(tag) {
                     // An unknown `{name}`, left as written by interpolation.
                     out.text.push_str(&format!("{{{inner}}}"));
                     shown += inner.chars().count() + 2;
                 } else {
-                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{w=0.5}}`, `{{nw}}`)"));
+                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{w=0.5}}`, `{{p}}`, `{{nw}}`)"));
                 }
                 i = close + 1;
             }
@@ -183,6 +190,15 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
         return Err("`{size=...}` is never closed with `{/size}`".into());
     }
     close_run(out.text.len(), style);
+    // A break at the very end would only leave an empty last line (and a pause or
+    // style that reached past the shorter text is clamped to it).
+    if out.text.ends_with('\n') {
+        out.text.truncate(out.text.trim_end_matches('\n').len());
+        let (len, chars) = (out.text.len(), out.text.chars().count());
+        runs.iter_mut().for_each(|r| r.end = r.end.min(len));
+        runs.retain(|r| r.start < r.end);
+        out.pauses.iter_mut().for_each(|p| p.0 = p.0.min(chars));
+    }
     if runs.iter().any(|r| r.style != Style::default()) {
         out.runs = runs;
     }
@@ -193,7 +209,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
 fn parse_size(v: &str) -> Result<TextSize, String> {
     let n: i32 = v.parse().map_err(|_| format!("`{{size={v}}}` needs a whole number: `+10`, `-8` or `24`"))?;
     if v.starts_with('+') || v.starts_with('-') {
-        if n.abs() > MAX_SIZE {
+        if n.unsigned_abs() > MAX_SIZE as u32 {
             return Err(format!("`{{size={v}}}`: a size change is at most {MAX_SIZE} either way"));
         }
         Ok(TextSize::Relative(n))
@@ -209,10 +225,11 @@ pub fn check_markup(src: &str) -> Result<(), String> {
     parse_markup(src).map(|_| ())
 }
 
-/// Like [`check_markup`] for a choice option, where `{nw}` makes no sense.
+/// Like [`check_markup`] for a choice option, where `{nw}` and `{p}` make no sense.
 pub fn check_option_markup(src: &str) -> Result<(), String> {
     match parse_markup(src)? {
         Rich { no_wait: true, .. } => Err("`{nw}` only works at the end of a dialogue line, not in a choice".into()),
+        Rich { text, .. } if text.contains('\n') => Err("`{p}` only works in a dialogue line, not in a choice".into()),
         _ => Ok(()),
     }
 }
@@ -223,7 +240,9 @@ pub fn rich(src: &str) -> Rich {
     parse_markup(src).unwrap_or_else(|_| Rich { text: src.to_string(), ..Rich::default() })
 }
 
-/// Just the words, for places that show plain text (history, save previews).
+/// Just the words, for places that show plain text (history, save previews). A
+/// `{p}` stays a line break (the history shows it as one); a one-line preview turns
+/// it into a space itself.
 pub fn plain(src: &str) -> String {
     rich(src).text
 }
@@ -286,6 +305,14 @@ mod tests {
     }
 
     #[test]
+    fn nesting_sizes_cannot_overflow() {
+        let big = TextSize::Relative(i32::MAX);
+        assert_eq!(big.within(Some(TextSize::Relative(i32::MAX))), TextSize::Relative(MAX_SIZE));
+        assert_eq!(TextSize::Relative(i32::MIN).within(Some(TextSize::Relative(i32::MIN))), TextSize::Relative(-MAX_SIZE));
+        assert_eq!(big.within(Some(TextSize::Absolute(i32::MAX))), TextSize::Absolute(MAX_SIZE));
+    }
+
+    #[test]
     fn sizes_are_relative_or_absolute_and_nest() {
         let r = parse_markup("a {size=+10}b {size=+4}c{/size} d{/size} e {size=24}f {size=-6}g{/size}{/size}").unwrap();
         assert_eq!(r.text, "a b c d e f g");
@@ -344,6 +371,8 @@ mod tests {
             ("{size=7}x{/size}", "from 8 to 200"),
             ("{size=201}x{/size}", "from 8 to 200"),
             ("{size=+201}x{/size}", "at most 200"),
+            ("{size=-2147483648}x{/size}", "at most 200"),
+            ("{size=+2147483647}x{/size}", "at most 200"),
             ("{size=24}open", "never closed"),
             ("{/size}", "without a `{size"),
             ("{nw}more", "last thing"),
@@ -358,5 +387,49 @@ mod tests {
         assert_eq!(parse_markup("a { b").unwrap().text, "a { b", "a lone brace is just a brace");
         assert_eq!(parse_markup("Path is C:\\temp\\new.").unwrap().text, "Path is C:\\temp\\new.", "other backslashes stay");
         assert_eq!(parse_markup("ends with \\").unwrap().text, "ends with \\");
+    }
+
+    #[test]
+    fn p_is_a_line_break_that_counts_as_one_character() {
+        let r = parse_markup("One.{p}Two.").unwrap();
+        assert_eq!(r.text, "One.\nTwo.");
+        assert!(r.runs.is_empty() && r.pauses.is_empty() && !r.no_wait);
+        assert_eq!(plain("One.{p}Two."), "One.\nTwo.", "the history keeps the break");
+        assert_eq!(rich("a{p}{p}b").text, "a\n\nb", "two make an empty line");
+        // an escaped one is the literal text, and a value can't smuggle a break in
+        assert_eq!(parse_markup("\\{p}").unwrap().text, "{p}");
+        assert_eq!(parse_markup(&escape("{p}")).unwrap().text, "{p}");
+    }
+
+    #[test]
+    fn p_at_the_start_or_end_is_harmless() {
+        assert_eq!(parse_markup("{p}Hi.").unwrap().text, "Hi.");
+        assert_eq!(parse_markup("Hi.{p}").unwrap().text, "Hi.");
+        assert_eq!(parse_markup("{p}{p}").unwrap().text, "");
+        let r = parse_markup("**Hi.{p}**{w=1}{nw}").unwrap();
+        assert_eq!((r.text.as_str(), r.no_wait), ("Hi.", true));
+        assert_eq!(r.pauses, [(3, 1.0)], "a pause past the trimmed break is clamped");
+        assert_eq!(styles(&r), [("Hi.", true, false, None)]);
+    }
+
+    #[test]
+    fn p_mixes_with_pauses_sizes_colours_and_typed_counts() {
+        let r = parse_markup("Well.{w=0.5}{p}{color=#f00}No{size=+10}!{/size}{/color}{nw}").unwrap();
+        assert_eq!(r.text, "Well.\nNo!");
+        assert_eq!(r.pauses, [(5, 0.5)], "a pause counts characters up to the break");
+        assert!(r.no_wait);
+        assert_eq!(r.text.chars().count(), 9, "the break is one typed character");
+        let red = Some([1.0, 0.0, 0.0]);
+        assert_eq!(styles(&r)[1], ("No", false, false, red));
+        assert_eq!(sizes(&r).last(), Some(&("!", Some(TextSize::Relative(10)))));
+        // after the break the pause position moves on by one
+        assert_eq!(parse_markup("a{p}b{w=1}").unwrap().pauses, [(3, 1.0)]);
+    }
+
+    #[test]
+    fn p_is_for_dialogue_not_choices() {
+        assert!(check_markup("a{p}b").is_ok());
+        assert!(check_option_markup("a{p}b").unwrap_err().contains("not in a choice"));
+        assert!(check_option_markup("{p}a").is_ok(), "a leading one is ignored, so harmless");
     }
 }

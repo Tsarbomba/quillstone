@@ -50,18 +50,45 @@ impl Game<'_> {
         self.bag = Bag { overlay, page: 0, focus: None };
     }
 
+    /// The shop or inventory this game is at: the screen showing, or the one
+    /// Settings, the history or a save screen is open over.
+    fn bag_screen(&self) -> Option<Screen> {
+        match self.screen {
+            Screen::Inventory | Screen::Shop => Some(self.screen),
+            _ => self.under,
+        }
+    }
+
+    /// Another screen is about to open over the shop or inventory: remember it,
+    /// so closing that screen comes back (page, focus and purchases kept).
+    pub(super) fn cover_bag(&mut self) {
+        if matches!(self.screen, Screen::Inventory | Screen::Shop) {
+            self.under = Some(self.screen);
+        }
+    }
+
     /// The story arrived at (or was redrawn at) a screen of its own.
     pub(super) fn bag_arrived(&mut self, cmds: &[Cmd]) {
         if !self.in_story {
             return;
         }
         for cmd in cmds {
-            match cmd {
-                Cmd::ShowInventory => self.open_bag(Screen::Inventory, false),
+            let want = match cmd {
+                Cmd::ShowInventory => Screen::Inventory,
+                Cmd::ShowShop { .. } => Screen::Shop,
+                _ => continue,
+            };
+            match self.screen {
                 // A purchase shows the shop again: stay on the page and item.
-                Cmd::ShowShop { .. } if self.screen == Screen::Shop => self.clamp_bag(),
-                Cmd::ShowShop { .. } => self.open_bag(Screen::Shop, false),
-                _ => {}
+                Screen::Shop if want == Screen::Shop => self.clamp_bag(),
+                Screen::Story | Screen::Inventory | Screen::Shop => self.open_bag(want, false),
+                // Settings, the history or a save screen is open (a reload, say):
+                // leave it be, and show the screen when it closes.
+                _ if self.under == Some(Screen::Shop) && want == Screen::Shop => self.clamp_bag(),
+                _ => {
+                    self.bag = Bag { overlay: false, page: 0, focus: None };
+                    self.under = Some(want);
+                }
             }
         }
     }
@@ -76,24 +103,26 @@ impl Game<'_> {
     /// After the script changed under a screen that belongs to it: back to the story
     /// when what that screen was for is no longer what the story waits at.
     pub(super) fn bag_resync(&mut self) {
+        let Some(kind) = self.bag_screen() else { return };
         let waiting = &self.session.state().pending;
-        let stale = match self.screen {
+        let stale = match kind {
             Screen::Shop => !matches!(waiting, Some(Cmd::ShowShop { .. })),
-            Screen::Inventory if self.bag.overlay => !self.has_inventory(),
-            Screen::Inventory => !matches!(waiting, Some(Cmd::ShowInventory)),
-            _ => false,
+            _ if self.bag.overlay => !self.has_inventory(),
+            _ => !matches!(waiting, Some(Cmd::ShowInventory)),
         };
-        if stale {
-            self.screen = Screen::Story;
-        } else if matches!(self.screen, Screen::Inventory | Screen::Shop) {
+        if !stale {
             self.clamp_bag();
+        } else if self.screen == kind {
+            self.screen = Screen::Story;
+        } else {
+            self.under = None;
         }
     }
 
     fn shelf(&self) -> Shelf {
         let info_detail = |i: &ItemInfo, price: Option<String>| Detail { name: i.name.clone(), text: i.text.clone(), price };
         let price_line = |p: i64| format!("Price: {p}");
-        match (self.screen, &self.session.state().pending) {
+        match (self.bag_screen().unwrap_or(self.screen), &self.session.state().pending) {
             (Screen::Shop, Some(Cmd::ShowShop { pay, money, items })) => {
                 let label = self.theme().shop_currency.clone().unwrap_or_else(|| pay.clone());
                 let cells = items
@@ -137,7 +166,7 @@ impl Game<'_> {
         let page = self.bag.page.min(pages - 1);
         let start = page * per;
         let shown = &shelf.cells[start.min(shelf.cells.len())..(start + per).min(shelf.cells.len())];
-        let hover = self.cursor.and_then(|(x, y)| bag::hit(theme, x, y, shown.len(), pages));
+        let hover = self.pointer().and_then(|(x, y)| bag::hit(theme, x, y, shown.len(), pages));
         let focus = self.bag.focus.and_then(|f| f.checked_sub(start)).filter(|&f| f < shown.len());
         // The description follows the mouse, else the keyboard.
         let detail_at = match hover {
@@ -178,8 +207,21 @@ impl Game<'_> {
                     None => {}
                 }
             }
-            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.close_bag(),
+            // The inventory over the story is an overlay like the history: Esc closes
+            // it. The shop and a script's inventory are screens of the story, so
+            // Esc and a right click open Settings, as everywhere else.
+            Event::Press(Button::Right) | Event::Key(Key::Escape) if self.bag.overlay && self.screen == Screen::Inventory => {
+                self.close_bag()
+            }
+            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.open_settings(),
+            Event::Key(Key::Char('s' | 'S')) => self.open_slots(Screen::Save),
+            Event::Key(Key::Char('l' | 'L')) => self.open_slots(Screen::Load),
+            Event::Key(Key::Char('h' | 'H')) => self.open_backlog(),
+            Event::Key(Key::F5) => self.quick_save(),
+            Event::Key(Key::F9) => self.quick_load(),
             Event::Key(Key::Char('i' | 'I')) if self.screen == Screen::Inventory => self.close_bag(),
+            // Backspace (the gamepad's X) leaves too: a pad has no other way to press Leave.
+            Event::Key(Key::Backspace) => self.close_bag(),
             Event::Wheel(dy) => self.turn_bag_page(if dy > 0.0 { -1 } else { 1 }, per, pages),
             Event::Key(Key::PageUp) => self.turn_bag_page(-1, per, pages),
             Event::Key(Key::PageDown) => self.turn_bag_page(1, per, pages),
@@ -197,7 +239,8 @@ impl Game<'_> {
                         Key::Right => (f + 1).min(shelf_len - 1),
                         Key::Up if f >= cols => f - cols,
                         Key::Up => f,
-                        _ => (f + cols).min(shelf_len - 1),
+                        _ if f + cols < shelf_len => f + cols,
+                        _ => f, // nothing below in this column: stay put
                     },
                 };
                 self.bag.focus = Some(at.min(shelf_len - 1));
@@ -242,7 +285,8 @@ impl Game<'_> {
         }
     }
 
-    /// Esc, right click, `I` or the button. Over the story that just closes it;
+    /// The Leave / Close button, or `I` in the inventory (and Esc over the story: the
+    /// overlay). Over the story that just closes it;
     /// where the script opened it, the story carries on.
     fn close_bag(&mut self) {
         let leaving_script_screen = self.screen == Screen::Shop || !self.bag.overlay;

@@ -8,14 +8,43 @@
 //! matches what the save was waiting for, the story re-runs from there instead
 //! of getting stuck.
 
+use std::collections::HashSet;
+
 use quillstone_script::{is_inside, Fit, Op, Program, Value, Vars};
 
-use crate::{rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SpriteState, State};
+use crate::{rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteState, State};
 
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
 
+/// Most items a list variable may hold when read from a save or the persistent
+/// file. A list past it makes the record unreadable (a save is refused, a persistent
+/// entry is skipped): real games hold dozens, and the limit keeps a hostile file
+/// from costing memory or time.
+pub const MAX_LIST_ITEMS: usize = 10_000;
+
+/// Most states (history plus the present) a save may hold; [`SAVE_HISTORY`] is what
+/// one writes. A save with more is refused.
+const MAX_SAVE_STATES: usize = 1_000;
+
+/// Most return addresses (`stack` records) in one state: the runtime's call depth limit.
+const MAX_STACK_RECORDS: usize = crate::MAX_CALL_DEPTH;
+
 const MAGIC: &str = "quillstone-session 1";
+
+/// Longest `pending wait` read from a save, in seconds (the language has no limit,
+/// but a wait this long is a hand-edited save, and the player can skip it anyway).
+const MAX_WAIT: f32 = 3600.0;
+
+/// A number read from a save, made safe: not finite gives `default`, else it is
+/// clamped to `lo..=hi` (the range the script language itself allows).
+fn sane(value: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(lo, hi)
+    } else {
+        default
+    }
+}
 
 impl Session<'_> {
     /// The session as save-file text.
@@ -48,7 +77,12 @@ impl<'p> Session<'p> {
         while let Some((n, line)) = lines.next() {
             let words = tokens(line).map_err(|e| format!("line {n}: {e}"))?;
             match words.first().map(String::as_str) {
-                Some("state") => states.push((read_state(&mut lines, program)?, None)),
+                Some("state") => {
+                    if states.len() >= MAX_SAVE_STATES {
+                        return Err(format!("line {n}: the save holds more than {MAX_SAVE_STATES} states"));
+                    }
+                    states.push((read_state(&mut lines, program)?, None));
+                }
                 Some("input") => {
                     let last = states.last_mut().ok_or(format!("line {n}: input before any state"))?;
                     last.1 = Some(match (words.get(1).map(String::as_str), words.get(2)) {
@@ -102,9 +136,13 @@ pub fn voice_name(program: &Program, pc: usize) -> Option<String> {
     Some(format!("{label}-{:08x}", id as u32))
 }
 
-/// Whether the op at the state's position is the one it is waiting at.
+/// Whether the op at the state's position is the one it is waiting at (and, at a
+/// choice or shop, that something is on offer, or nothing could move the story on).
 fn consistent(state: &State, program: &Program) -> bool {
     let op = program.ops.get(state.pc);
+    if crate::waits_on_nothing(state, program) {
+        return false;
+    }
     match &state.pending {
         None => state.finished,
         Some(Cmd::Say { .. }) => matches!(op, Some(Op::Say { .. })),
@@ -164,7 +202,7 @@ fn resolve(program: &Program, args: &[String], line: usize) -> Result<usize, Str
     let offset: usize = num(arg(1)?, line)?;
     let base = if label.is_empty() { Some(0) } else { program.labels.get(label).copied() };
     if let Some(base) = base {
-        return Ok((base + offset).min(program.ops.len()));
+        return Ok(base.saturating_add(offset).min(program.ops.len()));
     }
     // The label was renamed or removed: look for the line itself, then fall back
     // to where it was (right if nothing above it changed).
@@ -254,6 +292,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     if let Some(m) = &s.music {
         w(format!("music {} {} {}", q(&m.src), m.looped, m.volume));
     }
+    // Saves from before looping sounds existed have no such record: they load with none.
+    for l in &s.sfx_loops {
+        w(format!("sfxloop {} {}", q(&l.src), l.volume));
+    }
     for (src, alt) in &s.inline {
         w(format!("inline {} {}", q(src), q(alt)));
     }
@@ -300,12 +342,11 @@ pub(crate) fn read_var(t: &[String]) -> Result<(String, Value), String> {
         return Err("a `var` record is too short".into());
     };
     if kind == "list" {
-        let mut items: Vec<String> = Vec::new();
-        for item in &t[3..] {
-            if !item.is_empty() && !items.contains(item) {
-                items.push(item.clone());
-            }
+        if t.len() - 3 > MAX_LIST_ITEMS {
+            return Err(format!("the list `{name}` has more than {MAX_LIST_ITEMS} items"));
         }
+        let mut seen: HashSet<&str> = HashSet::with_capacity(t.len() - 3);
+        let items: Vec<String> = t[3..].iter().filter(|i| !i.is_empty() && seen.insert(i.as_str())).cloned().collect();
         return Ok((name.clone(), Value::List(items)));
     }
     let Some(v) = t.get(3) else {
@@ -382,8 +423,9 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "end" if saw_at => {
                 // A save whose script changed so the op is gone is dealt with by the caller
                 // (`consistent`): the placeholder stays and the story re-runs from the spot.
+                // Choices and hotspots are rebuilt from the script too, never from saved text.
                 let rebuilt = match (&s.pending, program.ops.get(s.pc)) {
-                    (Some(Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
+                    (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
                     (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => rebuild_pending(program, op, &s.vars),
                     _ => None,
                 };
@@ -397,22 +439,40 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.pc = resolve(program, &t[1..], n)?;
                 saw_at = true;
             }
-            "stack" => s.stack.push(resolve(program, &t[1..], n)?),
+            "stack" => {
+                if s.stack.len() >= MAX_STACK_RECORDS {
+                    return Err(format!("line {n}: more than {MAX_STACK_RECORDS} `stack` records in a state"));
+                }
+                s.stack.push(resolve(program, &t[1..], n)?);
+            }
             "var" => {
                 let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;
-                s.vars.insert(name, value);
+                // A list is a list and a number is not: a record of the other kind than the
+                // script declares is ignored (the declared default stays). Numbers, text and
+                // booleans may change into each other as the story runs, so those pass.
+                let is_list = |v: &Value| matches!(v, Value::List(_));
+                if program.vars.get(&name).is_none_or(|d| is_list(d) == is_list(&value)) {
+                    s.vars.insert(name, value);
+                }
             }
             "bg" => s.background = Some(path(1)?),
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
                 src: path(2)?,
-                x: f(3)?,
-                scale: f(4)?,
-                y: if t.len() > 5 { Some(f(5)?).filter(|y| y.is_finite()).map_or(1.0, |y| y.clamp(-0.5, 1.5)) } else { 1.0 },
+                x: sane(f(3)?, 0.0, 1.0, 0.5),
+                scale: sane(f(4)?, 0.05, 10.0, 1.0),
+                y: if t.len() > 5 { sane(f(5)?, -0.5, 1.5, 1.0) } else { 1.0 },
                 z: if t.len() > 6 { num::<i32>(arg(6)?, n)?.clamp(-100, 100) } else { 0 },
             }),
-            "camera" => s.camera = Camera { zoom: f(1)?, x: f(2)?, y: f(3)? },
-            "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: f(3)? }),
+            "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },
+            "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) }),
+            "sfxloop" => {
+                let volume = f(2)?;
+                let src = path(1)?;
+                if !s.sfx_loops.iter().any(|l| l.src == src) {
+                    s.sfx_loops.push(SfxLoopState { src, volume: sane(volume, 0.0, 1.0, 1.0) });
+                }
+            }
             "inline" => s.inline.push((path(1)?, arg(2)?.to_string())),
             "voice" => s.voice = Some(path(1)?),
             "line" => {
@@ -436,7 +496,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                         let l = s.line.as_ref().ok_or(format!("line {n}: pending say without a line"))?;
                         Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone() }
                     }
-                    "wait" => Cmd::Wait { seconds: f(2)? },
+                    "wait" => Cmd::Wait { seconds: sane(f(2)?, 0.01, MAX_WAIT, 1.0) },
                     "video" => Cmd::PlayVideo {
                         src: path(2)?,
                         fit: match arg(3)? {

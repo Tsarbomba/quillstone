@@ -41,9 +41,12 @@ impl<'p> Session<'p> {
     /// [`Session::load`], keeping `persistent` (the save's own copies of persistent
     /// variables may be older).
     pub fn load_with(program: &'p Program, text: &str, persistent: Vars) -> Result<(Session<'p>, Vec<Cmd>), String> {
-        let (mut session, cmds) = Session::load(program, text)?;
+        let (mut session, mut cmds) = Session::load(program, text)?;
         session.persistent = persistent;
-        session.overlay();
+        if session.overlay() {
+            // a kept value differs from the save's: the screen was rebuilt with it
+            cmds = session.state.redraw();
+        }
         session.note(&cmds);
         Ok((session, cmds))
     }
@@ -97,8 +100,13 @@ impl<'p> Session<'p> {
         }
     }
 
-    /// Put the kept values of persistent variables into the current state.
-    pub(crate) fn overlay(&mut self) {
+    /// Put the kept values of persistent variables into the current state. When one
+    /// changed, what the story is waiting at is rebuilt from the script and the new
+    /// values (choice texts and which options are on offer, hotspots, shop stock and
+    /// prices, an interpolated line), so the screen and the state never disagree.
+    /// Returns whether anything changed (the caller's screen may need redrawing).
+    pub(crate) fn overlay(&mut self) -> bool {
+        let mut changed = false;
         for name in &self.program.persistent {
             if let Some(value) = self.persistent.get(name) {
                 // a kept value of another type (the script changed) is dropped
@@ -106,9 +114,16 @@ impl<'p> Session<'p> {
                 if list(Some(value)) != list(self.program.vars.get(name)) {
                     continue;
                 }
-                self.state.vars.insert(name.clone(), value.clone());
+                if self.state.vars.get(name) != Some(value) {
+                    self.state.vars.insert(name.clone(), value.clone());
+                    changed = true;
+                }
             }
         }
+        if changed {
+            crate::refresh_pending(&mut self.state, self.program);
+        }
+        changed
     }
 }
 

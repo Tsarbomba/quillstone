@@ -10,11 +10,13 @@
 use quillstone_script::{AssignOp, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
+#[cfg(test)]
+mod hardening;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
 pub use persist::{read_persistent, write_persistent, UNLOCKED};
-pub use save::{line_id, q as quote, tokens, voice_name, SAVE_HISTORY};
+pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, SAVE_HISTORY};
 
 /// Something the frontend should do.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,11 +40,20 @@ pub enum Cmd {
     MoveSprite { id: String, x: f32, y: f32, scale: f32, time: f32, ease: Ease },
     /// Shake the stage for `time` seconds by up to `strength` pixels.
     Shake { time: f32, strength: f32 },
+    /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
+    /// Like a shake it is a moment: not part of [`State`], never replayed.
+    Flash { time: f32, color: [f32; 3] },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
     PlayMusic { src: String, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
     PlaySfx { src: String, volume: f32 },
+    /// Start a looping sound effect (part of the scene: see [`State::sfx_loops`]).
+    /// One that is already looping isn't restarted; only its volume follows.
+    PlaySfxLoop { src: String, fade: f32, volume: f32 },
+    /// Stop the loop of `src` and any one-shot of it still playing, or everything
+    /// on the sound-effect channel when `src` is `None`.
+    StopSfx { src: Option<String>, fade: f32 },
     /// Voice clip for the line being shown; stop it when the player advances.
     PlayVoice { src: String },
     /// Pause; send [`Input::Advance`] when the time is up (or the player skips).
@@ -146,6 +157,13 @@ pub struct MusicState {
     pub volume: f32,
 }
 
+/// A looping sound effect that is part of the scene.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SfxLoopState {
+    pub src: String,
+    pub volume: f32,
+}
+
 /// The line currently (or most recently) on screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -165,6 +183,8 @@ pub struct State {
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
     pub music: Option<MusicState>,
+    /// Looping sound effects, in the order they started.
+    pub sfx_loops: Vec<SfxLoopState>,
     /// Inline images belonging to the line that is waiting.
     pub inline: Vec<(String, String)>,
     /// Voice clip belonging to the line that is waiting.
@@ -185,6 +205,7 @@ impl State {
             sprites: Vec::new(),
             camera: Camera::default(),
             music: None,
+            sfx_loops: Vec::new(),
             inline: Vec::new(),
             voice: None,
             line: None,
@@ -222,6 +243,9 @@ impl State {
                 volume: m.volume,
             }),
             None => out.push(Cmd::StopMusic { fade: 0.0 }),
+        }
+        for l in &self.sfx_loops {
+            out.push(Cmd::PlaySfxLoop { src: l.src.clone(), fade: 0.0, volume: l.volume });
         }
         for (src, alt) in &self.inline {
             out.push(Cmd::ShowImage { src: src.clone(), alt: alt.clone() });
@@ -312,7 +336,13 @@ fn buy(state: &mut State, program: &Program, index: usize) -> bool {
     let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return false };
     let offered = offered_stock(stock, &state.vars);
     let Some(entry) = offered.get(index).map(|&i| &stock[i]) else { return false };
-    let owned = matches!(state.vars.get(into), Some(Value::List(items)) if items.contains(&entry.item));
+    // `into` must be a list and `pay` a number: a damaged save can break either, and
+    // then taking money without delivering (or the reverse) would be a cheat or a loss.
+    let Some(Value::List(held)) = state.vars.get(into) else { return false };
+    if !matches!(state.vars.get(pay), None | Some(Value::Int(_))) {
+        return false;
+    }
+    let owned = held.contains(&entry.item);
     if owned || entry.price < 0 || entry.price > money(&state.vars, pay) {
         return false;
     }
@@ -320,6 +350,41 @@ fn buy(state: &mut State, program: &Program, index: usize) -> bool {
     Effect { var: pay.clone(), op: AssignOp::Sub, value: lit(Value::Int(entry.price)) }.apply(&mut state.vars);
     Effect { var: into.clone(), op: AssignOp::Add, value: lit(Value::Str(entry.item.clone())) }.apply(&mut state.vars);
     true
+}
+
+/// Whether the state waits at a choice, hotspot or shop that has nothing on offer
+/// (so no input could ever move it on).
+pub(crate) fn waits_on_nothing(state: &State, program: &Program) -> bool {
+    match (&state.pending, program.ops.get(state.pc)) {
+        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(Op::Choice { options })) => visible_options(options, &state.vars).is_empty(),
+        (Some(Cmd::ShowShop { .. }), Some(Op::Shop { stock, .. })) => offered_stock(stock, &state.vars).is_empty(),
+        _ => false,
+    }
+}
+
+/// Rebuild what the state is waiting at from the script and the current variables,
+/// after they changed behind the story's back (a persistent value, see `persist.rs`).
+/// If that leaves a choice or shop with nothing on offer, the story goes on past it,
+/// as it would have had the variables been so when it got there.
+pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
+    match (&state.pending, program.ops.get(state.pc)) {
+        (Some(Cmd::Say { .. }), Some(Op::Say { speaker, color, text })) => {
+            let text = interpolate(text, &state.vars);
+            state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
+            state.pending = Some(Cmd::Say { speaker: speaker.clone(), color: *color, text });
+        }
+        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. }))
+        | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => {
+            if let Some(cmd) = rebuild_pending(program, op, &state.vars) {
+                state.pending = Some(cmd);
+            }
+            if waits_on_nothing(state, program) {
+                state.pending = None;
+                step(state, program, None);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The command a waiting op shows, for ops whose screen is built from the script
@@ -370,9 +435,9 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
             match rest.find('}') {
                 Some(end) => {
                     let name = rest[1..end].trim();
-                    match vars.get(name).filter(|_| name != "nw") {
+                    match vars.get(name).filter(|_| !matches!(name, "nw" | "p")) {
                         Some(v) => out.push_str(&quillstone_script::markup::escape(&v.to_string())),
-                        None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` text tag
+                        None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` / `{p}` text tags
                     }
                     rest = &rest[end + 1..];
                 }
@@ -546,6 +611,10 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 out.push(Cmd::Shake { time: *time, strength: *strength });
                 state.pc += 1;
             }
+            Op::Flash { time, color } => {
+                out.push(Cmd::Flash { time: *time, color: *color });
+                state.pc += 1;
+            }
             Op::Camera { zoom, x, y, time, ease } => {
                 let c = &mut state.camera;
                 *c = Camera { zoom: zoom.unwrap_or(c.zoom), x: x.unwrap_or(c.x), y: y.unwrap_or(c.y) };
@@ -566,6 +635,19 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 out.push(Cmd::PlaySfx { src: src.clone(), volume: *volume });
                 state.pc += 1;
             }
+            Op::SfxLoop { src, fade, volume } => {
+                match state.sfx_loops.iter_mut().find(|l| l.src == *src) {
+                    Some(l) => l.volume = *volume,
+                    None => state.sfx_loops.push(SfxLoopState { src: src.clone(), volume: *volume }),
+                }
+                out.push(Cmd::PlaySfxLoop { src: src.clone(), fade: *fade, volume: *volume });
+                state.pc += 1;
+            }
+            Op::StopSfx { src, fade } => {
+                state.sfx_loops.retain(|l| src.as_ref().is_some_and(|s| *s != l.src));
+                out.push(Cmd::StopSfx { src: src.clone(), fade: *fade });
+                state.pc += 1;
+            }
             Op::Voice { src } => {
                 state.voice = Some(src.clone());
                 out.push(Cmd::PlayVoice { src: src.clone() });
@@ -575,11 +657,19 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 let taken = cond.as_ref().is_none_or(|c| c.test(&state.vars));
                 state.pc = if taken { *target } else { state.pc + 1 };
             }
-            Op::Call { target } => {
+            Op::Call { target, args } => {
                 if state.stack.len() >= MAX_CALL_DEPTH {
                     let reason = format!("`::call` nested more than {MAX_CALL_DEPTH} deep (a call that never returns?)");
                     out.push(Cmd::Stopped { reason });
                     break;
+                }
+                // The parameters are ordinary variables: every value is worked out
+                // first (so `a=b b=a` swaps), then stored. Nothing undoes it at `::return`.
+                let values: Vec<Value> = args.iter().map(|(_, e)| e.eval(&state.vars)).collect();
+                for ((name, _), value) in args.iter().zip(values) {
+                    if !matches!(value, Value::List(_)) {
+                        state.vars.insert(name.clone(), value);
+                    }
                 }
                 state.stack.push(state.pc + 1);
                 state.pc = *target;
@@ -624,6 +714,11 @@ pub enum Logged {
     Choice(String),
 }
 
+/// How many snapshots a [`Session`] keeps for rollback (roll forward holds at most as many).
+/// Past it the oldest are dropped: rollback just stops there, and the backlog covers
+/// the retained history only.
+pub const MAX_HISTORY: usize = 500;
+
 /// A running game: the state plus a snapshot per player action, for rollback.
 pub struct Session<'p> {
     program: &'p Program,
@@ -663,6 +758,9 @@ impl<'p> Session<'p> {
         let cmds = step(&mut self.state, self.program, Some(input));
         if !cmds.is_empty() {
             self.history.push((before, input));
+            if self.history.len() > MAX_HISTORY {
+                self.history.remove(0);
+            }
             self.redo.clear(); // a new path: what was rolled back is gone
             self.redo_tip = None;
         }
@@ -695,11 +793,18 @@ impl<'p> Session<'p> {
         Some(self.state.redraw())
     }
 
+    fn push_history(&mut self, state: State, input: Input) {
+        self.history.push((state, input));
+        if self.history.len() > MAX_HISTORY {
+            self.history.remove(0);
+        }
+    }
+
     /// Undo a rollback: go on to the screen the player rolled back from. Waits and
     /// videos rollback went past are gone past again. `None` with nothing to redo.
     pub fn roll_forward(&mut self) -> Option<Vec<Cmd>> {
         let (state, input) = self.redo.pop()?;
-        self.history.push((state, input));
+        self.push_history(state, input);
         loop {
             match self.redo.last() {
                 Some((next, _)) => self.state = next.clone(),
@@ -712,7 +817,7 @@ impl<'p> Session<'p> {
                 break;
             }
             let (state, input) = self.redo.pop()?;
-            self.history.push((state, input));
+            self.push_history(state, input);
         }
         if self.redo.is_empty() {
             self.redo_tip = None;
@@ -1789,7 +1894,9 @@ After: [{inventory}]
         let p = parse(include_str!("../../../examples/shop.quill.md")).unwrap();
         let (mut game, first) = Session::start(&p);
         let (said, menu) = to_menu(&mut game, first);
-        assert_eq!(said[1..], ["You have 30 gold.", "Your bag is empty."]);
+        // the parameterized `price_line` subroutine is called twice, with different values
+        assert_eq!(said[2..4], ["The brass key costs 15 gold.", "The lamp costs 10 gold."]);
+        assert_eq!(said[4..], ["You have 30 gold.", "Your bag is empty."]);
         assert_eq!(menu, ["Buy the brass key (15 gold)", "Buy the lamp (10 gold)", "Buy the old map (10 gold)", "Leave the shop"]);
         let bought = game.input(Input::Choose(0)); // the key
         let (said, menu) = to_menu(&mut game, bought);
@@ -1820,5 +1927,183 @@ After: [{inventory}]
         to_menu(&mut game, first);
         let end = game.input(Input::Choose(3));
         assert!(lines(&end)[0].starts_with("Outside, the old gate is locked"));
+    }
+
+    // ---- labels with parameters ---------------------------------------------
+
+    const HEAL: &str = "\
+---
+vars: { amount: 99 }
+---
+# start
+::call{to=heal amount=5 who=\"Mika\"}
+**A:** back with {amount}
+::call{to=heal amount=7 who=\"Ren\"}
+**A:** and again
+::end
+# heal(amount, who)
+**A:** {who} heals {amount}
+::return
+";
+
+    #[test]
+    fn call_arguments_become_ordinary_variables_before_the_jump() {
+        let p = parse(HEAL).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first, vec![say("A", "Mika heals 5")], "the subroutine sees its values at once");
+        assert_eq!(game.state().vars["amount"], int(5));
+        assert_eq!(game.state().vars["who"], Value::Str("Mika".into()));
+        // `::return` doesn't restore anything: the values stay, like any variable
+        assert_eq!(game.input(Input::Advance), vec![say("A", "back with 5")]);
+        assert_eq!(game.input(Input::Advance), vec![say("A", "Ren heals 7")]);
+        game.input(Input::Advance);
+        assert_eq!(game.state().vars["amount"], int(7));
+        assert!(game.state().stack.is_empty());
+    }
+
+    #[test]
+    fn arguments_read_variables_and_are_all_worked_out_before_any_is_stored() {
+        let src = "---\nvars: { a: 1, b: 2 }\n---\n::call{to=f a=b b=a}\n::end\n# f(a, b)\n**X:** {a} {b}\n::return\n";
+        let p = parse(src).unwrap();
+        let (_, first) = Session::start(&p);
+        assert_eq!(first, vec![say("X", "2 1")], "a swap, not a copy");
+    }
+
+    #[test]
+    fn rollback_undoes_the_parameters_with_the_call() {
+        let p = parse(HEAL).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // back with 5
+        game.input(Input::Advance); // Ren heals 7
+        assert_eq!(game.state().vars["amount"], int(7));
+        let redraw = game.rollback().unwrap();
+        assert_eq!(game.state().vars["amount"], int(5));
+        assert_eq!(redraw.last(), Some(&say("A", "back with 5")));
+        game.rollback();
+        assert_eq!(game.state().vars["amount"], int(5), "inside the first call the parameter is 5");
+        assert_eq!(game.state().stack.len(), 1);
+        assert!(!game.can_rollback());
+    }
+
+    #[test]
+    fn a_save_inside_a_parameterized_call_returns_with_its_values() {
+        let p = parse(HEAL).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Advance); // inside the second call
+        let (mut loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.state(), game.state());
+        assert_eq!(cmds.last(), Some(&say("A", "Ren heals 7")), "the interpolation still reads the variable");
+        assert_eq!(loaded.state().stack.len(), 1);
+        assert_eq!(loaded.input(Input::Advance), vec![say("A", "and again")]);
+    }
+
+    #[test]
+    fn the_parenthesis_in_a_heading_changes_no_anchor_or_line_id() {
+        let plain = parse("::call{to=heal}\n::end\n# heal\n**A:** hi\n::return\n").unwrap();
+        let params = parse("::call{to=heal x=1}\n::end\n# heal(x)\n**A:** hi\n::return\n").unwrap();
+        let at = plain.labels["heal"];
+        assert_eq!(params.labels["heal"], at, "same op indices: a call adds no op");
+        assert_eq!(line_id(&plain, at), line_id(&params, at), "the hash uses the label id, not the heading");
+        assert_eq!(voice_name(&params, at).as_deref().map(|n| n.starts_with("heal-")), Some(true));
+        // a save from before the parameters were added still lands in the same place
+        let (mut game, _) = Session::start(&plain);
+        game.input(Input::Advance);
+        let (loaded, _) = Session::load(&params, &game.save()).unwrap();
+        assert_eq!(loaded.state().pc, game.state().pc);
+    }
+
+    // ---- ::flash -------------------------------------------------------------
+
+    #[test]
+    fn a_flash_is_a_moment_like_a_shake() {
+        let p = parse("::flash{time=0.5 color=#ff0000}\n**A:** one\n**A:** two\n").unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first[0], Cmd::Flash { time: 0.5, color: [1.0, 0.0, 0.0] });
+        assert!(!game.state().redraw().iter().any(|c| matches!(c, Cmd::Flash { .. })));
+        game.input(Input::Advance);
+        let back = game.rollback().unwrap();
+        assert!(!back.iter().any(|c| matches!(c, Cmd::Flash { .. })), "rollback doesn't flash again");
+        let (loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::Flash { .. })) && loaded.state().pc == game.state().pc);
+    }
+
+    // ---- looping sound effects ------------------------------------------------
+
+    const RAIN: &str = "\
+::sfx{src=rain.ogg loop volume=0.6 fade=1}
+**A:** one
+::sfx{src=rain.ogg loop volume=0.3}
+::sfx{src=wind.ogg loop}
+**A:** two
+::sfx{stop=rain.ogg fade=2}
+**A:** three
+::sfx{stop}
+**A:** four
+";
+
+    fn loops<'a>(game: &'a Session<'_>) -> Vec<(&'a str, f32)> {
+        game.state().sfx_loops.iter().map(|l| (l.src.as_str(), l.volume)).collect()
+    }
+
+    #[test]
+    fn a_looping_sfx_is_part_of_the_state_until_it_is_stopped() {
+        let p = parse(RAIN).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first[0], Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 1.0, volume: 0.6 });
+        assert_eq!(loops(&game), [("rain.ogg", 0.6)]);
+        game.input(Input::Advance);
+        assert_eq!(loops(&game), [("rain.ogg", 0.3), ("wind.ogg", 1.0)], "again: same loop, new volume; order kept");
+        let cmds = game.input(Input::Advance);
+        assert_eq!(cmds[0], Cmd::StopSfx { src: Some("rain.ogg".into()), fade: 2.0 });
+        assert_eq!(loops(&game), [("wind.ogg", 1.0)]);
+        game.input(Input::Advance);
+        assert!(loops(&game).is_empty(), "`stop` stops everything");
+    }
+
+    #[test]
+    fn rollback_and_redraw_bring_the_loops_of_that_moment_back() {
+        let p = parse(RAIN).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Advance); // "three": rain stopped, wind going
+        let redraw = game.rollback().unwrap(); // "two": rain 0.3 and wind
+        assert_eq!(
+            redraw.iter().filter(|c| matches!(c, Cmd::PlaySfxLoop { .. })).collect::<Vec<_>>(),
+            [
+                &Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 0.3 },
+                &Cmd::PlaySfxLoop { src: "wind.ogg".into(), fade: 0.0, volume: 1.0 },
+            ]
+        );
+        // a one-shot is still never replayed
+        let p = parse("::sfx{src=door.ogg}\n**A:** x\n").unwrap();
+        let (game, _) = Session::start(&p);
+        assert!(!game.state().redraw().iter().any(|c| matches!(c, Cmd::PlaySfx { .. } | Cmd::PlaySfxLoop { .. })));
+    }
+
+    #[test]
+    fn loops_are_saved_and_an_old_save_loads_with_none() {
+        let p = parse(RAIN).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        let text = game.save();
+        assert!(text.contains("sfxloop \"rain.ogg\" 0.3") && text.contains("sfxloop \"wind.ogg\" 1"), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loops(&loaded), loops(&game));
+        assert_eq!(loaded.state(), game.state());
+        assert!(cmds.contains(&Cmd::PlaySfxLoop { src: "wind.ogg".into(), fade: 0.0, volume: 1.0 }));
+        // history entries keep theirs too: roll back into the first line and the rain is 0.6
+        let (mut loaded, _) = Session::load(&p, &text).unwrap();
+        loaded.rollback();
+        assert_eq!(loops(&loaded), [("rain.ogg", 0.6)]);
+
+        // a save from before loops existed has no such record
+        let old: String = text.lines().filter(|l| !l.starts_with("sfxloop")).map(|l| format!("{l}\n")).collect();
+        let (loaded, cmds) = Session::load(&p, &old).unwrap();
+        assert!(loops(&loaded).is_empty());
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::PlaySfxLoop { .. })));
+        // an unsafe path in one is refused like any other
+        let bad = text.replace("\"wind.ogg\"", "\"../wind.ogg\"");
+        assert!(Session::load(&p, &bad).err().unwrap().contains("unsafe file path"));
     }
 }

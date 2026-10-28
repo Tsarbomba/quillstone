@@ -25,6 +25,10 @@ pub enum CellStyle {
     Image(String),
 }
 
+/// The least height of an inventory/shop cell: the icon (at least 16 px), name row
+/// and price row of `quillstone-ui`'s `bag.rs` need 106 px.
+pub const MIN_CELL_HEIGHT: f32 = 120.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     /// A `.ttf` / `.otf` file for all text (paths are relative to the script).
@@ -212,9 +216,12 @@ impl Theme {
                     None => bad("`inventory_columns` must be a whole number from 1 to 12".into()),
                 },
                 "inventory_cell_size" => match parse_numbers(value, 48.0, 600.0) {
-                    Some(v) if v.len() == 1 => t.inventory_cell_size = [v[0], v[0]],
-                    Some(v) if v.len() == 2 => t.inventory_cell_size = [v[0], v[1]],
-                    _ => bad("`inventory_cell_size` must be a size from 48 to 600, or `width, height`".into()),
+                    Some(v) if v.len() == 1 && v[0] >= MIN_CELL_HEIGHT => t.inventory_cell_size = [v[0], v[0]],
+                    Some(v) if v.len() == 2 && v[1] >= MIN_CELL_HEIGHT => t.inventory_cell_size = [v[0], v[1]],
+                    _ => bad(format!(
+                        "`inventory_cell_size` must be a size from {MIN_CELL_HEIGHT} to 600, or `width, height` \
+                         (width from 48, height from {MIN_CELL_HEIGHT}: a cell holds an icon, a name and a price)"
+                    )),
                 },
                 "inventory_cell_gap" => match number(0.0, 100.0) {
                     Some(n) => t.inventory_cell_gap = n,
@@ -403,6 +410,18 @@ mod tests {
         assert!(t.images().contains(&"gui/hover.png") && t.assets().contains(&"gui/panel.png"));
         let (square, _) = Theme::parse("inventory_cell_size = 180");
         assert_eq!(square.inventory_cell_size, [180.0, 180.0]);
+    }
+
+    #[test]
+    fn a_cell_must_be_tall_enough_for_its_icon_name_and_price() {
+        let (t, problems) = Theme::parse("inventory_cell_size = 119\ninventory_cell_size = 300, 100\ninventory_cell_size = 48, 119.9");
+        assert_eq!(t.inventory_cell_size, Theme::default().inventory_cell_size);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].contains("120"), "{}", problems[0]);
+        let (t, problems) = Theme::parse("inventory_cell_size = 48, 120");
+        assert!(problems.is_empty() && t.inventory_cell_size == [48.0, MIN_CELL_HEIGHT]);
+        let (t, problems) = Theme::parse("inventory_cell_size = 120");
+        assert!(problems.is_empty() && t.inventory_cell_size == [120.0, 120.0]);
     }
 
     #[test]

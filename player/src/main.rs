@@ -17,6 +17,7 @@ mod gamepad;
 mod images;
 mod reload;
 mod gfx;
+mod setup;
 mod text;
 mod video;
 
@@ -26,7 +27,7 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use quillstone_render::{build_frame, letterbox, to_virtual, Size, Theme};
+use quillstone_render::{build_frame, letterbox, to_virtual, Size};
 use quillstone_script::{parse, AssetKind, Op, Program};
 use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp};
 use quillstone_video::Videos;
@@ -39,6 +40,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use audio::Audio;
 use gfx::Gfx;
+use setup::{load_fonts, load_theme};
 
 struct App {
     title: String,
@@ -120,11 +122,7 @@ fn main() {
     let root = path.parent().map(PathBuf::from).unwrap_or_default();
 
     let theme = load_theme(program, &root);
-    let fonts: Vec<Vec<u8>> = theme
-        .fonts()
-        .into_iter()
-        .filter_map(|f| std::fs::read(root.join(f)).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
-        .collect();
+    let fonts = load_fonts(&theme, &root);
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("game").trim_end_matches(".quill");
     let dir = data_dir(&game_id(program.title.as_deref().unwrap_or(stem)));
@@ -138,7 +136,8 @@ fn main() {
         .map(|text| Settings::parse(&text))
         .unwrap_or_default();
 
-    // Sound effects are preloaded so they start instantly; music and voice stream.
+    // One-shot sound effects are preloaded so they start instantly; music, voice and
+    // looping effects stream (a long ambience is never decoded at startup).
     let sfx = program.ops.iter().filter_map(|op| match op {
         Op::Sfx { src, .. } => Some(src.as_str()),
         _ => None,
@@ -194,24 +193,6 @@ fn voice_files(program: &Program, root: &Path) -> HashMap<String, String> {
         .filter(|name| quillstone_script::kind_from_path(name) == AssetKind::Audio)
         .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
         .collect()
-}
-
-/// The theme the script names in its front matter, or the built-in look.
-fn load_theme(program: &Program, root: &Path) -> Theme {
-    let Some(file) = &program.theme else { return Theme::default() };
-    match std::fs::read_to_string(root.join(file)) {
-        Ok(text) => {
-            let (theme, problems) = Theme::parse(&text);
-            for p in problems {
-                eprintln!("warning: {file}: {p}");
-            }
-            theme
-        }
-        Err(e) => {
-            eprintln!("warning: cannot read the theme {file}: {e}; using the built-in look");
-            Theme::default()
-        }
-    }
 }
 
 /// A folder-safe name for this game's per-user data.
@@ -354,6 +335,9 @@ impl App {
             for action in actions {
                 audio.run(action);
             }
+            for src in audio.take_failed_loops() {
+                self.game.loop_failed(&src);
+            }
         }
     }
 
@@ -402,6 +386,9 @@ impl App {
         if let Some(audio) = &mut self.audio {
             if audio.update() {
                 self.game.music_ended();
+            }
+            for src in audio.take_failed_loops() {
+                self.game.loop_failed(&src);
             }
         }
         self.update_videos(dt);

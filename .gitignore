@@ -24,3 +24,7 @@ Thumbs.db
 # Local launcher
 /run-player.bat
 
+
+# Local screenshot tool, not part of the repo
+/tools/shots/
+/player/src/bin/

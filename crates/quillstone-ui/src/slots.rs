@@ -156,7 +156,7 @@ impl SaveFile {
 /// What the slot shows as a reminder: who was talking and what they said.
 pub fn preview(state: &State) -> String {
     let Some(line) = &state.line else { return String::new() };
-    let words = quillstone_script::markup::plain(&line.text);
+    let words = quillstone_script::markup::plain(&line.text).replace('\n', " "); // one line: `{p}` is a space
     let text = match &line.speaker {
         Some(name) => format!("{name}: {words}"),
         None => words,
@@ -281,6 +281,13 @@ mod tests {
         assert!(Session::load(&p, &back.session).is_ok());
         assert!(SaveFile::parse("nonsense").is_none());
         assert!(SaveFile::parse("quillstone-save 1\nseq x\n").is_none());
+    }
+
+    #[test]
+    fn a_paragraph_break_is_a_space_in_a_one_line_preview() {
+        let p = parse("**Mika:** One.{p}Two.\n").unwrap();
+        let (session, _) = Session::start(&p);
+        assert_eq!(preview(session.state()), "Mika: One. Two.");
     }
 
     #[test]

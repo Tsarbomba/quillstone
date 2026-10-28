@@ -293,6 +293,9 @@ pub struct Program {
     pub lines: Vec<usize>,
     /// Label name (slugified heading) -> index of the first op after it.
     pub labels: BTreeMap<String, usize>,
+    /// Labels written with parameters (`# heal(amount, who)`): label -> parameter names.
+    /// Only `::call` reaches them, and it must pass exactly these.
+    pub params: BTreeMap<String, Vec<String>>,
     /// Labels whose visits are counted because a `seen(label)` reads them:
     /// op index -> the `seen:` variables to count up when that op runs.
     pub counted: BTreeMap<usize, Vec<String>>,
@@ -315,10 +318,10 @@ impl Program {
         gallery.chain(self.music_room.iter().map(|p| (AssetKind::Audio, p.as_str())))
     }
 
-    /// The images the story may show within `steps` ops of `pc`, nearest first,
-    /// following jumps, calls and every choice (for loading them before they're needed).
-    pub fn images_ahead(&self, pc: usize, steps: usize) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
+    /// The indices of the ops within `steps` ops of `pc`, nearest first, following
+    /// jumps, calls and every choice.
+    pub fn ops_ahead(&self, pc: usize, steps: usize) -> Vec<usize> {
+        let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([pc]);
         while let Some(at) = queue.pop_front() {
@@ -326,15 +329,11 @@ impl Program {
                 continue;
             }
             let Some(op) = self.ops.get(at) else { continue };
-            for (kind, src) in op.all_assets() {
-                if kind == AssetKind::Image && !out.contains(&src) {
-                    out.push(src);
-                }
-            }
+            out.push(at);
             match op {
                 Op::Jump { target, cond: None } => queue.push_back(*target),
                 Op::Jump { target, .. } => queue.extend([*target, at + 1]),
-                Op::Call { target } => queue.extend([*target, at + 1]),
+                Op::Call { target, .. } => queue.extend([*target, at + 1]),
                 Op::Choice { options } => queue.extend(options.iter().map(|o| o.target)),
                 Op::Return | Op::End => {}
                 _ => queue.push_back(at + 1),
@@ -343,9 +342,63 @@ impl Program {
         out
     }
 
-    /// The icon of every declared item, as `(source line, path)`.
+    /// The images the story may show within `steps` ops of `pc`, nearest first,
+    /// following jumps, calls and every choice (for loading them before they're needed).
+    pub fn images_ahead(&self, pc: usize, steps: usize) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for at in self.ops_ahead(pc, steps) {
+            for (kind, src) in self.ops[at].all_assets() {
+                if kind == AssetKind::Image && !out.contains(&src) {
+                    out.push(src);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the story may open the inventory, and which item icons the shops
+    /// it may open sell, within `steps` ops of `pc` (see [`Program::ops_ahead`]).
+    pub fn bag_icons_ahead(&self, pc: usize, steps: usize) -> (bool, Vec<&str>) {
+        let (mut inventory, mut icons) = (false, Vec::new());
+        for at in self.ops_ahead(pc, steps) {
+            match &self.ops[at] {
+                Op::Inventory => inventory = true,
+                Op::Shop { stock, .. } => {
+                    for icon in stock.iter().filter_map(|s| self.items.get(&s.item)?.icon.as_deref()) {
+                        if !icons.contains(&icon) {
+                            icons.push(icon);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        (inventory, icons)
+    }
+
+    /// The icon of every declared item, as `(source line, path)`, in the order the
+    /// items are declared in the script.
     pub fn item_icons(&self) -> impl Iterator<Item = (usize, &str)> {
-        self.items.values().filter_map(|i| Some((i.line, i.icon.as_deref()?)))
+        let mut icons: Vec<(usize, &str)> = self.items.values().filter_map(|i| Some((i.line, i.icon.as_deref()?))).collect();
+        icons.sort_by_key(|(line, _)| *line);
+        icons.into_iter()
+    }
+
+    /// Like [`Program::assets`] but with the source line of each file's own mention:
+    /// a hotspot image reports its region's line, not the `::hotspots` line.
+    /// `(source line, kind, path)`, in script order.
+    pub fn assets_with_lines(&self) -> impl Iterator<Item = (usize, AssetKind, &str)> {
+        self.ops.iter().enumerate().flat_map(|(i, op)| {
+            let op_line = self.lines.get(i).copied().unwrap_or(0);
+            let found: Vec<(usize, AssetKind, &str)> = match op {
+                Op::Choice { options } => options
+                    .iter()
+                    .filter_map(|o| Some((o.line, AssetKind::Image, o.area.as_ref()?.image.as_deref()?)))
+                    .collect(),
+                _ => op.all_assets().into_iter().map(|(kind, path)| (op_line, kind, path)).collect(),
+            };
+            found
+        })
     }
 
     /// Literal item texts that name no `::item`, where the inventory list is
@@ -519,6 +572,8 @@ pub struct ChoiceOption {
     pub cond: Option<Cond>,
     /// Set for the entries of a `::hotspots` block: where on the screen to click.
     pub area: Option<Area>,
+    /// Source line (1-based) of the option.
+    pub line: usize,
 }
 
 /// A clickable region of the screen (`::hotspots`).
@@ -562,6 +617,14 @@ pub enum Op {
     StopMusic { fade: f32 },
     /// One-shot sound effect.
     Sfx { src: String, volume: f32 },
+    /// A looping sound effect (`::sfx{src=... loop}`); it belongs to the scene.
+    /// Starting one that is already looping only changes its volume.
+    SfxLoop { src: String, fade: f32, volume: f32 },
+    /// `::sfx{stop=file}` (one file) or `::sfx{stop}` (`None`: everything on the
+    /// sound-effect channel): stops its loop and any one-shot of it still playing.
+    StopSfx { src: Option<String>, fade: f32 },
+    /// A full-screen flash of `color` that fades out over `time` seconds. Doesn't wait.
+    Flash { time: f32, color: [f32; 3] },
     /// Voice clip for the next line.
     Voice { src: String },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.
@@ -577,8 +640,10 @@ pub enum Op {
     /// list `into`. Waits until the player leaves.
     Shop { pay: String, into: String, stock: Vec<ShopEntry> },
     Jump { target: usize, cond: Option<Cond> },
-    /// Jump to a label and come back at the next op after `::return`.
-    Call { target: usize },
+    /// Jump to a label and come back at the next op after `::return`. `args` are
+    /// the label's parameters: each is evaluated (all of them before any is
+    /// stored) and assigned to the ordinary variable of that name before the jump.
+    Call { target: usize, args: Vec<(String, Expr)> },
     Return,
     Set(Effect),
     /// End of the script. The parser always appends one.
@@ -591,6 +656,7 @@ impl Op {
         match self {
             Op::Jump { cond: Some(c), .. } => vec![c],
             Op::Set(e) => vec![&e.value],
+            Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),
             Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
             Op::Choice { options } => options
                 .iter()
@@ -618,7 +684,7 @@ impl Op {
             Op::Image { src, .. } => Some((AssetKind::Image, src)),
             Op::Bg { src, .. } => Some((kind_from_path(src), src)),
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
-            Op::Music { src, .. } | Op::Sfx { src, .. } | Op::Voice { src } => {
+            Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {
                 Some((AssetKind::Audio, src))
             }
             Op::Video { src, .. } => Some((AssetKind::Video, src)),

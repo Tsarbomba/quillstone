@@ -107,7 +107,7 @@ impl Game<'_> {
             .filter(|_| self.extras.tab == Tab::Music)
             .and_then(|p| p.checked_sub(start))
             .filter(|&p| p < per);
-        let hover = self.cursor.and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, entries.len(), pages));
+        let hover = self.pointer().and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, entries.len(), pages));
         let shown = ex::ExtrasScreen {
             tabs: &tabs,
             tab: self.extras.tab,

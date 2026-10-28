@@ -284,7 +284,8 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
         }
         let name_rect = Rect::new(r.x + 8.0, icon_rect.y + icon + 8.0, r.w - 16.0, 36.0);
         let name_col = if cell.state == CellState::Disabled { dim } else { name_color };
-        text(out, cell.name.clone(), name_rect, fit_size(&cell.name, 28.0, name_rect.w), name_col, Align::Center);
+        let size = fit_size(&cell.name, 28.0, name_rect.w);
+        text(out, crate::screens::one_row(&cell.name, size, name_rect.w), name_rect, size, name_col, Align::Center);
         let line = Rect::new(r.x + 8.0, name_rect.y + 38.0, r.w - 16.0, 32.0);
         match (cell.state, &cell.price) {
             (CellState::Owned, _) => text(out, "Owned", line, 26.0, theme.accent_color, Align::Center),
@@ -342,8 +343,8 @@ mod tests {
             parse("inventory_columns = 12\ninventory_cell_size = 600\ninventory_cell_gap = 100"),
             parse("inventory_panel_rect = 0,0,1920,1080\ninventory_columns = 8\ninventory_cell_size = 150,120\ninventory_cell_gap = 6"),
             parse("inventory_panel_rect = 1500,900,420,180\ninventory_cell_size = 300"),
-            parse("inventory_description_rect = 100,900,900,180\ninventory_columns = 3\ninventory_cell_size = 100"),
-            parse("inventory_cell_size = 48\ninventory_cell_gap = 0\ninventory_columns = 12"),
+            parse("inventory_description_rect = 100,900,900,180\ninventory_columns = 3\ninventory_cell_size = 100,120"),
+            parse("inventory_cell_size = 48,120\ninventory_cell_gap = 0\ninventory_columns = 12"),
         ]
     }
 
@@ -396,6 +397,40 @@ mod tests {
     }
 
     #[test]
+    fn name_and_price_stay_inside_the_smallest_cell() {
+        let t = Theme::parse(&format!(
+            "inventory_cell_size = 48,{}\ninventory_cell_gap = 0\ninventory_columns = 12",
+            quillstone_render::theme::MIN_CELL_HEIGHT
+        ))
+        .0;
+        assert_eq!(t.inventory_cell_size[1], quillstone_render::theme::MIN_CELL_HEIGHT);
+        let shown = vec![BagCell { name: "Key".into(), icon: Some("i.png".into()), price: Some("5 gold".into()), state: CellState::Normal }];
+        let screen = BagScreen {
+            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None,
+            detail: None, close_label: "Close", empty: "Nothing",
+        };
+        let mut out = Vec::new();
+        draw_bag(&mut out, &t, &screen, &|_| Some(Size::new(64.0, 64.0)));
+        let cell = cell_rect(&t, 0);
+        let within = |r: Rect| r.x >= cell.x - 1e-3 && r.y >= cell.y - 1e-3 && r.x + r.w <= cell.x + cell.w + 1e-3 && r.y + r.h <= cell.y + cell.h + 1e-3;
+        let mut seen = 0;
+        for d in &out {
+            match d {
+                Draw::Text { text, rect, .. } if text == "Key" || text == "5 gold" => {
+                    assert!(within(*rect), "{text}: {rect:?} outside {cell:?}");
+                    seen += 1;
+                }
+                Draw::Image { dest, .. } => {
+                    assert!(within(*dest), "icon {dest:?} outside {cell:?}");
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen, 3, "icon, name and price were drawn");
+    }
+
+    #[test]
     fn cells_do_not_overlap_each_other_or_the_description_box() {
         let t = Theme::default();
         let per = per_page(&t);
@@ -430,10 +465,10 @@ mod tests {
 
     #[test]
     fn a_theme_moves_and_resizes_the_grid() {
-        let (t, _) = Theme::parse("inventory_panel_rect = 100,100,1000,800\ninventory_columns = 3\ninventory_cell_size = 200,100");
+        let (t, _) = Theme::parse("inventory_panel_rect = 100,100,1000,800\ninventory_columns = 3\ninventory_cell_size = 200,130");
         assert_eq!(columns(&t), 3);
         let a = cell_rect(&t, 0);
-        assert_eq!((a.w, a.h), (200.0, 100.0));
+        assert_eq!((a.w, a.h), (200.0, 130.0));
         assert!(a.x >= 100.0 && a.x + 3.0 * 200.0 <= 1100.0);
         // more columns than fit are cut down
         let (t, _) = Theme::parse("inventory_panel_rect = 100,100,600,800\ninventory_columns = 6\ninventory_cell_size = 200");
@@ -483,5 +518,27 @@ mod tests {
         assert_eq!(fit_size("Key", 28.0, 224.0), 28.0);
         let s = fit_size("The extremely long name of a thing", 28.0, 224.0);
         assert!((18.0..28.0).contains(&s));
+    }
+
+    #[test]
+    fn a_name_too_long_even_when_small_is_cut_with_an_ellipsis_not_clipped() {
+        let t = Theme::default();
+        let name = "An extraordinarily long item name that keeps going and going past any sensible cell width";
+        let shown = vec![BagCell { name: name.into(), icon: None, price: None, state: CellState::Normal }];
+        let mut out = Vec::new();
+        let screen = BagScreen {
+            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None,
+            detail: None, close_label: "Close", empty: "Nothing",
+        };
+        draw_bag(&mut out, &t, &screen, &|_| None);
+        let (text, rect, size) = out
+            .iter()
+            .find_map(|d| match d {
+                Draw::Text { text, rect, size, .. } if text.starts_with("An extra") => Some((text.clone(), *rect, *size)),
+                _ => None,
+            })
+            .expect("the name is drawn");
+        assert!(text.ends_with('…') && text.len() < name.len());
+        assert_eq!(quillstone_render::estimate_lines(&text, size, rect.w), 1);
     }
 }

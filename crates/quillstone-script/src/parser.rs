@@ -43,7 +43,7 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
 /// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
 const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 
-const COMMANDS: &str = "character, bg, show, hide, move, shake, camera, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, camera, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
@@ -54,14 +54,14 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "hide" => &["all", "fade"],
         "move" => &["at", "y", "scale", "time", "ease"],
         "shake" => &["time", "strength"],
+        "flash" => &["time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "music" => &["src", "fade", "loop", "volume", "stop"],
-        "sfx" => &["src", "volume"],
+        "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src"],
         "wait" => &["time"],
         "video" => &["src", "fit", "loop", "skippable"],
         "jump" => &["to", "if"],
-        "call" => &["to"],
         _ => &[],
     }
 }
@@ -72,6 +72,10 @@ struct Parser {
     errors: Vec<ParseError>,
     fixups: Vec<Fixup>,
     blocks: Vec<IfBlock>,
+    /// Labels with parameters and the line of their heading (for the fall-through check).
+    param_labels: Vec<(String, usize)>,
+    /// `::sfx{stop=file}` targets, checked against the files the script plays.
+    sfx_stops: Vec<(String, usize)>,
 }
 
 /// A jump target that must be filled in once all labels are known.
@@ -186,17 +190,34 @@ impl Parser {
         let last_line = self.program.lines.last().copied().unwrap_or(1);
         self.push(Op::End, last_line);
 
-        for f in std::mem::take(&mut self.fixups) {
+        let fixups = std::mem::take(&mut self.fixups);
+        let user_jumps: std::collections::HashSet<usize> = fixups.iter().map(|f| f.op).collect();
+        for f in fixups {
             match self.program.labels.get(&f.label).copied() {
-                Some(target) => match &mut self.program.ops[f.op] {
-                    Op::Jump { target: t, .. } | Op::Call { target: t } => *t = target,
-                    Op::Choice { options } => {
-                        if let Some(k) = f.option {
-                            options[k].target = target;
+                Some(target) => {
+                    let params = self.program.params.get(&f.label).cloned();
+                    let mut problems = Vec::new();
+                    match &mut self.program.ops[f.op] {
+                        Op::Call { target: t, args } => {
+                            *t = target;
+                            problems = call_problems(&f.label, params.as_deref(), args);
                         }
+                        Op::Jump { target: t, .. } => {
+                            *t = target;
+                            problems.extend(needs_call(&f.label, params.as_deref(), "`::jump`"));
+                        }
+                        Op::Choice { options } => {
+                            if let Some(k) = f.option {
+                                options[k].target = target;
+                            }
+                            problems.extend(needs_call(&f.label, params.as_deref(), "a choice or hotspot link"));
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                    for m in problems {
+                        self.err(f.line, m);
+                    }
+                }
                 None => {
                     let known: Vec<&str> = self.program.labels.keys().map(String::as_str).collect();
                     let msg = if known.is_empty() {
@@ -206,6 +227,38 @@ impl Parser {
                     };
                     self.err(f.line, msg);
                 }
+            }
+        }
+
+        // A label with parameters is entered only by `::call`: running into it from
+        // above (or the start of the script, or an `::if` that skips past it) would
+        // leave its parameters unset.
+        for (label, line) in std::mem::take(&mut self.param_labels) {
+            let at = self.program.labels[&label];
+            let falls_in = match at.checked_sub(1).and_then(|p| self.program.ops.get(p)) {
+                None => true, // the story starts here
+                Some(Op::Jump { cond: None, .. } | Op::Return | Op::End) => false,
+                Some(_) => true,
+            };
+            let skipped_into = self.program.ops.iter().enumerate().any(|(i, op)| {
+                matches!(op, Op::Jump { target, .. } if *target == at) && !user_jumps.contains(&i)
+            });
+            if falls_in || skipped_into {
+                self.err(
+                    line,
+                    format!(
+                        "the story can run into `{label}` without a `::call`, so its parameters would be unset: \
+                         end the label above it with `::jump`, `::return` or `::end` {PARAM_HINT}"
+                    ),
+                );
+            }
+        }
+
+        // `::sfx{stop=file}` must name a file some `::sfx` plays.
+        for (src, line) in std::mem::take(&mut self.sfx_stops) {
+            let played = self.program.ops.iter().any(|op| matches!(op, Op::Sfx { src: s, .. } | Op::SfxLoop { src: s, .. } if *s == src));
+            if !played {
+                self.err(line, format!("`::sfx{{stop={src}}}`: no `::sfx{{src={src}}}` in the script plays that file"));
             }
         }
 
@@ -275,7 +328,10 @@ impl Parser {
             let (key, val) = (key.trim(), val.trim());
             match key {
                 "title" => self.program.title = Some(unquote(val).to_string()),
-                "theme" if !unquote(val).is_empty() => self.program.theme = Some(unquote(val).to_string()),
+                "theme" if !unquote(val).is_empty() => match check_inside("theme", unquote(val)) {
+                    Ok(()) => self.program.theme = Some(unquote(val).to_string()),
+                    Err(m) => self.err(line, m),
+                },
                 "theme" => self.err(line, "`theme` needs a file name, like `theme: theme.txt`"),
                 "vars" => self.front_vars(line, val, false),
                 "persistent" => self.front_vars(line, val, true),
@@ -340,6 +396,10 @@ impl Parser {
             return;
         };
         for item in split_top_level(inner, ',').into_iter().map(|p| unquote(p.trim())).filter(|p| !p.is_empty()) {
+            if let Err(m) = check_inside(key, item) {
+                self.err(line, m);
+                continue;
+            }
             let list = if key == "gallery" { &mut self.program.gallery } else { &mut self.program.music_room };
             if !list.iter().any(|p| p == item) {
                 list.push(item.to_string());
@@ -366,9 +426,22 @@ impl Parser {
         Ok(())
     }
 
+    /// A bare list variable can't be used as a value (it would be silently ignored):
+    /// `copy = inv`, `x += inv` or `::call{... a=inv}`. Use `inv has "item"` to ask about it.
+    fn not_a_list_value(&self, e: &Expr, place: &str) -> Result<(), String> {
+        match e {
+            Expr::Var(name) if matches!(self.program.vars.get(name), Some(Value::List(_))) => Err(format!(
+                "`{name}` is a list and can't be {place}: lists change only by `+=`/`-=` of an item, and \
+                 `{name} has \"item\"` asks about one"
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// A declared list changes only by `+=` / `-=` of text.
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
         self.check_expr(&e.value)?;
+        self.not_a_list_value(&e.value, "the right side of an assignment")?;
         if !matches!(self.program.vars.get(&e.var), Some(Value::List(_))) {
             return Ok(());
         }
@@ -384,15 +457,57 @@ impl Parser {
     // ---- labels, prose, images ------------------------------------------
 
     fn label(&mut self, line: usize, text: &str) {
-        let name = slug(text);
+        let (id_text, param_text) = split_params(text);
+        let name = slug(id_text);
         if name.is_empty() {
             self.err(line, "heading has no usable label name");
             return;
         }
+        let params = match param_text.map(|p| self.parameters(&name, p)) {
+            Some(Ok(params)) => Some(params),
+            Some(Err(m)) => {
+                self.err(line, m);
+                None
+            }
+            None => None,
+        };
         let at = self.here();
         if self.program.labels.insert(name.clone(), at).is_some() {
             self.err(line, format!("duplicate label `{name}`"));
         }
+        if let Some(params) = params {
+            self.program.params.insert(name.clone(), params);
+            self.param_labels.push((name, line));
+        }
+    }
+
+    /// The parameter names of a heading like `# heal(amount, who)`.
+    fn parameters(&self, label: &str, inner: &str) -> Result<Vec<String>, String> {
+        if inner.trim().is_empty() {
+            return Err(format!("`{label}()` has no parameters: write the heading without parentheses"));
+        }
+        let mut names: Vec<String> = Vec::new();
+        for part in inner.split(',').map(str::trim) {
+            if !is_ident(part) {
+                return Err(format!("bad parameter `{part}` in the heading (names are letters, digits and `_`, separated by commas)"));
+            }
+            if is_keyword(part) || matches!(part, "to" | "p" | "nw") {
+                let why = match part {
+                    "to" => "`::call` uses `to=` for the label",
+                    "p" | "nw" => "`{p}` and `{nw}` are text tags",
+                    _ => "it is a keyword",
+                };
+                return Err(format!("`{part}` can't be a parameter name: {why}"));
+            }
+            if names.iter().any(|n| n == part) {
+                return Err(format!("parameter `{part}` is listed twice"));
+            }
+            if matches!(self.program.vars.get(part), Some(Value::List(_))) {
+                return Err(format!("`{part}` is a list variable and can't be a parameter"));
+            }
+            names.push(part.to_string());
+        }
+        Ok(names)
     }
 
     fn flush(&mut self, para: &mut Vec<(usize, &str)>) {
@@ -420,6 +535,10 @@ impl Parser {
     fn image(&mut self, line: usize, alt: &str, path: &str) {
         if path.is_empty() {
             self.err(line, "image has no path");
+            return;
+        }
+        if let Err(m) = check_inside("path", path) {
+            self.err(line, format!("image {m}"));
             return;
         }
         let op = if kind_from_path(path) == AssetKind::Video {
@@ -464,6 +583,10 @@ impl Parser {
             "shop" => return self.shop(lines, i, inner),
             "item" => {
                 self.item(line, inner);
+                return i;
+            }
+            "call" => {
+                self.call(line, inner);
                 return i;
             }
             "set" => {
@@ -533,6 +656,51 @@ impl Parser {
             self.push(op, line);
         }
         i
+    }
+
+    /// `::call{to=heal amount=5 who="Mika"}`: a label and the values of its parameters.
+    /// A value runs to the next space outside quotes and parentheses, and is an
+    /// ordinary expression (so text is quoted).
+    fn call(&mut self, line: usize, inner: &str) {
+        let tokens = match call_tokens(inner) {
+            Ok(t) => t,
+            Err(m) => return self.err(line, m),
+        };
+        let mut to: Option<String> = None;
+        let mut args: Vec<(String, Expr)> = Vec::new();
+        for (key, value) in tokens {
+            match value {
+                None if to.is_none() => to = Some(key),
+                None => self.err(line, format!("unexpected `{key}`: `::call` takes one label (arguments are written `name=value`)")),
+                Some(v) if key == "to" => match (&to, unquote(&v)) {
+                    (Some(_), _) => self.err(line, "`::call` names its label twice"),
+                    (None, label) => to = Some(label.to_string()),
+                },
+                Some(v) => {
+                    if !is_ident(&key) || is_keyword(&key) {
+                        self.err(line, format!("`{key}` can't be an argument name (arguments are the label's parameter names)"));
+                    } else if args.iter().any(|(k, _)| *k == key) {
+                        self.err(line, format!("`{key}` is given twice in this `::call`"));
+                    } else {
+                        let checked = parse_expr(&v).and_then(|e| {
+                            self.check_expr(&e)?;
+                            self.not_a_list_value(&e, "a `::call` argument")?;
+                            Ok(e)
+                        });
+                        match checked {
+                            Ok(e) => args.push((key, e)),
+                            Err(m) => self.err(line, format!("{m} (in the argument `{key}={v}`)")),
+                        }
+                    }
+                }
+            }
+        }
+        let Some(to) = to.filter(|t| !slug(t).is_empty()) else {
+            return self.err(line, "`::call` needs a label, like `::call{to=label}`");
+        };
+        let label = slug(&to);
+        self.fixups.push(Fixup { op: self.here(), option: None, label, line });
+        self.push(Op::Call { target: UNSET, args }, line);
     }
 
     /// Build an op from attributes. The `Option<String>` is a label to resolve later.
@@ -605,6 +773,29 @@ impl Parser {
                 let strength = self.number(line, a, "strength", 0.0..=200.0)?.unwrap_or(20.0);
                 Some((Op::Shake { time, strength }, None))
             }
+            "flash" => {
+                let time = match a.value("time") {
+                    None => 0.4,
+                    Some(v) => match v.parse::<f32>() {
+                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
+                        _ => {
+                            self.err(line, format!("`time={v}` must be a number of seconds above 0 and at most 10"));
+                            return None;
+                        }
+                    },
+                };
+                let color = match a.value("color") {
+                    None => [1.0; 3],
+                    Some(c) => match parse_color(&c) {
+                        Ok(c) => c,
+                        Err(m) => {
+                            self.err(line, m);
+                            return None;
+                        }
+                    },
+                };
+                Some((Op::Flash { time, color }, None))
+            }
             "camera" => {
                 let reset = a.flag("reset");
                 let zoom = self.number(line, a, "zoom", 1.0..=4.0)?;
@@ -635,9 +826,38 @@ impl Parser {
                 }
             }
             "sfx" => {
+                if let Some(target) = a.take("stop") {
+                    if let Some(extra) = ["src", "loop", "volume"].into_iter().find(|k| a.0.iter().any(|(key, _)| key == k)) {
+                        self.err(line, format!("`::sfx{{stop}}` stops sounds, so `{extra}` doesn't go with it"));
+                        return None;
+                    }
+                    let fade = self.fade(line, a)?;
+                    let src = match target {
+                        None => None,
+                        Some(v) if v.is_empty() => {
+                            self.err(line, "`stop=` needs a file (`::sfx{stop=rain.ogg}`), or write just `stop` for all sounds");
+                            return None;
+                        }
+                        Some(v) => Some(v),
+                    };
+                    if let Some(src) = &src {
+                        self.sfx_stops.push((src.clone(), line));
+                    }
+                    return Some((Op::StopSfx { src, fade }, None));
+                }
                 let src = self.require(line, name, a, "src")?;
+                let looped = a.flag("loop");
+                let faded = a.0.iter().any(|(k, _)| k == "fade");
                 let volume = self.volume(line, a)?;
-                Some((Op::Sfx { src, volume }, None))
+                if looped {
+                    let fade = self.fade(line, a)?;
+                    Some((Op::SfxLoop { src, fade, volume }, None))
+                } else if faded {
+                    self.err(line, "`fade` on a sound effect needs `loop` (a one-shot sound is too short to fade) or `stop`");
+                    None
+                } else {
+                    Some((Op::Sfx { src, volume }, None))
+                }
             }
             "voice" => {
                 let src = self.require(line, name, a, "src")?;
@@ -671,7 +891,7 @@ impl Parser {
                 let skippable = a.flag("skippable") || looped;
                 Some((Op::Video { src, fit, looped, skippable }, None))
             }
-            "jump" | "call" => {
+            "jump" => {
                 let to = match a.value("to").or_else(|| a.take_bare().into_iter().next()) {
                     Some(t) => t,
                     None => {
@@ -680,9 +900,6 @@ impl Parser {
                     }
                 };
                 let label = Some(slug(&to));
-                if name == "call" {
-                    return Some((Op::Call { target: UNSET }, label));
-                }
                 let cond = match a.value("if") {
                     None => None,
                     Some(c) => match parse_expr(&c).and_then(|e| self.check_expr(&e).map(|()| e)) {
@@ -733,6 +950,10 @@ impl Parser {
             }
         };
 
+        if let Err(m) = check_inside("src", &src) {
+            self.err(line, m);
+            return None;
+        }
         let at = match a.value("at") {
             None => None,
             Some(v) => match parse_position(&v) {
@@ -820,6 +1041,10 @@ impl Parser {
         let key = id.to_lowercase();
         if self.program.characters.contains_key(&key) {
             self.err(line, format!("character `{id}` is declared twice"));
+            return;
+        }
+        if let Some(Err(m)) = sprites.as_deref().map(|t| check_inside("sprites", t)) {
+            self.err(line, m);
             return;
         }
         let name = name.unwrap_or_else(|| id.clone());
@@ -936,6 +1161,17 @@ impl Parser {
         } else if stock.is_empty() {
             // every line was already reported
         } else if let (Some(pay), Some(into)) = (pay, into) {
+            let (pay_kept, into_kept) = (self.program.persistent.contains(&pay), self.program.persistent.contains(&into));
+            if pay_kept != into_kept {
+                let (kept, plain) = if pay_kept { (&pay, &into) } else { (&into, &pay) };
+                self.err(
+                    line,
+                    format!(
+                        "`{kept}` is persistent but `{plain}` is not: rolling back a purchase would give the item twice or lose \
+                         both the money and the item (make `{plain}` persistent too, or neither)"
+                    ),
+                );
+            }
             self.push(Op::Shop { pay, into, stock }, line);
         }
         j
@@ -985,7 +1221,13 @@ impl Parser {
 
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
         match a.value(key) {
-            Some(v) if !v.is_empty() => Some(v),
+            Some(v) if !v.is_empty() => match check_inside(key, &v) {
+                Ok(()) => Some(v),
+                Err(m) => {
+                    self.err(line, m);
+                    None
+                }
+            },
             _ => {
                 self.err(line, format!("`::{cmd}` needs `{key}=...`"));
                 None
@@ -1156,7 +1398,7 @@ impl Parser {
                     self.err(j + 1, format!("a comment inside `{name}` must open and close on one line"));
                 }
             } else if !t.is_empty() {
-                match self.option(t, hot) {
+                match self.option(t, hot, j + 1) {
                     Ok((opt, label)) => {
                         options.push(opt);
                         labels.push((label, j + 1));
@@ -1182,7 +1424,7 @@ impl Parser {
     }
 
     /// Parse `- [text](#label){var+=1, if met}`.
-    fn option(&mut self, t: &str, hot: bool) -> Result<(ChoiceOption, String), String> {
+    fn option(&mut self, t: &str, hot: bool, line: usize) -> Result<(ChoiceOption, String), String> {
         let t = t
             .strip_prefix("- ")
             .or_else(|| t.strip_prefix("* "))
@@ -1267,7 +1509,7 @@ impl Parser {
             let var = format!("{ONCE}{target}:{text}");
             effects.push(Effect { var, op: AssignOp::Set, value: Expr::Lit(Value::Bool(true)) });
         }
-        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area };
+        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area, line };
         Ok((opt, target))
     }
 }
@@ -1323,11 +1565,24 @@ fn check_hotspot_image(path: &str) -> Result<String, String> {
 
 /// `path` must name a .png, .jpg or .webp file (`key` and `what` are for the message).
 fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String> {
+    check_inside(key, path)?;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !path.contains('.') || !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
         return Err(format!("bad `{key}={path}` ({what} must be a .png, .jpg or .webp file)"));
     }
     Ok(path.to_string())
+}
+
+/// A file named by the script must be relative and inside the game folder, or a save
+/// that mentions it can't be loaded again (and the game can't be packaged).
+fn check_inside(key: &str, path: &str) -> Result<(), String> {
+    if is_inside(path) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{key}={path}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"
+        ))
+    }
 }
 
 /// A price: a whole number, 0 or more.
@@ -1346,6 +1601,101 @@ fn parse_fraction(s: &str) -> Option<f32> {
         None => (s, 1.0),
     };
     num.trim().parse::<f32>().ok().map(|v| v / scale).filter(|v| (0.0..=1.0).contains(v))
+}
+
+/// `heal(amount, who)` -> (`heal`, Some(`amount, who`)). Parameters count only when
+/// the `(` follows the name directly and the heading ends with `)`, so a heading
+/// like `# Chapter 1 (the start)` is just a title, as it always was.
+fn split_params(text: &str) -> (&str, Option<&str>) {
+    if let Some(body) = text.strip_suffix(')') {
+        if let Some(open) = body.find('(') {
+            if body[..open].chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+                return (&body[..open], Some(&body[open + 1..]));
+            }
+        }
+    }
+    (text, None)
+}
+
+/// Problems with the arguments of a `::call` to `label`, whose parameters are `params`.
+fn call_problems(label: &str, params: Option<&[String]>, args: &[(String, Expr)]) -> Vec<String> {
+    let Some(params) = params else {
+        return args
+            .iter()
+            .map(|(k, _)| format!("`{label}` takes no parameters, but this `::call` passes `{k}`"))
+            .collect();
+    };
+    let takes = format!("{label} takes: {}", params.join(", "));
+    let mut out = Vec::new();
+    for (k, _) in args.iter().filter(|(k, _)| !params.contains(k)) {
+        out.push(format!("`{label}` has no parameter `{k}` ({takes})"));
+    }
+    for p in params.iter().filter(|p| !args.iter().any(|(k, _)| k == *p)) {
+        out.push(format!("this `::call` is missing `{p}={{...}}` ({takes})"));
+    }
+    out
+}
+
+/// Added to errors about reaching a label with parameters, for headings that were
+/// meant as plain titles.
+const PARAM_HINT: &str = "(`(a)` right after the name is read as a parameter list; put a space before `(` for a plain title)";
+
+/// A jump or link can't give a parameterized label its values.
+fn needs_call(label: &str, params: Option<&[String]>, what: &str) -> Option<String> {
+    let params = params?;
+    Some(format!(
+        "`{label}` has parameters ({}), so only `::call{{to={label} ...}}` can go there; {what} can't supply them {PARAM_HINT}",
+        params.join(", ")
+    ))
+}
+
+/// Split the inside of `::call{...}` into `key=value` words and bare words, at
+/// spaces and commas that are outside quotes and parentheses.
+fn call_tokens(s: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let mut words: Vec<String> = Vec::new();
+    let (mut cur, mut quote, mut depth) = (String::new(), None::<char>, 0i32);
+    for c in s.chars() {
+        match (quote, c) {
+            (Some(q), c) => {
+                cur.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            (None, '(') => {
+                depth += 1;
+                cur.push(c);
+            }
+            (None, ')') => {
+                depth -= 1;
+                cur.push(c);
+            }
+            (None, c) if (c.is_whitespace() || c == ',') && depth <= 0 => {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quote in `::call`".into());
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+        .into_iter()
+        .map(|w| match w.split_once('=') {
+            Some(("", _)) => Err("expected an argument name before `=`".to_string()),
+            Some((k, v)) => Ok((k.to_string(), Some(v.to_string()))),
+            None => Ok((w, None)),
+        })
+        .collect()
 }
 
 fn heading(t: &str) -> Option<&str> {
@@ -1828,6 +2178,43 @@ mod tests {
     }
 
     #[test]
+    fn asset_paths_must_be_inside_the_game_folder_where_they_are_written() {
+        for bad in ["assets\\calm.ogg", "../x.png", "/abs/x.png", "C:/x.png", "a/../../x.png"] {
+            for (tail, line) in [
+                (format!("Hi.\n::bg{{src={bad}}}\n"), 2),
+                (format!("::music{{src={bad}}}\n"), 1),
+                (format!("Hi.\n::sfx{{src={bad} loop}}\n"), 2),
+                (format!("::voice{{src={bad}}}\n"), 1),
+                (format!("::video{{src={bad}}}\n"), 1),
+                (format!("Hi.\n::show{{x src={bad}}}\n"), 2),
+                (format!("![alt]({bad})\n"), 1),
+                (format!("Hi.\n::item{{id=k icon={bad}}}\n"), 2),
+                (format!("::character{{id=m sprites={bad}}}\n"), 1),
+                (format!("::hotspots\n- [a](#b){{rect=0,0,1,1 image={bad}}}\n::\n# b\nHi.\n"), 2),
+            ] {
+                let e = errs(&tail);
+                let hit = e.iter().find(|e| e.message.contains("inside the game folder"));
+                assert_eq!(hit.map(|e| e.line), Some(line), "{bad} in {tail:?}: {e:?}");
+            }
+            let front = format!("---\ngallery: [{bad}]\n---\nHi.\n");
+            assert!(has_err(&front, "inside the game folder"), "{front}");
+            assert!(has_err(&format!("---\ntheme: {bad}\n---\nHi.\n"), "inside the game folder"));
+        }
+        ok("::bg{src=./assets/a.png}\n::music{src=assets/m.ogg}\n");
+    }
+
+    #[test]
+    fn options_know_their_line_and_item_icons_come_in_file_order() {
+        let p = ok("::item{id=zed icon=z.png}\n::item{id=alpha icon=a.png}\n::item{id=mid}\n::item{id=beta icon=b.png}\n# m\n::hotspots\n- [One](#m){rect=0,0,.5,.5 image=one.png}\n\n- [Two](#m){rect=0,0,.5,.5}\n- [Three](#m){rect=0,0,.5,.5 image=three.png}\n::\n");
+        let icons: Vec<_> = p.item_icons().collect();
+        assert_eq!(icons, [(1, "z.png"), (2, "a.png"), (4, "b.png")], "declaration order, not id order");
+        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        assert_eq!(options.iter().map(|o| o.line).collect::<Vec<_>>(), [7, 9, 10]);
+        let images: Vec<_> = p.assets_with_lines().collect();
+        assert_eq!(images, [(7, AssetKind::Image, "one.png"), (10, AssetKind::Image, "three.png")]);
+    }
+
+    #[test]
     fn extra_words_are_errors() {
         let chars = "::character{id=mika sprites=m_{pose}.png}\n";
         assert!(has_err(&format!("{chars}::show{{mika happy sad}}\n"), "unexpected `sad`"));
@@ -1845,7 +2232,7 @@ mod tests {
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
         assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, fade, wipe)"));
-        assert!(has_err("::frobnicate\n", "shake, camera"));
+        assert!(has_err("::frobnicate\n", "shake, flash, camera"));
     }
 
     #[test]
@@ -1898,7 +2285,7 @@ mod tests {
     #[test]
     fn call_and_return() {
         let p = ok("::call{to=sub}\n**A:** back\n::end\n# sub\n**A:** inside\n::return\n");
-        assert_eq!(p.ops[0], Op::Call { target: p.labels["sub"] });
+        assert_eq!(p.ops[0], Op::Call { target: p.labels["sub"], args: vec![] });
         assert!(p.ops.contains(&Op::Return));
         assert!(has_err("::call{to=nowhere}\n", "unknown label `nowhere`"));
         assert!(has_err("::call\n", "needs a label"));
@@ -2030,8 +2417,19 @@ mod tests {
         assert!(p.ops.iter().any(|op| matches!(op, Op::Move { y: Some(_), .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Show { z: Some(_), .. })));
         let says = |f: &str| p.ops.iter().any(|op| matches!(op, Op::Say { text, .. } if text.contains(f)));
-        assert!(says("{size=+14}") && says("{size=24}") && says("{nw}"));
+        assert!(says("{size=+14}") && says("{size=24}") && says("{nw}") && says("{p}"));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Flash { .. })));
+        assert!(p.ops.contains(&Op::SfxLoop { src: "assets/calm.ogg".into(), fade: 1.0, volume: 0.4 }));
+        assert!(p.ops.contains(&Op::StopSfx { src: Some("assets/calm.ogg".into()), fade: 1.5 }));
         assert_eq!(p.characters.len(), 2);
+    }
+
+    #[test]
+    fn the_shop_demo_calls_a_parameterized_label_twice() {
+        let p = ok(include_str!("../../../examples/shop.quill.md"));
+        assert_eq!(p.params["price-line"], ["item", "cost"], "the label id is the slug of the heading");
+        let calls = p.ops.iter().filter(|op| matches!(op, Op::Call { args, .. } if args.len() == 2)).count();
+        assert_eq!(calls, 2);
     }
 
     #[test]
@@ -2140,6 +2538,19 @@ mod tests {
         assert_eq!(options[0].effects.len(), 2, "hidden is not an effect");
         let errors = errs("# a\n::choice\n- [x](#a)\n- [y](#a){hidden}\n::\n");
         assert!(errors.iter().any(|e| e.line == 4 && e.message.contains("`hidden` only belongs")), "{errors:?}");
+    }
+
+    #[test]
+    fn a_shop_cannot_mix_persistent_and_ordinary_money_and_items() {
+        let items = "::item{id=k price=5}\n::shop{pay=gold into=inv}\n- k\n::\n";
+        let head = |gold: &str, inv: &str| format!("---\n{gold}\n{inv}\n---\n{items}");
+        let (gold, inv) = ("vars: { gold: 9 }", "persistent: { inv: [] }");
+        let e = errs(&head(gold, inv));
+        assert!(e.iter().any(|e| e.line == 6 && e.message.contains("rolling back")), "{e:?}");
+        let (gold, inv) = ("persistent: { gold: 9 }", "vars: { inv: [] }");
+        assert!(has_err(&head(gold, inv), "rolling back"));
+        ok(&head("vars: { gold: 9 }", "vars: { inv: [] }"));
+        ok(&head("persistent: { gold: 9 }", "persistent: { inv: [] }"));
     }
 
     #[test]
@@ -2317,5 +2728,200 @@ mod tests {
         assert_eq!(line("::if{nothing has \"x\"}\nHi.\n::endif\n", "declare it"), 4);
         assert_eq!(line("# a\n::jump{to=a if=\"gold has 'x'\"}\n", "not a list"), 5);
         assert_eq!(line("# a\n::choice\n- [x](#a){if gold has \"x\"}\n::\n", "not a list"), 6);
+        // a bare list as a value is never meaningful
+        assert_eq!(line("Hi.\n::set{gold = inv}\n", "can't be the right side"), 5);
+        assert_eq!(line("::set{gold += inv}\n", "can't be the right side"), 4);
+        assert_eq!(line("::set{inv += inv}\n", "can't be the right side"), 4);
+        assert_eq!(line("# a\n::choice\n- [x](#a){gold = inv}\n::\n", "can't be the right side"), 6);
+        assert_eq!(line("::call{to=h x=inv}\n::end\n# h(x)\nHi.\n::return\n", "`::call` argument"), 4);
+        assert!(!ok(&format!("{head}::set{{gold = (inv has \"k\")}}\n")).ops.is_empty(), "asking about a list is fine");
+    }
+
+    // ---- labels with parameters ------------------------------------------
+
+    /// A story with a parameterized subroutine after the main flow.
+    const SUB: &str = "::call{to=heal amount=5 who=\"Mika\"}\n**A:** back\n::end\n# heal(amount, who)\n**A:** {who} heals {amount}\n::return\n";
+
+    fn line_of(src: &str, needle: &str) -> usize {
+        let e = errs(src);
+        e.iter().find(|e| e.message.contains(needle)).unwrap_or_else(|| panic!("{src:?}: {e:?}")).line
+    }
+
+    #[test]
+    fn a_label_with_parameters_is_called_with_values() {
+        let p = ok(SUB);
+        assert_eq!(p.labels["heal"], 3, "the id is the heading text before the parenthesis");
+        assert_eq!(p.params["heal"], ["amount", "who"]);
+        let lit = |v| Expr::Lit(v);
+        assert_eq!(
+            p.ops[0],
+            Op::Call {
+                target: 3,
+                args: vec![
+                    ("amount".into(), lit(Value::Int(5))),
+                    ("who".into(), lit(Value::Str("Mika".into()))),
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn arguments_are_expressions_with_quotes_and_parentheses_keeping_their_spaces() {
+        let src = "---\nvars: { gold: 3 }\n---\n::call{to=f a=gold b=\"two words, here\" c=(gold >= 2 and true), d=-4}\n::end\n# f(a, b, c, d)\n::return\n";
+        let p = ok(src);
+        let Op::Call { args, .. } = &p.ops[0] else { panic!() };
+        assert_eq!(args[0].1, Expr::Var("gold".into()));
+        assert_eq!(args[1].1, Expr::Lit(Value::Str("two words, here".into())));
+        assert!(matches!(args[2].1, Expr::And(..)));
+        assert_eq!(args[3].1, Expr::Lit(Value::Int(-4)));
+        // the label may also come first and bare, and `to` may be quoted
+        ok("::call{f a=1}\n::end\n# f(a)\n::return\n");
+        ok("::call{to=\"f\" a=1}\n::end\n# f(a)\n::return\n");
+        ok("::call{to=f, a=1}\n::end\n# f(a)\n::return\n");
+    }
+
+    #[test]
+    fn a_call_must_pass_exactly_the_parameters() {
+        let tail = "::end\n# heal(amount, who)\n::return\n";
+        assert_eq!(line_of(&format!("::call{{to=heal who=\"M\"}}\n{tail}"), "missing `amount"), 1);
+        assert_eq!(line_of(&format!("Hi.\n::call{{to=heal}}\n{tail}"), "missing `amount"), 2);
+        assert_eq!(line_of(&format!("::call{{to=heal amount=1 who=\"M\" extra=2}}\n{tail}"), "no parameter `extra`"), 1);
+        assert_eq!(line_of(&format!("::call{{to=heal amont=1 who=\"M\"}}\n{tail}"), "no parameter `amont`"), 1);
+        assert!(has_err(&format!("::call{{to=heal amont=1 who=\"M\"}}\n{tail}"), "missing `amount"), "the misspelling is both");
+        assert!(has_err("::call{to=heal amount=1 amount=2 who=1}\n::end\n# heal(amount, who)\n::return\n", "given twice"));
+        // a label without parameters takes no arguments
+        assert_eq!(line_of("\n::call{to=plain x=1}\n::end\n# plain\n::return\n", "takes no parameters"), 2);
+        // and a bad value is reported on its line
+        assert_eq!(line_of("Hi.\n::call{to=heal amount=?? who=1}\n::end\n# heal(amount, who)\n::return\n", "amount"), 2);
+        assert!(has_err("::call{to=heal amount=1 who=\"x}\n", "unterminated quote"));
+        assert!(has_err("::call{amount=1}\n", "needs a label"));
+    }
+
+    #[test]
+    fn jumps_and_links_cannot_reach_a_parameterized_label() {
+        let sub = "# heal(amount)\n::return\n";
+        assert_eq!(line_of(&format!("Hi.\n::jump{{to=heal}}\n::end\n{sub}"), "can't supply them"), 2);
+        assert_eq!(line_of(&format!("::jump{{to=heal if=\"1\"}}\n::end\n{sub}"), "`::jump`"), 1);
+        let choice = format!("::choice\n- [Go](#heal)\n::\n::end\n{sub}");
+        assert_eq!(line_of(&choice, "a choice or hotspot link"), 2);
+        let hot = format!("::hotspots\n- [Go](#heal){{rect=0,0,0.5,0.5}}\n::\n::end\n{sub}");
+        assert_eq!(line_of(&hot, "a choice or hotspot link"), 2);
+        // `seen()` only counts passes, so it is fine
+        ok(&format!("::if{{seen(heal)}}\nHi.\n::endif\n::call{{to=heal amount=1}}\n::end\n{sub}"));
+    }
+
+    #[test]
+    fn running_into_a_parameterized_label_is_an_error() {
+        let heal = "# heal(amount)\n::return\n";
+        // from the label above, from the start of the script, and past an `::if`
+        assert_eq!(line_of(&format!("# main\nHi.\n{heal}"), "without a `::call`"), 3);
+        assert_eq!(line_of(heal, "without a `::call`"), 1);
+        // a title like `# Round 1(a)` is read as a parameter list: the error says so
+        assert!(has_err("Hi.\n# Round 1(a)\nHo.\n", "put a space before `(` for a plain title"));
+        assert!(has_err("::jump{to=round-1}\n# Round 1(a)\n::return\n", "put a space before `(` for a plain title"));
+        assert_eq!(line_of(&format!("::if{{x}}\n::jump{{to=main}}\n::endif\n{heal}# main\n::end\n"), "without a `::call`"), 4);
+        // a choice block with nothing on offer carries on past itself
+        assert_eq!(line_of(&format!("# main\n::choice\n- [x](#main){{if 0}}\n::\n{heal}"), "without a `::call`"), 5);
+        // ending the label above stops that
+        for end in ["::jump{to=main}", "::return", "::end"] {
+            ok(&format!("# main\n{end}\n{heal}"));
+        }
+        ok(&format!("::call{{to=heal amount=1}}\n::end\n{heal}"));
+    }
+
+    #[test]
+    fn heading_parentheses_only_make_parameters_right_after_the_name() {
+        // the old behaviour: spaces before the parenthesis (or none at the end) is plain title text
+        let p = ok("# Chapter 1 (the start)\nHi.\n# Plain (\nHi.\n");
+        assert!(p.labels.contains_key("chapter-1-the-start") && p.params.is_empty());
+        assert!(p.labels.contains_key("plain"));
+        // with a space the parentheses are part of the title, and the label is its slug
+        let p = ok("# heal (amount)\nHi.\n");
+        assert!(p.labels.contains_key("heal-amount") && p.params.is_empty());
+        assert!(!ok("# Round 1 (a)\nHi.\n").labels.contains_key("round-1"));
+        // the examples the manual gives for the touching form
+        let p = ok("::call{to=round-1 a=1}\n::call{to=café night=2}\n::end\n# Round 1(a)\n::return\n# Café(night)\n::return\n");
+        assert_eq!((p.params["round-1"].as_slice(), p.params["café"].as_slice()), (&["a".to_string()][..], &["night".to_string()][..]));
+        let p = ok("::call{to=\"Price Line\" x=1}\n::end\n# Price line(x)\n::return\n");
+        assert_eq!(p.params["price-line"], ["x"]);
+        assert!(p.labels.contains_key("price-line"));
+        for (src, needle) in [
+            ("# f()\n", "no parameters"),
+            ("# f(a,)\n", "bad parameter"),
+            ("# f(a b)\n", "bad parameter"),
+            ("# f(1)\n", "bad parameter"),
+            ("# f(a, a)\n", "listed twice"),
+            ("# f(not)\n", "keyword"),
+            ("# f(to)\n", "`to=`"),
+            ("# f(p)\n", "text tags"),
+        ] {
+            assert!(has_err(src, needle), "{src}");
+        }
+        assert!(has_err("---\nvars: { inv: [] }\n---\n# f(inv)\n", "list variable"));
+        assert!(has_err("# f(a)\n::return\n# f(b)\n::return\n", "duplicate label"));
+    }
+
+    #[test]
+    fn parameterized_labels_work_with_seen_and_old_scripts_are_unchanged() {
+        let p = ok("::call{to=heal amount=1}\n::if{seen(heal) >= 1}\nHi.\n::endif\n::end\n# heal(amount)\n::return\n");
+        assert!(p.counted.contains_key(&p.labels["heal"]));
+        assert_eq!(ok(DEMO).params.len(), 0);
+    }
+
+    // ---- ::flash --------------------------------------------------------
+
+    #[test]
+    fn flash_has_defaults_and_validates() {
+        let p = ok("::flash\n::flash{time=1.5 color=#f00}\n::flash{color=#00ff80}\n");
+        assert_eq!(p.ops[0], Op::Flash { time: 0.4, color: [1.0, 1.0, 1.0] });
+        assert_eq!(p.ops[1], Op::Flash { time: 1.5, color: [1.0, 0.0, 0.0] });
+        assert_eq!(p.ops[2], Op::Flash { time: 0.4, color: [0.0, 1.0, 128.0 / 255.0] });
+        for (src, needle) in [
+            ("::flash{time=0}\n", "above 0"),
+            ("::flash{time=-1}\n", "above 0"),
+            ("::flash{time=10.5}\n", "at most 10"),
+            ("::flash{time=soon}\n", "time=soon"),
+            ("::flash{color=red}\n", "bad colour"),
+            ("::flash{colour=#fff}\n", "unknown attribute `colour`"),
+        ] {
+            assert!(has_err(src, needle), "{src}");
+        }
+        assert_eq!(line_of("Hi.\n::flash{time=0}\n", "above 0"), 2);
+        assert!(ok("::flash{time=10}\n").ops.contains(&Op::Flash { time: 10.0, color: [1.0; 3] }));
+    }
+
+    // ---- looping and stopping ::sfx ---------------------------------------
+
+    #[test]
+    fn sfx_loops_and_stops() {
+        let p = ok("::sfx{src=rain.ogg loop volume=0.6 fade=1}\n::sfx{src=a.ogg loop}\n::sfx{src=door.ogg}\n::sfx{src=b.ogg loop=false}\n::sfx{stop=rain.ogg fade=2}\n::sfx{stop=door.ogg}\n::sfx{stop}\n::sfx{stop fade=0.5}\n");
+        assert_eq!(p.ops[0], Op::SfxLoop { src: "rain.ogg".into(), fade: 1.0, volume: 0.6 });
+        assert_eq!(p.ops[1], Op::SfxLoop { src: "a.ogg".into(), fade: 0.0, volume: 1.0 });
+        assert_eq!(p.ops[2], Op::Sfx { src: "door.ogg".into(), volume: 1.0 }, "a one-shot is unchanged");
+        assert_eq!(p.ops[3], Op::Sfx { src: "b.ogg".into(), volume: 1.0 });
+        assert_eq!(p.ops[4], Op::StopSfx { src: Some("rain.ogg".into()), fade: 2.0 });
+        assert_eq!(p.ops[5], Op::StopSfx { src: Some("door.ogg".into()), fade: 0.0 }, "a one-shot can be stopped too");
+        assert_eq!(p.ops[6], Op::StopSfx { src: None, fade: 0.0 });
+        assert_eq!(p.ops[7], Op::StopSfx { src: None, fade: 0.5 });
+        assert_eq!(p.assets().filter(|(_, k, _)| *k == AssetKind::Audio).count(), 4, "loops are assets; stops are not");
+    }
+
+    #[test]
+    fn sfx_mistakes_are_errors_with_lines() {
+        for (src, needle) in [
+            ("::sfx{src=a.ogg fade=1}\n", "needs `loop`"),
+            ("::sfx{src=a.ogg loop volume=2}\n", "between 0 and 1"),
+            ("::sfx{src=a.ogg loop fade=-1}\n", "seconds"),
+            ("::sfx{stop=a.ogg src=a.ogg}\n", "doesn't go with"),
+            ("::sfx{stop loop}\n", "doesn't go with"),
+            ("::sfx{stop=}\n", "needs a file"),
+            ("::sfx{loop}\n", "needs `src=...`"),
+            ("::sfx{stop=never.ogg}\n", "no `::sfx{src=never.ogg}`"),
+            ("::sfx{src=a.ogg loop speed=2}\n", "unknown attribute `speed`"),
+        ] {
+            assert!(has_err(src, needle), "{src}");
+        }
+        assert_eq!(line_of("Hi.\n::sfx{stop=never.ogg}\n", "no `::sfx"), 2);
+        ok("::sfx{src=a.ogg loop}\n::sfx{stop=a.ogg}\n");
     }
 }

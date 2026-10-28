@@ -153,6 +153,7 @@ pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton]) -> Option<MenuButton> {
 
 /// The main menu: the theme's background picture (or black), the title, buttons.
 /// `focus` is the button the keyboard is on.
+/// An empty `title` and no `buttons` draw just the menu's background (what an overlay opened from the menu leaves).
 pub fn draw_main_menu(
     out: &mut Vec<Draw>,
     theme: &Theme,
@@ -169,7 +170,9 @@ pub fn draw_main_menu(
             out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
         }
     }
-    text(out, title, Rect::new(0.0, 180.0, VIRTUAL.w, 160.0), 96.0, theme.accent_color, Align::Center);
+    if !title.is_empty() {
+        text(out, title, Rect::new(0.0, 180.0, VIRTUAL.w, 160.0), 96.0, theme.accent_color, Align::Center);
+    }
     for (i, &b) in buttons.iter().enumerate() {
         let label = match b {
             MenuButton::Start => "Start",
@@ -396,9 +399,36 @@ const NAME_W: f32 = 320.0;
 const TEXT_X: f32 = 500.0;
 const TEXT_W: f32 = 1260.0;
 
-/// How far back the backlog can scroll (in entries) without running out.
+/// The text of a history row, without styling.
+fn log_body(entry: &Logged) -> String {
+    match entry {
+        Logged::Line(line) => plain(&line.text),
+        Logged::Choice(choice) => format!("» {}", plain(choice)),
+    }
+}
+
+fn log_line_height() -> f32 {
+    (LOG_SIZE * 1.35).round() // same line height the text renderer uses
+}
+
+fn log_entry_height(entry: &Logged) -> f32 {
+    estimate_lines(&log_body(entry), LOG_SIZE, TEXT_W) as f32 * log_line_height()
+}
+
+/// How far back the backlog can scroll (in entries) without running out: until the oldest
+/// entry is on screen (more would only show it alone on an empty page). 0 if all fit.
 pub fn backlog_max_scroll(entries: &[Logged]) -> usize {
-    entries.len().saturating_sub(1)
+    let room = LOG_BOTTOM - LOG_TOP;
+    // Scrolling back by `s` shows the oldest `len - s` entries, bottom-aligned: the oldest is
+    // in view once they fit, which is the first `s` for which that prefix is no taller than the room.
+    let mut s = 0;
+    let mut total: f32 = entries.iter().map(log_entry_height).sum::<f32>() + LOG_GAP * entries.len().saturating_sub(1) as f32;
+    while total > room && s + 1 < entries.len() {
+        let newest = &entries[entries.len() - 1 - s];
+        total -= log_entry_height(newest) + LOG_GAP;
+        s += 1;
+    }
+    s
 }
 
 /// Draw the backlog, newest entry at the bottom, `scroll` entries back from the end.
@@ -412,27 +442,49 @@ pub fn draw_backlog(out: &mut Vec<Draw>, theme: &Theme, entries: &[Logged], scro
         return;
     }
 
-    let line_h = (LOG_SIZE * 1.35).round(); // same line height the text renderer uses
+    let line_h = log_line_height();
     let mut bottom = LOG_BOTTOM;
     for entry in entries.iter().rev().skip(scroll) {
-        let (speaker, color, body, body_color) = match entry {
+        let (speaker, color, body_color) = match entry {
             Logged::Line(line) => {
                 let color = line.color.map(|[r, g, b]| [r, g, b, 1.0]).unwrap_or(theme.name_color);
-                (line.speaker.as_deref(), color, plain(&line.text), theme.text_color)
+                (line.speaker.as_deref(), color, theme.text_color)
             }
-            Logged::Choice(choice) => (None, theme.accent_color, format!("» {}", plain(choice)), theme.accent_color),
+            Logged::Choice(_) => (None, theme.accent_color, theme.accent_color),
         };
-        let h = estimate_lines(&body, LOG_SIZE, TEXT_W) as f32 * line_h;
+        let body = log_body(entry);
+        let h = log_entry_height(entry);
         let top = bottom - h;
         if top < LOG_TOP {
             break; // only whole entries are drawn
         }
         if let Some(name) = speaker {
-            text(out, name, Rect::new(NAME_X, top, NAME_W, line_h), LOG_SIZE, color, Align::Left);
+            // A long name steps down in size until it fits on one row (the row is one line tall).
+            let mut size = LOG_SIZE;
+            while size > 20.0 && estimate_lines(name, size, NAME_W) > 1 {
+                size -= 2.0;
+            }
+            text(out, name, Rect::new(NAME_X, top, NAME_W, line_h), size, color, Align::Left);
         }
         text(out, body, Rect::new(TEXT_X, top, TEXT_W, h), LOG_SIZE, body_color, Align::Left);
         bottom = top - LOG_GAP;
     }
+}
+
+/// `s` cut short with an ellipsis so that it fits one row `width` wide (a row has no room for a second line).
+pub(crate) fn one_row(s: &str, size: f32, width: f32) -> String {
+    let mut chars: Vec<char> = s.chars().collect();
+    if estimate_lines(s, size, width) <= 1 {
+        return s.to_string();
+    }
+    while chars.len() > 1 {
+        chars.pop();
+        let cut: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
+        if estimate_lines(&cut, size, width) <= 1 {
+            return cut;
+        }
+    }
+    String::new()
 }
 
 // ---- save / load slots ---------------------------------------------------------------
@@ -535,7 +587,8 @@ pub fn draw_slots(
                     }
                 }
                 text(out, info.time.clone(), below(4.0, 30.0), 22.0, theme.dim_color, Align::Left);
-                text(out, info.preview.clone(), below(32.0, 30.0), 22.0, theme.text_color, Align::Left);
+                let row = below(32.0, 30.0);
+                text(out, one_row(&info.preview, 22.0, row.w), row, 22.0, theme.text_color, Align::Left);
             }
         }
     }
@@ -725,7 +778,20 @@ mod tests {
         let mut out = Vec::new();
         draw_backlog(&mut out, &Theme::default(), &entries, 1);
         assert!(!texts(&out).contains(&"three".to_string()));
-        assert_eq!(backlog_max_scroll(&entries), 2);
+        assert_eq!(backlog_max_scroll(&entries), 0, "all of it fits: nothing to scroll to");
+    }
+
+    #[test]
+    fn a_paragraph_break_in_the_backlog_is_a_real_line_break_with_room_for_it() {
+        let tall = vec![line("a{p}b{p}c")];
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &Theme::default(), &tall, 0);
+        let h = out.iter().find_map(|d| match d {
+            Draw::Text { text, rect, .. } if text == "a\nb\nc" => Some(rect.h),
+            _ => None,
+        });
+        let one = (LOG_SIZE * 1.35).round();
+        assert_eq!(h, Some(3.0 * one), "three lines of room");
     }
 
     #[test]
@@ -739,6 +805,53 @@ mod tests {
             Draw::Text { rect, text, .. } if text.starts_with("line ") => rect.y >= LOG_TOP,
             _ => true,
         }));
+    }
+
+    #[test]
+    fn scrolling_stops_when_the_oldest_entry_is_on_screen() {
+        let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
+        let max = backlog_max_scroll(&entries);
+        assert!(max > 50 && max < 99, "{max}: not all the way to a lone entry");
+        let shown = |scroll: usize| {
+            let mut out = Vec::new();
+            draw_backlog(&mut out, &Theme::default(), &entries, scroll);
+            texts(&out).iter().filter(|t| t.starts_with("line ")).count()
+        };
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &Theme::default(), &entries, max);
+        assert!(texts(&out).contains(&"line 0".to_string()), "the oldest line is there at the end");
+        assert!(shown(max) > 5, "and so is a page of others");
+        assert_eq!(backlog_max_scroll(&entries[..3]), 0, "a short history has nothing to scroll");
+    }
+
+    #[test]
+    fn a_long_speaker_name_is_smaller_so_that_it_fits_its_row() {
+        let mut long = line("hello");
+        if let Logged::Line(l) = &mut long {
+            l.speaker = Some("Professor Bartholomew Fitzgerald-Montgomery".into());
+        }
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &Theme::default(), &[long], 0);
+        let (rect, size) = out
+            .iter()
+            .find_map(|d| match d {
+                Draw::Text { text, rect, size, .. } if text.starts_with("Professor") => Some((*rect, *size)),
+                _ => None,
+            })
+            .unwrap();
+        // Too long for one row even when smaller, so it wraps: the renderer may shrink it to 60% to fit.
+        let rows = quillstone_render::estimate_lines("Professor Bartholomew Fitzgerald-Montgomery", size, rect.w);
+        assert!(rows as f32 * (size * 0.6 * 1.35).round() <= rect.h, "{rows} rows of {size}px fit {}px", rect.h);
+        assert!((20.0..LOG_SIZE).contains(&size));
+    }
+
+    #[test]
+    fn a_slots_preview_is_cut_to_one_row_so_nothing_is_clipped() {
+        let long = "Professor Bartholomew Fitzgerald-Montgomery: Line 30: a longer line from the professor";
+        let cut = one_row(long, 22.0, 448.0);
+        assert!(cut.ends_with('…') && cut.len() < long.len());
+        assert_eq!(estimate_lines(&cut, 22.0, 448.0), 1);
+        assert_eq!(one_row("Mika: Hi.", 22.0, 448.0), "Mika: Hi.");
     }
 
     #[test]

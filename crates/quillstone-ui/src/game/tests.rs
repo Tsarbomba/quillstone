@@ -210,6 +210,27 @@ fn a_no_wait_line_with_instant_text_still_asks_for_ticks() {
 }
 
 #[test]
+fn a_no_wait_line_ending_in_a_pause_waits_it_out_even_with_instant_text() {
+    let src = "**A:** Well...{w=3}{nw}\n**A:** next\n";
+    let p = parse(src).unwrap();
+    for settings in [instant(), Settings { text_speed: 10.0, ..Settings::default() }] {
+        let mut g = new_game(&p, settings);
+        g.tick(1.5, false); // typed (if it types) and pausing
+        assert_eq!(line(&g), "Well...");
+        g.tick(1.0, false);
+        assert_eq!(line(&g), "Well...", "still inside the 3 s");
+        g.tick(1.5, false); // (typing at 10/s adds 0.7 s before the pause starts)
+        assert_eq!(line(&g), "next");
+    }
+    // a click reveals all and cancels the pause: the story then moves on at once
+    let mut g = new_game(&p, instant());
+    g.tick(0.5, false);
+    key(&mut g, Key::Space);
+    g.tick(0.0, false);
+    assert_eq!(line(&g), "next");
+}
+
+#[test]
 fn a_click_on_a_no_wait_line_only_finishes_the_typing_then_it_moves_on() {
     let p = parse(NW).unwrap();
     let mut g = new_game(&p, Settings { text_speed: 10.0, ..Settings::default() });
@@ -305,14 +326,23 @@ fn skip_mode_and_auto_forward_need_nothing_special_for_no_wait() {
 fn the_staging_demo_plays_through() {
     let p = parse(include_str!("../../../../examples/staging.quill.md")).unwrap();
     let mut g = new_game(&p, instant());
+    let first = g.take_audio();
+    assert!(first.iter().any(|a| matches!(a, Action::PlaySfxLoop { src, .. } if src == "assets/calm.ogg")), "{first:?}");
+    let mut flashed = false;
+    let mut broke = false;
     for _ in 0..40 {
         if !g.view().choices.is_empty() {
             break;
         }
+        flashed |= flash_alpha(&g).is_some();
+        broke |= line(&g).contains('\n');
         key(&mut g, Key::Space);
         g.tick(0.0, false); // the `{nw}` line goes on by itself
     }
+    assert!(flashed && broke, "the demo flashes and has a line with a {{p}} break");
     assert_eq!(g.view().choices.len(), 2);
+    assert!(g.take_audio().iter().any(|a| matches!(a, Action::StopSfx { src: Some(s), .. } if s == "assets/calm.ogg")));
+    assert!(!g.mixer.has_sfx_loops());
     assert_eq!(line(&g), "This line moves on by itself once it is typed, with no click...");
     // two sprites, with Mika drawn over Ren (her z is higher by then)
     assert!(g.view().sprites.iter().all(|s| s.y <= 1.0 && s.z >= 0));
@@ -478,7 +508,7 @@ fn the_backlog_lists_what_was_read_and_scrolls() {
     g.handle(Event::Wheel(1.0));
     g.handle(Event::Wheel(1.0));
     g.handle(Event::Wheel(1.0));
-    assert_eq!(g.backlog_scroll, 2, "clamped to the oldest entry");
+    assert_eq!(g.backlog_scroll, 0, "three short lines all fit: nothing to scroll to");
     key(&mut g, Key::End);
     g.handle(Event::Wheel(-1.0)); // wheeling down at the newest entry stays put
     assert_eq!(g.screen(), Screen::Backlog);
@@ -503,8 +533,67 @@ fn overlays_draw_on_top_of_the_story() {
     assert!(story.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "History")));
     key(&mut g, Key::Escape);
     let settings = g.draw_list(&none);
-    assert!(settings.len() > story.len());
-    assert_eq!(&settings[..story.len()], &story[..]);
+    assert!(settings.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Settings")));
+}
+
+fn has_text(list: &[Draw], what: &str) -> bool {
+    list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == what))
+}
+
+/// Draw list of the game with a full-screen overlay opened by `open`, over a story that shows a
+/// line, two choices and the quick menu.
+#[test]
+fn a_full_screen_overlay_hides_the_stories_text_choices_and_quick_menu() {
+    let p = parse(CHOICE).unwrap();
+    let none = |_: &str| None;
+    type Open = fn(&mut Game);
+    let opens: [(&str, Open); 4] = [
+        ("settings", |g| key(g, Key::Escape)),
+        ("history", |g| key(g, Key::Char('h'))),
+        ("save", |g| key(g, Key::Char('s'))),
+        ("load", |g| key(g, Key::Char('l'))),
+    ];
+    for (name, open) in opens {
+        let mut g = new_game(&p, instant());
+        key(&mut g, Key::Space); // on to the choices
+        let story = g.draw_list(&none);
+        for what in ["pick", "Left", "Right", "Skip", "Auto", "Q.Save"] {
+            assert!(has_text(&story, what), "the story shows {what}");
+        }
+        open(&mut g);
+        assert_ne!(g.screen(), Screen::Story, "{name} is open");
+        let list = g.draw_list(&none);
+        for what in ["pick", "Left", "Right", "Skip", "Auto", "Q.Save", "Q.Load"] {
+            // the backlog lists the line itself; the slot screens have an "Auto" tab
+            if (name == "history" && what == "pick") || (what == "Auto" && matches!(name, "save" | "load")) {
+                continue;
+            }
+            assert!(!has_text(&list, what), "{name}: {what} must not show through");
+        }
+    }
+}
+
+#[test]
+fn a_hotspot_overlay_leaves_no_tooltip_and_a_confirm_over_the_story_keeps_the_story() {
+    let p = parse(MAP).unwrap();
+    let mut g = new_game(&p, instant());
+    let known = |_: &str| Some(quillstone_render::Size::new(100.0, 100.0));
+    g.handle(Event::CursorMoved(spot_centre(&g, 0)));
+    assert!(has_text(&g.draw_list(&known), "Library"), "the tooltip shows on the map");
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Settings);
+    assert!(!has_text(&g.draw_list(&known), "Library"), "no tooltip under settings");
+    key(&mut g, Key::Escape);
+
+    let q = parse(CHOICE).unwrap();
+    let mut g = new_game(&q, instant());
+    key(&mut g, Key::Space);
+    g.ask("Sure?", Then::Quit);
+    let list = g.draw_list(&|_| None);
+    assert!(has_text(&list, "Sure?"));
+    for what in ["pick", "Left", "Right", "Skip"] {
+        assert!(has_text(&list, what), "the story stays under a confirm: {what}");
+    }
 }
 
 #[test]
@@ -893,6 +982,28 @@ fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     click_at(&mut g, centre(menu_button_rect(1)));
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "two", "no confirm needed: nothing to lose at the menu");
+}
+
+#[test]
+fn an_overlay_opened_from_the_menu_hides_the_menus_title_and_buttons() {
+    let p = parse(THREE).unwrap();
+    let mut g = at_menu(&p);
+    let none = |_: &str| None;
+    let menu = g.draw_list(&none);
+    for what in ["Start", "Settings", "Quit"] {
+        assert!(has_text(&menu, what), "the menu shows {what}");
+    }
+    for (open, shown) in [(MenuButton::Settings, "Settings"), (MenuButton::Load, "Load")] {
+        let at = menu_buttons(false, false).iter().position(|b| *b == open).unwrap();
+        click_at(&mut g, centre(menu_button_rect(at)));
+        let list = g.draw_list(&none);
+        assert!(has_text(&list, shown));
+        for what in ["Start", "Quillstone"] {
+            assert!(!has_text(&list, what), "{shown}: {what} must not show through");
+        }
+        key(&mut g, Key::Escape);
+        assert_eq!(g.screen(), Screen::MainMenu);
+    }
 }
 
 #[test]
@@ -1579,12 +1690,33 @@ fn more_items_than_fit_are_paged_by_wheel_keys_and_arrows() {
     assert!(drawn_texts(&g).contains(&"Page 1 of 2".to_string()), "up from the first cell of page two goes back");
 }
 
+#[test]
+fn down_on_the_last_row_stays_put_when_the_column_has_nothing_below() {
+    let items: String = (0..7).map(|i| format!("::item{{id=i{i} name=\"i{i}\"}}\n")).collect();
+    let src = format!("---\ninventory: bag\nvars: {{ bag: [i0, i1, i2, i3, i4, i5, i6] }}\n---\n{items}**A:** hi\n");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    assert_eq!(crate::bag::columns(g.theme()), 5);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right); // item 2, first row
+    assert_eq!(g.bag.focus, Some(2));
+    key(&mut g, Key::Down);
+    assert_eq!(g.bag.focus, Some(2), "no item under column 2");
+    key(&mut g, Key::Left); // item 1
+    key(&mut g, Key::Down);
+    assert_eq!(g.bag.focus, Some(6), "item 6 is under item 1");
+    key(&mut g, Key::Down);
+    assert_eq!(g.bag.focus, Some(6), "the last row");
+}
+
 const SCRIPTED: &str = "---\ninventory: bag\nvars: { bag: [key] }\n---\n::item{id=key name=\"Brass key\" text=\"Opens it.\"}\n**A:** one\n::inventory\n**A:** two\n::inventory\n**A:** three\n";
 
 #[test]
 fn the_inventory_command_opens_the_screen_and_the_story_waits_for_it_to_close() {
     let p = parse(SCRIPTED).unwrap();
-    for closer in 0..4 {
+    for closer in 0..2 {
         let mut g = new_game(&p, instant());
         key(&mut g, Key::Space);
         assert_eq!(g.screen(), Screen::Inventory, "the script opened it");
@@ -1593,9 +1725,7 @@ fn the_inventory_command_opens_the_screen_and_the_story_waits_for_it_to_close() 
         assert_eq!(g.screen(), Screen::Inventory, "it stays until the player closes it");
         match closer {
             0 => key(&mut g, Key::Char('i')),
-            1 => g.handle(Event::Press(Button::Right)),
-            2 => click_bag(&mut g, crate::bag::close_rect),
-            _ => key(&mut g, Key::Escape),
+            _ => click_bag(&mut g, crate::bag::close_rect),
         }
         assert_eq!(g.screen(), Screen::Story, "closer {closer}");
         assert_eq!(line(&g), "two", "the story carried on");
@@ -1609,7 +1739,7 @@ fn a_script_inventory_survives_save_load_rollback_and_a_reload() {
     key(&mut g, Key::Space);
     assert_eq!(g.screen(), Screen::Inventory);
     g.quick_save();
-    key(&mut g, Key::Escape);
+    click_bag(&mut g, crate::bag::close_rect);
     assert_eq!(line(&g), "two");
     // loading puts the screen back
     g.quick_load();
@@ -1620,7 +1750,7 @@ fn a_script_inventory_survives_save_load_rollback_and_a_reload() {
     g.reload(&p).unwrap();
     assert_eq!(g.screen(), Screen::Inventory);
     // closing then going back lands on it again
-    key(&mut g, Key::Escape);
+    click_bag(&mut g, crate::bag::close_rect);
     key(&mut g, Key::Backspace);
     assert_eq!(g.screen(), Screen::Inventory);
     key(&mut g, Key::Char('i'));
@@ -1701,24 +1831,176 @@ fn the_keyboard_buys_the_focused_item_and_the_focus_stays_put() {
 }
 
 #[test]
-fn leaving_by_button_escape_or_right_click_continues_after_the_block() {
+fn leaving_a_shop_is_the_button_only() {
     let p = parse(SHOPPING).unwrap();
-    for leave in 0..3 {
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    click_cell(&mut g, 0);
+    click_bag(&mut g, crate::bag::close_rect);
+    assert_eq!(g.screen(), Screen::Story);
+    assert_eq!(line(&g), "Bye.");
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25), "what was bought stays bought");
+    key(&mut g, Key::Char('h'));
+    let entries = g.backlog.clone();
+    assert!(entries.iter().all(|e| matches!(e, quillstone_runtime::Logged::Line(_))), "{entries:?}");
+}
+
+#[test]
+fn backspace_leaves_a_shop_so_a_gamepad_can() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Shop);
+    key(&mut g, Key::Backspace);
+    assert_eq!(g.screen(), Screen::Story);
+    assert_eq!(line(&g), "Bye.");
+}
+
+#[test]
+fn escape_and_right_click_in_a_shop_open_settings_and_closing_them_returns_to_the_shop() {
+    let p = parse(SHOPPING).unwrap();
+    for how in 0..4 {
         let mut g = new_game(&p, instant());
         key(&mut g, Key::Space);
-        click_cell(&mut g, 0);
-        match leave {
-            0 => click_bag(&mut g, crate::bag::close_rect),
-            1 => key(&mut g, Key::Escape),
-            _ => g.handle(Event::Press(Button::Right)),
+        click_cell(&mut g, 0); // buy the key
+        key(&mut g, Key::Right);
+        let (page, focus) = (g.bag.page, g.bag.focus);
+        assert!(focus.is_some());
+        let open = |g: &mut Game| {
+            if how % 2 == 0 {
+                key(g, Key::Escape)
+            } else {
+                g.handle(Event::Press(Button::Right))
+            }
+        };
+        open(&mut g);
+        assert_eq!(g.screen(), Screen::Settings, "how {how}");
+        assert!(matches!(g.state().pending, Some(Cmd::ShowShop { .. })), "still waiting at the shop");
+        if how < 2 {
+            open(&mut g); // the same key closes Settings
+        } else {
+            click_at(&mut g, centre(crate::screens::button_rect(crate::screens::SettingsButton::Back, true)));
         }
-        assert_eq!(g.screen(), Screen::Story, "leave {leave}");
+        assert_eq!(g.screen(), Screen::Shop, "how {how}: back at the shop");
+        assert_eq!((g.bag.page, g.bag.focus), (page, focus));
+        assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25), "the purchase is kept");
+        assert!(drawn_texts(&g).contains(&"Owned".to_string()));
+        click_bag(&mut g, crate::bag::close_rect);
         assert_eq!(line(&g), "Bye.");
-        assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(25), "what was bought stays bought");
-        key(&mut g, Key::Char('h'));
-        let entries = g.backlog.clone();
-        assert!(entries.iter().all(|e| matches!(e, quillstone_runtime::Logged::Line(_))), "{entries:?}");
     }
+}
+
+#[test]
+fn the_story_keys_work_from_the_shop_and_a_script_inventory() {
+    let p = parse(SHOPPING).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    for (k, want) in [('h', Screen::Backlog), ('s', Screen::Save), ('l', Screen::Load)] {
+        key(&mut g, Key::Char(k));
+        assert_eq!(g.screen(), want);
+        key(&mut g, Key::Escape);
+        assert_eq!(g.screen(), Screen::Shop, "{k} closes back to the shop");
+    }
+    key(&mut g, Key::F5);
+    assert!(has_file(&g, "quick-1.save"), "F5 saves at the shop");
+    click_cell(&mut g, 0);
+    key(&mut g, Key::F9);
+    key(&mut g, Key::Char('y'));
+    assert_eq!(g.screen(), Screen::Shop);
+    assert_eq!(g.state().vars["gold"], quillstone_script::Value::Int(40), "F9 loaded the shop as saved");
+    let p = parse(SCRIPTED).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Inventory);
+    key(&mut g, Key::Char('h'));
+    key(&mut g, Key::Char('h'));
+    assert_eq!(g.screen(), Screen::Inventory);
+}
+
+#[test]
+fn the_inventory_overlay_still_closes_with_escape_and_right_click() {
+    let p = parse(BAG).unwrap();
+    for how in 0..2 {
+        let mut g = new_game(&p, instant());
+        key(&mut g, Key::Char('i'));
+        assert_eq!(g.screen(), Screen::Inventory);
+        if how == 0 {
+            key(&mut g, Key::Escape)
+        } else {
+            g.handle(Event::Press(Button::Right))
+        }
+        assert_eq!(g.screen(), Screen::Story);
+    }
+}
+
+#[test]
+fn a_reload_with_settings_open_at_a_shop_keeps_settings_and_shows_the_shop_after() {
+    let p = parse(SHOPPING).unwrap();
+    // the story is at a shop and Settings is open over it
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    click_cell(&mut g, 0);
+    key(&mut g, Key::Right);
+    let focus = g.bag.focus;
+    key(&mut g, Key::Escape);
+    g.settings.text_speed = 33.0; // an edit that must be flushed on close
+    g.reload(&p).unwrap();
+    assert_eq!(g.screen(), Screen::Settings, "reload leaves Settings open");
+    assert_eq!(g.bag.focus, focus);
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Shop, "the shop is back");
+    assert!(g.take_requests().contains(&Request::SaveSettings), "settings were flushed on close");
+    assert!(drawn_texts(&g).contains(&"Gold: 25".to_string()));
+    click_bag(&mut g, crate::bag::close_rect);
+    assert_eq!(line(&g), "Bye.");
+
+    // Settings opened at "Bye." of a script without the shop; the reload brings the shop in
+    let without = SHOPPING.replace("::shop{pay=gold into=bag}\n- key\n- lamp\n- map\n::\n", "");
+    let p2 = parse(&without).unwrap();
+    let mut g = new_game(&p2, instant());
+    key(&mut g, Key::Space); // "Bye."
+    key(&mut g, Key::Escape);
+    g.reload(&p).unwrap();
+    assert_eq!(g.screen(), Screen::Settings);
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Shop, "the shop appears when Settings closes");
+    // a reload that drops the shop while Settings is open: no shop afterwards
+    key(&mut g, Key::Escape);
+    g.reload(&p2).unwrap();
+    assert_eq!(g.screen(), Screen::Settings);
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
+fn item_icons_are_wanted_only_for_a_shop_or_inventory_coming_up() {
+    let mut src = String::from("---\ninventory: bag\nvars: { gold: 40, bag: [i0, i1] }\n---\n");
+    for i in 0..150 {
+        src.push_str(&format!("::item{{id=i{i} name=\"Item {i}\" price=5 icon=icons/i{i}.png}}\n"));
+    }
+    src.push_str("**A:** first\n");
+    for n in 0..60 {
+        src.push_str(&format!("**A:** filler {n}\n"));
+    }
+    src.push_str("::shop{pay=gold into=bag}\n- i7\n- i8\n::\n**A:** after\n::inventory\n");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(g.upcoming_images(), Vec::<&str>::new(), "the shop is further than the look-ahead: no icons at all");
+    for _ in 0..30 {
+        key(&mut g, Key::Space);
+    }
+    // the shop (and the inventory just after it) is within the 40-op window now: the
+    // shop's two items and the two owned ones, not the other 146
+    let wanted = g.upcoming_images();
+    assert_eq!(wanted, ["icons/i7.png", "icons/i8.png", "icons/i0.png", "icons/i1.png"].as_slice());
+    for _ in 0..31 {
+        key(&mut g, Key::Space);
+    }
+    assert_eq!(g.screen(), Screen::Shop);
+    click_cell(&mut g, 0); // buys i7
+    click_bag(&mut g, crate::bag::close_rect);
+    let wanted = g.upcoming_images();
+    assert!(wanted.len() <= 3 && wanted.contains(&"icons/i7.png") && wanted.contains(&"icons/i0.png"), "{wanted:?}");
 }
 
 #[test]
@@ -1757,7 +2039,7 @@ fn a_shop_survives_save_load_rollback_and_hot_reload() {
     assert_eq!(g.screen(), Screen::Shop);
     assert!(drawn_texts(&g).contains(&"Gold: 25".to_string()));
     // leaving, then rolling back, lands in the shop again with the purchase kept
-    key(&mut g, Key::Escape);
+    click_bag(&mut g, crate::bag::close_rect);
     assert_eq!(line(&g), "Bye.");
     g.handle(Event::Wheel(1.0));
     assert_eq!(g.screen(), Screen::Shop);
@@ -1811,7 +2093,7 @@ fn the_market_demo_can_be_played_through_the_screens() {
     assert_eq!(notice(&g).as_deref(), Some("Not enough Gold"));
     click_cell(&mut g, 0); // the key again: owned
     assert_eq!(notice(&g).as_deref(), Some("Already owned"));
-    key(&mut g, Key::Escape); // leave
+    click_bag(&mut g, crate::bag::close_rect); // leave
     assert_eq!(g.screen(), Screen::Story);
     key(&mut g, Key::Space); // "You have 7 gold left..." -> the script's own ::inventory
     assert_eq!(g.screen(), Screen::Inventory);
@@ -1827,4 +2109,217 @@ fn the_market_demo_can_be_played_through_the_screens() {
     key(&mut g, Key::Char('1')); // climb the tower: only offered with the key
     key(&mut g, Key::Space);
     assert!(line(&g).contains("worth the gold"));
+}
+
+// ---- ::flash, looping sounds ------------------------------------------------------------------
+
+/// The opacity of the white full-screen flash in the draw list, if one is drawn.
+fn flash_alpha(g: &Game) -> Option<f32> {
+    let screen = Rect::new(0.0, 0.0, quillstone_render::VIRTUAL.w, quillstone_render::VIRTUAL.h);
+    g.draw_list(&|_| None).iter().find_map(|d| match d {
+        Draw::Rect { rect, color } if *rect == screen && color[..3] == [1.0, 1.0, 1.0] => Some(color[3]),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_flash_fades_on_its_own_and_needs_ticks_while_it_does() {
+    let p = parse("::flash{time=1}\n**A:** one\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(flash_alpha(&g), Some(1.0));
+    assert!(g.needs_ticks(), "a fading flash must keep the frames coming");
+    g.tick(0.5, false);
+    assert!((flash_alpha(&g).unwrap() - 0.5).abs() < 1e-5);
+    assert_eq!(line(&g), "one", "it never blocks or advances the story");
+    g.tick(0.6, false);
+    assert_eq!(flash_alpha(&g), None);
+    assert!(!g.needs_ticks());
+}
+
+#[test]
+fn a_flash_freezes_under_menus_like_other_timers() {
+    let p = parse("::flash{time=1}\n**A:** one\n").unwrap();
+    let mut g = new_game(&p, instant());
+    g.tick(0.25, false);
+    key(&mut g, Key::Escape); // settings
+    assert_eq!(g.screen(), Screen::Settings);
+    for _ in 0..20 {
+        g.tick(1.0, false);
+    }
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story);
+    assert!((flash_alpha(&g).unwrap() - 0.75).abs() < 1e-5, "still where it was");
+}
+
+#[test]
+fn a_flash_is_not_replayed_by_rollback_and_skip_ends_it_at_once() {
+    let p = parse("**A:** one\n::flash{time=5}\n**A:** two\n::flash{time=5}\n**A:** three\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert!(flash_alpha(&g).is_some());
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "one");
+    assert_eq!(flash_alpha(&g), None, "going back doesn't flash again");
+
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    key(&mut g, Key::Tab);
+    run(&mut g, 1); // one step: the first flash starts and is cut short
+    assert!(g.skipping());
+    assert_eq!(flash_alpha(&g), None);
+    run(&mut g, 10);
+    assert_eq!(flash_alpha(&g), None, "and the second");
+}
+
+const RAIN: &str = "::sfx{src=rain.ogg loop volume=0.5}\n**A:** one\n::sfx{src=door.ogg}\n**A:** two\n**A:** three\n::sfx{stop=rain.ogg}\n**A:** four\n::choice\n- [Go](#go)\n::\n# go\n**A:** end\n";
+
+#[test]
+fn skipping_mutes_one_shots_but_loops_stay_in_step_with_the_story() {
+    let p = parse(RAIN).unwrap();
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    let start = g.take_audio();
+    assert!(start.iter().any(|a| matches!(a, Action::PlaySfxLoop { src, volume, .. } if src == "rain.ogg" && *volume == 0.5)));
+    key(&mut g, Key::Tab);
+    run(&mut g, 2);
+    // mid-way: the door is muted, the rain is still looping
+    let mid = g.take_audio();
+    assert!(!mid.iter().any(|a| matches!(a, Action::PlaySfx { .. })), "{mid:?}");
+    assert!(g.mixer.has_sfx_loops() && g.session.state().sfx_loops.len() == 1);
+    run(&mut g, 10); // on to the choice, past the stop
+    let end = g.take_audio();
+    assert!(end.iter().any(|a| matches!(a, Action::StopSfx { src: Some(s), .. } if s == "rain.ogg")), "{end:?}");
+    assert!(!g.mixer.has_sfx_loops() && g.session.state().sfx_loops.is_empty(), "audio and story agree");
+    // rolling back to before the stop restarts it exactly once
+    key(&mut g, Key::Backspace); // "four": the rain had already stopped
+    assert!(!g.mixer.has_sfx_loops());
+    key(&mut g, Key::Backspace); // "three"
+    let back = g.take_audio();
+    assert_eq!(back.iter().filter(|a| matches!(a, Action::PlaySfxLoop { .. })).count(), 1, "{back:?}");
+    assert!(g.mixer.has_sfx_loops());
+}
+
+#[test]
+fn a_loop_started_while_skipping_is_not_lost() {
+    let p = parse("**A:** one\n::sfx{src=rain.ogg loop}\n::sfx{src=door.ogg}\n**A:** two\n::choice\n- [Go](#go)\n::\n# go\n**A:** end\n").unwrap();
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    g.take_audio();
+    key(&mut g, Key::Tab);
+    run(&mut g, 10);
+    let audio = g.take_audio();
+    assert_eq!(audio.iter().filter(|a| matches!(a, Action::PlaySfxLoop { .. })).count(), 1, "{audio:?}");
+    assert!(!audio.iter().any(|a| matches!(a, Action::PlaySfx { .. })));
+    assert!(g.mixer.has_sfx_loops());
+    // and rolling back (a redraw) neither doubles nor drops it
+    key(&mut g, Key::Backspace);
+    assert!(g.take_audio().iter().all(|a| !matches!(a, Action::PlaySfxLoop { .. } | Action::StopSfx { .. } | Action::StopSfxLoop { .. })));
+}
+
+#[test]
+fn leaving_for_the_main_menu_ends_the_stories_loops() {
+    let p = parse("::sfx{src=rain.ogg loop}\n**A:** only\n").unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(g.mixer.has_sfx_loops());
+    g.take_audio();
+    key(&mut g, Key::Space); // the last line
+    key(&mut g, Key::Space); // the end: back to the menu
+    assert_eq!(g.screen(), Screen::MainMenu);
+    assert!(!g.mixer.has_sfx_loops());
+    assert!(g.take_audio().iter().any(|a| matches!(a, Action::StopSfx { src: None, .. })));
+}
+
+#[test]
+fn a_loop_the_backend_failed_to_start_is_tried_again_on_a_redraw() {
+    let p = parse("::sfx{src=rain.ogg loop volume=0.5}\n**A:** one\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(g.take_audio().iter().any(|a| matches!(a, Action::PlaySfxLoop { .. })));
+    key(&mut g, Key::Space);
+    assert!(g.take_audio().is_empty(), "nothing to do while the mixer thinks it plays");
+    g.loop_failed("rain.ogg"); // the file is missing, say
+    assert!(!g.mixer.has_sfx_loops());
+    key(&mut g, Key::Backspace); // a redraw lists the loop again
+    let audio = g.take_audio();
+    assert_eq!(audio.iter().filter(|a| matches!(a, Action::PlaySfxLoop { src, .. } if src == "rain.ogg")).count(), 1, "{audio:?}");
+}
+
+#[test]
+fn a_redraw_that_drops_a_loop_stops_only_the_loop() {
+    let p = parse("**A:** one\n::sfx{src=rain.ogg loop}\n::sfx{src=rain.ogg}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    g.take_audio();
+    key(&mut g, Key::Space);
+    g.take_audio();
+    key(&mut g, Key::Backspace); // before the loop started
+    let audio = g.take_audio();
+    assert!(audio.iter().any(|a| matches!(a, Action::StopSfxLoop { src, .. } if src == "rain.ogg")), "{audio:?}");
+    assert!(!audio.iter().any(|a| matches!(a, Action::StopSfx { .. })), "{audio:?}");
+}
+
+// ---- keyboard focus beats a resting mouse -------------------------------------------------------
+
+#[test]
+fn a_key_that_moves_the_focus_silences_the_mouse_hover_until_the_mouse_moves() {
+    let p = parse(BAG).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    assert!(drawn_texts(&g).contains(&"Burns for hours.".to_string()));
+    key(&mut g, Key::Right); // focus lands on the first item while the mouse rests on the second
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Opens the tower.".to_string()), "the description follows the keyboard: {texts:?}");
+    assert!(!texts.contains(&"Burns for hours.".to_string()), "{texts:?}");
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    assert!(drawn_texts(&g).contains(&"Burns for hours.".to_string()), "the mouse moved: it points again");
+}
+
+#[test]
+fn every_screen_with_hover_and_focus_lets_the_keyboard_win() {
+    let mouse = Some((300.0, 300.0));
+    // choices
+    let p = parse(CHOICE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.handle(Event::CursorMoved(mouse));
+    assert_eq!(g.pointer(), mouse);
+    key(&mut g, Key::Down);
+    assert_eq!(g.pointer(), None, "choices");
+    g.handle(Event::CursorMoved(mouse));
+    assert_eq!(g.pointer(), mouse);
+    // a key that moves no focus keeps the hover
+    key(&mut g, Key::Char('x'));
+    assert_eq!(g.pointer(), mouse);
+    // slots
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('s'));
+    g.handle(Event::CursorMoved(mouse));
+    key(&mut g, Key::Down);
+    assert_eq!(g.pointer(), None, "slots");
+    // settings
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Escape);
+    g.handle(Event::CursorMoved(mouse));
+    key(&mut g, Key::Down);
+    assert_eq!(g.pointer(), None, "settings");
+    // the main menu
+    let mut g = at_menu(&p);
+    g.handle(Event::CursorMoved(mouse));
+    key(&mut g, Key::Down);
+    assert_eq!(g.pointer(), None, "menu");
+    // extras
+    let p = parse("---\ngallery: [a.png, b.png]\n---\n**A:** hi\n").unwrap();
+    let mut g = at_menu(&p);
+    open_extras(&mut g);
+    g.handle(Event::CursorMoved(mouse));
+    key(&mut g, Key::Right);
+    assert_eq!(g.pointer(), None, "extras");
+}
+
+#[test]
+fn a_click_still_lands_where_the_mouse_is_after_the_keyboard_moved_the_focus() {
+    let p = parse(BAG).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    key(&mut g, Key::Right);
+    assert_eq!(g.pointer(), None);
+    assert!(g.cursor.is_some(), "the real position is kept for clicks");
 }

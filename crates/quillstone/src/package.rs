@@ -208,8 +208,11 @@ mod tests {
         std::fs::write(src.join("assets/icon.png"), "icon").unwrap();
         std::fs::write(src.join("assets/gem.png"), "gem").unwrap();
         std::fs::write(src.join("assets/panel.png"), "panel").unwrap();
-        std::fs::write(src.join("theme.txt"), "textbox_image = assets/box.png\ninventory_panel = assets/panel.png\n").unwrap();
-        let script = "---\ntitle: Tiny Tale\ntheme: theme.txt\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=gem icon=assets/gem.png price=1}\n# start\n::bg{src=assets/bg.png}\nHello.\n::hotspots\n- [Again](#start){rect=0,0,0.1,0.1 image=assets/icon.png}\n::\n";
+        std::fs::write(src.join("assets/rain.ogg"), "rain").unwrap();
+        std::fs::write(src.join("assets/f.ttf"), [0, 1, 0, 0]).unwrap();
+        std::fs::write(src.join("assets/fb.ttf"), [0, 1, 0, 0]).unwrap();
+        std::fs::write(src.join("theme.txt"), "textbox_image = assets/box.png\ninventory_panel = assets/panel.png\nfont = assets/f.ttf\nfont_bold = assets/fb.ttf\n").unwrap();
+        let script = "---\ntitle: Tiny Tale\ntheme: theme.txt\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=gem icon=assets/gem.png price=1}\n# start\n::bg{src=assets/bg.png}\n::sfx{src=assets/rain.ogg loop}\nHello.\n::hotspots\n- [Again](#start){rect=0,0,0.1,0.1 image=assets/icon.png}\n::\n";
         std::fs::write(src.join("tiny.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         for lib in ["avcodec-62.dll", "avfilter-11.dll", "avutil-60.dll"] {
@@ -229,7 +232,7 @@ mod tests {
 
         for f in ["Tiny Tale.exe", "avcodec-62.dll", "avutil-60.dll", "game/tiny.quill.md", "game/theme.txt",
                   "game/assets/bg.png", "game/assets/box.png", "game/assets/icon.png", "game/assets/gem.png",
-                  "game/assets/panel.png"] {
+                  "game/assets/panel.png", "game/assets/rain.ogg", "game/assets/f.ttf", "game/assets/fb.ttf"] {
             assert!(out.join(f).is_file(), "{f}");
         }
         assert!(!out.join("avfilter-11.dll").exists() && !out.join("game/assets/unused.png").exists());
