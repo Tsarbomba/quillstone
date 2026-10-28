@@ -276,6 +276,33 @@ mod tests {
     }
 
     #[test]
+    fn packages_every_layer_file_and_what_a_layer_pattern_can_build() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-layers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        let files = ["body_casual", "body_formal", "eyes_open", "mouth_smile", "mouth_open", "open", "closed", "eyes_unused", "hat_x"];
+        for f in files {
+            std::fs::write(src.join("a").join(format!("{f}.png")), "png").unwrap();
+        }
+        let script = "---\nvars: { mood: \"smile\" }\n---\n::anim{id=blink frames=\"a/open.png 3, a/closed.png 0.1\" loop}\n\
+            ::character{id=m layers=body,eyes,mouth layer_sprites=a/{layer}_{value}.png}\n\
+            ::show{m body=casual eyes=anim:blink mouth={mood}}\nHi.\n::show{m body=formal eyes=open}\nBye.\n";
+        std::fs::write(src.join("l.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
+        for f in ["body_casual", "body_formal", "eyes_open", "mouth_smile", "mouth_open", "open", "closed"] {
+            assert!(out.join("game/a").join(format!("{f}.png")).is_file(), "{f} ships");
+        }
+        for f in ["eyes_unused", "hat_x"] {
+            assert!(!out.join("game/a").join(format!("{f}.png")).exists(), "{f} does not");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn packages_every_file_a_picture_pattern_can_build_and_nothing_else() {
         let base = std::env::temp_dir().join(format!("quillstone-package-pattern-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

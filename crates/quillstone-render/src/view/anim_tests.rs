@@ -24,7 +24,7 @@ fn big(_: &str) -> Option<Size> {
 }
 
 fn show(id: &str, src: &str, x: f32, y: f32, scale: f32, fade: f32) -> Cmd {
-    Cmd::ShowSprite { id: id.into(), src: src.into(), x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, fade }
+    Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, fade }
 }
 
 fn bg(src: &str, fade: f32) -> Cmd {

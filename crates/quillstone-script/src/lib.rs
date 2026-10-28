@@ -11,10 +11,13 @@ pub mod markup;
 mod ops;
 mod parser;
 
+#[cfg(test)]
+mod layers_tests;
+
 pub use dynpath::{is_pattern, pattern_matches, pattern_vars, pieces, resolve, unsafe_reason, Piece, MAX_FRAGMENT, MAX_PATTERN_VARS, MISSING_PICTURE};
 pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value};
 pub use ops::{
-    is_inside, kind_from_path, anim_id, anim_src, bg_color, bg_color_src, Anim, AnimFrame, AssetKind, ANIM_FRAME_SECONDS, ANIM_PREFIX, AssignOp, Area, BinOp, Character, ChoiceOption, Cmp, Cond, Ease, Effect, Expr,
+    is_inside, kind_from_path, anim_id, anim_src, bg_color, bg_color_src, Anim, AnimFrame, AssetKind, ANIM_FRAME_SECONDS, ANIM_PREFIX, AssignOp, Area, BinOp, Character, ChoiceOption, Cmp, LAYER_NONE, MAX_LAYERS, Cond, Ease, Effect, Expr,
     Axis, Fit, Func, HudAnchor, HudElem, HudExpr, HudKind, Item, Op, Program, Replay, ShopEntry, Value, Vars, Wipe, BG_COLOR_PREFIX, MAX_CHOICE_TIME, MIN_CHOICE_TIME, DEFAULT_SEED, FUNCTIONS, INPUT_MAX_DEFAULT, INPUT_MAX_LIMIT, MAX_REPLAYS, ONCE, SEEN,
     roll, splitmix64,
 };

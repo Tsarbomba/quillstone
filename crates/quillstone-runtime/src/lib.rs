@@ -19,6 +19,8 @@ mod anim_tests;
 #[cfg(test)]
 mod dynpic_tests;
 #[cfg(test)]
+mod layers_tests;
+#[cfg(test)]
 mod hud_tests;
 #[cfg(test)]
 mod timed_tests;
@@ -51,9 +53,12 @@ pub enum Cmd {
     /// where its bottom edge is, as a fraction of the screen height (1 is the
     /// bottom of the screen); `z` orders sprites (higher is in front). `flip`
     /// mirrors the picture; `xscale` and `yscale` stretch it along one axis (on top of `scale`).
+    /// A layered sprite has an empty `src` and every layer, back to front, as (layer id,
+    /// picture): a file, `anim:<id>`, or empty for a hidden layer. Plain sprites have none.
     ShowSprite {
         id: String,
         src: String,
+        layers: Vec<(String, String)>,
         x: f32,
         y: f32,
         z: i32,
@@ -215,6 +220,9 @@ pub fn finish_input(raw: &str, default: Option<&str>, max: usize) -> Option<Stri
 pub struct SpriteState {
     pub id: String,
     pub src: String,
+    /// Layers of a layered sprite (`src` is then empty): (layer id, picture) in the
+    /// character's layer order; an empty picture is a hidden layer. Empty for a plain sprite.
+    pub layers: Vec<(String, String)>,
     pub x: f32,
     /// Where the bottom edge is, as a fraction of the screen height.
     pub y: f32,
@@ -393,6 +401,7 @@ impl State {
             out.push(Cmd::ShowSprite {
                 id: s.id.clone(),
                 src: s.src.clone(),
+                layers: s.layers.clone(),
                 x: s.x,
                 y: s.y,
                 z: s.z,
@@ -675,6 +684,42 @@ fn picture_path(src: &str, vars: &Vars, out: &mut Vec<Cmd>) -> String {
     }
 }
 
+/// The layers of a layered sprite after a `::show` that sets `given` of them (see [`Op::Show`]): every
+/// layer of the character in its order, the given ones resolved, the rest as the sprite on stage has them.
+/// A layer with no value (the sprite is new, or was shown as a plain pose) stays hidden, with a warning.
+fn merge_layers(
+    program: &Program,
+    id: &str,
+    given: &[(String, String)],
+    before: Option<&SpriteState>,
+    vars: &Vars,
+    out: &mut Vec<Cmd>,
+) -> Vec<(String, String)> {
+    let Some(character) = program.characters.get(id) else {
+        return given.iter().map(|(l, p)| (l.clone(), picture_path(p, vars, out))).collect();
+    };
+    let mut merged = Vec::with_capacity(character.layers.len());
+    let mut missing = Vec::new();
+    for layer in &character.layers {
+        let picture = match given.iter().find(|(l, _)| l == layer) {
+            Some((_, p)) => picture_path(p, vars, out),
+            None => match before.and_then(|b| b.layers.iter().find(|(l, _)| l == layer)) {
+                Some((_, p)) => p.clone(),
+                None => {
+                    missing.push(layer.as_str());
+                    String::new()
+                }
+            },
+        };
+        merged.push((layer.clone(), picture));
+    }
+    if !missing.is_empty() {
+        let message = format!("`{id}` was shown without a value for the layer(s) {}: they stay hidden.", missing.join(", "));
+        out.push(Cmd::Warning { message });
+    }
+    merged
+}
+
 /// Advance the script. Call once with `None` to start, then with the player's input.
 ///
 /// Input that doesn't match what the script is waiting for is ignored and returns
@@ -843,10 +888,11 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Show { id, src, at, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
+            Op::Show { id, src, layers: layers_given, at, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
                 let (y, scale) = (*y_given, *scale_given);
                 let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
+                let layers = if src.is_empty() { merge_layers(program, id, layers_given, existing.map(|i| &state.sprites[i]), &state.vars, &mut out) } else { Vec::new() };
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
                 let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
@@ -859,12 +905,12 @@ pub(crate) fn step_traced(
                 let sets_values = at.is_some() || y_given.is_some() || scale_given.is_some() || xscale_given.is_some() || yscale_given.is_some();
                 let old_loop = existing.and_then(|i| state.sprites[i].looped);
                 let looped = if sets_values { None } else { old_loop };
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale, looped };
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, looped };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale, fade: *fade });
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), layers, x, y, z, scale, flip, xscale, yscale, fade: *fade });
                 if old_loop.is_some() && looped.is_none() {
                     // The view would keep a loop whose resting values did not change: end it.
                     out.push(Cmd::MoveSprite { id: id.clone(), x, y, scale, flip, xscale, yscale, time: 0.0, ease: Ease::Linear });
@@ -1577,7 +1623,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -1586,7 +1632,7 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
         );
         assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, y: 1.0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 1.0, ease: Ease::InOut });
         assert_eq!(game.state().sprites.len(), 1);

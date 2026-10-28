@@ -146,6 +146,10 @@ fn check(path: &Path) -> Result<(), String> {
         missing += usize::from(error);
         eprintln!("{msg}");
     }
+    for (error, msg) in layer_size_findings(&program, path, root) {
+        missing += usize::from(error);
+        eprintln!("{msg}");
+    }
     for (pc, text) in program.unknown_items() {
         eprintln!(
             "{}:{}: warning: \"{text}\" is not a declared `::item` (it will show in the inventory under that name, with no picture; a typo?)",
@@ -339,6 +343,53 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
                     format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
                 )),
                 Ok(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// The pictures of a character's layers must all have the canvas size of the first one (they are drawn
+/// stacked in the same place and size): one warning for each file that differs. Files that can't be read
+/// are reported elsewhere. `(is an error, message)`, like [`picture_findings`].
+fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for character in program.characters.values().filter(|c| !c.layers.is_empty()) {
+        // (line, file) in script order, each file once.
+        let mut files: Vec<(usize, String)> = Vec::new();
+        for (pc, op) in program.ops.iter().enumerate() {
+            let Op::Show { id, layers, .. } = op else { continue };
+            if *id != character.id {
+                continue;
+            }
+            for (_, picture) in layers {
+                let named: Vec<String> = match quillstone_script::anim_id(picture).and_then(|a| program.anims.get(a)) {
+                    Some(anim) => anim.frames.iter().map(|f| f.file.clone()).collect(),
+                    None if picture.is_empty() || quillstone_script::anim_id(picture).is_some() => Vec::new(),
+                    None if quillstone_script::is_pattern(picture) => pattern::expand(root, picture),
+                    None => vec![picture.clone()],
+                };
+                for file in named {
+                    if !files.iter().any(|(_, f)| *f == file) {
+                        files.push((program.lines[pc], file));
+                    }
+                }
+            }
+        }
+        let mut canvas: Option<(String, u32, u32)> = None;
+        for (line, file) in files {
+            let Ok((w, h)) = picture::read_picture(&root.join(&file)) else { continue };
+            match &canvas {
+                None => canvas = Some((file, w, h)),
+                Some((first, fw, fh)) if (*fw, *fh) != (w, h) => out.push((
+                    false,
+                    format!(
+                        "{}:{line}: warning: layer picture `{file}` is {w}x{h} but `{first}` is {fw}x{fh}: the layers of `{}` are drawn stacked in the same place and size, so they should be the same size",
+                        script.display(),
+                        character.id
+                    ),
+                )),
+                Some(_) => {}
             }
         }
     }
@@ -793,7 +844,14 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::Say { speaker: None, text, .. } => println!("\n  {}", plain(text)),
             Cmd::ShowImage { src, alt } => println!("[image: {src}] {alt}"),
             Cmd::SetBackground { src, .. } => println!("[background: {src}]"),
-            Cmd::ShowSprite { id, src, x, y, .. } => println!("[show {id}: {src} at {:.0}%,{:.0}%]", x * 100.0, y * 100.0),
+            Cmd::ShowSprite { id, src, layers, x, y, .. } => {
+                let what = if layers.is_empty() {
+                    src.clone()
+                } else {
+                    layers.iter().map(|(l, p)| format!("{l}={}", if p.is_empty() { "none" } else { p })).collect::<Vec<_>>().join(" ")
+                };
+                println!("[show {id}: {what} at {:.0}%,{:.0}%]", x * 100.0, y * 100.0)
+            }
             Cmd::HideSprite { id, .. } => println!("[hide {id}]"),
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::LoopSprite { id, x, y, scale, .. } => println!("[loop {id} between here and {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
@@ -1258,6 +1316,50 @@ mod tests {
             check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{p}.png", &mut seen);
             assert!(check_pattern(&dir.join("s.quill.md"), dir, 5, "assets/places/{q}.png", &mut seen).is_empty());
         });
+    }
+
+    const LAYERS: &str = "---\nvars: { mood: \"smile\" }\n---\n::anim{id=blink frames=\"a/open.png 3, a/closed.png 0.1\" loop}\n\
+        ::character{id=mika layers=body,eyes,mouth layer_sprites=a/{layer}_{value}.png}\n\
+        ::show{mika body=casual eyes=anim:blink mouth={mood}}\nHi.\n::show{mika eyes=none}\nBye.\n";
+
+    #[test]
+    fn check_looks_at_every_layer_file_and_the_files_a_layer_pattern_can_build() {
+        let png = picture::fake_png(10, 20);
+        let all: &[(&str, &[u8])] =
+            &[("a/body_casual.png", &png), ("a/open.png", &png), ("a/closed.png", &png), ("a/mouth_smile.png", &png), ("a/mouth_open.png", &png)];
+        assert!(checked(LAYERS, all).is_ok());
+        // a missing literal layer file, and a layer pattern that builds nothing
+        let e = checked(LAYERS, &all[1..]).unwrap_err();
+        assert!(e.contains("1 problem"), "{e}");
+        let e = checked(LAYERS, &all[..3]).unwrap_err();
+        assert!(e.contains("1 problem"), "{e}");
+        // a file a pattern builds that is not a picture is an error too
+        let mut bad = all.to_vec();
+        bad[4] = ("a/mouth_open.png", b"not a picture");
+        assert!(checked(LAYERS, &bad).is_err());
+        // a layer file that is a video is not a picture: the character's template must end in a picture type
+        assert!(parse("::character{id=m layers=a layer_sprites=x/{layer}_{value}.webm}\n").is_err());
+    }
+
+    #[test]
+    fn layers_of_different_sizes_are_a_warning_not_an_error() {
+        let (small, big) = (picture::fake_png(10, 20), picture::fake_png(40, 80));
+        let found = |files: &[(&str, &[u8])]| in_dir(files, |dir| layer_size_findings(&parse(LAYERS).unwrap(), &dir.join("s.quill.md"), dir));
+        let same: &[(&str, &[u8])] =
+            &[("a/body_casual.png", &small), ("a/open.png", &small), ("a/closed.png", &small), ("a/mouth_smile.png", &small), ("a/mouth_open.png", &small)];
+        assert!(found(same).is_empty());
+        // one animation frame and one file a pattern builds differ from the first picture
+        let mixed: &[(&str, &[u8])] =
+            &[("a/body_casual.png", &small), ("a/open.png", &small), ("a/closed.png", &big), ("a/mouth_smile.png", &small), ("a/mouth_open.png", &big)];
+        let w = found(mixed);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w.iter().all(|(error, _)| !error), "warnings only");
+        assert!(w[0].1.contains("a/closed.png") && w[0].1.contains("40x80") && w[0].1.contains("a/body_casual.png"), "{}", w[0].1);
+        assert!(w.iter().any(|(_, m)| m.contains("a/mouth_open.png")), "{w:?}");
+        // other characters' pictures are not compared with these
+        let p = parse("::character{id=a layers=x layer_sprites=q/{layer}_{value}.png}\n::character{id=b layers=x layer_sprites=r/{layer}_{value}.png}\n::show{a x=1}\n::show{b x=1}\n").unwrap();
+        let files: &[(&str, &[u8])] = &[("q/x_1.png", &small), ("r/x_1.png", &big)];
+        assert!(in_dir(files, |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir)).is_empty());
     }
 
     #[test]

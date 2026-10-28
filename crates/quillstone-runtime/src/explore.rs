@@ -192,6 +192,7 @@ impl Explorer<'_> {
             let at = Cell::new(from.pc);
             let mut next_roll: Option<(i64, i64, usize)> = None;
             let mut asked = 0;
+            let cmds;
             {
                 let mut draw = |lo: i64, hi: i64| {
                     let k = asked;
@@ -208,7 +209,14 @@ impl Explorer<'_> {
                     trace.push(pc);
                     at.set(pc);
                 };
-                step_traced(&mut state, self.program, input.clone(), &mut ran, Some(&mut draw));
+                cmds = step_traced(&mut state, self.program, input.clone(), &mut ran, Some(&mut draw));
+            }
+            // A picture that can't be shown (a variable that isn't a safe name, a layer left empty)
+            // is a warning the player would see as a notice.
+            for cmd in &cmds {
+                if let Cmd::Warning { message } = cmd {
+                    self.warn(at.get(), "picture", message, None);
+                }
             }
             let Some((lo, hi, pc)) = next_roll else {
                 done.push((state, trace));
@@ -471,8 +479,13 @@ impl Explorer<'_> {
                 }
                 Op::Input { prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 // A picture named from variables (`assets/{place}.png`).
-                Op::Bg { src, .. } | Op::Show { src, .. } | Op::Image { src, .. } => {
+                Op::Bg { src, .. } | Op::Image { src, .. } => {
                     read.extend(quillstone_script::pattern_vars(src).into_iter().map(|n| (at, n, false)));
+                }
+                // ... also in the pictures of a layered sprite's layers.
+                Op::Show { src, layers, .. } => {
+                    let names = std::iter::once(src).chain(layers.iter().map(|(_, p)| p));
+                    read.extend(names.flat_map(|p| quillstone_script::pattern_vars(p)).map(|n| (at, n, false)));
                 }
                 Op::Shop { pay, into, stock } => {
                     set.insert(into);

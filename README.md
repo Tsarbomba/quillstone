@@ -4,7 +4,7 @@ A lightweight, fast visual novel engine in Rust: one that
 keeps what a visual novel needs and leaves out the bloat. Scripts are plain
 markdown, and seamless video playback is a first-class feature.
 
-**What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, frame animations (blinking, talking) and looping moves, music, sound effects,
+**What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, layered sprites (swap an expression or outfit layer by layer), frame animations (blinking, talking) and looping moves, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
 conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
 rollback, history, skip and auto-forward, save/load slots, a gallery, music
@@ -205,7 +205,7 @@ variable as an inventory in a shop; `examples/market.quill.md` and `examples/mar
 show items, the built-in inventory and shop screens, and a theme that restyles them;
 `examples/staging.quill.md` shows sprite height and layering, text sizes and `{nw}`;
 `examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
-`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables).
+`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer).
 
 ## Layout
 

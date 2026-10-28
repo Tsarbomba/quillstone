@@ -445,6 +445,11 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.xscale,
             sp.yscale
         ));
+        // The layers of a layered sprite (its `src` is empty) are records of their own; a save
+        // without them (every save from before layers) loads as plain sprites.
+        for (layer, picture) in &sp.layers {
+            w(format!("layer {} {} {}", q(&sp.id), q(layer), q(picture)));
+        }
         // A looping move is a record of its own, so older saves and readers are unaffected.
         if let Some(l) = &sp.looped {
             w(format!("loop {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name()));
@@ -611,6 +616,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 None => path(i),
             }
         };
+        // A layer picture: nothing (hidden), or a picture as above.
+        let layer_pic = |i: usize| -> Result<String, String> { if arg(i)?.is_empty() { Ok(String::new()) } else { pic(i) } };
         // After a script edit, a picture that is an animation no longer declared is dropped.
         let gone = |i: usize| edited && t.get(i).and_then(|p| p.strip_prefix(ANIM_PREFIX)).is_some_and(|id| !program.anims.contains_key(id));
         match arg(0)? {
@@ -667,9 +674,11 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 }
                 s.set_hud(elem);
             }
+            // An empty picture is a layered sprite (its `layer` records follow).
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
-                src: pic(2)?,
+                src: layer_pic(2)?,
+                layers: Vec::new(),
                 x: sane(f(3)?, 0.0, 1.0, 0.5),
                 scale: sane(f(4)?, 0.05, 10.0, 1.0),
                 y: if t.len() > 5 { sane(f(5)?, -0.5, 1.5, 1.0) } else { 1.0 },
@@ -680,6 +689,33 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 yscale: if t.len() > 9 { sane(f(9)?, 0.05, 10.0, 1.0) } else { 1.0 },
                 looped: None,
             }),
+            "layer" => {
+                let (id, layer) = (arg(1)?, arg(2)?);
+                // Saves are shared between players: only layers the character declares, once each,
+                // on a sprite that is on stage (after a script edit, one that no longer exists is dropped).
+                let declared = program.characters.get(id).and_then(|c| c.layers.iter().position(|l| l == layer));
+                let Some(sprite) = s.sprites.iter_mut().find(|sp| sp.id == id) else {
+                    if edited {
+                        continue;
+                    }
+                    return Err(format!("line {n}: a `layer` for the sprite `{id}`, which is not on stage"));
+                };
+                let Some(rank) = declared else {
+                    if edited {
+                        continue;
+                    }
+                    return Err(format!("line {n}: `{id}` has no layer `{layer}`"));
+                };
+                let picture = if gone(3) { String::new() } else { layer_pic(3)? };
+                let order = |l: &str| program.characters.get(id).and_then(|c| c.layers.iter().position(|x| x == l));
+                match sprite.layers.iter_mut().find(|(l, _)| l == layer) {
+                    Some(old) => old.1 = picture,
+                    None => {
+                        let at = sprite.layers.iter().position(|(l, _)| order(l).is_some_and(|o| o > rank)).unwrap_or(sprite.layers.len());
+                        sprite.layers.insert(at, (layer.to_string(), picture));
+                    }
+                }
+            }
             "loop" => {
                 let id = arg(1)?;
                 let Some(sprite) = s.sprites.iter_mut().find(|sp| sp.id == id) else {

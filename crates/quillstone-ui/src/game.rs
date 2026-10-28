@@ -1244,6 +1244,8 @@ mod input_tests;
 #[cfg(test)]
 mod anim_tests;
 #[cfg(test)]
+mod layers_tests;
+#[cfg(test)]
 mod dynpic_tests;
 #[cfg(test)]
 mod hud_tests;

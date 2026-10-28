@@ -384,6 +384,24 @@ pub struct Character {
     pub color: Option<[f32; 3]>,
     /// Sprite path template; `{pose}` is replaced by the pose name.
     pub sprites: Option<String>,
+    /// Layer ids of a layered sprite, back to front (empty: no layers).
+    pub layers: Vec<String>,
+    /// Layer picture template: `{layer}` is a layer id, `{value}` the value shown on it.
+    pub layer_sprites: Option<String>,
+}
+
+/// The most layers one character may have.
+pub const MAX_LAYERS: usize = 8;
+
+/// The layer value that hides a layer (`::show{mika eyes=none}`).
+pub const LAYER_NONE: &str = "none";
+
+impl Character {
+    /// The picture of layer `layer` showing `value` (a pattern when `value` has `{variable}` parts).
+    pub fn layer_path(&self, layer: &str, value: &str) -> Option<String> {
+        let template = self.layer_sprites.as_deref()?;
+        Some(template.replace("{layer}", layer).replace("{value}", value))
+    }
 }
 
 /// One picture of a frame animation and how long it stays up.
@@ -575,11 +593,15 @@ impl Program {
         let mut out: Vec<&str> = Vec::new();
         for at in self.ops_ahead(pc, steps) {
             let op = &self.ops[at];
-            let anim = match op {
-                Op::Bg { src, .. } | Op::Show { src, .. } => anim_id(src).and_then(|id| self.anims.get(id)),
-                _ => None,
+            let anims: Vec<&Anim> = match op {
+                Op::Bg { src, .. } => anim_id(src).and_then(|id| self.anims.get(id)).into_iter().collect(),
+                Op::Show { src, layers, .. } => std::iter::once(src.as_str())
+                    .chain(layers.iter().map(|(_, l)| l.as_str()))
+                    .filter_map(|s| anim_id(s).and_then(|id| self.anims.get(id)))
+                    .collect(),
+                _ => Vec::new(),
             };
-            let frames = anim.into_iter().flat_map(|a| a.frames.iter().map(|f| (AssetKind::Image, f.file.as_str())));
+            let frames = anims.into_iter().flat_map(|a| a.frames.iter().map(|f| (AssetKind::Image, f.file.as_str())));
             for (kind, src) in op.all_assets().into_iter().chain(frames) {
                 // A name with `{variable}` parts is built when it is shown: nothing to load ahead.
                 if kind == AssetKind::Image && !crate::is_pattern(src) && !out.contains(&src) {
@@ -994,9 +1016,14 @@ pub enum Op {
     /// `flip` mirrors the picture left to right; `xscale` and `yscale` (0.05 to 10)
     /// stretch it along one axis, on top of `scale`. All three keep the sprite's
     /// current value when `None` (and are off / 1 for a new sprite).
+    /// A layered sprite (`::show{mika body=casual eyes=open}`) has an empty `src` and
+    /// the layers the command sets: (layer id, picture) in the character's layer order,
+    /// where the picture is a file or pattern, `anim:<id>`, or empty to hide the layer.
+    /// Layers the command leaves out keep their value.
     Show {
         id: String,
         src: String,
+        layers: Vec<(String, String)>,
         at: Option<f32>,
         y: Option<f32>,
         z: Option<i32>,
@@ -1120,6 +1147,12 @@ impl Op {
                 let intro = intro.iter().map(|i| (AssetKind::Audio, i.as_str()));
                 std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()
             }
+            // Every layer file the command names (the ones it leaves out come from other commands).
+            Op::Show { layers, .. } if !layers.is_empty() => layers
+                .iter()
+                .filter(|(_, l)| !l.is_empty() && anim_id(l).is_none())
+                .map(|(_, l)| (AssetKind::Image, l.as_str()))
+                .collect(),
             _ => self.asset().into_iter().collect(),
         }
     }
@@ -1131,7 +1164,7 @@ impl Op {
             Op::Bg { src, .. } if bg_color(src).is_some() || anim_id(src).is_some() => None,
             Op::Bg { src, .. } => Some((kind_from_path(src), src)),
             Op::Hud { elem, .. } => elem.image().map(|i| (AssetKind::Image, i)),
-            Op::Show { src, .. } if anim_id(src).is_some() => None,
+            Op::Show { src, .. } if src.is_empty() || anim_id(src).is_some() => None,
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
             Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {
                 Some((AssetKind::Audio, src))
@@ -1267,7 +1300,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

@@ -276,6 +276,8 @@ rest were not tried.
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
+| `::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}` | A character drawn from **layers** (see "Layered sprites" below): `layers` lists the layer ids back to front (at most 8), `layer_sprites` is where each layer's pictures are (`{layer}` is the layer id, `{value}` what is shown on it). A character may have `sprites=` poses, layers, or both. |
+| `::show{mika body=casual eyes=open mouth=smile at=left}` | Show or change a **layered** sprite: each layer id is an attribute whose value says what that layer shows (`eyes=none` hides it, `eyes=anim:blink` uses an animation). See "Layered sprites" below. |
 | `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
 | `::show{mika happy y=0.9 z=2}` | `y`: where the sprite's **bottom edge** is, as a fraction of the screen height (a number or `N%`, from -0.5 to 1.5; default 1, the bottom of the screen). Less than 1 lifts the sprite, more than 1 sinks it below the screen edge; the screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps standing on its `y` line and stays centred on `at`. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
@@ -328,7 +330,8 @@ vars: { place: "rooftop", mood: "happy" }
 **Where it works:** the pose of `::show` (`::show{mika {mood}}`, also joined to other
 letters, like `a_{mood}`: it goes through the character's `sprites=` pattern exactly like
 a written pose), `src=` of `::show` (which then needs a sprite name, `::show{mika
-src="x/{mood}.png"}`), `src=` of `::bg`, and inline images. Sounds, voices, videos, HUD
+src="x/{mood}.png"}`), `src=` of `::bg`, inline images, and the value of a layer of a
+layered sprite (`::show{mika eyes={mood}}`, see "Layered sprites"). Sounds, voices, videos, HUD
 pictures, item icons, animation frames and the gallery take plain file names only (a brace
 there is an error), and `anim=` and `color=` take no variables.
 
@@ -415,6 +418,63 @@ loop of well-sized pictures is best. `quillstone check` reports a frame that is 
 or is not a picture as an error, and warns about an animation of more than 64 frames or a
 frame bigger than 2048 pixels on a side. `quillstone package` includes every frame.
 Frames of an animation are not crossfaded into each other.
+
+## Layered sprites
+
+A character can be drawn from several pictures stacked on top of each other, such as a body,
+a pair of eyes and a mouth, so that an expression or an outfit changes without a picture for
+every combination. Declare the layers on the character, back to front:
+
+```
+::anim{id=blink frames="assets/mika/eyes_open.png 3, assets/mika/eyes_closed.png 0.12" loop}
+::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}
+
+::show{mika body=casual eyes=open mouth=smile at=left fade=0.4}
+::show{mika mouth=open}
+::show{mika eyes=anim:blink body=formal}
+::show{mika eyes=none}
+```
+
+- `layers` is a comma-separated list of layer ids (letters, digits and `_`, at most 8, no
+  repeats; not `none`, and not the name of a `::show` attribute such as `at` or `scale`).
+  `layer_sprites` must contain both `{layer}` and `{value}` and end in a picture type
+  (`.png`, `.jpg`, `.jpeg` or `.webp`). With `layer_sprites=assets/mika/{layer}_{value}.png`,
+  `eyes=open` shows `assets/mika/eyes_open.png`.
+- A `::show` names the layers it changes. **A layer you leave out keeps what it showed**, and so
+  do the sprite's position, size and everything else. The first `::show` of a character with
+  layers must give a value for every layer (the script is refused otherwise, and the error lists
+  the missing ones; use `none` for a layer that starts empty). A bare `::show{mika at=right}` on a
+  character that has only layers just moves the sprite.
+- `eyes=none` hides that layer. `eyes=anim:blink` shows the frame animation `blink` (declared
+  above, see "Frame animations") on that layer, so blinking is just an animated eyes layer; its
+  clock runs on while other layers change.
+- A value may hold `{variable}` parts like a pose does (`mouth={feeling}`, `body=outfit_{day}`);
+  the same rules apply as in "Picture names from variables": the variable must be a text variable, and
+  a value that is not a safe file-name fragment shows nothing and gives a notice.
+- All the layers of a character should be the **same size** (the same canvas): they are drawn
+  stacked, each at the same place, size and mirroring, so one layer is not placed on its own.
+  `quillstone check` warns about a layer picture whose size differs from the first.
+- Everything that works on a sprite works on the whole stack: `at`, `y`, `z`, `scale`, `flip`,
+  `xscale`, `yscale`, `fade`, `::move`, `::move{... loop}`, `::hide`, the camera and shake.
+- **Changing a layer crossfades that layer only**, over the `fade` of the `::show` (none by
+  default); the other layers do not flicker. A sprite's own `fade` fades the whole stack in or out.
+  The layers are fading as separate pictures, so a sprite that is halfway through a fade is a little
+  more see-through where layers overlap than a single picture would be.
+- **Poses and layers.** A character with only layers can't be shown with a pose
+  (`::show{mika happy}` is an error). A character with both `sprites=` and layers can be shown either
+  way: a pose replaces the whole sprite (and drops its layers); layers on a sprite that was shown
+  as a pose replace it, so all of them need a value. When a sprite is hidden and shown again, the
+  layers start over: one with no value stays hidden and the game shows a notice
+  (`quillstone test` reports it).
+- Layers are part of the scene: rollback, saves and hot reload restore them. A save names each
+  layer's value, and is checked like a sprite's picture (a path outside the game folder, an
+  unknown animation or a layer the character does not declare is refused; after a script
+  edit that removed a layer or an animation, the load drops it). Saves from before layers existed
+  load as they were.
+
+`quillstone check` looks at every layer picture the script can show, including every file a
+`{variable}` value can build, and `quillstone package` ships them all. A demo is in
+`examples/layers.quill.md`.
 
 ## Looping moves
 
@@ -959,7 +1019,7 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch, mirroring, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

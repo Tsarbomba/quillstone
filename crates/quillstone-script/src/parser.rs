@@ -88,6 +88,8 @@ struct Parser {
     replay_decls: Vec<(usize, String, String)>,
     /// Ops a command adds right after its own (the fade back in of `::bg{through}`).
     trailing: Vec<Op>,
+    /// Characters an earlier `::show` gave layers to (a later one may then leave layers out).
+    layered_seen: std::collections::BTreeSet<String>,
 }
 
 /// A jump target that must be filled in once all labels are known.
@@ -1299,9 +1301,33 @@ impl Parser {
         let id_attr = a.value("id");
         let anim_attr = a.value("anim");
         let is_anim = anim_attr.is_some();
+        // A character with layers: its layer attributes (`eyes=open`) are taken first, so
+        // an error further down never reports them as unknown attributes.
+        let layered_char = id_attr
+            .as_ref()
+            .or(bare.first())
+            .and_then(|who| self.program.characters.get(&who.to_lowercase()))
+            .filter(|c| !c.layers.is_empty())
+            .cloned();
+        let given: Vec<(String, String)> = match &layered_char {
+            Some(c) => c.layers.iter().filter_map(|l| Some((l.clone(), a.value(l)?))).collect(),
+            None => Vec::new(),
+        };
         if anim_attr.is_some() && src_attr.is_some() {
             self.err(line, "`::show` takes `src=` (a picture) or `anim=` (an animation), not both");
             return None;
+        }
+        if let (Some(c), false) = (&layered_char, given.is_empty()) {
+            if src_attr.is_some() || anim_attr.is_some() {
+                self.err(line, format!("`::show` can't mix layers ({}) with `src=` or `anim=`", c.layers.join(", ")));
+                return None;
+            }
+            if bare.len() > 1 {
+                let msg = format!("`::show{{{} {}}}`: a pose and layers can't be set together (a pose replaces the whole sprite)", c.id, bare[1]);
+                self.err(line, msg);
+                return None;
+            }
+            return self.show_layers(line, a, c, given, flip);
         }
 
         self.extra_words(line, "show", &bare, if src_attr.is_some() || anim_attr.is_some() { 1 } else { 2 })?;
@@ -1334,8 +1360,21 @@ impl Parser {
                     self.err(line, format!("unknown character `{who}` (declare it first with `::character`)"));
                     return None;
                 };
+                if character.sprites.is_none() && !character.layers.is_empty() && bare.len() == 1 {
+                    // Layers only: with no layer named, the show changes only where the sprite stands.
+                    return self.show_layers(line, a, &character, Vec::new(), flip);
+                }
                 let Some(template) = character.sprites else {
-                    self.err(line, format!("character `{who}` has no `sprites=...` template"));
+                    let msg = if character.layers.is_empty() {
+                        format!("character `{who}` has no `sprites=...` template")
+                    } else {
+                        format!(
+                            "character `{who}` has layers ({}), not poses: set them like `::show{{{who} {}=...}}`",
+                            character.layers.join(", "),
+                            character.layers[0]
+                        )
+                    };
+                    self.err(line, msg);
                     return None;
                 };
                 (character.id, template.replace("{pose}", &pose))
@@ -1348,6 +1387,11 @@ impl Parser {
                 return None;
             }
         }
+        self.show_rest(line, a, id, src, Vec::new(), flip)
+    }
+
+    /// The position, size and fade attributes of a `::show`, shared by pose and layered sprites.
+    fn show_rest(&mut self, line: usize, a: &mut Attrs, id: String, src: String, layers: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
         let at = match a.value("at") {
             None => None,
             Some(v) => match parse_position(&v) {
@@ -1373,7 +1417,44 @@ impl Parser {
         let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
         let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
         let fade = self.fade(line, a)?;
-        Some((Op::Show { id, src, at, y, z, scale, flip, xscale, yscale, fade }, None))
+        Some((Op::Show { id, src, layers, at, y, z, scale, flip, xscale, yscale, fade }, None))
+    }
+
+    /// `::show{mika body=casual eyes=anim:blink mouth=none at=left}`: set layers of a layered sprite.
+    fn show_layers(&mut self, line: usize, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
+        let mut layers = Vec::new();
+        for (layer, value) in &given {
+            let picture = if value == LAYER_NONE {
+                String::new()
+            } else if let Some(id) = value.strip_prefix(ANIM_PREFIX) {
+                self.anim_ref(line, id)?
+            } else {
+                let path = c.layer_path(layer, value).unwrap_or_default();
+                if let Err(m) = self.picture_path(layer, &path) {
+                    self.err(line, m);
+                    return None;
+                }
+                path
+            };
+            layers.push((layer.clone(), picture));
+        }
+        // The first layered show of a character has to name every layer: after that the
+        // layers keep their values (a sprite hidden in between starts over at run time).
+        if !self.layered_seen.contains(&c.id) {
+            let missing: Vec<&str> = c.layers.iter().filter(|l| !given.iter().any(|(g, _)| g == *l)).map(String::as_str).collect();
+            if !missing.is_empty() {
+                let msg = format!(
+                    "the first `::show` of `{}` with layers must set every layer; missing: {} (use `{}=none` to leave one empty)",
+                    c.id,
+                    missing.join(", "),
+                    missing[0]
+                );
+                self.err(line, msg);
+                return None;
+            }
+        }
+        self.layered_seen.insert(c.id.clone());
+        self.show_rest(line, a, c.id.clone(), String::new(), layers, flip)
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
@@ -1413,8 +1494,10 @@ impl Parser {
         let name = a.value("name");
         let color = a.value("color");
         let sprites = a.value("sprites");
+        let (layers, layer_sprites) = (a.value("layers"), a.value("layer_sprites"));
         if let Some(extra) = a.leftover(&[]) {
-            self.err(line, format!("unknown attribute `{extra}` for `::character`"));
+            let msg = format!("unknown attribute `{extra}` for `::character` (it takes: id, name, color, sprites, layers, layer_sprites)");
+            self.err(line, msg);
         }
         let Some(id) = id else {
             self.err(line, "`::character` needs `id=...`");
@@ -1443,8 +1526,56 @@ impl Parser {
             self.err(line, m);
             return;
         }
+        let layers = match self.character_layers(line, layers.as_deref(), layer_sprites.as_deref()) {
+            Ok(l) => l,
+            Err(m) => {
+                self.err(line, m);
+                return;
+            }
+        };
         let name = name.unwrap_or_else(|| id.clone());
-        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites });
+        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites });
+    }
+
+    /// The layer ids of `layers=body,eyes,mouth`, checked together with the `layer_sprites=` template.
+    fn character_layers(&self, _line: usize, layers: Option<&str>, template: Option<&str>) -> Result<Vec<String>, String> {
+        let Some(list) = layers else {
+            return match template {
+                None => Ok(Vec::new()),
+                Some(_) => Err("`layer_sprites=` needs `layers=body,eyes,...` (the layer ids, back to front)".into()),
+            };
+        };
+        let Some(template) = template else {
+            return Err("`layers=` needs `layer_sprites=assets/mika/{layer}_{value}.png` (where each layer's pictures are)".into());
+        };
+        let mut out: Vec<String> = Vec::new();
+        for part in list.split(',') {
+            let id = part.trim();
+            if id.is_empty() {
+                return Err("`layers=` has an empty entry (an extra comma?)".into());
+            }
+            if !is_plain_ident(id) || crate::unsafe_reason(id).is_some() {
+                return Err(format!("layer id `{id}` must be letters, digits and `_`"));
+            }
+            if known_attrs("show").contains(&id) || id == LAYER_NONE {
+                return Err(format!("`{id}` can't be a layer id: it is a `::show` attribute or keyword; pick another name"));
+            }
+            if out.iter().any(|o| o == id) {
+                return Err(format!("layer `{id}` is listed twice"));
+            }
+            out.push(id.to_string());
+        }
+        if out.len() > MAX_LAYERS {
+            return Err(format!("a character has at most {MAX_LAYERS} layers, not {}", out.len()));
+        }
+        for part in ["{layer}", "{value}"] {
+            if !template.contains(part) {
+                return Err(format!("`layer_sprites={template}` needs `{part}` in it"));
+            }
+        }
+        let sample = template.replace("{layer}", "x").replace("{value}", "x");
+        check_image_path(&sample, "layer_sprites", "a layer picture")?;
+        Ok(out)
     }
 
     /// `::anim{id=blink frames="open.png 3, closed.png 0.12" loop}`: a named frame animation.
@@ -2912,12 +3043,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy at=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], at: Some(0.28), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
     }
 
@@ -2926,7 +3057,7 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost at=0.3}\n::show{src=art/x.png at=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], at: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, at: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
