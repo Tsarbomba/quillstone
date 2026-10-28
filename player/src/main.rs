@@ -625,7 +625,11 @@ impl ApplicationHandler for App {
                 }
             }
             // A Ctrl held while switching away would never be seen let go.
-            WindowEvent::Focused(false) => self.game.handle(Event::KeyReleased(Key::Ctrl)),
+            WindowEvent::Focused(false) => {
+                self.game.set_focused(false);
+                self.game.handle(Event::KeyReleased(Key::Ctrl));
+            }
+            WindowEvent::Focused(true) => self.game.set_focused(true),
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }

@@ -5,7 +5,7 @@
 //! - `**Name:** text`         dialogue; other prose is narration
 //! - `![alt](path)`           inline image, or video if the extension says so
 //! - `::name{key=value flag}` command, one line (see SCRIPT.md for the full list)
-//! - `::choice` ... `::`      choice block with `- [text](#label){effects, if cond}` options
+//! - `::choice` ... `::`      choice block with `- [text](#label){effects, if cond, default}` options (`::choice{time=8}` is timed)
 //! - `::if{c}` `::elif{c}` `::else` `::endif`   conditional blocks, lowered to jumps
 //! - `<!-- comment -->`       ignored (single line)
 //!
@@ -218,7 +218,7 @@ impl Parser {
                             *t = target;
                             problems.extend(needs_call(&f.label, params.as_deref(), "`::jump`"));
                         }
-                        Op::Choice { options } => {
+                        Op::Choice { options, .. } => {
                             if let Some(k) = f.option {
                                 options[k].target = target;
                             }
@@ -2081,8 +2081,29 @@ impl Parser {
     fn choice(&mut self, lines: &[&str], start: usize, inner: &str, hot: bool) -> usize {
         let line = start + 1;
         let name = if hot { "::hotspots" } else { "::choice" };
-        if !inner.is_empty() {
-            self.err(line, format!("`{name}` takes no attributes"));
+        let mut time = None;
+        if hot {
+            if !inner.is_empty() {
+                self.err(line, format!("`{name}` takes no attributes"));
+            }
+        } else {
+            match Attrs::parse(inner) {
+                Ok(mut a) => {
+                    let value = a.take("time");
+                    if let Some(extra) = a.leftover(&[]) {
+                        self.err(line, format!("unknown attribute `{extra}` for `::choice` (it takes: time)"));
+                    }
+                    match value {
+                        None => {}
+                        Some(v) => match v.as_deref().map(parse_choice_time) {
+                            Some(Ok(t)) => time = Some(t),
+                            Some(Err(m)) => self.err(line, m),
+                            None => self.err(line, "`time` needs a number of seconds, like `::choice{time=8}`"),
+                        },
+                    }
+                }
+                Err(m) => self.err(line, m),
+            }
         }
         let mut options = Vec::new();
         let mut labels = Vec::new();
@@ -2112,6 +2133,18 @@ impl Parser {
         if !closed {
             self.err(line, format!("`{name}` is never closed with a line containing only `::`"));
         }
+        let defaults: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.default).map(|(k, _)| k).collect();
+        if time.is_some() && defaults.is_empty() && !options.is_empty() {
+            self.err(line, "a timed `::choice` needs one option marked `{default}`: the one picked when time runs out");
+        }
+        for &k in defaults.iter().skip(1) {
+            self.err(options[k].line, "only one option of a `::choice` can be the `{default}`");
+        }
+        if time.is_none() {
+            for &k in defaults.iter().take(1) {
+                self.err(options[k].line, "`default` needs a timed choice (`::choice{time=8}`)");
+            }
+        }
         if options.is_empty() {
             self.err(line, if hot { "`::hotspots` has no regions" } else { "`::choice` has no options" });
         } else {
@@ -2119,7 +2152,7 @@ impl Parser {
             for (k, (label, ln)) in labels.into_iter().enumerate() {
                 self.fixups.push(Fixup { op, option: Some(k), label, line: ln });
             }
-            self.push(Op::Choice { options }, line);
+            self.push(Op::Choice { options, time }, line);
         }
         j
     }
@@ -2151,6 +2184,7 @@ impl Parser {
         let mut once = false;
         let mut area = None;
         let mut hidden = false;
+        let mut default = false;
         if hot && tail.is_empty() {
             return Err("a hotspot needs `{rect=x,y,w,h}` after its label".into());
         }
@@ -2183,6 +2217,11 @@ impl Parser {
                     cond = Some(e);
                 } else if item == "once" {
                     once = true;
+                } else if item == "default" {
+                    if hot {
+                        return Err("`default` only belongs in a timed `::choice`, not a `::hotspots` block".into());
+                    }
+                    default = true;
                 } else if item == "hidden" {
                     if !hot {
                         return Err("`hidden` only belongs in a `::hotspots` block".into());
@@ -2210,7 +2249,7 @@ impl Parser {
             let var = format!("{ONCE}{target}:{text}");
             effects.push(Effect { var, op: AssignOp::Set, value: Expr::Lit(Value::Bool(true)) });
         }
-        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area, line };
+        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area, default, line };
         Ok((opt, target))
     }
 }
@@ -2237,6 +2276,16 @@ fn take_attr(inner: &mut String, key: &str) -> Option<String> {
         return Some(value);
     }
     None
+}
+
+/// `time=` of a `::choice`: a plain number of seconds, `MIN_CHOICE_TIME` to `MAX_CHOICE_TIME`.
+fn parse_choice_time(s: &str) -> Result<f32, String> {
+    s.parse::<f32>()
+        .ok()
+        .filter(|t| t.is_finite() && (MIN_CHOICE_TIME..=MAX_CHOICE_TIME).contains(t))
+        .ok_or_else(|| {
+            format!("bad `time={s}` (a number of seconds from {MIN_CHOICE_TIME} to {MAX_CHOICE_TIME}, not a variable)")
+        })
 }
 
 /// `x,y,w,h`, each 0..1 or a percentage; the region must lie inside the screen.
@@ -2977,7 +3026,7 @@ mod tests {
         let p = ok("::item{id=zed icon=z.png}\n::item{id=alpha icon=a.png}\n::item{id=mid}\n::item{id=beta icon=b.png}\n# m\n::hotspots\n- [One](#m){rect=0,0,.5,.5 image=one.png}\n\n- [Two](#m){rect=0,0,.5,.5}\n- [Three](#m){rect=0,0,.5,.5 image=three.png}\n::\n");
         let icons: Vec<_> = p.item_icons().collect();
         assert_eq!(icons, [(1, "z.png"), (2, "a.png"), (4, "b.png")], "declaration order, not id order");
-        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
         assert_eq!(options.iter().map(|o| o.line).collect::<Vec<_>>(), [7, 9, 10]);
         let images: Vec<_> = p.assets_with_lines().collect();
         assert_eq!(images, [(7, AssetKind::Image, "one.png"), (10, AssetKind::Image, "three.png")]);
@@ -3124,7 +3173,7 @@ mod tests {
     #[test]
     fn choices_resolve_labels_effects_and_conditions() {
         let p = ok("::choice\n- [Yes](#Say Yes){trust+=2, met=1}\n- [No](#no)\n- [Secret](#no){if met and trust > 1, x=\"a, b\"}\n::\n# say yes\n**A:** y\n# no\n**A:** n\n");
-        let Op::Choice { options } = &p.ops[0] else { panic!("not a choice") };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!("not a choice") };
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].target, p.labels["say-yes"]);
         assert_eq!(options[1].target, p.labels["no"]);
@@ -3135,6 +3184,41 @@ mod tests {
     }
 
     #[test]
+    fn timed_choices_carry_a_limit_and_one_default_that_combines_with_other_settings() {
+        let p = ok("# a\n::choice{time=8}\n- [Speak](#a)\n- [Wait](#a){once, default, calm+=1, if calm < 9}\n::\n");
+        let Op::Choice { options, time } = &p.ops[0] else { panic!() };
+        assert_eq!(*time, Some(8.0));
+        assert_eq!(options.iter().map(|o| o.default).collect::<Vec<_>>(), [false, true]);
+        assert!(options[1].cond.is_some() && options[1].effects.len() == 2, "if, once and effects all kept");
+        for t in ["0.5", "2.5", "600"] {
+            ok(&format!("# a\n::choice{{time={t}}}\n- [x](#a){{default}}\n::\n"));
+        }
+        let plain = ok("# a\n::choice\n- [x](#a)\n::\n");
+        assert!(matches!(&plain.ops[0], Op::Choice { time: None, .. }));
+    }
+
+    #[test]
+    fn timed_choice_errors_name_the_line() {
+        let line = |src: &str, msg: &str| {
+            let e = errs(src);
+            e.iter().find(|e| e.message.contains(msg)).unwrap_or_else(|| panic!("{msg}: {e:?}")).line
+        };
+        assert_eq!(line("# a\n::choice{time=5}\n- [x](#a)\n::\n", "needs one option marked `{default}`"), 2);
+        assert_eq!(line("# a\n::choice\n- [x](#a)\n- [y](#a){default}\n::\n", "`default` needs a timed choice"), 4);
+        assert_eq!(line("# a\n::choice{time=5}\n- [x](#a){default}\n- [y](#a){default}\n::\n", "only one option"), 4);
+        for bad in ["0", "0.4", "601", "-3", "abc", "{secs}", "nan", "inf", "1e9"] {
+            let src = format!("# a\n::choice{{time={bad}}}\n- [x](#a){{default}}\n::\n");
+            assert_eq!(line(&src, "bad `time="), 2, "{bad}");
+        }
+        assert_eq!(line("# a\n::choice{time}\n- [x](#a){default}\n::\n", "`time` needs a number"), 2);
+        assert_eq!(line("# a\n::choice{speed=2}\n- [x](#a)\n::\n", "unknown attribute `speed`"), 2);
+        // not for hotspots (or anything else)
+        assert!(has_err("# a\n::hotspots{time=5}\n- [x](#a){rect=0,0,1,1}\n::\n", "takes no attributes"));
+        assert!(has_err("# a\n::hotspots\n- [x](#a){rect=0,0,1,1, default}\n::\n", "only belongs in a timed `::choice`"));
+        assert!(has_err("# a\n::shop{time=5 pay=g into=i}\n::\n", "unknown attribute"));
+    }
+
+    #[test]
     fn choice_errors() {
         assert!(has_err("::choice\n- [x](#y)\n", "never closed"));
         assert!(has_err("::choice\n::\n", "has no options"));
@@ -3142,7 +3226,7 @@ mod tests {
         assert!(has_err("# a\n::choice\n- [x](#a){bogus}\n::\n", "bad assignment"));
         // a variable that merely starts with "if" is still an assignment
         let p = ok("# a\n::choice\n- [x](#a){iffy+=1}\n::\n");
-        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
         assert_eq!((options[0].effects.len(), options[0].cond.is_none()), (1, true));
     }
 
@@ -3151,7 +3235,7 @@ mod tests {
     #[test]
     fn hotspots_take_a_rect_an_image_and_the_usual_option_extras() {
         let p = ok("# map\n::hotspots\n- [Library](#map){rect=0.1,0.2,0.2,0.3}\n- [Old key](#map){rect=60%,70%,5%,8% image=assets/key.png, once, found=true, if not found}\n::\n");
-        let Op::Choice { options } = &p.ops[0] else { panic!("not a choice") };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!("not a choice") };
         let a = options[0].area.as_ref().unwrap();
         assert_eq!((a.rect, a.image.as_deref()), ([0.1, 0.2, 0.2, 0.3], None));
         let b = options[1].area.as_ref().unwrap();
@@ -3361,7 +3445,7 @@ mod tests {
     #[test]
     fn hidden_is_a_bare_hotspot_option() {
         let p = ok("# a\n::hotspots\n- [Key](#a){rect=0,0,0.1,0.1, hidden, once, found=true}\n- [Door](#a){rect=0.5,0.5,0.1,0.1}\n::\n");
-        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
         assert!(options[0].area.as_ref().unwrap().hidden);
         assert!(!options[1].area.as_ref().unwrap().hidden);
         assert_eq!(options[0].effects.len(), 2, "hidden is not an effect");
@@ -3454,7 +3538,7 @@ mod tests {
     #[test]
     fn once_options_are_offered_until_picked() {
         let p = ok("# a\n::choice\n- [Ask](#a){once, trust+=1, if trust < 5}\n::\n");
-        let Op::Choice { options } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
         let (picked, mut vars) = ("once:a:Ask", Vars::new());
         assert_eq!(options[0].effects.len(), 2, "its own effect, then the remembering one");
         assert!(options[0].cond.as_ref().unwrap().test(&vars));
@@ -3532,7 +3616,7 @@ mod tests {
         let p = ok(src);
         let Op::Set(e) = &p.ops[0] else { panic!() };
         assert_eq!((e.var.as_str(), e.op, &e.value), ("inv", AssignOp::Add, &Expr::Lit(Value::Str("key".into()))));
-        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options } => Some(options), _ => None }).unwrap();
+        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options, .. } => Some(options), _ => None }).unwrap();
         assert_eq!(options[0].effects[0].op, AssignOp::Add);
         let has = |s: &str| Expr::Has("inv".into(), Box::new(Expr::Lit(Value::Str(s.into()))));
         assert_eq!(options[0].cond, Some(Expr::Not(Box::new(has("gem")))));
@@ -3587,7 +3671,7 @@ mod tests {
         assert!(matches!(&e.value, Expr::Func(Func::Min, args) if args.len() == 2));
         let call = p.ops.iter().find_map(|op| match op { Op::Call { args, .. } => Some(args), _ => None }).unwrap();
         assert!(matches!(call[0].1, Expr::Bin(_, BinOp::Mul, _)) && matches!(call[1].1, Expr::Func(Func::Min, _)));
-        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options } => Some(options), _ => None }).unwrap();
+        let options = p.ops.iter().find_map(|op| match op { Op::Choice { options, .. } => Some(options), _ => None }).unwrap();
         assert_eq!(options[0].effects.len(), 2);
         assert!(matches!(&options[0].cond, Some(Expr::Cmp(_, Cmp::Ge, r)) if matches!(**r, Expr::Bin(_, BinOp::Add, _))));
     }

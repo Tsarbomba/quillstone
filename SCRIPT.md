@@ -618,6 +618,29 @@ is really playing, so a file that can't be decoded never traps the player.
   scarf](#scarf){once}`. A menu that jumps back to itself then offers fewer and
   fewer questions, and when all of them are `once` and used up, the story carries
   on past it. Options with the same text and label count as the same option.
+- A **timed choice** runs out: `::choice{time=8}` (seconds, 0.5 to 600, a plain
+  number) and exactly one option marked `default` in its braces. When the time is up
+  that option is picked as if it had been clicked, so a silent answer is an answer too:
+
+  ````markdown
+  ::choice{time=8}
+  - [Tell the truth](#truth)
+  - [Say nothing](#silent){default}
+  ::
+  ````
+
+  `default` combines with the other settings (`{default, once, trust-=1, if met}`). If
+  the default option's `if` is false when the choice shows, the first visible option is
+  picked instead. A countdown bar over the options shows the time left; it starts when
+  the options appear (not while the line above is still being typed), and starts full
+  again after a rollback to the choice or a load. It waits while Settings, the history or
+  a question is open and while the window is not the active one. Picking by click or key
+  works as usual, hovering changes nothing, auto-forward never picks for the player, and
+  skipping stops at the choice. A timed choice is an error without `default` (or with
+  two), `default` is an error without `time`, and `::hotspots` and `::shop` can't be
+  timed. `quillstone check` warns when the time is under 2 seconds, too quick to read;
+  `quillstone test` plays the default like any other option. The bar's look is a theme
+  setting (see Themes).
 - Falling off the end of a label continues into the next one, so end each scene
   with `::jump`, `::return` or `::end` when that isn't what you want.
 - `::call` can nest up to 256 deep. `::return` with nothing to return to ends the story.
@@ -958,7 +981,7 @@ mode remembers read lines by their label and text, so rewording a line makes it
 "unread" again. The same rules apply when the player reloads a script you just
 saved (hot reload): it carries on where you are. A save that was waiting at a
 choice, hotspot block or shop where nothing is on offer any more (an edited
-condition) carries on past it. Choice texts, hotspots, shop stock and input prompts always come from
+condition) carries on past it. Choice texts, a timed choice's time limit and default, hotspots, shop stock and input prompts always come from
 the script, never from the save.
 
 Saves are shared between players, so loading is strict: a file path outside the game
@@ -994,6 +1017,8 @@ textbox_image = assets/gui/textbox.png   # stretched over the textbox (1600x260 
 quick_menu = visible                # visible (default), hover or hidden (see below)
 menu_background = assets/gui/menu.png
 menu_music = assets/audio/menu.ogg
+choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (default accent_color)
+choice_timer_height = 8             # its thickness, 2 to 40
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).

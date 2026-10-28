@@ -101,7 +101,7 @@ double-click the exe. If it can't start, the reason is also written to
 | Control | What it does |
 | --- | --- |
 | click / Space / Enter / Right | advance (the first press finishes typing the line) |
-| 1-9 or click | pick a choice |
+| 1-9 or click | pick a choice (a timed choice picks its default option when the bar runs out) |
 | Backspace / Left / wheel up | go back (rollback); wheel down rolls forward again |
 | H / Page Up | history (backlog); wheel or Page Up/Down to scroll, Esc to close |
 | A | auto-forward on/off (waits for the voice clip; stops at choices) |

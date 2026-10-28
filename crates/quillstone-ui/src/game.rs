@@ -7,7 +7,7 @@
 
 use quillstone_audio::{Action, Channel, Mixer};
 use quillstone_render::{textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
-use quillstone_runtime::{voice_name, Cmd, Input, Logged, Session, State};
+use quillstone_runtime::{choice_timer, voice_name, ChoiceTimer, Cmd, Input, Logged, Session, State};
 use quillstone_script::{kind_from_path, AssetKind, Program, Value};
 use quillstone_video::Wanted;
 
@@ -196,6 +196,11 @@ pub struct Game<'p> {
     seed: u64,
     /// A scene replay in progress (see `replay.rs`): nothing it does is saved.
     replay: Option<ReplayRun>,
+    /// Seconds a timed `::choice` has been counting down. UI only: it starts again from 0
+    /// whenever the options are shown (arrival, rollback, load, reload).
+    choice_elapsed: f32,
+    /// Whether the window has the focus (the countdown waits while it hasn't).
+    focused: bool,
 }
 
 impl<'p> Game<'p> {
@@ -250,6 +255,8 @@ impl<'p> Game<'p> {
             quick_alpha: 0.0,
             seed: quillstone_runtime::DEFAULT_SEED,
             replay: None,
+            choice_elapsed: 0.0,
+            focused: true,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -507,6 +514,12 @@ impl<'p> Game<'p> {
         if self.view.take_wait_finished() {
             self.forward(Input::Advance);
         }
+        if let Some(timer) = self.running_timer() {
+            self.choice_elapsed += dt;
+            if self.choice_elapsed >= timer.seconds {
+                return self.pick(timer.default); // time is up: as if the default had been clicked
+            }
+        }
         // A line ending in `{nw}` moves the story on once it is typed (no click, no auto delay).
         if self.no_wait_line() && self.view.dialogue.as_ref().is_some_and(|d| d.is_complete()) {
             return self.forward(Input::Advance);
@@ -529,6 +542,26 @@ impl<'p> Game<'p> {
         }
     }
 
+    /// The timer of the timed `::choice` on screen (shown, whether or not it counts now).
+    fn choice_timer(&self) -> Option<ChoiceTimer> {
+        if !self.in_story || self.screen != Screen::Story || self.view.choices.is_empty() {
+            return None;
+        }
+        choice_timer(self.session.state(), self.program)
+    }
+
+    /// The timer, while it counts: not while the window is unfocused or the line above the
+    /// options is still being typed (Settings, History and confirms pause the whole tick).
+    fn running_timer(&self) -> Option<ChoiceTimer> {
+        let typed = self.view.dialogue.as_ref().is_none_or(|d| d.is_complete());
+        self.choice_timer().filter(|_| self.focused && typed)
+    }
+
+    /// The window gained or lost the keyboard focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
     /// Whether the line waiting is one that ends in `{nw}`.
     fn no_wait_line(&self) -> bool {
         matches!(self.session.state().pending, Some(Cmd::Say { .. }))
@@ -545,6 +578,7 @@ impl<'p> Game<'p> {
             || self.screen == Screen::Input // the caret blinks
             || self.auto
             || self.skip.is_some()
+            || self.running_timer().is_some()
             || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
             || !self.wanted_videos().is_empty()
     }
@@ -580,6 +614,9 @@ impl<'p> Game<'p> {
             }
             out
         };
+        if let Some(timer) = self.choice_timer() {
+            draw_choice_timer(&mut out, theme, self.view.choices.len(), 1.0 - self.choice_elapsed / timer.seconds);
+        }
         if self.in_story && story && self.quick_menu_shown() {
             let inventory = self.has_inventory();
             let tb = self.textbox();
@@ -939,6 +976,7 @@ impl<'p> Game<'p> {
         let cmds = voiced.as_deref().unwrap_or(cmds);
         if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
             self.choice_focus = None; // new choices: nothing picked out yet
+            self.choice_elapsed = 0.0; // and a timed one starts counting from full
         }
         if cmds.iter().any(|c| matches!(c, Cmd::PlayVideo { .. })) {
             self.video_generation += 1;
@@ -1211,3 +1249,5 @@ mod dynpic_tests;
 mod hud_tests;
 #[cfg(test)]
 mod replay_tests;
+#[cfg(test)]
+mod timed_tests;

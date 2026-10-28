@@ -14,3 +14,5 @@ menu_music = assets/calm.ogg
 # name_plate_rect = 380, 640, 400, 64     # where the speaker's name goes
 # text_align = center                     # or left
 # quick_menu = hover                      # visible (default), hover or hidden
+# choice_timer_color = #ffd98c            # the bar of a timed ::choice (default accent_color)
+# choice_timer_height = 8                 # its thickness (2 to 40)

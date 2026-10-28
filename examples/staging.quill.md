@@ -4,7 +4,7 @@ title: Staging
 
 <!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{p}` and `{nw}`
      text tags, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
-     one axis, a flipped and a stretched sprite, and a dip to black (`::fade` and `through=`).
+     one axis, a flipped and a stretched sprite, a dip to black (`::fade` and `through=`) and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
@@ -77,4 +77,19 @@ The screen is black, and this narration is still readable: the dialogue box is n
 # done
 
 **Mika:** That's all.
+
+**Mika:** Well, one more thing: a timed choice. Answer before the bar runs out, or stay quiet and the default answer is picked.
+::choice{time=8}
+- [Wave goodbye](#wave)
+- [Say nothing](#silent){default}
+::
+
+# wave
+**Mika:** Goodbye!
+::jump{to=bye}
+
+# silent
+**Mika:** ...Goodbye, then.
+
+# bye
 ::end

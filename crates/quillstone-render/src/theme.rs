@@ -137,6 +137,10 @@ pub struct Theme {
     pub inventory_price_color: Option<[f32; 4]>,
     /// The description; `None` follows `text_color`.
     pub inventory_text_color: Option<[f32; 4]>,
+    /// The countdown bar of a timed `::choice`; `None` follows `accent_color`.
+    pub choice_timer_color: Option<[f32; 4]>,
+    /// Its thickness in the 1920x1080 screen.
+    pub choice_timer_height: f32,
 }
 
 impl Default for Theme {
@@ -185,6 +189,8 @@ impl Default for Theme {
             inventory_name_color: None,
             inventory_price_color: None,
             inventory_text_color: None,
+            choice_timer_color: None,
+            choice_timer_height: 8.0,
         }
     }
 }
@@ -231,6 +237,7 @@ impl Theme {
                 "inventory_name_color" => Some(&mut t.inventory_name_color),
                 "inventory_price_color" => Some(&mut t.inventory_price_color),
                 "inventory_text_color" => Some(&mut t.inventory_text_color),
+                "choice_timer_color" => Some(&mut t.choice_timer_color),
                 _ => None,
             };
             if let Some(slot) = optional_color {
@@ -285,6 +292,10 @@ impl Theme {
                 "inventory_icon_size" => match number(16.0, 400.0) {
                     Some(n) => t.inventory_icon_size = n,
                     None => bad("`inventory_icon_size` must be a number from 16 to 400".into()),
+                },
+                "choice_timer_height" => match number(2.0, 40.0) {
+                    Some(n) => t.choice_timer_height = n,
+                    None => bad("`choice_timer_height` must be a number from 2 to 40".into()),
                 },
                 "inventory_title" | "shop_title" | "shop_currency" => match unquote(value) {
                     "" => bad(format!("`{key}` needs a text")),
@@ -596,6 +607,19 @@ mod tests {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
         assert_eq!(t, Theme::default(), "nothing took effect");
+    }
+
+    #[test]
+    fn the_choice_timer_keys_have_defaults_are_read_and_are_checked() {
+        let t = Theme::default();
+        assert_eq!((t.choice_timer_color, t.choice_timer_height), (None, 8.0));
+        let (t, problems) = Theme::parse("choice_timer_color = #ff8040\nchoice_timer_height = 14\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(t.choice_timer_color, Some([1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]));
+        assert_eq!(t.choice_timer_height, 14.0);
+        let (t, problems) = Theme::parse("choice_timer_color = red\nchoice_timer_height = 1\nchoice_timer_height = 41\n");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert_eq!(t, Theme::default());
     }
 
     #[test]

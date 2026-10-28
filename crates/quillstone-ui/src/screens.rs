@@ -183,6 +183,20 @@ pub fn draw_mode_badge(out: &mut Vec<Draw>, theme: &Theme, auto: bool, skipping:
     text(out, label, r, 26.0, theme.text_color, Align::Center);
 }
 
+/// The countdown bar of a timed `::choice`: a dim track above the first button with the
+/// time left (`left`, 0..1) filling it from the left.
+pub fn draw_choice_timer(out: &mut Vec<Draw>, theme: &Theme, buttons: usize, left: f32) {
+    let Some(first) = quillstone_render::choice_rects(theme, buttons).first().copied() else { return };
+    let h = theme.choice_timer_height;
+    let track = Rect::new(first.x, (first.y - 8.0 - h).max(0.0), first.w, h);
+    out.push(Draw::Rect { rect: track, color: [0.0, 0.0, 0.0, 0.45] });
+    let left = left.clamp(0.0, 1.0);
+    if left > 0.0 {
+        let color = theme.choice_timer_color.unwrap_or(theme.accent_color);
+        out.push(Draw::Rect { rect: Rect::new(track.x, track.y, track.w * left, h), color });
+    }
+}
+
 // ---- main menu ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

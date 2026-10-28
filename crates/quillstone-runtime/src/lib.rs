@@ -20,6 +20,8 @@ mod anim_tests;
 mod dynpic_tests;
 #[cfg(test)]
 mod hud_tests;
+#[cfg(test)]
+mod timed_tests;
 mod persist;
 mod save;
 pub use explore::{explore, Finding, Report};
@@ -456,6 +458,32 @@ fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
         .collect()
 }
 
+/// The time limit of the timed `::choice` the state waits at. The runtime never counts the
+/// time: the frontend does, and sends [`Input::Choose`] with `default` when it runs out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChoiceTimer {
+    pub seconds: f32,
+    /// Index into the visible options (the list of [`Cmd::ShowChoices`]).
+    pub default: usize,
+}
+
+/// The timer of the choice the state waits at, if it is a timed one. It is worked out from
+/// the script and the variables each time, never stored, so rollback, saves (which are
+/// untrusted) and hot reload can't leave a wrong one behind. The default is the option marked
+/// `{default}`, or the first visible one when that is hidden by its condition.
+pub fn choice_timer(state: &State, program: &Program) -> Option<ChoiceTimer> {
+    if !matches!(state.pending, Some(Cmd::ShowChoices { .. })) {
+        return None;
+    }
+    let Some(Op::Choice { options, time: Some(seconds) }) = program.ops.get(state.pc) else { return None };
+    let visible = visible_options(options, &state.vars);
+    if visible.is_empty() {
+        return None;
+    }
+    let default = visible.iter().position(|&i| options[i].default).unwrap_or(0);
+    Some(ChoiceTimer { seconds: *seconds, default })
+}
+
 /// The item `id` as the screens show it. An id that no `::item` declares still
 /// shows, under its own name and without a picture, so nothing in a list is lost.
 pub fn item_info(program: &Program, id: &str) -> ItemInfo {
@@ -526,7 +554,7 @@ fn buy(state: &mut State, program: &Program, index: usize) -> bool {
 /// (so no input could ever move it on).
 pub(crate) fn waits_on_nothing(state: &State, program: &Program) -> bool {
     match (&state.pending, program.ops.get(state.pc)) {
-        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(Op::Choice { options })) => visible_options(options, &state.vars).is_empty(),
+        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(Op::Choice { options, .. })) => visible_options(options, &state.vars).is_empty(),
         (Some(Cmd::ShowShop { .. }), Some(Op::Shop { stock, .. })) => offered_stock(stock, &state.vars).is_empty(),
         _ => false,
     }
@@ -562,7 +590,7 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
 /// and the variables (used to rebuild it when a save is read).
 pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option<Cmd> {
     match op {
-        Op::Choice { options } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
+        Op::Choice { options, .. } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
         Op::Inventory => Some(Cmd::ShowInventory),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
         Op::Input { prompt, default, max, .. } => {
@@ -706,7 +734,7 @@ pub(crate) fn step_traced(
                 state.pc += 1;
             }
             (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
-                let Some(Op::Choice { options: all }) = program.ops.get(state.pc) else {
+                let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) else {
                     return Vec::new();
                 };
                 let visible = visible_options(all, &state.vars);
@@ -759,7 +787,7 @@ pub(crate) fn step_traced(
             Op::Wait { seconds } => {
                 return block(state, &mut out, Cmd::Wait { seconds: *seconds });
             }
-            Op::Choice { options } => {
+            Op::Choice { options, .. } => {
                 let visible = visible_options(options, &state.vars);
                 if visible.is_empty() {
                     state.pc += 1; // nothing on offer: carry on past the block

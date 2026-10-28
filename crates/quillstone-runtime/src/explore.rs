@@ -82,7 +82,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         let state = x.nodes[id].state.take().expect("queued once, with its state");
         let inputs: Vec<(Input, Option<String>)> = match &state.pending {
             Some(pending @ (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) => {
-                if let Some(Op::Choice { options: all }) = program.ops.get(state.pc) {
+                if let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) {
                     x.offered.extend(visible_options(all, &state.vars).into_iter().map(|i| (state.pc, i)));
                 }
                 let labels = match pending {
@@ -281,7 +281,7 @@ impl Explorer<'_> {
         // `{once}` options is meant to run dry, so that one is left alone.)
         for (i, &at) in trace.iter().enumerate() {
             let waited = i + 1 == trace.len() && waiting_at_choice;
-            let Op::Choice { options } = &self.program.ops[at] else { continue };
+            let Op::Choice { options, .. } = &self.program.ops[at] else { continue };
             let all_once = options.iter().all(|o| o.effects.iter().any(|e| e.var.starts_with(ONCE)));
             if !waited && !all_once {
                 let msg = "this choice can come up with no option on offer (the story then carries on past it)";
@@ -425,7 +425,7 @@ impl Explorer<'_> {
                     }
                 }
             }
-            let Op::Choice { options } = op else { continue };
+            let Op::Choice { options, .. } = op else { continue };
             if !self.ran[at] {
                 continue;
             }
@@ -481,7 +481,7 @@ impl Explorer<'_> {
                         read.extend(names(|out| c.vars_read(out)).into_iter().map(|n| (at, n, false)));
                     }
                 }
-                Op::Choice { options } => {
+                Op::Choice { options, .. } => {
                     for o in options {
                         set.extend(o.effects.iter().map(|e| e.var.as_str()));
                         for e in &o.effects {
@@ -615,7 +615,7 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
             Op::Jump { cond: Some(c), .. } => tested(&mut caps, c),
             Op::Set(e) => uncapped(&mut caps, &e.value),
             Op::Call { args, .. } => args.iter().for_each(|(_, e)| uncapped(&mut caps, e)),
-            Op::Choice { options } => {
+            Op::Choice { options, .. } => {
                 for o in options {
                     if let Some(c) = &o.cond {
                         tested(&mut caps, c);
@@ -676,7 +676,7 @@ fn added_items(program: &Program) -> HashMap<&str, Option<Vec<String>>> {
 fn all_effects(program: &Program) -> impl Iterator<Item = &quillstone_script::Effect> {
     program.ops.iter().flat_map(|op| match op {
         Op::Set(e) => vec![e],
-        Op::Choice { options } => options.iter().flat_map(|o| &o.effects).collect(),
+        Op::Choice { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
         _ => Vec::new(),
     })
 }
@@ -690,7 +690,7 @@ fn playthroughs(program: &Program) -> Vec<(Option<String>, Vars)> {
         let mut values: Vec<Value> = program.vars.get(name).cloned().into_iter().collect();
         let assigned = program.ops.iter().flat_map(|op| match op {
             Op::Set(e) => vec![e],
-            Op::Choice { options } => options.iter().flat_map(|o| &o.effects).collect(),
+            Op::Choice { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
             _ => Vec::new(),
         });
         for e in assigned.filter(|e| e.var == *name && e.op == quillstone_script::AssignOp::Set) {
@@ -1059,6 +1059,14 @@ mod tests {
         let r = test(include_str!("../../../examples/staging.quill.md"));
         assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
         assert!(!r.partial && r.endings.len() == 1);
+    }
+
+    #[test]
+    fn the_tester_treats_the_default_of_a_timed_choice_as_an_ordinary_option() {
+        let src = "# a\n::choice{time=5}\n- [Speak](#spoke)\n- [Stay quiet](#quiet){default}\n::\n# spoke\nSpoke.\n::end\n# quiet\nQuiet.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert_eq!(r.endings.len(), 2, "both options are played, whatever the timer");
     }
 
     #[test]

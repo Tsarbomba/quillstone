@@ -560,7 +560,7 @@ impl Program {
                 Op::Jump { target, cond: None } => queue.push_back(*target),
                 Op::Jump { target, .. } => queue.extend([*target, at + 1]),
                 Op::Call { target, .. } => queue.extend([*target, at + 1]),
-                Op::Choice { options } => queue.extend(options.iter().map(|o| o.target)),
+                Op::Choice { options, .. } => queue.extend(options.iter().map(|o| o.target)),
                 Op::Return | Op::End => {}
                 _ => queue.push_back(at + 1),
             }
@@ -625,7 +625,7 @@ impl Program {
         self.ops.iter().enumerate().flat_map(|(i, op)| {
             let op_line = self.lines.get(i).copied().unwrap_or(0);
             let found: Vec<(usize, AssetKind, &str)> = match op {
-                Op::Choice { options } => options
+                Op::Choice { options, .. } => options
                     .iter()
                     .filter_map(|o| Some((o.line, AssetKind::Image, o.area.as_ref()?.image.as_deref()?)))
                     .collect(),
@@ -644,7 +644,7 @@ impl Program {
         for (at, op) in self.ops.iter().enumerate() {
             let effects: Vec<&Effect> = match op {
                 Op::Set(e) => vec![e],
-                Op::Choice { options } => options.iter().flat_map(|o| &o.effects).collect(),
+                Op::Choice { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
                 _ => Vec::new(),
             };
             let mut texts: Vec<&str> = effects
@@ -945,6 +945,10 @@ pub fn kind_from_path(path: &str) -> AssetKind {
     }
 }
 
+/// Shortest and longest `::choice{time=..}`, in seconds.
+pub const MIN_CHOICE_TIME: f32 = 0.5;
+pub const MAX_CHOICE_TIME: f32 = 600.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChoiceOption {
     pub text: String,
@@ -955,6 +959,8 @@ pub struct ChoiceOption {
     pub cond: Option<Cond>,
     /// Set for the entries of a `::hotspots` block: where on the screen to click.
     pub area: Option<Area>,
+    /// Picked when a timed choice runs out (`{default}`); only in a `::choice{time=..}`.
+    pub default: bool,
     /// Source line (1-based) of the option.
     pub line: usize,
 }
@@ -1058,8 +1064,10 @@ pub enum Op {
     /// Fullscreen video clip. Waits until it ends or the player skips it.
     Video { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Waits for the player to pick an option (or, when the options have an
-    /// `area`, to click a region of the screen).
-    Choice { options: Vec<ChoiceOption> },
+    /// `area`, to click a region of the screen). With a `time` (seconds, `MIN_CHOICE_TIME` to
+    /// `MAX_CHOICE_TIME`) the frontend picks the `default` option when it runs out; the
+    /// runtime itself never counts time.
+    Choice { options: Vec<ChoiceOption>, time: Option<f32> },
     /// The inventory screen; waits until the player closes it.
     Inventory,
     /// A shop: items for sale, paid with the int variable `pay`, bought into the
@@ -1092,7 +1100,7 @@ impl Op {
             Op::Hud { elem, .. } => elem.exprs(),
             Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),
             Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
-            Op::Choice { options } => options
+            Op::Choice { options, .. } => options
                 .iter()
                 .flat_map(|o| o.cond.iter().chain(o.effects.iter().map(|e| &e.value)))
                 .collect(),
@@ -1103,7 +1111,7 @@ impl Op {
     /// Every asset file the op needs: [`Op::asset`], or a hotspot block's images.
     pub fn all_assets(&self) -> Vec<(AssetKind, &str)> {
         match self {
-            Op::Choice { options } => options
+            Op::Choice { options, .. } => options
                 .iter()
                 .filter_map(|o| o.area.as_ref()?.image.as_deref())
                 .map(|i| (AssetKind::Image, i))

@@ -239,7 +239,7 @@ fn check_pattern(script: &Path, root: &Path, line: usize, pattern: &str, checked
 fn all_hidden_hotspot_blocks(program: &Program) -> Vec<usize> {
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
-        let Op::Choice { options } = op else { continue };
+        let Op::Choice { options, .. } = op else { continue };
         let mut areas = options.iter().filter_map(|o| o.area.as_ref()).peekable();
         if areas.peek().is_some() && areas.all(|a| a.hidden) {
             out.push(pc);
@@ -253,7 +253,7 @@ fn all_hidden_hotspot_blocks(program: &Program) -> Vec<usize> {
 fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
-        let Op::Choice { options } = op else { continue };
+        let Op::Choice { options, .. } = op else { continue };
         for (i, a) in options.iter().enumerate() {
             let Some(ra) = a.area.as_ref().filter(|_| a.cond.is_none()).map(|a| a.rect) else { continue };
             for b in options[i + 1..].iter().filter(|b| b.cond.is_none()) {
@@ -290,7 +290,7 @@ const BIG_FRAME_SIDE: u32 = 2048;
 /// `(line, path)` of every hotspot region's image.
 fn hotspot_images(program: &Program) -> HashSet<(usize, &str)> {
     let regions = program.ops.iter().filter_map(|op| match op {
-        Op::Choice { options } => Some(options),
+        Op::Choice { options, .. } => Some(options),
         _ => None,
     });
     regions.flatten().filter_map(|o| Some((o.line, o.area.as_ref()?.image.as_deref()?))).collect()
@@ -345,6 +345,9 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
     out
 }
 
+/// A timed `::choice` shorter than this (seconds) gets a warning.
+const MIN_READABLE_TIME: f32 = 2.0;
+
 /// Text clearly too long for where it is drawn: `(line, message)`. The player shrinks text that
 /// doesn't fit, so these are warnings; the estimate errs long, so only clear cases count.
 /// Covers dialogue lines, item descriptions and (non-hotspot) choice options.
@@ -370,7 +373,13 @@ fn line_warnings(program: &Program, root: &Path) -> Vec<(usize, String)> {
                     ));
                 }
             }
-            Op::Choice { options } => {
+            Op::Choice { options, time } => {
+                if let Some(t) = time.filter(|t| *t < MIN_READABLE_TIME) {
+                    out.push((
+                        program.lines[pc],
+                        format!("this choice gives {t} s to answer; under {MIN_READABLE_TIME} s is too quick to read the options"),
+                    ));
+                }
                 let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none()).collect();
                 let Some(rect) = quillstone_render::view::choice_rects(&theme, buttons.len()).first().copied() else { continue };
                 let size = theme.text_size.min(rect.h * 0.5); // as the player draws it
@@ -1054,7 +1063,7 @@ mod tests {
             let mut program = parse(&script.replace(&format!(".{ext}"), ".png")).unwrap();
             program.items.get_mut("k").unwrap().icon = Some(format!("assets/k.{ext}"));
             for op in &mut program.ops {
-                if let Op::Choice { options } = op {
+                if let Op::Choice { options, .. } = op {
                     options[0].area.as_mut().unwrap().image = Some(format!("assets/h.{ext}"));
                 }
             }
@@ -1178,6 +1187,19 @@ mod tests {
         let at: Vec<usize> = found.iter().map(|(l, _)| *l).collect();
         assert_eq!(at, [9, 6], "the choice option's line, then the item's declaration line: {found:?}");
         assert!(found[0].1.contains("button") && found[1].1.contains("description of `b`"));
+    }
+
+    #[test]
+    fn check_warns_when_a_timed_choice_is_too_quick_to_read_and_refuses_a_badly_marked_one() {
+        let script = |attrs: &str, default: &str| format!("# a\n::choice{attrs}\n- [Go](#a)\n- [Stay](#a){default}\n::\n");
+        let warns = |src: &str| line_warnings(&parse(src).unwrap(), Path::new("."));
+        let quick = warns(&script("{time=1.5}", "{default}"));
+        assert!(quick.len() == 1 && quick[0].0 == 2 && quick[0].1.contains("1.5 s"), "{quick:?}");
+        assert!(warns(&script("{time=2}", "{default}")).is_empty() && warns(&script("", "")).is_empty());
+        assert!(checked(&script("{time=1.5}", "{default}"), &[]).is_ok(), "a warning only");
+        for bad in [script("{time=5}", ""), script("", "{default}"), script("{time=0}", "{default}")] {
+            assert!(checked(&bad, &[]).is_err(), "{bad}");
+        }
     }
 
     #[test]
