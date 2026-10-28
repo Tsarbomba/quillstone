@@ -1344,6 +1344,20 @@ fn an_edited_script_takes_over_at_the_same_spot() {
 }
 
 #[test]
+fn editing_an_included_file_takes_over_at_the_same_spot() {
+    let load = |part: &'static str| quillstone_script::parse_files("# a\n**A:** one\n::include{p.quill.md}\n", "m.quill.md", &move |_| Ok(part.into())).unwrap();
+    let before = load("# b\n**A:** two\n**A:** three\n");
+    let mut g = new_game(&before, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    let after = load("# b\n**A:** two\n**A:** three, in the included file\n");
+    g.reload(&after).unwrap();
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "three, in the included file");
+}
+
+#[test]
 fn reloading_at_the_menu_just_swaps_the_script() {
     let before = parse(THREE).unwrap();
     let mut g = at_menu(&before);

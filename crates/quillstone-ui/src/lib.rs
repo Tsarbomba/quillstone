@@ -19,6 +19,7 @@ pub mod input;
 pub mod screens;
 pub mod settings;
 pub mod slots;
+pub mod source;
 
 pub use game::{Button, Event, Game, Key, Request, Screen, AUTO_PER_CHAR};
 pub use settings::{QuickMenuSetting, Settings};

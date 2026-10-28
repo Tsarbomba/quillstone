@@ -553,9 +553,48 @@ pub struct Program {
     /// Auto-voice: the folder of voice files named after their lines (front
     /// matter `voice:`), relative to the script. See `voice_name` in the runtime.
     pub voice_folder: Option<String>,
+    /// Files pulled in with `::include`, in the order they were read. The main script's
+    /// lines are numbered as written; each included file's lines continue after it (see
+    /// [`SourceSpan`]), so `lines` and every other line number stay plain numbers.
+    /// Use [`Program::locate`] to turn one back into a file and a line.
+    pub sources: Vec<SourceSpan>,
+}
+
+/// Where an included file's lines sit in a [`Program`]'s line numbering: its line `n` is
+/// numbered `base + n`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSpan {
+    /// The path as written in `::include`, relative to the game folder.
+    pub file: String,
+    pub base: usize,
+    /// How many lines the file has.
+    pub len: usize,
 }
 
 impl Program {
+    /// The file and line a program line number stands for: `(None, line)` for the main
+    /// script, `(Some(path), line)` for an included file.
+    pub fn locate(&self, line: usize) -> (Option<&str>, usize) {
+        match self.sources.iter().find(|s| line > s.base && line <= s.base + s.len) {
+            Some(s) => (Some(s.file.as_str()), line - s.base),
+            None => (None, line),
+        }
+    }
+
+    /// `path:line` for a program line number, where `main` is how the caller names the
+    /// main script and included files keep their game-folder paths.
+    pub fn place(&self, main: &str, line: usize) -> String {
+        match self.locate(line) {
+            (Some(file), n) => format!("{file}:{n}"),
+            (None, n) => format!("{main}:{n}"),
+        }
+    }
+
+    /// The included files (game-folder paths), for a hot reload to watch and a package to ship.
+    pub fn included_files(&self) -> impl Iterator<Item = &str> {
+        self.sources.iter().map(|s| s.file.as_str())
+    }
+
     /// Files named in the front matter (gallery pictures and music room tracks).
     pub fn extra_assets(&self) -> impl Iterator<Item = (AssetKind, &str)> {
         let gallery = self.gallery.iter().map(|p| (kind_from_path(p), p.as_str()));

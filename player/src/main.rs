@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
-use quillstone_script::{parse, AssetKind, Op, Program};
+use quillstone_script::{AssetKind, Op, Program};
 use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
@@ -114,11 +114,8 @@ fn main() {
         }),
     };
     let source = std::fs::read_to_string(&path).unwrap_or_else(|e| fatal(format!("cannot read {}: {e}", path.display())));
-    let program = parse(&source).unwrap_or_else(|errors| {
-        let lines: Vec<String> =
-            errors.iter().map(|e| format!("{}:{}: error: {}", path.display(), e.line, e.message)).collect();
-        fatal(lines.join("\n"))
-    });
+    let program = quillstone_ui::source::parse_script(&path, &source)
+        .unwrap_or_else(|errors| fatal(quillstone_ui::source::error_lines(&path, &errors).join("\n")));
     // The program lives as long as the app does; leaking it keeps the game simple.
     let program: &'static Program = Box::leak(Box::new(program));
     let root = path.parent().map(PathBuf::from).unwrap_or_default();
@@ -313,11 +310,13 @@ impl App {
     /// The script or theme was saved: carry on with the new version (see `reload.rs`).
     fn reload(&mut self) {
         let parsed = std::fs::read_to_string(&self.script_path).map_err(|e| e.to_string()).and_then(|source| {
-            parse(&source).map_err(|errors| {
-                for e in &errors {
-                    eprintln!("{}:{}: error: {}", self.script_path.display(), e.line, e.message);
+            quillstone_ui::source::parse_script(&self.script_path, &source).map_err(|errors| {
+                for line in quillstone_ui::source::error_lines(&self.script_path, &errors) {
+                    eprintln!("{line}");
                 }
-                format!("line {}: {}", errors[0].line, errors[0].message)
+                // An included file with an error is saved again to fix it: watch it even though no program came out.
+                self.watch.add(errors.iter().filter_map(|e| e.file.as_ref()).map(|f| self.root.join(f)));
+                errors[0].to_string() // names the file when it is an included one
             })
         });
         let program = match parsed {

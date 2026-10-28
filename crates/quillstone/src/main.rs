@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
-use quillstone_script::{kind_from_path, parse, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
+use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
 
 mod package;
 mod pattern;
@@ -102,13 +102,20 @@ fn test_exit_code(outcome: Explored, allow_partial: bool) -> u8 {
 fn load(path: &Path) -> Result<Program, String> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    parse(&src).map_err(|errors| {
-        errors
-            .iter()
-            .map(|e| format!("{}:{}: error: {}", path.display(), e.line, e.message))
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
+    quillstone_ui::source::parse_script(path, &src).map_err(|errors| quillstone_ui::source::error_lines(path, &errors).join("\n"))
+}
+
+/// An included file (a game-folder path) as a path from where the command was run.
+fn game_file(script: &Path, file: &str) -> std::path::PathBuf {
+    script.parent().unwrap_or_else(|| Path::new("")).join(file)
+}
+
+/// `file:line` of a program line number: the script's own path, or the included file's.
+fn at(program: &Program, script: &Path, line: usize) -> String {
+    match program.locate(line) {
+        (Some(file), n) => format!("{}:{n}", game_file(script, file).display()),
+        (None, n) => format!("{}:{n}", script.display()),
+    }
 }
 
 fn check(path: &Path) -> Result<(), String> {
@@ -123,7 +130,7 @@ fn check(path: &Path) -> Result<(), String> {
             continue; // below, as pictures
         }
         if quillstone_script::is_pattern(asset) {
-            for (error, msg) in check_pattern(path, root, line, asset, &mut checked) {
+            for (error, msg) in check_pattern_at(&at(&program, path, line), root, asset, &mut checked) {
                 missing += usize::from(error);
                 eprintln!("{msg}");
             }
@@ -133,13 +140,13 @@ fn check(path: &Path) -> Result<(), String> {
         if !quillstone_script::is_inside(asset) {
             // Saves refuse such paths (a shared save must not reach outside the game), so the game would break.
             missing += 1;
-            eprintln!("{}:{line}: error: `{asset}` is outside the script's folder (keep assets beside or below it)", path.display());
+            eprintln!("{}: error: `{asset}` is outside the script's folder (keep assets beside or below it)", at(&program, path, line));
         } else if !file.exists() {
             missing += 1;
-            eprintln!("{}:{line}: error: missing asset `{asset}`", path.display());
+            eprintln!("{}: error: missing asset `{asset}`", at(&program, path, line));
         } else if let Some(why) = unplayable(&file, kind) {
             missing += 1;
-            eprintln!("{}:{line}: error: `{asset}` won't play in a shipped game: {why}", path.display());
+            eprintln!("{}: error: `{asset}` won't play in a shipped game: {why}", at(&program, path, line));
         }
     }
     for (error, msg) in picture_findings(&program, path, root) {
@@ -152,9 +159,8 @@ fn check(path: &Path) -> Result<(), String> {
     }
     for (pc, text) in program.unknown_items() {
         eprintln!(
-            "{}:{}: warning: \"{text}\" is not a declared `::item` (it will show in the inventory under that name, with no picture; a typo?)",
-            path.display(),
-            program.lines[pc]
+            "{}: warning: \"{text}\" is not a declared `::item` (it will show in the inventory under that name, with no picture; a typo?)",
+            at(&program, path, program.lines[pc])
         );
     }
     if let Some(theme_path) = &program.theme {
@@ -165,20 +171,19 @@ fn check(path: &Path) -> Result<(), String> {
     }
     missing += check_extras(&program, path, root);
     for (pc, msg) in hidden_hotspots(&program) {
-        eprintln!("{}:{}: warning: {msg}", path.display(), program.lines[pc]);
+        eprintln!("{}: warning: {msg}", at(&program, path, program.lines[pc]));
     }
     for pc in all_hidden_hotspot_blocks(&program) {
         eprintln!(
-            "{}:{}: warning: every region of this `::hotspots` block is `hidden`: players using only keyboard or gamepad can't pick anything here; add a visible region such as an exit",
-            path.display(),
-            program.lines[pc]
+            "{}: warning: every region of this `::hotspots` block is `hidden`: players using only keyboard or gamepad can't pick anything here; add a visible region such as an exit",
+            at(&program, path, program.lines[pc])
         );
     }
     for (line, msg) in line_warnings(&program, root) {
-        eprintln!("{}:{line}: warning: {msg}", path.display());
+        eprintln!("{}: warning: {msg}", at(&program, path, line));
     }
     for (line, msg) in replay_warnings(&program) {
-        eprintln!("{}:{line}: warning: {msg}", path.display());
+        eprintln!("{}: warning: {msg}", at(&program, path, line));
     }
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
@@ -214,8 +219,13 @@ const MANY_MATCHES: usize = 200;
 /// A picture name with `{variable}` parts stands for every file it can build: there must
 /// be at least one, and each must be a picture the player can show (`checked` skips files
 /// another line already looked at).
+#[cfg(test)]
 fn check_pattern(script: &Path, root: &Path, line: usize, pattern: &str, checked: &mut HashSet<String>) -> Vec<Finding> {
-    let at = format!("{}:{line}", script.display());
+    check_pattern_at(&format!("{}:{line}", script.display()), root, pattern, checked)
+}
+
+/// [`check_pattern`] for a line already written as `file:line`.
+fn check_pattern_at(at: &str, root: &Path, pattern: &str, checked: &mut HashSet<String>) -> Vec<Finding> {
     let files = pattern::expand(root, pattern);
     if files.is_empty() {
         let msg = format!("{at}: error: `{pattern}` matches no file (each `{{variable}}` stands for a file-name part in that folder; keep the files beside or below the script)");
@@ -319,9 +329,8 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
         out.push((
             false,
             format!(
-                "{}:{}: warning: animation `{}` has {} frames (more than {MANY_FRAMES}): every frame is loaded when it is shown; fewer, or a shorter loop, loads faster",
-                script.display(),
-                anim.line,
+                "{}: warning: animation `{}` has {} frames (more than {MANY_FRAMES}): every frame is loaded when it is shown; fewer, or a shorter loop, loads faster",
+                at(program, script, anim.line),
                 anim.id,
                 anim.frames.len()
             ),
@@ -332,7 +341,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
         let Op::Particles { set: Some(Particles { kind: ParticleKind::Image(asset), .. }), .. } = op else { continue };
         if let Ok((w, h)) = picture::read_picture(&root.join(asset)) {
             if w.max(h) > BIG_PARTICLE_SIDE {
-                let at = format!("{}:{}", script.display(), program.lines.get(pc).copied().unwrap_or(0));
+                let at = at(program, script, program.lines.get(pc).copied().unwrap_or(0));
                 out.push((
                     false,
                     format!(
@@ -344,7 +353,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path) -> Vec<Findin
         }
     }
     for (line, asset, noun) in spots.chain(icons).chain(frames) {
-        let at = format!("{}:{line}", script.display());
+        let at = at(program, script, line);
         let file = root.join(asset);
         if !quillstone_script::is_inside(asset) {
             out.push((true, format!("{at}: error: `{asset}` is outside the script's folder (keep assets beside or below it)")));
@@ -403,8 +412,8 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
                 Some((first, fw, fh)) if (*fw, *fh) != (w, h) => out.push((
                     false,
                     format!(
-                        "{}:{line}: warning: layer picture `{file}` is {w}x{h} but `{first}` is {fw}x{fh}: the layers of `{}` are drawn stacked in the same place and size, so they should be the same size",
-                        script.display(),
+                        "{}: warning: layer picture `{file}` is {w}x{h} but `{first}` is {fw}x{fh}: the layers of `{}` are drawn stacked in the same place and size, so they should be the same size",
+                        at(program, script, line),
                         character.id
                     ),
                 )),
@@ -672,12 +681,17 @@ const DEFAULT_LIMIT: usize = 100_000;
 
 /// What `test` prints about how far it got. A partial run never claims the story has
 /// no ending: it only says none was reached yet.
-fn test_summary(report: &quillstone_runtime::Report) -> Vec<String> {
-    let lines = |lines: &[usize]| lines.iter().map(usize::to_string).collect::<Vec<_>>().join(", ");
+fn test_summary(report: &quillstone_runtime::Report, program: &Program, script: &Path) -> Vec<String> {
+    // "12" in the main script, "chapters/ch1.quill.md:12" in an included file.
+    let line = |line: usize| match program.locate(line) {
+        (Some(file), n) => format!("{}:{n}", game_file(script, file).display()),
+        (None, n) => n.to_string(),
+    };
+    let lines = |lines: &[usize]| lines.iter().map(|&l| line(l)).collect::<Vec<_>>().join(", ");
     let endings = match (report.endings.as_slice(), report.partial) {
         ([], false) => "no ending".to_string(),
         ([], true) => "no ending reached yet".to_string(),
-        ([line], _) => format!("1 ending (line {line})"),
+        ([l], _) => format!("1 ending (line {})", line(*l)),
         (found, _) => format!("{} endings (lines {})", found.len(), lines(found)),
     };
     if report.partial {
@@ -696,11 +710,11 @@ fn test_summary(report: &quillstone_runtime::Report) -> Vec<String> {
 fn test(path: &Path, limit: usize) -> Result<Explored, String> {
     let program = load(path)?;
     let report = quillstone_runtime::explore(&program, limit);
-    for line in test_summary(&report) {
+    for line in test_summary(&report, &program, path) {
         println!("{line}");
     }
     let show = |kind: &str, f: &quillstone_runtime::Finding| {
-        let at = if f.line > 0 { format!("{}:{}: ", path.display(), f.line) } else { String::new() };
+        let at = if f.line > 0 { format!("{}: ", at(&program, path, f.line)) } else { String::new() };
         eprintln!("{at}{kind}: {}", f.message);
         match f.path.as_deref() {
             Some([]) => eprintln!("    (straight from the start, no choices needed)"),
@@ -777,7 +791,11 @@ fn dump(path: &Path) -> Result<(), String> {
         for name in labels_at.get(&i).into_iter().flatten() {
             println!("{name}:");
         }
-        println!("{i:>5}  (line {:<3})  {op:?}", program.lines[i]);
+        let (file, line) = program.locate(program.lines[i]);
+        match file {
+            None => println!("{i:>5}  (line {line:<3})  {op:?}"),
+            Some(file) => println!("{i:>5}  ({file}:{line})  {op:?}"),
+        }
     }
     Ok(())
 }
@@ -940,6 +958,7 @@ fn print_cmds(cmds: &[Cmd]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quillstone_script::parse;
 
     #[test]
     fn a_hotspots_block_with_only_hidden_regions_is_flagged() {
@@ -1459,9 +1478,68 @@ mod tests {
         let src = "---\nvars: { a: 0, b: 0, c: 0, d: 0, e: 0 }\n---\n# loop\n::set{a=random(1,6), b=random(1,6), c=random(1,6), d=random(1,6), e=random(1,6)}\n::choice\n- [Again](#loop)\n- [Stop](#fin)\n::\n# fin\n::end\n";
         let report = quillstone_runtime::explore(&parse(src).unwrap(), 40);
         assert!(report.partial);
-        let text = test_summary(&report).join("\n");
+        let text = test_summary(&report, &parse(src).unwrap(), Path::new("s.quill.md")).join("\n");
         assert!(text.contains("PARTIAL") && !text.contains("Found no ending") && !text.ends_with("no ending."), "{text}");
         let done = quillstone_runtime::explore(&parse("Hi.\n").unwrap(), 40);
-        assert!(test_summary(&done)[0].starts_with("played every branch"));
+        assert!(test_summary(&done, &parse("Hi.\n").unwrap(), Path::new("s.quill.md"))[0].starts_with("played every branch"));
+    }
+
+    // ---- `::include` ---------------------------------------------------------
+
+    const KEY_PNG: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+
+    fn text(s: &str) -> &[u8] {
+        s.as_bytes()
+    }
+
+    #[test]
+    fn check_finds_an_included_files_assets_and_errors_name_it() {
+        let main = "::include{ch/a.quill.md}\n";
+        let (ok, bad) = (
+            in_dir(&[("g.quill.md", text(main)), ("ch/a.quill.md", text("::bg{src=assets/k.png}\nHi.\n")), ("assets/k.png", KEY_PNG)], |d| check(&d.join("g.quill.md"))),
+            in_dir(&[("g.quill.md", text(main)), ("ch/a.quill.md", text("Hi.\n::bg{src=assets/k.png}\n"))], |d| check(&d.join("g.quill.md"))),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+        assert!(bad.unwrap_err().starts_with("1 problem"));
+        // where it is reported
+        in_dir(&[("g.quill.md", text(main)), ("ch/a.quill.md", text("Hi.\n::bg{src=assets/k.png}\n"))], |d| {
+            let script = d.join("g.quill.md");
+            let program = load(&script).unwrap();
+            let line = program.assets_with_lines().next().unwrap().0;
+            assert_eq!(at(&program, &script, line), format!("{}:2", d.join("ch/a.quill.md").display()));
+            assert_eq!(at(&program, &script, 1), format!("{}:1", script.display()));
+        });
+    }
+
+    #[test]
+    fn a_parse_error_in_an_included_file_names_the_file_and_line() {
+        in_dir(&[("g.quill.md", text("::include{ch/a.quill.md}\n")), ("ch/a.quill.md", text("Hi.\n\n::bogus\n"))], |d| {
+            let e = load(&d.join("g.quill.md")).unwrap_err();
+            assert!(e.starts_with(&format!("{}:3: error: ", d.join("ch/a.quill.md").display())), "{e}");
+            assert!(check(&d.join("g.quill.md")).unwrap_err().contains("ch/a.quill.md:3"));
+        });
+    }
+
+    #[test]
+    fn test_findings_and_endings_in_an_included_file_say_which_file() {
+        let files = [("g.quill.md", text("# a\n::jump{to=z}\n::include{ch/a.quill.md}\n")), ("ch/a.quill.md", text("# lost\nNever.\n# z\nEnd.\n"))];
+        in_dir(&files, |d| {
+            let script = d.join("g.quill.md");
+            let program = load(&script).unwrap();
+            let report = quillstone_runtime::explore(&program, 1000);
+            let lost = report.warnings.iter().find(|f| f.message.contains("lost") || f.message.contains("Never")).expect("unreached part");
+            assert_eq!(at(&program, &script, lost.line), format!("{}:2", d.join("ch/a.quill.md").display()));
+            let summary = test_summary(&report, &program, &script).join("\n");
+            assert!(summary.contains(&format!("1 ending (line {}:", d.join("ch/a.quill.md").display())), "{summary}");
+            assert!(test(&script, 1000).is_ok());
+        });
+    }
+
+    #[test]
+    fn dump_and_the_examples_work_with_includes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/chapters.quill.md");
+        assert!(check(&path).is_ok());
+        assert!(test(&path, 1000).is_ok());
+        assert!(dump(&path).is_ok());
     }
 }

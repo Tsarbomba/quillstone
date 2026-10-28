@@ -1,4 +1,4 @@
-//! Hot reload: save the script (or its theme) and the running game picks the
+//! Hot reload: save the script (or a file it includes, or its theme) and the running game picks the
 //! change up at the same spot (see `quillstone_ui::Game::reload`).
 //!
 //! The files are polled (twice a second), which needs no file-watching library
@@ -21,18 +21,28 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 impl Watch {
-    /// Watch the script and the theme file it names.
+    /// Watch the script, the files it includes and the theme file it names.
     pub fn new(script: &Path, program: &Program, root: &Path) -> Watch {
-        let mut paths = vec![script.to_path_buf()];
-        paths.extend(program.theme.as_ref().map(|t| root.join(t)));
-        let files = paths
-            .into_iter()
-            .map(|path| {
+        let mut watch = Watch { files: Vec::new(), last: Instant::now() };
+        watch.add(quillstone_ui::source::script_files(script, program));
+        watch.add(program.theme.as_ref().map(|t| root.join(t)));
+        watch
+    }
+
+    /// Also watch these files (those already watched stay as they are).
+    pub fn add(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            if !self.files.iter().any(|(p, _)| *p == path) {
                 let seen = modified(&path);
-                (path, seen)
-            })
-            .collect();
-        Watch { files, last: Instant::now() }
+                self.files.push((path, seen));
+            }
+        }
+    }
+
+    /// The watched files, in the order they were added (the script first).
+    #[cfg(test)]
+    fn paths(&self) -> Vec<&Path> {
+        self.files.iter().map(|(p, _)| p.as_path()).collect()
     }
 
     /// Whether a watched file was saved since the last call (looks at most twice a second).
@@ -50,5 +60,54 @@ impl Watch {
             }
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qs-reload-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("ch")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn included_files_are_watched_with_the_script_and_theme() {
+        let root = dir("watch");
+        let main = root.join("main.quill.md");
+        let text = "---\ntheme: t.txt\n---\n::include{ch/a.quill.md}\n";
+        std::fs::write(&main, text).unwrap();
+        std::fs::write(root.join("ch/a.quill.md"), "::include{ch/b.quill.md}\n").unwrap();
+        std::fs::write(root.join("ch/b.quill.md"), "Hi.\n").unwrap();
+        let program = quillstone_ui::source::parse_script(&main, text).unwrap();
+        let mut watch = Watch::new(&main, &program, &root);
+        assert_eq!(watch.paths(), [main.as_path(), &root.join("ch/a.quill.md"), &root.join("ch/b.quill.md"), &root.join("t.txt")]);
+        // saving an included file is a change, once
+        watch.last = Instant::now() - EVERY;
+        assert!(!watch.changed());
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(root.join("ch/b.quill.md"), "Changed.\n").unwrap();
+        let later = SystemTime::now() + Duration::from_secs(5);
+        std::fs::File::options().write(true).open(root.join("ch/b.quill.md")).unwrap().set_modified(later).unwrap();
+        watch.last = Instant::now() - EVERY;
+        assert!(watch.changed());
+        watch.last = Instant::now() - EVERY;
+        assert!(!watch.changed());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_file_with_an_error_can_be_added_and_nothing_is_watched_twice() {
+        let root = dir("add");
+        let main = root.join("main.quill.md");
+        std::fs::write(&main, "Hi.\n").unwrap();
+        let program = quillstone_ui::source::parse_script(&main, "Hi.\n").unwrap();
+        let mut watch = Watch::new(&main, &program, &root);
+        watch.add([root.join("ch/new.quill.md"), main.clone(), root.join("ch/new.quill.md")]);
+        assert_eq!(watch.paths(), [main.as_path(), &root.join("ch/new.quill.md")]);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

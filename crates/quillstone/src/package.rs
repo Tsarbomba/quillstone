@@ -7,6 +7,7 @@
 //!   licenses/FFmpeg.txt   FFmpeg is LGPL: say so and where its source is
 //!   game/
 //!     story.quill.md      the script, under its own name (the only one, so the player finds it)
+//!     chapters/...        files the script `::include`s, at the same paths
 //!     theme.txt, assets/  only the files the script and theme use
 //! ```
 //!
@@ -41,6 +42,17 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
     let mut files: BTreeSet<String> = BTreeSet::new();
     files.insert(script_name.to_string());
+    // Included scripts keep their paths under game/, so the player reads them as it does from the project folder.
+    files.extend(program.included_files().map(String::from));
+    // The player starts `main.quill.md`, else the only `.quill.md` beside it: another script there makes it ambiguous.
+    if script_name != "main.quill.md" {
+        if let Some(beside) = program.included_files().find(|f| !f.contains('/') && f.to_ascii_lowercase().ends_with(".quill.md")) {
+            return Err(format!(
+                "can't package: `{beside}` is included from `{script_name}` but sits beside it, so the player couldn't tell which \
+                 is the game's script. Name the main script `main.quill.md`, or move included files into a folder (`chapters/`)"
+            ));
+        }
+    }
     for (_, _, asset) in program.assets() {
         if quillstone_script::is_pattern(asset) {
             // A picture named from variables: every file it can build ships.
@@ -349,6 +361,56 @@ mod tests {
         let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None };
         let err = package(&opts, &quillstone_script::parse(lonely).unwrap()).unwrap_err();
         assert!(err.contains("matches no file"), "{err}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packages_included_scripts_at_their_paths() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-include-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("chapters/deep")).unwrap();
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        std::fs::write(src.join("assets/bg.png"), include_bytes!("../../../examples/assets/gui/key.png")).unwrap();
+        std::fs::write(src.join("chapters/unused.quill.md"), "Not included.\n").unwrap();
+        let main = "---\ntitle: Split\n---\n::include{chapters/one.quill.md}\n";
+        std::fs::write(src.join("main.quill.md"), main).unwrap();
+        std::fs::write(src.join("chapters/one.quill.md"), "# one\n::bg{src=assets/bg.png}\n::include{chapters/deep/two.quill.md}\n").unwrap();
+        std::fs::write(src.join("chapters/deep/two.quill.md"), "Hi.\n").unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let script = src.join("main.quill.md");
+        let program = crate::load(&script).unwrap();
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
+        for f in ["main.quill.md", "chapters/one.quill.md", "chapters/deep/two.quill.md", "assets/bg.png"] {
+            assert!(out.join("game").join(f).is_file(), "{f}");
+        }
+        assert!(!out.join("game/chapters/unused.quill.md").exists());
+        // the packed game checks out on its own
+        assert!(crate::check(&out.join("game/main.quill.md")).is_ok());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_included_script_beside_a_differently_named_main_is_refused() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-include-beside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("story.quill.md"), "::include{two.quill.md}\n").unwrap();
+        std::fs::write(src.join("two.quill.md"), "Hi.\n").unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let script = src.join("story.quill.md");
+        let program = crate::load(&script).unwrap();
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        assert!(package(&opts, &program).unwrap_err().contains("main.quill.md"));
+        assert!(!out.exists());
+        // as main.quill.md it is fine
+        std::fs::rename(&script, src.join("main.quill.md")).unwrap();
+        let script = src.join("main.quill.md");
+        let program = crate::load(&script).unwrap();
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        package(&opts, &program).unwrap();
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

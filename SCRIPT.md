@@ -8,7 +8,7 @@ wait, a video, a choice). Everything else runs instantly in between.
 `quillstone test script.quill.md` plays every branch and reports story bugs (loops
 with no way out, unreachable parts, options never offered, misspelt variables);
 `quillstone run script.quill.md` plays it in the terminal; `quillstone dump` shows
-the compiled form. Errors name the line.
+the compiled form. Errors name the file and line.
 
 ## Layout of a file
 
@@ -50,6 +50,40 @@ She looks away.
   `image=`, `sprites=`, inline image, `gallery:`, `music_room:` or `theme:` path breaks that
   (otherwise its saves could never be loaded again). Braces can't be part of a file name
   (see [Picture names from variables](#picture-names-from-variables) for the one place a `{variable}` may stand in a name).
+
+## Splitting a story over several files
+
+````markdown
+::include{chapters/ch1.quill.md}
+::include{src=chapters/ch2.quill.md}
+````
+
+`::include` on a line of its own reads another script file at that spot, as if its lines
+were written there: its labels, characters, items and animations are part of the one story,
+and a `::jump` may go from any file to a label in any other. The inclusion happens when the
+game is compiled, so saves, rollback and the tester see one story.
+
+- The path is relative to the **main script's folder** (the game folder), like every other
+  path (assets keep that same base inside an included file: `assets/x.png`, not a path
+  relative to the included file), and must be inside it. The file name ends in `.quill.md`
+  (or `.md`). It can't hold a `{variable}`.
+- The **main script** keeps the front matter: `title`, `vars`, `theme`, `gallery`, `replays`,
+  `persistent` and the rest. An included file has none, and starting with `---` is an error.
+- Labels are global: the same label in two files is an error that names both places.
+- Includes may nest up to 8 files deep. A file can be included once: including it a second
+  time, or a cycle (`a` includes `b` includes `a`, or a file including the main script), is
+  an error. A game may include up to 200 files and 8 MB of script in all.
+- A `::choice`, `::hotspots` or `::shop` block, a comment and a front matter block each
+  stay inside one file; an `::if` block may open in one file and close in another.
+- Errors, warnings and `quillstone test` findings name the file and line, such as
+  `chapters/ch1.quill.md:12`. In `quillstone dump` the line column shows the file as well.
+- A script handed to the compiler as plain text, with no folder to read from, can't use it.
+- Hot reload watches every included file: saving one updates the running game. `quillstone
+  package` copies every included file into the game's `game` folder at the same path (put
+  included scripts in a folder such as `chapters/`, or name the main script `main.quill.md`,
+  so the player can tell which file starts the game).
+
+See `examples/chapters.quill.md`.
 
 ## Variables
 
@@ -1091,7 +1125,9 @@ Saves remember positions as *label + how far past it*, so editing a script
 doesn't break existing saves: anything added or removed above a label leaves
 saves after that label where they were. If a saved spot no longer matches the
 script (say, a line was inserted just before it), the game picks up from that
-spot instead. A save whose label was renamed or removed can't be loaded. Skip
+spot instead. A save whose label was renamed or removed can't be loaded. Moving
+part of a story into an `::include` (or back) changes nothing for saves, since they are
+checked against the one compiled story. Skip
 mode remembers read lines by their label and text, so rewording a line makes it
 "unread" again. The same rules apply when the player reloads a script you just
 saved (hot reload): it carries on where you are. A save that was waiting at a
@@ -1215,6 +1251,6 @@ ignored.
 
 ## Not (yet) in the language
 
-Pasting into a text input, multiple script files / `::include`,
+Pasting into a text input,
 character voices per speaker, and transitions other than fades and wipes.
 The runtime is built so these slot in without changing what is written above.

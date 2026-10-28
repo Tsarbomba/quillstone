@@ -21,23 +21,74 @@ use crate::ops::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
+    /// The line within `file` (or within the main script when `file` is `None`).
     pub line: usize,
+    /// The included file the error is in (its game-folder path); `None` for the main script.
+    pub file: Option<String>,
     pub message: String,
+}
+
+impl ParseError {
+    /// `path:line` with `main` naming the main script.
+    pub fn place(&self, main: &str) -> String {
+        format!("{}:{}", self.file.as_deref().unwrap_or(main), self.line)
+    }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
+        match &self.file {
+            Some(file) => write!(f, "{file}:{}: {}", self.line, self.message),
+            None => write!(f, "line {}: {}", self.line, self.message),
+        }
     }
 }
 
 impl std::error::Error for ParseError {}
 
 /// Compile script source into a [`Program`], or return every error found.
+/// `::include` is an error here: a plain string has no game folder (see [`parse_files`]).
 pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
-    let mut p = Parser::default();
-    p.run(src);
+    parse_inner(src, "", None)
+}
+
+/// Reads an included file: gets its game-folder path, returns its text or why it can't be read.
+pub type Loader<'a> = &'a dyn Fn(&str) -> Result<String, String>;
+
+/// Like [`parse`], but `::include{path}` reads other script files through `load`, which gets
+/// the path as written in the script (relative to the game folder, already checked to be
+/// inside it) and returns the file's text or a reason it can't be read. `main` is the main
+/// script's own path in the game folder: it names the file in messages and an include of
+/// it is a cycle.
+pub fn parse_files(src: &str, main: &str, load: Loader) -> Result<Program, Vec<ParseError>> {
+    parse_inner(src, main, Some(load))
+}
+
+fn parse_inner(src: &str, main: &str, load: Option<Loader>) -> Result<Program, Vec<ParseError>> {
+    let mut p = Parser { main: main.to_string(), ..Parser::default() };
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let mut files = Files { load, stack: Vec::new(), seen: Vec::new(), bytes: 0, next_base: src.lines().count() + 1 };
+    p.run_file(src, &mut files);
     p.finish()
+}
+
+/// Most files that may be included in one game, how deep they may nest, and how much text
+/// they may add up to (scripts can come from shared packages).
+pub const MAX_INCLUDES: usize = 200;
+pub const MAX_INCLUDE_DEPTH: usize = 8;
+pub const MAX_INCLUDE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What `::include` needs while one script is read: the loader and what it already read.
+struct Files<'a> {
+    load: Option<Loader<'a>>,
+    /// The files being read right now, outermost first (for cycles and the depth); the main
+    /// script is not in it.
+    stack: Vec<String>,
+    /// Every file included so far: (name, line of the `::include`) for the "twice" error.
+    seen: Vec<(String, usize)>,
+    bytes: usize,
+    /// The program line number the next included file's line 0 gets.
+    next_base: usize,
 }
 
 /// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
@@ -47,7 +98,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end, end_replay";
+                        choice, hotspots, item, inventory, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -92,6 +143,13 @@ struct Parser {
     trailing: Vec<Op>,
     /// Characters an earlier `::show` gave layers to (a later one may then leave layers out).
     layered_seen: std::collections::BTreeSet<String>,
+    /// The main script's path as given to `parse_files` (empty for plain `parse`).
+    main: String,
+    /// Added to a line number of the file being read to make its program line number
+    /// (0 for the main script).
+    base: usize,
+    /// The first line of every label, for the duplicate-label message.
+    label_lines: BTreeMap<String, usize>,
 }
 
 /// A jump target that must be filled in once all labels are known.
@@ -116,7 +174,7 @@ const UNSET: usize = usize::MAX;
 
 impl Parser {
     fn err(&mut self, line: usize, message: impl Into<String>) {
-        self.errors.push(ParseError { line, message: message.into() });
+        self.errors.push(ParseError { line, file: None, message: message.into() });
     }
 
     fn push(&mut self, op: Op, line: usize) {
@@ -134,12 +192,12 @@ impl Parser {
         }
     }
 
-    fn run(&mut self, src: &str) {
-        let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    /// Read one script (the main one, or an included file whose lines are numbered from `self.base`).
+    fn run_file(&mut self, src: &str, files: &mut Files) {
         let lines: Vec<&str> = src.lines().collect();
         let mut i = 0;
 
-        if lines.first().map(|l| l.trim()) == Some("---") {
+        if self.base == 0 && lines.first().map(|l| l.trim()) == Some("---") {
             match lines.iter().skip(1).position(|l| l.trim() == "---") {
                 Some(rel) => {
                     let end = rel + 1;
@@ -155,7 +213,7 @@ impl Parser {
 
         let mut para: Vec<(usize, &str)> = Vec::new();
         while i < lines.len() {
-            let line_no = i + 1;
+            let line_no = self.base + i + 1;
             let t = lines[i].trim();
             if t.is_empty() {
                 self.flush(&mut para);
@@ -166,7 +224,7 @@ impl Parser {
                     let l = lines[end].trim();
                     if let Some(pos) = l.find("-->") {
                         if !l[pos + 3..].trim().is_empty() {
-                            self.err(end + 1, "nothing may follow `-->` on a comment's last line");
+                            self.err(self.base + end + 1, "nothing may follow `-->` on a comment's last line");
                         }
                         break;
                     }
@@ -181,6 +239,9 @@ impl Parser {
             } else if let Some(text) = heading(t) {
                 self.flush(&mut para);
                 self.label(line_no, text);
+            } else if let Some(inner) = include_args(t) {
+                self.flush(&mut para);
+                self.include(line_no, inner, files);
             } else if t.starts_with("::") {
                 self.flush(&mut para);
                 i = self.command(&lines, i);
@@ -340,9 +401,89 @@ impl Parser {
         if self.errors.is_empty() {
             Ok(self.program)
         } else {
+            // Lines are program line numbers until now; give each error its file and own line.
             self.errors.sort_by_key(|e| e.line);
+            for e in &mut self.errors {
+                if let (Some(file), line) = self.program.locate(e.line) {
+                    (e.file, e.line) = (Some(file.to_string()), line);
+                }
+            }
             Err(self.errors)
         }
+    }
+
+    /// `file:line` of a program line number, for messages that point at a second place.
+    fn describe(&self, line: usize) -> String {
+        match self.program.locate(line) {
+            (Some(file), n) => format!("{file}:{n}"),
+            (None, n) if self.main.is_empty() => format!("line {n} of the main script"),
+            (None, n) => format!("{}:{n}", self.main),
+        }
+    }
+
+    /// `::include{chapters/ch1.quill.md}`: read that file here, as if its text stood in its place.
+    fn include(&mut self, line: usize, inner: &str, files: &mut Files) {
+        let Some(path) = include_path(inner) else {
+            return self.err(line, "`::include` needs a file: `::include{chapters/ch1.quill.md}`");
+        };
+        if path.contains(['{', '}']) {
+            return self.err(line, format!("`::include{{{path}}}`: braces can't be part of a file name (a `::include` is read when the game is built, so it can't use a variable)"));
+        }
+        if !is_inside(&path) {
+            return self.err(line, format!("`::include{{{path}}}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"));
+        }
+        let lower = path.to_ascii_lowercase();
+        if !lower.ends_with(".quill.md") && !lower.ends_with(".md") {
+            return self.err(line, format!("`::include{{{path}}}`: a script file ends in `.quill.md` (or `.md`)"));
+        }
+        let key = normal_path(&path);
+        let same = |a: &String| a.eq_ignore_ascii_case(&key);
+        if same(&normal_path(&self.main)) || files.stack.iter().any(same) {
+            let mut chain: Vec<&str> = std::iter::once(self.main.as_str()).chain(files.stack.iter().map(String::as_str)).collect();
+            chain.retain(|n| !n.is_empty());
+            chain.push(&key);
+            return self.err(line, format!("`::include{{{path}}}` includes a file that is already being read (a cycle: {})", chain.join(" -> ")));
+        }
+        if let Some((_, first)) = files.seen.iter().find(|(k, _)| same(k)) {
+            let first = self.describe(*first);
+            return self.err(line, format!("`{path}` is included twice (first at {first}); each file may be included once, or its labels would be defined twice"));
+        }
+        if files.stack.len() >= MAX_INCLUDE_DEPTH {
+            return self.err(line, format!("`::include` nests more than {MAX_INCLUDE_DEPTH} files deep"));
+        }
+        if files.seen.len() >= MAX_INCLUDES {
+            return self.err(line, format!("a game may include at most {MAX_INCLUDES} files"));
+        }
+        let Some(load) = files.load else {
+            return self.err(line, "`::include` needs a game folder to read the file from: it can't be used in a script given as plain text");
+        };
+        files.seen.push((key.clone(), line));
+        let text = match load(&key) {
+            Ok(t) => t,
+            Err(why) => return self.err(line, format!("cannot include `{path}`: {why}")),
+        };
+        files.bytes = files.bytes.saturating_add(text.len());
+        if files.bytes > MAX_INCLUDE_BYTES {
+            return self.err(line, format!("the included files add up to more than {} MB: that is too much script", MAX_INCLUDE_BYTES >> 20));
+        }
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let len = text.lines().count();
+        let base = files.next_base;
+        files.next_base += len + 1;
+        self.program.sources.push(SourceSpan { file: key.clone(), base, len });
+        if text.lines().next().map(str::trim) == Some("---") {
+            self.errors.push(ParseError {
+                line: base + 1,
+                file: None,
+                message: "front matter (title, variables, theme, gallery, ...) belongs in the main script only: an included file has none".into(),
+            });
+            return;
+        }
+        let outer = std::mem::replace(&mut self.base, base);
+        files.stack.push(key);
+        self.run_file(text, files);
+        files.stack.pop();
+        self.base = outer;
     }
 
     // ---- front matter -------------------------------------------------
@@ -593,7 +734,10 @@ impl Parser {
         };
         let at = self.here();
         if self.program.labels.insert(name.clone(), at).is_some() {
-            self.err(line, format!("duplicate label `{name}`"));
+            let first = self.label_lines.get(&name).map(|&l| format!(" (first defined at {})", self.describe(l))).unwrap_or_default();
+            self.err(line, format!("duplicate label `{name}`{first}"));
+        } else {
+            self.label_lines.insert(name.clone(), line);
         }
         if let Some(params) = params {
             self.program.params.insert(name.clone(), params);
@@ -673,7 +817,7 @@ impl Parser {
 
     /// Parse the command at `lines[i]`. Returns the index of the last line consumed.
     fn command(&mut self, lines: &[&str], i: usize) -> usize {
-        let line = i + 1;
+        let line = self.base + i + 1;
         let body = &lines[i].trim()[2..];
         if body.trim().is_empty() {
             self.err(line, "stray `::` (it only closes a `::choice`, `::hotspots` or `::shop` block)");
@@ -1676,7 +1820,7 @@ impl Parser {
 
     /// `::shop{pay=gold into=inventory}` and its `- key{price=20, if met}` lines.
     fn shop(&mut self, lines: &[&str], start: usize, inner: &str) -> usize {
-        let line = start + 1;
+        let line = self.base + start + 1;
         let mut a = match Attrs::parse(inner) {
             Ok(a) => a,
             Err(m) => {
@@ -1730,16 +1874,16 @@ impl Parser {
             }
             if t.starts_with("<!--") {
                 if !t.ends_with("-->") {
-                    self.err(j + 1, "a comment inside `::shop` must open and close on one line");
+                    self.err(self.base + j + 1, "a comment inside `::shop` must open and close on one line");
                 }
             } else if !t.is_empty() {
                 lines_seen += 1;
                 match self.shop_entry(t) {
                     Ok(e) if stock.iter().any(|s| s.item == e.item) => {
-                        self.err(j + 1, format!("`{}` is in this shop twice", e.item));
+                        self.err(self.base + j + 1, format!("`{}` is in this shop twice", e.item));
                     }
                     Ok(e) => stock.push(e),
-                    Err(m) => self.err(j + 1, m),
+                    Err(m) => self.err(self.base + j + 1, m),
                 }
             }
             j += 1;
@@ -2319,7 +2463,7 @@ impl Parser {
     // ---- choice blocks ---------------------------------------------------
 
     fn choice(&mut self, lines: &[&str], start: usize, inner: &str, hot: bool) -> usize {
-        let line = start + 1;
+        let line = self.base + start + 1;
         let name = if hot { "::hotspots" } else { "::choice" };
         let mut time = None;
         if hot {
@@ -2357,15 +2501,15 @@ impl Parser {
             }
             if t.starts_with("<!--") {
                 if !t.ends_with("-->") {
-                    self.err(j + 1, format!("a comment inside `{name}` must open and close on one line"));
+                    self.err(self.base + j + 1, format!("a comment inside `{name}` must open and close on one line"));
                 }
             } else if !t.is_empty() {
-                match self.option(t, hot, j + 1) {
+                match self.option(t, hot, self.base + j + 1) {
                     Ok((opt, label)) => {
                         options.push(opt);
-                        labels.push((label, j + 1));
+                        labels.push((label, self.base + j + 1));
                     }
-                    Err(m) => self.err(j + 1, m),
+                    Err(m) => self.err(self.base + j + 1, m),
                 }
             }
             j += 1;
@@ -2554,6 +2698,29 @@ fn check_hotspot_image(path: &str) -> Result<String, String> {
 }
 
 /// `path` must name a .png, .jpg or .webp file (`key` and `what` are for the message).
+/// The argument of an `::include{..}` line, or `None` for any other line.
+fn include_args(t: &str) -> Option<&str> {
+    let rest = t.strip_prefix("::include")?.trim();
+    if rest.is_empty() {
+        return Some("");
+    }
+    rest.strip_prefix('{')?.strip_suffix('}')
+}
+
+/// `chapters/ch1.quill.md`, `src=chapters/ch1.quill.md` or either in quotes.
+fn include_path(inner: &str) -> Option<String> {
+    let t = inner.trim();
+    let t = t.strip_prefix("src=").unwrap_or(t).trim();
+    let t = t.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(t);
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// A game-folder path without `.` parts, so two spellings of one file compare equal (callers
+/// compare ignoring case too, for systems that do).
+fn normal_path(path: &str) -> String {
+    path.split('/').filter(|p| !p.is_empty() && *p != ".").collect::<Vec<_>>().join("/")
+}
+
 fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String> {
     check_inside(key, path)?;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
