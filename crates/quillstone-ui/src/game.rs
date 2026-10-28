@@ -261,7 +261,7 @@ impl<'p> Game<'p> {
             cmds.push(Cmd::StopSfx { src: None, fade: 1.0 }); // the story's ambience ends with it
         }
         if let Some(src) = self.theme().menu_music.clone() {
-            cmds.push(Cmd::PlayMusic { src, fade: 1.0, looped: true, volume: 1.0 });
+            cmds.push(Cmd::PlayMusic { src, intro: None, fade: 1.0, looped: true, volume: 1.0 });
         }
         self.show(&cmds);
         self.newest_save = crate::slots::newest_save(&*self.storage);
@@ -346,7 +346,7 @@ impl<'p> Game<'p> {
         self.view.set_theme(theme);
         if !self.in_story {
             let cmd = match music {
-                Some(src) => Cmd::PlayMusic { src, fade: 1.0, looped: true, volume: 1.0 },
+                Some(src) => Cmd::PlayMusic { src, intro: None, fade: 1.0, looped: true, volume: 1.0 },
                 None => Cmd::StopMusic { fade: 1.0 },
             };
             self.audio.extend(self.mixer.apply(&[cmd]));
@@ -891,6 +891,7 @@ impl<'p> Game<'p> {
             // one-shot sounds or voices. Looping sounds belong to the scene and are
             // never muted, so what plays still agrees with the story afterwards.
             self.view.end_flash();
+            self.view.end_cover_fade();
             actions.retain(|a| !matches!(a, Action::PlaySfx { .. } | Action::PlayVoice { .. }));
         }
         self.audio.extend(actions);

@@ -10,7 +10,7 @@
 use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{Ease, Fit, Wipe};
+use quillstone_script::{Axis, Ease, Fit, Wipe};
 
 use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
@@ -128,19 +128,26 @@ pub struct SpriteView {
     pub z: i32,
     /// Target size.
     pub scale: f32,
+    /// Mirrored left to right (from the start of a move that switches it).
+    pub flip: bool,
+    /// Target stretch along one axis, on top of `scale`.
+    pub xscale: f32,
+    pub yscale: f32,
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
     from_x: f32,
     from_y: f32,
     from_scale: f32,
+    from_xscale: f32,
+    from_yscale: f32,
     move_time: f32,
     move_elapsed: f32,
     move_ease: Ease,
 }
 
 impl SpriteView {
-    fn new(id: &str, src: &str, x: f32, y: f32, z: i32, scale: f32, fade: f32) -> SpriteView {
+    fn new(id: &str, src: &str, x: f32, y: f32, z: i32, look: Look, fade: f32) -> SpriteView {
         SpriteView {
             id: id.to_string(),
             src: src.to_string(),
@@ -148,13 +155,18 @@ impl SpriteView {
             x,
             y,
             z,
-            scale,
+            scale: look.scale,
+            flip: look.flip,
+            xscale: look.xscale,
+            yscale: look.yscale,
             hiding: false,
             fade,
             elapsed: 0.0,
             from_x: x,
             from_y: y,
-            from_scale: scale,
+            from_scale: look.scale,
+            from_xscale: look.xscale,
+            from_yscale: look.yscale,
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
@@ -173,6 +185,21 @@ impl SpriteView {
     /// How big the sprite is right now (growing towards `scale` during a move).
     pub fn current_scale(&self) -> f32 {
         self.from_scale + (self.scale - self.from_scale) * self.move_progress()
+    }
+
+    /// The horizontal stretch right now (moving towards `xscale` during a move).
+    pub fn current_xscale(&self) -> f32 {
+        self.from_xscale + (self.xscale - self.from_xscale) * self.move_progress()
+    }
+
+    /// The vertical stretch right now (moving towards `yscale` during a move).
+    pub fn current_yscale(&self) -> f32 {
+        self.from_yscale + (self.yscale - self.from_yscale) * self.move_progress()
+    }
+
+    /// Size, stretch and mirroring right now.
+    fn look(&self) -> Look {
+        Look { scale: self.current_scale(), xscale: self.current_xscale(), yscale: self.current_yscale(), flip: self.flip }
     }
 
     /// Fade progress as opacity: rising when showing, falling when hiding.
@@ -204,6 +231,8 @@ impl SpriteView {
                 self.from_x = self.x;
                 self.from_y = self.y;
                 self.from_scale = self.scale;
+                self.from_xscale = self.xscale;
+                self.from_yscale = self.yscale;
             }
         }
         if !self.hiding && self.elapsed >= self.fade {
@@ -214,6 +243,15 @@ impl SpriteView {
     fn is_gone(&self) -> bool {
         self.hiding && self.alpha() <= 0.0
     }
+}
+
+/// How big a sprite is drawn and whether it is mirrored: `scale` times the per-axis stretch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Look {
+    pub scale: f32,
+    pub xscale: f32,
+    pub yscale: f32,
+    pub flip: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +379,7 @@ impl CameraMove {
 struct Shake {
     time: f32,
     strength: f32,
+    axis: Axis,
     elapsed: f32,
 }
 
@@ -357,10 +396,18 @@ impl Shake {
     }
 
     /// The zoom about the screen centre that keeps the shifted stage covering the
-    /// whole screen (the largest offset is `envelope` across, 0.6 of it down).
+    /// whole screen. Only the shaken axis needs covering: the largest offset across
+    /// is `envelope`; down it is `envelope` for a vertical shake, 0.6 of it in a
+    /// shake along both axes.
     fn cover_zoom(&self) -> f32 {
         let e = self.envelope();
-        (1.0 + 2.0 * e / VIRTUAL.w).max(1.0 + 2.0 * 0.6 * e / VIRTUAL.h)
+        let across = 1.0 + 2.0 * e / VIRTUAL.w;
+        let down = |k: f32| 1.0 + 2.0 * k * e / VIRTUAL.h;
+        match self.axis {
+            Axis::X => across,
+            Axis::Y => down(1.0),
+            Axis::Both => across.max(down(0.6)),
+        }
     }
 
     /// The stage's offset now: a fast wobble that dies away (deterministic).
@@ -371,7 +418,13 @@ impl Shake {
             return (0.0, 0.0);
         }
         let tau = std::f32::consts::TAU;
-        (fade * (t * tau * 13.0).sin(), fade * 0.6 * (t * tau * 17.0 + 1.3).sin())
+        let across = fade * (t * tau * 13.0).sin();
+        let down = |k: f32| fade * k * (t * tau * 17.0 + 1.3).sin();
+        match self.axis {
+            Axis::X => (across, 0.0),
+            Axis::Y => (0.0, down(1.0)),
+            Axis::Both => (across, down(0.6)),
+        }
     }
 }
 
@@ -387,6 +440,17 @@ impl Flash {
     fn alpha(&self) -> f32 {
         (1.0 - self.elapsed / self.time).clamp(0.0, 1.0)
     }
+}
+
+/// The stage covered with a colour (`::fade{out}`), fading to full cover or away.
+#[derive(Debug, Clone, PartialEq)]
+struct Cover {
+    color: [f32; 3],
+    alpha: f32,
+    /// 1 while fading out or covered, 0 while fading in.
+    target: f32,
+    /// Opacity change per second (0: at once).
+    rate: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -405,6 +469,7 @@ pub struct View {
     camera: CameraMove,
     shake: Option<Shake>,
     flash: Option<Flash>,
+    cover: Option<Cover>,
     /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
     /// how fast it fades (per second; 0 = at once).
     box_hidden: bool,
@@ -439,6 +504,7 @@ impl View {
             camera: CameraMove { from: Camera::default(), to: Camera::default(), time: 0.0, elapsed: 0.0, ease: Ease::Linear },
             shake: None,
             flash: None,
+            cover: None,
             box_hidden: false,
             box_alpha: 1.0,
             box_rate: 0.0,
@@ -486,6 +552,9 @@ impl View {
         self.wait = None;
         // Only the latest batch can say the story is over (matters after rollback).
         self.finished = false;
+        // `::fade{out}` waits for its end, so a new batch means it is over (a click or
+        // skip cut it short): the cover is complete. A fade in carries on by itself.
+        self.finish_fade_out();
         // A redraw (rollback, later: loading a save) returns to a line the player
         // has already read, so it is shown whole instead of typed out again.
         let redraw = cmds.first() == Some(&Cmd::ClearScene);
@@ -499,6 +568,7 @@ impl View {
                     self.set_camera(Camera::default(), 0.0, Ease::Linear);
                     self.shake = None;
                     self.flash = None;
+                    self.cover = None;
                     self.box_hidden = false;
                     self.box_alpha = 1.0;
                 }
@@ -510,23 +580,49 @@ impl View {
                     }
                 }
                 Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
-                Cmd::ShowSprite { id, src, x, y, z, scale, fade } => self.show_sprite(id, src, (*x, *y), *z, *scale, *fade),
+                Cmd::ShowSprite { id, src, x, y, z, scale, flip, xscale, yscale, fade } => {
+                    let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip };
+                    self.show_sprite(id, src, (*x, *y), *z, look, *fade)
+                }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
-                Cmd::MoveSprite { id, x, y, scale, time, ease } => {
+                Cmd::MoveSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
                         s.from_x = s.current_x();
                         s.from_y = s.current_y();
                         s.y = *y;
                         s.from_scale = s.current_scale();
+                        s.from_xscale = s.current_xscale();
+                        s.from_yscale = s.current_yscale();
                         s.x = *x;
                         s.scale = *scale;
+                        s.flip = *flip; // mirroring can't be animated: it switches as the move starts
+                        s.xscale = *xscale;
+                        s.yscale = *yscale;
                         s.move_time = *time;
                         s.move_elapsed = 0.0;
                         s.move_ease = *ease;
                     }
                 }
-                Cmd::Shake { time, strength } => {
-                    self.shake = Some(Shake { time: *time, strength: *strength, elapsed: 0.0 });
+                Cmd::Shake { time, strength, axis } => {
+                    self.shake = Some(Shake { time: *time, strength: *strength, axis: *axis, elapsed: 0.0 });
+                }
+                Cmd::FadeOut { time, color } => {
+                    let cover = self.cover.get_or_insert(Cover { color: *color, alpha: 0.0, target: 1.0, rate: 0.0 });
+                    cover.color = *color;
+                    cover.target = 1.0;
+                    cover.rate = if *time > 0.0 { 1.0 / time } else { 0.0 };
+                    if *time <= 0.0 {
+                        cover.alpha = 1.0;
+                    }
+                }
+                Cmd::FadeIn { time } => {
+                    if let Some(cover) = &mut self.cover {
+                        cover.target = 0.0;
+                        cover.rate = if *time > 0.0 { 1.0 / time } else { 0.0 };
+                    }
+                    if *time <= 0.0 {
+                        self.cover = None;
+                    }
                 }
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
@@ -619,12 +715,32 @@ impl View {
         self.flash = None;
     }
 
+    /// Finish the cover's fades at once (skipping doesn't wait for them): a fade out
+    /// is complete, a fade in is gone.
+    pub fn end_cover_fade(&mut self) {
+        self.finish_fade_out();
+        if self.cover.as_ref().is_some_and(|c| c.target == 0.0) {
+            self.cover = None;
+        }
+    }
+
+    fn finish_fade_out(&mut self) {
+        if let Some(c) = self.cover.as_mut().filter(|c| c.target == 1.0) {
+            c.alpha = 1.0;
+        }
+    }
+
+    /// The colour and opacity the stage is covered with right now, if it is.
+    pub fn cover(&self) -> Option<([f32; 3], f32)> {
+        self.cover.as_ref().filter(|c| c.alpha > 0.0).map(|c| (c.color, c.alpha))
+    }
+
     /// Where the camera is right now.
     pub fn camera(&self) -> Camera {
         self.camera.current()
     }
 
-    fn show_sprite(&mut self, id: &str, src: &str, (x, y): (f32, f32), z: i32, scale: f32, fade: f32) {
+    fn show_sprite(&mut self, id: &str, src: &str, (x, y): (f32, f32), z: i32, look: Look, fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
@@ -642,10 +758,15 @@ impl View {
                 s.y = y;
                 s.z = z;
                 s.move_time = 0.0;
-                s.scale = scale;
-                s.from_scale = scale;
+                s.scale = look.scale;
+                s.from_scale = look.scale;
+                s.flip = look.flip;
+                s.xscale = look.xscale;
+                s.from_xscale = look.xscale;
+                s.yscale = look.yscale;
+                s.from_yscale = look.yscale;
             }
-            None => self.sprites.push(SpriteView::new(id, src, x, y, z, scale, fade)),
+            None => self.sprites.push(SpriteView::new(id, src, x, y, z, look, fade)),
         }
     }
 
@@ -684,6 +805,17 @@ impl View {
                 self.flash = None;
             }
         }
+        if let Some(c) = &mut self.cover {
+            c.alpha = if c.rate > 0.0 {
+                let step = c.rate * dt;
+                if c.alpha < c.target { (c.alpha + step).min(c.target) } else { (c.alpha - step).max(c.target) }
+            } else {
+                c.target
+            };
+            if c.target == 0.0 && c.alpha <= 0.0 {
+                self.cover = None;
+            }
+        }
         self.sprites.retain(|s| !s.is_gone());
         let target = if self.box_hidden { 0.0 } else { 1.0 };
         if self.box_rate > 0.0 {
@@ -711,6 +843,7 @@ impl View {
     pub fn busy(&self) -> bool {
         self.wait.is_some()
             || self.flash.is_some()
+            || self.cover.as_ref().is_some_and(|c| c.alpha != c.target)
             || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
     }
@@ -817,11 +950,11 @@ impl View {
         let mut order: Vec<&SpriteView> = self.sprites.iter().collect();
         order.sort_by_key(|s| s.z);
         for s in order {
-            let (x, y, scale) = (s.current_x(), s.current_y(), s.current_scale());
+            let (x, y, look) = (s.current_x(), s.current_y(), s.look());
             if let Some(prev) = &s.previous_src {
-                push_sprite(&mut stage, prev, (x, y), scale, 1.0, image_size);
+                push_sprite(&mut stage, prev, (x, y), look, 1.0, image_size);
             }
-            push_sprite(&mut stage, &s.src, (x, y), scale, s.alpha(), image_size);
+            push_sprite(&mut stage, &s.src, (x, y), look, s.alpha(), image_size);
         }
         let view = self.stage_transform();
         for draw in stage {
@@ -858,17 +991,22 @@ impl View {
             }
         }
 
-        // The flash is over the whole picture (video included) but under the textbox and the UI.
-        if let Some(flash) = &self.flash {
-            let [r, g, b] = flash.color;
-            out.push(Draw::Rect { rect: screen, color: [r, g, b, flash.alpha()] });
-        }
-
         let theme = &self.theme;
         for spot in &self.hotspots {
             if let Some(src) = &spot.image {
                 push_image(&mut out, src, hotspot_rect(spot), Fit::Stretch, 1.0, image_size);
             }
+        }
+
+        // The cover and the flash are over the whole picture (stage, inline images, video and
+        // hotspot art), the flash over the cover, but under the textbox and the UI.
+        if let Some((color, alpha)) = self.cover() {
+            let [r, g, b] = color;
+            out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] });
+        }
+        if let Some(flash) = &self.flash {
+            let [r, g, b] = flash.color;
+            out.push(Draw::Rect { rect: screen, color: [r, g, b, flash.alpha()] });
         }
 
         let box_alpha = self.box_alpha();
@@ -1106,7 +1244,7 @@ fn push_sprite(
     out: &mut Vec<Draw>,
     src: &str,
     (x, y): (f32, f32),
-    scale: f32,
+    look: Look,
     alpha: f32,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
@@ -1114,14 +1252,12 @@ fn push_sprite(
     if size.w <= 0.0 || size.h <= 0.0 {
         return;
     }
-    let h = SPRITE_HEIGHT * scale;
-    let w = size.w / size.h * h;
-    out.push(Draw::Image {
-        src: src.to_string(),
-        dest: Rect::new(x * VIRTUAL.w - w / 2.0, y * VIRTUAL.h - h, w, h),
-        uv: Rect::new(0.0, 0.0, 1.0, 1.0),
-        alpha,
-    });
+    let h = SPRITE_HEIGHT * look.scale * look.yscale;
+    let w = size.w / size.h * SPRITE_HEIGHT * look.scale * look.xscale;
+    // A mirrored sprite reads its texture right to left: the clip below carries the
+    // negative width along, so cropping at the screen edge stays right.
+    let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x * VIRTUAL.w - w / 2.0, y * VIRTUAL.h - h, w, h), uv, alpha });
 }
 
 #[cfg(test)]
@@ -1139,11 +1275,11 @@ mod tests {
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: src.into(), x, y: 1.0, z: 0, scale: 1.0, fade }
+        Cmd::ShowSprite { id: id.into(), src: src.into(), x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade }
     }
 
     fn slide(id: &str, x: f32, scale: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), x, y: 1.0, scale, time, ease }
+        Cmd::MoveSprite { id: id.into(), x, y: 1.0, scale, flip: false, xscale: 1.0, yscale: 1.0, time, ease }
     }
 
     fn images(list: &[Draw]) -> Vec<(&str, Rect, Rect)> {
@@ -1450,7 +1586,7 @@ mod tests {
     #[test]
     fn sprites_stand_on_the_bottom_edge_centred_on_x() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), x: 0.25, y: 1.0, z: 0, scale: 0.5, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
@@ -1461,7 +1597,7 @@ mod tests {
     }
 
     fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), x, y, z, scale: 1.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
     }
 
     fn drawn_order(v: &View) -> Vec<String> {
@@ -1513,7 +1649,7 @@ mod tests {
     }
 
     fn slide_y(id: &str, x: f32, y: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), x, y, scale: 1.0, time, ease }
+        Cmd::MoveSprite { id: id.into(), x, y, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time, ease }
     }
 
     #[test]
@@ -1646,7 +1782,7 @@ mod tests {
     #[test]
     fn a_shake_wobbles_the_stage_and_dies_away() {
         let mut v = View::new();
-        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 0.5, strength: 30.0 }]);
+        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 0.5, strength: 30.0, axis: Axis::Both }]);
         let mut moved = false;
         for _ in 0..4 {
             v.tick(0.05);
@@ -1665,7 +1801,7 @@ mod tests {
     #[test]
     fn a_strong_shake_never_exposes_the_screen_edge() {
         let mut v = View::new();
-        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 1.0, strength: 200.0 }]);
+        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 1.0, strength: 200.0, axis: Axis::Both }]);
         let mut zoomed = false;
         for _ in 0..200 {
             v.tick(0.005);
@@ -1685,7 +1821,7 @@ mod tests {
         v.apply(&[bg("bg.png", 0.0)]);
         let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h));
-        v.apply(&[Cmd::Shake { time: 1.0, strength: 200.0 }]);
+        v.apply(&[Cmd::Shake { time: 1.0, strength: 200.0, axis: Axis::Both }]);
         let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "no pop at the start");
     }
@@ -2334,5 +2470,269 @@ mod tests {
         let list = v.draw_list(&no_images, Some(0));
         assert!(!list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Where to?")));
         assert!(list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Door")), "the tooltip stays");
+    }
+
+    // ---- shake axis ----------------------------------------------------------------
+
+    /// Shake `axis` hard and report, over its whole length, the largest movement of the
+    /// background's crop along x and along y, and whether the screen edge ever showed.
+    fn shake_extent(axis: Axis) -> (f32, f32, bool) {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::Shake { time: 1.0, strength: 200.0, axis }]);
+        let (mut mx, mut my, mut exposed) = (0.0_f32, 0.0_f32, false);
+        for _ in 0..200 {
+            v.tick(0.005);
+            let list = v.draw_list(&all_1080p, None);
+            let (_, dest, uv) = images(&list)[0];
+            exposed |= dest.x.abs() > 1e-2 || dest.y.abs() > 1e-2 || (dest.w - VIRTUAL.w).abs() > 1e-2 || (dest.h - VIRTUAL.h).abs() > 1e-2;
+            exposed |= uv.x < -1e-4 || uv.y < -1e-4 || uv.x + uv.w > 1.0001 || uv.y + uv.h > 1.0001;
+            // how far the crop is from centred, along each axis
+            mx = mx.max((uv.x - (1.0 - uv.w) / 2.0).abs());
+            my = my.max((uv.y - (1.0 - uv.h) / 2.0).abs());
+        }
+        (mx, my, exposed)
+    }
+
+    #[test]
+    fn a_horizontal_shake_only_moves_along_x_and_exposes_no_edge() {
+        let (mx, my, exposed) = shake_extent(Axis::X);
+        assert!(mx > 0.01, "it moves sideways ({mx})");
+        assert!(my < 1e-5, "and not up or down ({my})");
+        assert!(!exposed);
+    }
+
+    #[test]
+    fn a_vertical_shake_only_moves_along_y_and_exposes_no_edge() {
+        let (mx, my, exposed) = shake_extent(Axis::Y);
+        assert!(my > 0.01, "it moves up and down ({my})");
+        assert!(mx < 1e-5, "and not sideways ({mx})");
+        assert!(!exposed);
+    }
+
+    #[test]
+    fn a_shake_along_both_axes_moves_both_and_exposes_no_edge() {
+        let (mx, my, exposed) = shake_extent(Axis::Both);
+        assert!(mx > 0.01 && my > 0.01 && !exposed, "{mx} {my} {exposed}");
+    }
+
+    #[test]
+    fn a_one_axis_shake_zooms_only_as_far_as_that_axis_needs() {
+        let shake = |axis| Shake { time: 1.0, strength: 100.0, axis, elapsed: 0.5 };
+        let e = shake(Axis::X).envelope();
+        assert!(close(shake(Axis::X).cover_zoom(), 1.0 + 2.0 * e / VIRTUAL.w));
+        assert!(close(shake(Axis::Y).cover_zoom(), 1.0 + 2.0 * e / VIRTUAL.h));
+        assert!(shake(Axis::Both).cover_zoom() >= shake(Axis::X).cover_zoom());
+        // the stage is unmoved and unzoomed when the shake is over
+        let mut done = shake(Axis::Y);
+        done.elapsed = 1.0;
+        assert_eq!((done.cover_zoom(), done.offset()), (1.0, (0.0, 0.0)));
+    }
+
+    // ---- fade to a colour ----------------------------------------------------------------
+
+    fn cover_rect(list: &[Draw]) -> Option<(usize, [f32; 4])> {
+        let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
+        list.iter().enumerate().find_map(|(i, d)| match d {
+            Draw::Rect { rect, color } if *rect == screen && color[3] < 1.0 + 1e-6 => Some((i, *color)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_fade_out_rises_to_full_cover_and_stays() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::FadeOut { time: 1.0, color: [0.0, 0.0, 1.0] }, Cmd::Wait { seconds: 1.0 }]);
+        assert!(v.busy());
+        assert!(cover_rect(&v.draw_list(&all_1080p, None)).is_none(), "nothing yet at the start");
+        v.tick(0.5);
+        let (_, c) = cover_rect(&v.draw_list(&all_1080p, None)).unwrap();
+        assert!(close(c[3], 0.5) && c[..3] == [0.0, 0.0, 1.0], "{c:?}");
+        v.tick(0.6);
+        let (_, c) = cover_rect(&v.draw_list(&all_1080p, None)).unwrap();
+        assert_eq!(c, [0.0, 0.0, 1.0, 1.0]);
+        v.tick(30.0);
+        assert!(cover_rect(&v.draw_list(&all_1080p, None)).is_some(), "it stays until faded in");
+    }
+
+    #[test]
+    fn a_fade_in_clears_the_cover_over_its_time_and_does_not_wait() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::FadeOut { time: 0.0, color: [0.0; 3] }]);
+        assert_eq!(v.cover(), Some(([0.0; 3], 1.0)), "time 0 covers at once (a redraw)");
+        v.apply(&[Cmd::FadeIn { time: 1.0 }, say(None, "hi")]);
+        assert!(v.busy());
+        v.tick(0.25);
+        assert!(close(v.cover().unwrap().1, 0.75));
+        v.tick(0.8);
+        assert_eq!(v.cover(), None);
+        assert!(cover_rect(&v.draw_list(&all_1080p, None)).is_none());
+        // a fade in with nothing covering is nothing
+        v.apply(&[Cmd::FadeIn { time: 1.0 }]);
+        assert_eq!(v.cover(), None);
+    }
+
+    #[test]
+    fn the_next_batch_completes_a_fade_out_that_a_click_cut_short() {
+        let mut v = View::new();
+        v.apply(&[Cmd::FadeOut { time: 2.0, color: [0.0; 3] }, Cmd::Wait { seconds: 2.0 }]);
+        v.tick(0.5);
+        assert!(close(v.cover().unwrap().1, 0.25));
+        v.apply(&[say(None, "in the dark")]);
+        assert_eq!(v.cover(), Some(([0.0; 3], 1.0)), "the click ended the fade: fully covered");
+        // ...but a fade in under way is not cut short by the next batch
+        v.apply(&[Cmd::FadeIn { time: 1.0 }]);
+        v.tick(0.25);
+        v.apply(&[say(None, "again")]);
+        assert!(close(v.cover().unwrap().1, 0.75));
+        // skip mode ends both kinds at once
+        v.end_cover_fade();
+        assert_eq!(v.cover(), None);
+        v.apply(&[Cmd::FadeOut { time: 2.0, color: [1.0; 3] }]);
+        v.end_cover_fade();
+        assert_eq!(v.cover(), Some(([1.0; 3], 1.0)));
+    }
+
+    #[test]
+    fn a_redraw_replaces_the_cover() {
+        let mut v = View::new();
+        v.apply(&[Cmd::FadeOut { time: 0.0, color: [1.0, 0.0, 0.0] }]);
+        v.apply(&[Cmd::ClearScene, bg("bg.png", 0.0)]);
+        assert_eq!(v.cover(), None, "a rollback to before the fade uncovers");
+        v.apply(&[Cmd::ClearScene, Cmd::FadeOut { time: 0.0, color: [0.0, 1.0, 0.0] }]);
+        assert_eq!(v.cover(), Some(([0.0, 1.0, 0.0], 1.0)));
+    }
+
+    #[test]
+    fn the_cover_is_over_the_picture_and_hotspot_art_under_the_flash_and_the_textbox() {
+        let mut v = View::new();
+        v.apply(&[
+            bg("bg.png", 0.0),
+            show("m", "m.png", 0.5, 0.0),
+            Cmd::ShowImage { src: "inline.png".into(), alt: String::new() },
+            Cmd::ShowHotspots { spots: vec![Spot { label: "Map".into(), rect: [0.0, 0.0, 0.2, 0.2], image: Some("art.png".into()), hidden: false }] },
+            say(Some("A"), "hello"),
+            Cmd::FadeOut { time: 0.0, color: [0.0; 3] },
+            Cmd::Flash { time: 1.0, color: [1.0; 3] },
+        ]);
+        let list = v.draw_list(&all_1080p, None);
+        let cover = list.iter().position(|d| matches!(d, Draw::Rect { rect, color } if *rect == Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h) && color[..3] == [0.0; 3])).unwrap();
+        let flash = list.iter().position(|d| matches!(d, Draw::Rect { rect, color } if *rect == Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h) && color[..3] == [1.0; 3])).unwrap();
+        let last_image = list.iter().rposition(|d| matches!(d, Draw::Image { .. })).unwrap();
+        let first_text = list.iter().position(|d| matches!(d, Draw::Text { .. })).unwrap();
+        let textbox = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == textbox_rect(&Theme::default()))).unwrap();
+        assert!(last_image < cover, "above the stage, inline image and hotspot art");
+        assert!(cover < flash, "the flash is above the cover");
+        assert!(flash < textbox && flash < first_text, "the textbox and its text are not covered");
+        // choices are not covered either
+        v.apply(&[Cmd::ShowChoices { options: vec!["Yes".into()] }]);
+        let list = v.draw_list(&all_1080p, None);
+        let cover = cover_rect(&list).map(|(i, _)| i).unwrap();
+        assert!(list.iter().skip(cover + 1).any(|d| matches!(d, Draw::Text { text, .. } if text == "Yes")));
+    }
+
+    #[test]
+    fn a_covered_screen_still_draws_the_dialogue_over_it() {
+        let mut v = View::new();
+        v.apply(&[bg("bg.png", 0.0), Cmd::FadeOut { time: 0.0, color: [0.0; 3] }, say(None, "Black.")]);
+        v.tick(0.0);
+        let list = v.draw_list(&all_1080p, None);
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Black.")));
+        // while an overlay screen asks only for the picture, the cover is part of it
+        assert!(cover_rect(&v.draw_scene(&all_1080p)).is_some());
+    }
+
+    // ---- flip and per-axis scale ------------------------------------------------------------
+
+    fn look_show(id: &str, flip: bool, xscale: f32, yscale: f32, x: f32) -> Cmd {
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, fade: 0.0 }
+    }
+
+    #[test]
+    fn a_flipped_sprite_reads_its_texture_right_to_left_and_keeps_its_place() {
+        let mut v = View::new();
+        v.apply(&[look_show("m", true, 1.0, 1.0, 0.5)]);
+        let size = |_: &str| Some(Size::new(500.0, 1000.0));
+        let list = v.draw_list(&size, None);
+        let (_, dest, uv) = images(&list)[0];
+        assert_eq!(uv, Rect::new(1.0, 0.0, -1.0, 1.0));
+        let mut plain = View::new();
+        plain.apply(&[look_show("m", false, 1.0, 1.0, 0.5)]);
+        assert_eq!(images(&plain.draw_list(&size, None))[0].1, dest, "same size and position, only mirrored");
+        // the batch turns the corners into [u0, v0, u1, v1] with u0 > u1: a mirrored quad
+        let frame = crate::build_frame(&list, Size::new(1920.0, 1080.0));
+        assert_eq!(frame.quads[0].uv, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn xscale_and_yscale_stretch_one_axis_from_the_feet_and_the_centre() {
+        let mut v = View::new();
+        v.apply(&[look_show("m", false, 2.0, 0.5, 0.25)]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        let (_, dest, _) = images(&list)[0];
+        // a 1:2 picture at scale 1 is 940 tall and 470 wide: twice as wide, half as tall
+        assert!(close(dest.w, 940.0) && close(dest.h, 470.0), "{dest:?}");
+        assert!(close(dest.y + dest.h, VIRTUAL.h), "still standing on the bottom edge");
+        assert!(close(dest.x + dest.w / 2.0, 0.25 * VIRTUAL.w), "still centred on x");
+        // multiplied with scale
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, fade: 0.0 }]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        assert!(close(images(&list)[0].1.w, 470.0) && close(images(&list)[0].1.h, 235.0));
+    }
+
+    #[test]
+    fn a_move_animates_the_scales_and_switches_flip_at_its_start() {
+        let mut v = View::new();
+        v.apply(&[look_show("m", false, 1.0, 1.0, 0.5)]);
+        v.apply(&[Cmd::MoveSprite { id: "m".into(), x: 0.5, y: 1.0, scale: 1.0, flip: true, xscale: 2.0, yscale: 0.5, time: 1.0, ease: Ease::Linear }]);
+        let size = |_: &str| Some(Size::new(500.0, 1000.0));
+        let at = |v: &View| {
+            let list = v.draw_list(&size, None);
+            let (_, dest, uv) = images(&list)[0];
+            (dest, uv)
+        };
+        let (dest, uv) = at(&v);
+        assert_eq!(uv.w, -1.0, "mirrored from the first frame");
+        assert!(close(dest.w, 470.0) && close(dest.h, 940.0));
+        v.tick(0.5);
+        let (dest, _) = at(&v);
+        assert!(close(dest.w, 470.0 * 1.5) && close(dest.h, 940.0 * 0.75), "{dest:?}");
+        v.tick(0.6);
+        let (dest, _) = at(&v);
+        assert!(close(dest.w, 940.0) && close(dest.h, 470.0));
+    }
+
+    #[test]
+    fn a_flipped_sprite_is_cropped_at_the_screen_edge_with_the_right_part_of_the_picture() {
+        let size = |_: &str| Some(Size::new(500.0, 1000.0)); // 470 wide
+        for flip in [false, true] {
+            // centred at x=0: the left half (235 px) hangs off the screen
+            let mut v = View::new();
+            v.apply(&[look_show("m", flip, 1.0, 1.0, 0.0)]);
+            let list = v.draw_list(&size, None);
+            let (_, dest, uv) = images(&list)[0];
+            assert!(close(dest.x, 0.0) && close(dest.w, 235.0), "{dest:?}");
+            // what stays on screen is the picture's right half; mirrored, that is the texture's left half
+            let (from, to) = (uv.x, uv.x + uv.w);
+            if flip {
+                assert!(close(from, 0.5) && close(to, 0.0), "{uv:?}");
+            } else {
+                assert!(close(from, 0.5) && close(to, 1.0), "{uv:?}");
+            }
+            // fully off screen: nothing is drawn
+            let mut off = View::new();
+            off.apply(&[look_show("m", flip, 1.0, 1.0, -0.5)]);
+            assert!(images(&off.draw_list(&size, None)).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_pose_change_crossfade_keeps_the_flip_for_both_poses() {
+        let mut v = View::new();
+        v.apply(&[look_show("m", true, 1.0, 1.0, 0.5)]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, fade: 1.0 }]);
+        v.tick(0.5);
+        let list = v.draw_list(&all_1080p, None);
+        let flipped: Vec<_> = images(&list).into_iter().map(|(_, _, uv)| uv.w < 0.0).collect();
+        assert_eq!(flipped, [true, true]);
     }
 }

@@ -43,21 +43,25 @@ pub fn parse(src: &str) -> Result<Program, Vec<ParseError>> {
 /// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
 const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 
-const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, camera, textbox, music, sfx, voice, wait, video, \
+/// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
+const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
+
+const COMMANDS: &str = "character, bg, show, hide, move, shake, flash, fade, camera, textbox, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, jump, call, return, set, if, elif, else, endif, end";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
-        "bg" => &["src", "fade", "wipe"],
-        "show" => &["src", "id", "at", "y", "z", "scale", "fade"],
+        "bg" => &["src", "fade", "wipe", "through"],
+        "show" => &["src", "id", "at", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["at", "y", "scale", "time", "ease"],
-        "shake" => &["time", "strength"],
+        "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease"],
+        "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
+        "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "textbox" => &["hide", "show", "fade"],
-        "music" => &["src", "fade", "loop", "volume", "stop"],
+        "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src"],
         "wait" => &["time"],
@@ -77,6 +81,8 @@ struct Parser {
     param_labels: Vec<(String, usize)>,
     /// `::sfx{stop=file}` targets, checked against the files the script plays.
     sfx_stops: Vec<(String, usize)>,
+    /// Ops a command adds right after its own (the fade back in of `::bg{through}`).
+    trailing: Vec<Op>,
 }
 
 /// A jump target that must be filled in once all labels are known.
@@ -655,6 +661,9 @@ impl Parser {
                 self.fixups.push(Fixup { op: self.here(), option: None, label, line });
             }
             self.push(op, line);
+            for extra in std::mem::take(&mut self.trailing) {
+                self.push(extra, line);
+            }
         }
         i
     }
@@ -724,6 +733,32 @@ impl Parser {
                     self.err(line, "a wipe needs a duration: add `fade=` (seconds)");
                     return None;
                 }
+                let through = match a.take("through") {
+                    None => None,
+                    Some(None) => Some([0.0; 3]),
+                    Some(Some(c)) => match parse_color(&c) {
+                        Ok(c) => Some(c),
+                        Err(m) => {
+                            self.err(line, m);
+                            return None;
+                        }
+                    },
+                };
+                if let Some(color) = through {
+                    if fade <= 0.0 {
+                        self.err(line, "`through` needs a duration: add `fade=` (seconds; half to fade out, half to fade in)");
+                        return None;
+                    }
+                    if wipe.is_some() {
+                        self.err(line, "`through` and `wipe` can't be combined: a wipe is a transition of its own");
+                        return None;
+                    }
+                    // Fade out for half the time, change the picture (no crossfade), fade in.
+                    let half = fade / 2.0;
+                    self.push(Op::FadeOut { time: half, color }, line);
+                    self.trailing.push(Op::FadeIn { time: half });
+                    return Some((Op::Bg { src, fade: 0.0, wipe: None }, None));
+                }
                 Some((Op::Bg { src, fade, wipe }, None))
             }
             "show" => self.show(line, a),
@@ -743,6 +778,7 @@ impl Parser {
                 Some((Op::Hide { id, fade }, None))
             }
             "move" => {
+                let flip = opt_flag(a, "flip");
                 let bare = a.take_bare();
                 self.extra_words(line, "move", &bare, 1)?;
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
@@ -760,19 +796,31 @@ impl Parser {
                     None => None,
                 };
                 let y = self.number(line, a, "y", SPRITE_Y)?;
-                let scale = self.number(line, a, "scale", 0.05..=10.0)?;
-                if at.is_none() && y.is_none() && scale.is_none() {
-                    self.err(line, "`::move` needs `at=...`, `y=...` and/or `scale=...`");
+                let scale = self.number(line, a, "scale", SPRITE_SCALE)?;
+                let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
+                let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
+                if at.is_none() && y.is_none() && scale.is_none() && flip.is_none() && xscale.is_none() && yscale.is_none() {
+                    self.err(line, "`::move` needs `at=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`");
                     return None;
                 }
                 let time = self.seconds(line, a, "time", 0.5)?;
                 let ease = self.ease(line, a)?;
-                Some((Op::Move { id, at, y, scale, time, ease }, None))
+                Some((Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease }, None))
             }
             "shake" => {
                 let time = self.seconds(line, a, "time", 0.4)?;
                 let strength = self.number(line, a, "strength", 0.0..=200.0)?.unwrap_or(20.0);
-                Some((Op::Shake { time, strength }, None))
+                let axis = match a.value("axis") {
+                    None => Axis::default(),
+                    Some(v) => match Axis::parse(&v) {
+                        Some(x) => x,
+                        None => {
+                            self.err(line, format!("`axis={v}` must be `x`, `y` or `both`"));
+                            return None;
+                        }
+                    },
+                };
+                Some((Op::Shake { time, strength, axis }, None))
             }
             "flash" => {
                 let time = match a.value("time") {
@@ -796,6 +844,49 @@ impl Parser {
                     },
                 };
                 Some((Op::Flash { time, color }, None))
+            }
+            "fade" => {
+                let (out, into) = (a.flag("out"), a.flag("in"));
+                let time = match a.value("time") {
+                    None => 0.5,
+                    Some(v) => match v.parse::<f32>() {
+                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
+                        _ => {
+                            self.err(line, format!("`time={v}` must be a number of seconds above 0 and at most 10"));
+                            return None;
+                        }
+                    },
+                };
+                match (out, into) {
+                    (true, true) => {
+                        self.err(line, "`::fade` takes `out` or `in`, not both");
+                        None
+                    }
+                    (false, false) => {
+                        self.err(line, "`::fade` needs `out` (fade to a colour and stay covered) or `in` (uncover)");
+                        None
+                    }
+                    (false, true) => {
+                        if a.0.iter().any(|(k, _)| k == "color") {
+                            self.err(line, "`::fade{in}` takes no `color`: it fades away the colour the screen is covered with");
+                            return None;
+                        }
+                        Some((Op::FadeIn { time }, None))
+                    }
+                    (true, false) => {
+                        let color = match a.value("color") {
+                            None => [0.0; 3],
+                            Some(c) => match parse_color(&c) {
+                                Ok(c) => c,
+                                Err(m) => {
+                                    self.err(line, m);
+                                    return None;
+                                }
+                            },
+                        };
+                        Some((Op::FadeOut { time, color }, None))
+                    }
+                }
             }
             "camera" => {
                 let reset = a.flag("reset");
@@ -844,11 +935,38 @@ impl Parser {
                     let fade = self.fade(line, a)?;
                     Some((Op::StopMusic { fade }, None))
                 } else {
+                    let intro = a.take("intro");
+                    if intro.is_some() && !a.0.iter().any(|(k, _)| k == "src") {
+                        self.err(line, "`intro=` needs `src=`: the file that loops after the intro");
+                        return None;
+                    }
                     let src = self.require(line, name, a, "src")?;
+                    let intro = match intro {
+                        None => None,
+                        Some(Some(i)) if !i.is_empty() => match check_inside("intro", &i) {
+                            Ok(()) if i == src => {
+                                self.err(line, "`intro` and `src` are the same file: `src` is the loop, `intro` plays once before it");
+                                return None;
+                            }
+                            Ok(()) => Some(i),
+                            Err(m) => {
+                                self.err(line, m);
+                                return None;
+                            }
+                        },
+                        Some(_) => {
+                            self.err(line, "`intro=` needs a file (`::music{src=loop.ogg intro=intro.ogg}`)");
+                            return None;
+                        }
+                    };
                     let fade = self.fade(line, a)?;
                     let looped = a.flag_or("loop", true);
+                    if intro.is_some() && !looped {
+                        self.err(line, "`intro` needs a looping track: it plays once and then `src` loops (drop `loop=false`)");
+                        return None;
+                    }
                     let volume = self.volume(line, a)?;
-                    Some((Op::Music { src, fade, looped, volume }, None))
+                    Some((Op::Music { src, intro, fade, looped, volume }, None))
                 }
             }
             "sfx" => {
@@ -947,6 +1065,7 @@ impl Parser {
     }
 
     fn show(&mut self, line: usize, a: &mut Attrs) -> Option<(Op, Option<String>)> {
+        let flip = opt_flag(a, "flip");
         let bare = a.take_bare();
         let src_attr = a.value("src");
         let id_attr = a.value("id");
@@ -1001,9 +1120,11 @@ impl Parser {
                 }
             },
         };
-        let scale = self.number(line, a, "scale", 0.05..=10.0)?;
+        let scale = self.number(line, a, "scale", SPRITE_SCALE)?;
+        let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
+        let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
         let fade = self.fade(line, a)?;
-        Some((Op::Show { id, src, at, y, z, scale, fade }, None))
+        Some((Op::Show { id, src, at, y, z, scale, flip, xscale, yscale, fade }, None))
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
@@ -1821,6 +1942,11 @@ pub(crate) fn parse_color(s: &str) -> Result<[f32; 3], String> {
     }
 }
 
+/// A flag that may be absent: `flip` or `flip=true` is `Some(true)`, `flip=false` is `Some(false)`.
+fn opt_flag(a: &mut Attrs, key: &str) -> Option<bool> {
+    a.take(key).map(|v| v.is_none_or(|v| !matches!(v.as_str(), "false" | "0" | "no")))
+}
+
 /// `key=value key="quoted value" flag`
 struct Attrs(Vec<(String, Option<String>)>);
 
@@ -1947,9 +2073,9 @@ mod tests {
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), time: 0.5, ease: Ease::Out });
-        assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0 });
-        assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0 });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out });
+        assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
+        assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
         assert_eq!(
             p.ops[4],
             Op::Camera { zoom: Some(1.5), x: Some(0.3), y: None, time: 2.0, ease: Ease::Linear }
@@ -1989,7 +2115,7 @@ mod tests {
         for (src, needle) in [
             ("::bg{src=b.png wipe=sideways fade=1}\n", "wipe=sideways"),
             ("::bg{src=b.png wipe=left}\n", "needs a duration"),
-            ("::move{mika}\n", "`at=...`, `y=...` and/or `scale=...`"),
+            ("::move{mika}\n", "`xscale=`, `yscale=` and/or `flip`"),
             ("::move{mika at=left ease=bouncy}\n", "ease=bouncy"),
             ("::move{mika scale=0}\n", "scale=0"),
             ("::camera{time=1}\n", "needs `zoom=`"),
@@ -2097,8 +2223,8 @@ mod tests {
     #[test]
     fn music_loops_by_default_and_takes_a_volume() {
         let p = ok("::music{src=a.ogg}\n::music{src=b.ogg loop=false volume=0.4 fade=1}\n");
-        assert_eq!(p.ops[0], Op::Music { src: "a.ogg".into(), fade: 0.0, looped: true, volume: 1.0 });
-        assert_eq!(p.ops[1], Op::Music { src: "b.ogg".into(), fade: 1.0, looped: false, volume: 0.4 });
+        assert_eq!(p.ops[0], Op::Music { src: "a.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 1.0 });
+        assert_eq!(p.ops[1], Op::Music { src: "b.ogg".into(), intro: None, fade: 1.0, looped: false, volume: 0.4 });
     }
 
     #[test]
@@ -2144,12 +2270,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy at=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), y: None, z: None, scale: Some(0.9), fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), at: Some(0.28), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, y: None, z: None, scale: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
     }
 
@@ -2158,7 +2284,7 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost at=0.3}\n::show{src=art/x.png at=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), y: None, z: None, scale: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), at: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, at: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
@@ -2176,7 +2302,7 @@ mod tests {
         assert_eq!(show(1), (Some(0.9), Some(-100)));
         assert_eq!(show(2), (Some(-0.5), Some(100)));
         assert_eq!(show(3), (Some(1.5), None));
-        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, time: 0.3, ease: Ease::Out });
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out });
         assert!(matches!(&p.ops[5], Op::Move { at: Some(_), y: Some(y), .. } if *y == 1.5));
         // not given: `None`, so the sprite keeps its own
         let q = ok(&format!("{MIKA}::show{{mika}}\n"));
@@ -2207,8 +2333,8 @@ mod tests {
         let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika at=right time=1}}\n::move{{mika at=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, time: 1.0, ease: Ease::InOut });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, time: 0.5, ease: Ease::InOut });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut });
     }
 
     #[test]
@@ -2281,8 +2407,8 @@ mod tests {
         assert_eq!(e.len(), 1, "the unread `wipe` isn't reported: {e:?}");
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
-        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, fade, wipe)"));
-        assert!(has_err("::frobnicate\n", "shake, flash, camera"));
+        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, fade, wipe, through)"));
+        assert!(has_err("::frobnicate\n", "shake, flash, fade, camera"));
     }
 
     #[test]
@@ -2469,6 +2595,10 @@ mod tests {
         let says = |f: &str| p.ops.iter().any(|op| matches!(op, Op::Say { text, .. } if text.contains(f)));
         assert!(says("{size=+14}") && says("{size=24}") && says("{nw}") && says("{p}"));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Flash { .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::FadeOut { .. })) && p.ops.iter().any(|op| matches!(op, Op::FadeIn { .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Shake { axis: Axis::Y, .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Show { flip: Some(true), .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { xscale: Some(_), yscale: Some(_), .. })));
         assert!(p.ops.contains(&Op::SfxLoop { src: "assets/calm.ogg".into(), fade: 1.0, volume: 0.4 }));
         assert!(p.ops.contains(&Op::StopSfx { src: Some("assets/calm.ogg".into()), fade: 1.5 }));
         assert_eq!(p.characters.len(), 2);
@@ -2973,5 +3103,154 @@ mod tests {
         }
         assert_eq!(line_of("Hi.\n::sfx{stop=never.ogg}\n", "no `::sfx"), 2);
         ok("::sfx{src=a.ogg loop}\n::sfx{stop=a.ogg}\n");
+    }
+
+    // ---- ::fade and through= -----------------------------------------------
+
+    #[test]
+    fn fade_out_and_in_have_defaults() {
+        let p = ok("::fade{out}\n::fade{in}\n::fade{out time=2 color=#ff8000}\n::fade{in time=1.5}\n");
+        assert_eq!(p.ops[0], Op::FadeOut { time: 0.5, color: [0.0; 3] });
+        assert_eq!(p.ops[1], Op::FadeIn { time: 0.5 });
+        assert_eq!(p.ops[2], Op::FadeOut { time: 2.0, color: [1.0, 128.0 / 255.0, 0.0] });
+        assert_eq!(p.ops[3], Op::FadeIn { time: 1.5 });
+        assert_eq!(ok("::fade{out color=#fff time=10}\n").ops[0], Op::FadeOut { time: 10.0, color: [1.0; 3] });
+    }
+
+    #[test]
+    fn fade_errors_name_the_line() {
+        for (src, needle) in [
+            ("::fade\n", "needs `out`"),
+            ("::fade{time=1}\n", "needs `out`"),
+            ("::fade{out in}\n", "not both"),
+            ("::fade{in color=#fff}\n", "takes no `color`"),
+            ("::fade{out color=red}\n", "bad colour"),
+            ("::fade{out color=#12}\n", "bad colour"),
+            ("::fade{out time=0}\n", "time=0"),
+            ("::fade{in time=-1}\n", "time=-1"),
+            ("::fade{out time=10.5}\n", "time=10.5"),
+            ("::fade{in time=soon}\n", "time=soon"),
+            ("::fade{out speed=2}\n", "unknown attribute `speed`"),
+            ("::fade{out fade=1}\n", "unknown attribute `fade`"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e.len(), 1, "{src}: {e:?}");
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn bg_through_is_a_fade_out_a_cut_and_a_fade_in() {
+        let p = ok("::bg{src=a.png fade=1 through=#ff0000}\n::bg{src=b.png fade=2 through}\n::bg{src=c.png fade=1}\n");
+        assert_eq!(p.ops[0], Op::FadeOut { time: 0.5, color: [1.0, 0.0, 0.0] });
+        assert_eq!(p.ops[1], Op::Bg { src: "a.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(p.ops[2], Op::FadeIn { time: 0.5 });
+        // bare `through` is black, and each half is fade/2
+        assert_eq!(p.ops[3], Op::FadeOut { time: 1.0, color: [0.0; 3] });
+        assert_eq!(p.ops[4], Op::Bg { src: "b.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(p.ops[5], Op::FadeIn { time: 1.0 });
+        // without `through` it is the old crossfade, one op
+        assert_eq!(p.ops[6], Op::Bg { src: "c.png".into(), fade: 1.0, wipe: None });
+        assert!(matches!(p.ops[7], Op::End) && p.ops.len() == 8);
+        // every op of the sugar reports the command's line
+        assert_eq!(&p.lines[..3], &[1, 1, 1]);
+    }
+
+    #[test]
+    fn bg_through_errors_name_the_line() {
+        for (src, needle) in [
+            ("::bg{src=a.png through}\n", "needs a duration"),
+            ("::bg{src=a.png through=#fff fade=0}\n", "needs a duration"),
+            ("::bg{src=a.png fade=1 through=#fff wipe=left}\n", "can't be combined"),
+            ("::bg{src=a.png fade=1 through=blue}\n", "bad colour"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e.len(), 1, "{src}: {e:?}");
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+    }
+
+    // ---- shake axis -------------------------------------------------------
+
+    #[test]
+    fn shake_takes_an_axis() {
+        let p = ok("::shake{axis=x}\n::shake{time=1 strength=5 axis=y}\n::shake{axis=both}\n::shake\n");
+        let axes: Vec<Axis> = p.ops.iter().filter_map(|o| if let Op::Shake { axis, .. } = o { Some(*axis) } else { None }).collect();
+        assert_eq!(axes, [Axis::X, Axis::Y, Axis::Both, Axis::Both]);
+        let e = errs("Hi.\n::shake{axis=z}\n");
+        assert_eq!(e[0].line, 2);
+        assert!(e[0].message.contains("axis=z") && e[0].message.contains("`x`, `y` or `both`"), "{}", e[0].message);
+    }
+
+    // ---- music intro ------------------------------------------------------
+
+    #[test]
+    fn music_takes_an_intro() {
+        let p = ok("::music{src=loop.ogg intro=intro.ogg fade=1 volume=0.5}\n::music{src=a.ogg}\n");
+        assert_eq!(p.ops[0], Op::Music { src: "loop.ogg".into(), intro: Some("intro.ogg".into()), fade: 1.0, looped: true, volume: 0.5 });
+        assert!(matches!(&p.ops[1], Op::Music { intro: None, .. }));
+        // the intro is an asset of the op, so check, package and validation see it
+        let assets: Vec<_> = p.assets().map(|(_, k, f)| (k, f.to_string())).collect();
+        assert!(assets.contains(&(AssetKind::Audio, "intro.ogg".to_string())));
+        assert!(assets.contains(&(AssetKind::Audio, "loop.ogg".to_string())));
+    }
+
+    #[test]
+    fn music_intro_errors_name_the_line() {
+        for (src, needle) in [
+            ("::music{intro=i.ogg}\n", "`intro=` needs `src=`"),
+            ("::music{src=a.ogg intro=i.ogg loop=false}\n", "needs a looping track"),
+            ("::music{src=a.ogg intro=a.ogg}\n", "same file"),
+            ("::music{src=a.ogg intro=}\n", "needs a file"),
+            ("::music{src=a.ogg intro}\n", "needs a file"),
+            ("::music{src=a.ogg intro=../x.ogg}\n", "inside"),
+            ("::music{stop intro=i.ogg}\n", "unknown attribute `intro`"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+    }
+
+    // ---- sprite flip and per-axis scale ---------------------------------------
+
+    #[test]
+    fn show_takes_flip_xscale_and_yscale() {
+        let p = ok(&format!(
+            "{MIKA}::show{{mika happy flip}}\n::show{{mika flip=false xscale=1.5 yscale=0.5}}\n::show{{mika}}\n::show{{src=a.png flip=true}}\n"
+        ));
+        let get = |i: usize| match &p.ops[i] {
+            Op::Show { flip, xscale, yscale, .. } => (*flip, *xscale, *yscale),
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(get(0), (Some(true), None, None));
+        assert_eq!(get(1), (Some(false), Some(1.5), Some(0.5)));
+        assert_eq!(get(2), (None, None, None), "not given: the sprite keeps its own");
+        assert_eq!(get(3), (Some(true), None, None));
+    }
+
+    #[test]
+    fn move_takes_flip_xscale_and_yscale() {
+        let p = ok(&format!("{MIKA}::move{{mika flip}}\n::move{{mika xscale=2 yscale=0.5 time=1}}\n::move{{mika flip=false at=left}}\n"));
+        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), at: None, xscale: None, yscale: None, .. }));
+        assert!(matches!(&p.ops[1], Op::Move { flip: None, xscale: Some(x), yscale: Some(y), time, .. } if *x == 2.0 && *y == 0.5 && *time == 1.0));
+        assert!(matches!(&p.ops[2], Op::Move { flip: Some(false), at: Some(_), .. }));
+    }
+
+    #[test]
+    fn sprite_scale_errors_name_the_line() {
+        for (src, needle) in [
+            ("::show{src=a.png xscale=0}\n", "xscale=0"),
+            ("::show{src=a.png yscale=11}\n", "yscale=11"),
+            ("::show{src=a.png xscale=wide}\n", "xscale=wide"),
+            ("::move{mika yscale=0.01}\n", "yscale=0.01"),
+            ("::move{mika xscale=-1}\n", "xscale=-1"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
     }
 }

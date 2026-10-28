@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{AssignOp, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
+use quillstone_script::{AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, Op, Program, ShopEntry, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -33,22 +33,42 @@ pub enum Cmd {
     SetBackground { src: String, fade: f32, wipe: Option<Wipe> },
     /// Show a sprite or change its pose. `x` is 0..1 across the screen; `y` is
     /// where its bottom edge is, as a fraction of the screen height (1 is the
-    /// bottom of the screen); `z` orders sprites (higher is in front).
-    ShowSprite { id: String, src: String, x: f32, y: f32, z: i32, scale: f32, fade: f32 },
+    /// bottom of the screen); `z` orders sprites (higher is in front). `flip`
+    /// mirrors the picture; `xscale` and `yscale` stretch it along one axis (on top of `scale`).
+    ShowSprite {
+        id: String,
+        src: String,
+        x: f32,
+        y: f32,
+        z: i32,
+        scale: f32,
+        flip: bool,
+        xscale: f32,
+        yscale: f32,
+        fade: f32,
+    },
     HideSprite { id: String, fade: f32 },
-    /// Animate a sprite to position `x`, `y` and size `scale` over `time` seconds.
-    MoveSprite { id: String, x: f32, y: f32, scale: f32, time: f32, ease: Ease },
-    /// Shake the stage for `time` seconds by up to `strength` pixels.
-    Shake { time: f32, strength: f32 },
+    /// Animate a sprite to position `x`, `y` and sizes `scale`, `xscale`, `yscale`
+    /// over `time` seconds. `flip` is what the sprite is from the start of the move.
+    MoveSprite { id: String, x: f32, y: f32, scale: f32, flip: bool, xscale: f32, yscale: f32, time: f32, ease: Ease },
+    /// Shake the stage for `time` seconds by up to `strength` pixels along `axis`.
+    Shake { time: f32, strength: f32, axis: Axis },
     /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
     /// Like a shake it is a moment: not part of [`State`], never replayed.
     Flash { time: f32, color: [f32; 3] },
+    /// Fade the stage to `color` over `time` seconds and keep it covered (0: at
+    /// once; a redraw sends it that way). Part of the scene: see [`State::cover`].
+    /// The story then waits (a [`Cmd::Wait`] of `time` follows), so a click ends the fade.
+    FadeOut { time: f32, color: [f32; 3] },
+    /// Fade the cover away over `time` seconds. Doesn't wait.
+    FadeIn { time: f32 },
     /// Hide or show the dialogue box (textbox, name plate, line, quick menu),
     /// fading over `fade` seconds (0: at once). Part of the scene: see [`State::textbox_hidden`].
     Textbox { hidden: bool, fade: f32 },
     /// Pan/zoom the stage to `camera` over `time` seconds.
     Camera { camera: Camera, time: f32, ease: Ease },
-    PlayMusic { src: String, fade: f32, looped: bool, volume: f32 },
+    /// With an `intro`, that file plays once and `src` then loops.
+    PlayMusic { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
     PlaySfx { src: String, volume: f32 },
     /// Start a looping sound effect (part of the scene: see [`State::sfx_loops`]).
@@ -136,6 +156,11 @@ pub struct SpriteState {
     /// Drawing order among sprites: higher is in front, ties keep show order.
     pub z: i32,
     pub scale: f32,
+    /// Mirrored left to right.
+    pub flip: bool,
+    /// Stretch along one axis, multiplied with `scale`.
+    pub xscale: f32,
+    pub yscale: f32,
 }
 
 /// What part of the stage is in view: `zoom` 1 shows all of it; the point
@@ -156,6 +181,8 @@ impl Default for Camera {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MusicState {
     pub src: String,
+    /// Played once before `src` loops.
+    pub intro: Option<String>,
     pub looped: bool,
     pub volume: f32,
 }
@@ -188,6 +215,9 @@ pub struct State {
     /// `::textbox{hide}` is in effect: the dialogue box stays hidden until
     /// `::textbox{show}` or the next line or choice.
     pub textbox_hidden: bool,
+    /// The stage is covered with this colour (`::fade{out}`) until `::fade{in}`.
+    /// Textbox, choices and menus are not covered.
+    pub cover: Option<[f32; 3]>,
     pub music: Option<MusicState>,
     /// Looping sound effects, in the order they started.
     pub sfx_loops: Vec<SfxLoopState>,
@@ -211,6 +241,7 @@ impl State {
             sprites: Vec::new(),
             camera: Camera::default(),
             textbox_hidden: false,
+            cover: None,
             music: None,
             sfx_loops: Vec::new(),
             inline: Vec::new(),
@@ -231,6 +262,9 @@ impl State {
         if self.camera != Camera::default() {
             out.push(Cmd::Camera { camera: self.camera, time: 0.0, ease: Ease::Linear });
         }
+        if let Some(color) = self.cover {
+            out.push(Cmd::FadeOut { time: 0.0, color });
+        }
         if self.textbox_hidden {
             out.push(Cmd::Textbox { hidden: true, fade: 0.0 });
         }
@@ -242,12 +276,16 @@ impl State {
                 y: s.y,
                 z: s.z,
                 scale: s.scale,
+                flip: s.flip,
+                xscale: s.xscale,
+                yscale: s.yscale,
                 fade: 0.0,
             });
         }
         match &self.music {
             Some(m) => out.push(Cmd::PlayMusic {
                 src: m.src.clone(),
+                intro: m.intro.clone(),
                 fade: 0.0,
                 looped: m.looped,
                 volume: m.volume,
@@ -582,19 +620,22 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe });
                 state.pc += 1;
             }
-            Op::Show { id, src, at, y, z, scale, fade } => {
+            Op::Show { id, src, at, y, z, scale, flip, xscale, yscale, fade } => {
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
                 let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
                 let y = y.or(existing.map(|i| state.sprites[i].y)).unwrap_or(1.0);
                 let z = z.or(existing.map(|i| state.sprites[i].z)).unwrap_or(0);
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale };
+                let keep = |given: Option<f32>, of: fn(&SpriteState) -> f32| given.or(existing.map(|i| of(&state.sprites[i]))).unwrap_or(1.0);
+                let (xscale, yscale) = (keep(*xscale, |s| s.xscale), keep(*yscale, |s| s.yscale));
+                let flip = flip.or(existing.map(|i| state.sprites[i].flip)).unwrap_or(false);
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, y, z, scale, fade: *fade });
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), x, y, z, scale, flip, xscale, yscale, fade: *fade });
                 state.pc += 1;
             }
             Op::Hide { id, fade } => {
@@ -613,21 +654,47 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 }
                 state.pc += 1;
             }
-            Op::Move { id, at, y, scale, time, ease } => {
+            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
                     s.x = at.unwrap_or(s.x);
                     s.y = y.unwrap_or(s.y);
                     s.scale = scale.unwrap_or(s.scale);
-                    out.push(Cmd::MoveSprite { id: id.clone(), x: s.x, y: s.y, scale: s.scale, time: *time, ease: *ease });
+                    s.flip = flip.unwrap_or(s.flip);
+                    s.xscale = xscale.unwrap_or(s.xscale);
+                    s.yscale = yscale.unwrap_or(s.yscale);
+                    out.push(Cmd::MoveSprite {
+                        id: id.clone(),
+                        x: s.x,
+                        y: s.y,
+                        scale: s.scale,
+                        flip: s.flip,
+                        xscale: s.xscale,
+                        yscale: s.yscale,
+                        time: *time,
+                        ease: *ease,
+                    });
                 }
                 state.pc += 1;
             }
-            Op::Shake { time, strength } => {
-                out.push(Cmd::Shake { time: *time, strength: *strength });
+            Op::Shake { time, strength, axis } => {
+                out.push(Cmd::Shake { time: *time, strength: *strength, axis: *axis });
                 state.pc += 1;
             }
             Op::Flash { time, color } => {
                 out.push(Cmd::Flash { time: *time, color: *color });
+                state.pc += 1;
+            }
+            Op::FadeOut { time, color } => {
+                // The fade is one command and the wait for it another, so a click, skip
+                // mode and rollback treat it like any `::wait` (see `moves_on_by_itself`).
+                state.cover = Some(*color);
+                out.push(Cmd::FadeOut { time: *time, color: *color });
+                return block(state, &mut out, Cmd::Wait { seconds: *time });
+            }
+            Op::FadeIn { time } => {
+                if state.cover.take().is_some() {
+                    out.push(Cmd::FadeIn { time: *time });
+                }
                 state.pc += 1;
             }
             Op::Textbox { hidden, fade } => {
@@ -641,9 +708,9 @@ pub(crate) fn step_traced(state: &mut State, program: &Program, input: Option<In
                 out.push(Cmd::Camera { camera: *c, time: *time, ease: *ease });
                 state.pc += 1;
             }
-            Op::Music { src, fade, looped, volume } => {
-                state.music = Some(MusicState { src: src.clone(), looped: *looped, volume: *volume });
-                out.push(Cmd::PlayMusic { src: src.clone(), fade: *fade, looped: *looped, volume: *volume });
+            Op::Music { src, intro, fade, looped, volume } => {
+                state.music = Some(MusicState { src: src.clone(), intro: intro.clone(), looped: *looped, volume: *volume });
+                out.push(Cmd::PlayMusic { src: src.clone(), intro: intro.clone(), fade: *fade, looped: *looped, volume: *volume });
                 state.pc += 1;
             }
             Op::StopMusic { fade } => {
@@ -1254,7 +1321,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -1263,9 +1330,9 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
         );
-        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, y: 1.0, scale: 1.0, time: 1.0, ease: Ease::InOut });
+        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, y: 1.0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 1.0, ease: Ease::InOut });
         assert_eq!(game.state().sprites.len(), 1);
         assert_eq!(game.state().sprites[0].x, 0.72);
 
@@ -1279,10 +1346,10 @@ vars: { trust: 0 }
         let src = "::show{src=s.png id=s at=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.28, y: 1.0, scale: 1.2, time: 0.5, ease: Ease::InOut }));
+        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.28, y: 1.0, scale: 1.2, flip: false, xscale: 1.0, yscale: 1.0, time: 0.5, ease: Ease::InOut }));
         let camera = Camera { zoom: 1.5, x: 0.2, y: 0.5 };
         assert!(first.contains(&Cmd::Camera { camera, time: 3.0, ease: Ease::InOut }), "keeps the zoom it had");
-        assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0 }));
+        assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::Both }));
         assert_eq!(game.state().camera, camera);
         game.input(Input::Advance);
         let redraw = game.rollback().unwrap();
@@ -1310,7 +1377,7 @@ vars: { trust: 0 }
         assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "b" && *y == 1.0 && *z == 0)), "new: bottom edge, z 0");
         let two = game.input(Input::Advance);
         assert!(matches!(&two[0], Cmd::ShowSprite { y, z, .. } if *y == 0.9 && *z == 2), "a new pose keeps y and z");
-        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), x: 0.5, y: 0.7, scale: 1.0, time: 0.3, ease: Ease::Out });
+        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), x: 0.5, y: 0.7, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 0.3, ease: Ease::Out });
         assert_eq!(game.state().sprites[0].y, 0.7);
         let three = game.input(Input::Advance);
         assert!(matches!(&three[0], Cmd::MoveSprite { x, y, .. } if *x == 0.28 && *y == 0.7), "an `at` move keeps y");
@@ -1338,7 +1405,7 @@ vars: { trust: 0 }
         // a save from before y and z: the sprite record stops after the scale
         let old: String = text
             .lines()
-            .map(|l| if l.starts_with("sprite ") { l.rsplitn(3, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(6, ' ').last().unwrap().to_string() } else { l.to_string() })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
@@ -1409,7 +1476,7 @@ vars: { trust: 0 }
         assert_eq!(again[0], Cmd::ClearScene);
         assert!(again.contains(&Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None }));
         assert!(again.iter().any(|c| matches!(c, Cmd::ShowSprite { id, fade, .. } if id == "s" && *fade == 0.0)));
-        assert!(again.contains(&Cmd::PlayMusic { src: "m.ogg".into(), fade: 0.0, looped: true, volume: 0.5 }));
+        assert!(again.contains(&Cmd::PlayMusic { src: "m.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 0.5 }));
         assert!(again.contains(&Cmd::ShowImage { src: "pic.png".into(), alt: "alt".into() }));
         assert!(again.contains(&Cmd::PlayVoice { src: "v.ogg".into() }));
         assert_eq!(again.last(), Some(&say("A", "two")));
@@ -2184,5 +2251,184 @@ vars: { amount: 99 }
         let (game, cmds) = Session::start(&p);
         assert!(cmds.contains(&Cmd::Textbox { hidden: false, fade: 1.0 }));
         assert!(!game.state().textbox_hidden);
+    }
+
+    // ---- ::fade (dip to colour) ------------------------------------------------
+
+    const DIP: &str = "**A:** before\n::fade{out time=0.5 color=#ff0000}\n**A:** in the dark\n::fade{in time=0.25}\n**A:** after\n";
+
+    #[test]
+    fn fade_out_covers_the_stage_and_waits_like_a_wait() {
+        let p = parse(DIP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert_eq!(game.state().cover, None);
+        let cmds = game.input(Input::Advance);
+        assert_eq!(cmds[0], Cmd::FadeOut { time: 0.5, color: [1.0, 0.0, 0.0] });
+        assert_eq!(cmds[1], Cmd::Wait { seconds: 0.5 }, "the fade waits");
+        assert_eq!(game.state().cover, Some([1.0, 0.0, 0.0]));
+        assert!(moves_on_by_itself(&game.state().pending));
+        // the wait ends (or a click or skip ends it): the line over the black screen arrives
+        let cmds = game.input(Input::Advance);
+        assert!(matches!(cmds.last(), Some(Cmd::Say { text, .. }) if text == "in the dark"));
+        assert_eq!(game.state().cover, Some([1.0, 0.0, 0.0]), "it stays covered");
+        // fade in does not wait
+        let cmds = game.input(Input::Advance);
+        assert_eq!(cmds[0], Cmd::FadeIn { time: 0.25 });
+        assert!(matches!(cmds.last(), Some(Cmd::Say { text, .. }) if text == "after"));
+        assert_eq!(game.state().cover, None);
+    }
+
+    #[test]
+    fn fade_in_with_nothing_covering_does_nothing() {
+        let p = parse("::fade{in}\n**A:** hi\n").unwrap();
+        let (game, first) = Session::start(&p);
+        assert!(!first.iter().any(|c| matches!(c, Cmd::FadeIn { .. })));
+        assert_eq!(game.state().cover, None);
+    }
+
+    #[test]
+    fn the_cover_is_scene_state_redraw_emits_it_and_rollback_skips_the_fade_wait() {
+        let p = parse(DIP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // fade out: waiting
+        game.input(Input::Advance); // "in the dark"
+        let redraw = game.state().redraw();
+        assert_eq!(redraw[0], Cmd::ClearScene);
+        assert!(redraw.contains(&Cmd::FadeOut { time: 0.0, color: [1.0, 0.0, 0.0] }), "redraw covers at once");
+        // back from the dark line goes past the fade's wait, to the line before it, uncovered
+        let back = game.rollback().unwrap();
+        assert!(matches!(game.state().pending, Some(Cmd::Say { .. })));
+        assert_eq!(game.state().cover, None);
+        assert!(!back.iter().any(|c| matches!(c, Cmd::FadeOut { .. })));
+        // and forward again lands on the dark line, covered
+        let fwd = game.roll_forward().unwrap();
+        assert!(fwd.iter().any(|c| matches!(c, Cmd::FadeOut { time, .. } if *time == 0.0)));
+        assert!(matches!(&game.state().pending, Some(Cmd::Say { text, .. }) if text == "in the dark"));
+    }
+
+    #[test]
+    fn the_cover_is_saved_and_old_saves_load_uncovered() {
+        let p = parse(DIP).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance);
+        game.input(Input::Advance);
+        let text = game.save();
+        assert!(text.contains("cover 1,0,0"), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded.state().cover, Some([1.0, 0.0, 0.0]));
+        assert!(cmds.contains(&Cmd::FadeOut { time: 0.0, color: [1.0, 0.0, 0.0] }));
+        let old: String = text.lines().filter(|l| !l.starts_with("cover ")).collect::<Vec<_>>().join("\n") + "\n";
+        assert_eq!(Session::load(&p, &old).unwrap().0.state().cover, None);
+        // a save made while the fade-out itself was waiting loads onto the wait
+        let (mut mid, _) = Session::start(&p);
+        mid.input(Input::Advance);
+        let (back, _) = Session::load(&p, &mid.save()).unwrap();
+        assert_eq!(back.state().pending, Some(Cmd::Wait { seconds: 0.5 }));
+        assert_eq!(back.state().cover, Some([1.0, 0.0, 0.0]));
+        // nonsense colours are pulled into range
+        let wild = text.replace("cover 1,0,0", "cover 9,NaN,-3");
+        assert_eq!(Session::load(&p, &wild).unwrap().0.state().cover, Some([1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn bg_through_dips_to_the_colour_changes_the_picture_and_comes_back() {
+        let p = parse("::bg{src=a.png}\n**A:** one\n::bg{src=b.png fade=1 through=#000000}\n**A:** two\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        let cmds = game.input(Input::Advance);
+        assert_eq!(cmds, vec![Cmd::FadeOut { time: 0.5, color: [0.0; 3] }, Cmd::Wait { seconds: 0.5 }]);
+        assert_eq!(game.state().background.as_deref(), Some("a.png"), "the picture changes after the fade out");
+        let cmds = game.input(Input::Advance);
+        assert_eq!(cmds[0], Cmd::SetBackground { src: "b.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(cmds[1], Cmd::FadeIn { time: 0.5 });
+        assert!(matches!(cmds[2], Cmd::Say { .. }));
+        assert_eq!(game.state().cover, None);
+    }
+
+    // ---- sprite flip and per-axis scale ------------------------------------------
+
+    #[test]
+    fn flip_xscale_and_yscale_are_sprite_state_that_later_shows_keep() {
+        let p = parse("::show{src=s.png id=s flip xscale=1.5 yscale=0.8}\n::show{src=s2.png id=s}\n::show{src=s2.png id=s flip=false xscale=2}\n**A:** hi\n").unwrap();
+        let (game, cmds) = Session::start(&p);
+        let shows: Vec<_> = cmds.iter().filter(|c| matches!(c, Cmd::ShowSprite { .. })).collect();
+        assert!(matches!(shows[0], Cmd::ShowSprite { flip: true, xscale, yscale, .. } if *xscale == 1.5 && *yscale == 0.8));
+        assert!(matches!(shows[1], Cmd::ShowSprite { flip: true, xscale, yscale, .. } if *xscale == 1.5 && *yscale == 0.8), "kept");
+        let s = &game.state().sprites[0];
+        assert_eq!((s.flip, s.xscale, s.yscale), (false, 2.0, 0.8), "given values change, the rest is kept");
+        // a new sprite starts unflipped and unstretched
+        let q = parse("::show{src=s.png id=s}\n**A:** hi\n").unwrap();
+        let (g, _) = Session::start(&q);
+        assert_eq!((g.state().sprites[0].flip, g.state().sprites[0].xscale, g.state().sprites[0].yscale), (false, 1.0, 1.0));
+    }
+
+    #[test]
+    fn move_resolves_flip_and_the_scales_from_the_sprite() {
+        let p = parse("::show{src=s.png id=s xscale=2}\n::move{s flip time=1}\n::move{s yscale=0.5 time=2 ease=out}\n::move{s at=left time=0}\n**A:** hi\n").unwrap();
+        let (game, cmds) = Session::start(&p);
+        let moves: Vec<_> = cmds.iter().filter_map(|c| if let Cmd::MoveSprite { flip, xscale, yscale, time, .. } = c { Some((*flip, *xscale, *yscale, *time)) } else { None }).collect();
+        assert_eq!(moves, [(true, 2.0, 1.0, 1.0), (true, 2.0, 0.5, 2.0), (true, 2.0, 0.5, 0.0)]);
+        let s = &game.state().sprites[0];
+        assert_eq!((s.flip, s.xscale, s.yscale), (true, 2.0, 0.5));
+        // redraw shows the sprite as it ended up
+        assert!(game.state().redraw().iter().any(|c| matches!(c, Cmd::ShowSprite { flip: true, xscale, yscale, .. } if *xscale == 2.0 && *yscale == 0.5)));
+    }
+
+    #[test]
+    fn flip_and_scales_are_saved_and_old_saves_load_unflipped() {
+        let p = parse("::show{src=s.png id=s flip xscale=1.5 yscale=0.75}\n**A:** hi\n").unwrap();
+        let (game, _) = Session::start(&p);
+        let text = game.save();
+        assert!(text.contains(" true 1.5 0.75"), "{text}");
+        let (loaded, _) = Session::load(&p, &text).unwrap();
+        let s = &loaded.state().sprites[0];
+        assert_eq!((s.flip, s.xscale, s.yscale), (true, 1.5, 0.75));
+        // a save from before these existed: the record stops after `z`
+        let old: String = text
+            .lines()
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(4, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert!(!old.contains("1.75") && !old.contains("true 1.5"), "{old}");
+        let (loaded, _) = Session::load(&p, &old).unwrap();
+        let s = &loaded.state().sprites[0];
+        assert_eq!((s.flip, s.xscale, s.yscale), (false, 1.0, 1.0));
+        // nonsense is pulled into range
+        let wild = text.replace(" true 1.5 0.75", " true 99 NaN");
+        let s = Session::load(&p, &wild).unwrap().0;
+        assert_eq!((s.state().sprites[0].xscale, s.state().sprites[0].yscale), (10.0, 1.0));
+    }
+
+    // ---- music intro ---------------------------------------------------------------
+
+    #[test]
+    fn music_intro_is_kept_in_state_redraw_and_saves() {
+        let p = parse("::music{src=loop.ogg intro=intro.ogg volume=0.5}\n**A:** hi\n").unwrap();
+        let (game, first) = Session::start(&p);
+        let play = Cmd::PlayMusic { src: "loop.ogg".into(), intro: Some("intro.ogg".into()), fade: 0.0, looped: true, volume: 0.5 };
+        assert!(first.contains(&play));
+        assert_eq!(game.state().music.as_ref().unwrap().intro.as_deref(), Some("intro.ogg"));
+        assert!(game.state().redraw().contains(&play));
+        let text = game.save();
+        assert!(text.contains("music \"loop.ogg\" true 0.5 \"intro.ogg\""), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded.state().music, game.state().music);
+        assert!(cmds.contains(&play));
+        // a save from before intros has three values and loads without one
+        let old = text.replace(" \"intro.ogg\"", "");
+        assert_eq!(Session::load(&p, &old).unwrap().0.state().music.as_ref().unwrap().intro, None);
+        // a save is untrusted: an intro path outside the game folder refuses the load
+        let bad = text.replace("\"intro.ogg\"", "\"../x.ogg\"");
+        assert!(Session::load(&p, &bad).is_err());
+    }
+
+    // ---- shake axis -----------------------------------------------------------------
+
+    #[test]
+    fn shake_carries_its_axis() {
+        let p = parse("::shake{axis=y time=1}\n::shake{axis=x}\n**A:** hi\n").unwrap();
+        let (_, cmds) = Session::start(&p);
+        assert_eq!(cmds[0], Cmd::Shake { time: 1.0, strength: 20.0, axis: Axis::Y });
+        assert_eq!(cmds[1], Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::X });
     }
 }

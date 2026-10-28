@@ -6,6 +6,12 @@
 //!
 //! - Music keeps playing across a rollback redraw (or any `::music` of the track
 //!   already playing); only its volume follows. A different track crossfades.
+//! - A track with an `intro` plays the intro once and then loops. The same
+//!   (src, intro) already playing is never restarted, whether the batch is a plain
+//!   `::music`, a rollback redraw or a load; a different intro, or a different `src`,
+//!   crossfades. Where the track was when the player rolled back or loaded is not
+//!   kept: whatever starts afresh (another track, or nothing was playing) starts from
+//!   the intro again.
 //! - A voice clip belongs to its line: it stops as soon as the player acts.
 //! - One-shot sound effects are fire-and-forget (the runtime never replays them on redraw).
 //! - A looping sound effect belongs to the scene, like music: starting one that is
@@ -33,7 +39,9 @@ pub enum Channel {
 pub enum Action {
     /// Start a music track, fading in over `fade`. Music that was playing before
     /// has already been sent a [`Action::StopMusic`], so the two crossfade.
-    PlayMusic { src: String, fade: f32, looped: bool, volume: f32 },
+    /// With an `intro`, the backend plays that file once and then loops `src`
+    /// with no audible gap.
+    PlayMusic { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     /// Fade out and drop the current music track.
     StopMusic { fade: f32 },
     /// Change the current music track's volume without restarting it.
@@ -60,6 +68,7 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq)]
 struct Track {
     src: String,
+    intro: Option<String>,
     looped: bool,
     volume: f32,
 }
@@ -110,7 +119,9 @@ impl Mixer {
 
         for cmd in cmds {
             match cmd {
-                Cmd::PlayMusic { src, fade, looped, volume } => self.play_music(&mut out, src, *fade, *looped, *volume),
+                Cmd::PlayMusic { src, intro, fade, looped, volume } => {
+                    self.play_music(&mut out, src, intro.as_deref(), *fade, *looped, *volume)
+                }
                 Cmd::StopMusic { fade } => {
                     if self.music.take().is_some() {
                         out.push(Action::StopMusic { fade: *fade });
@@ -160,9 +171,10 @@ impl Mixer {
         self.loops.retain(|l| l.src != src);
     }
 
-    fn play_music(&mut self, out: &mut Vec<Action>, src: &str, fade: f32, looped: bool, volume: f32) {
+    fn play_music(&mut self, out: &mut Vec<Action>, src: &str, intro: Option<&str>, fade: f32, looped: bool, volume: f32) {
         if let Some(track) = &mut self.music {
-            if track.src == src && track.looped == looped {
+            // The same loop with another intro (or none) is another piece: it crossfades.
+            if track.src == src && track.looped == looped && track.intro.as_deref() == intro {
                 if track.volume != volume {
                     track.volume = volume;
                     out.push(Action::SetMusicVolume { volume, fade });
@@ -171,8 +183,9 @@ impl Mixer {
             }
             out.push(Action::StopMusic { fade });
         }
-        self.music = Some(Track { src: src.to_string(), looped, volume });
-        out.push(Action::PlayMusic { src: src.to_string(), fade, looped, volume });
+        let intro = intro.map(str::to_string);
+        self.music = Some(Track { src: src.to_string(), intro: intro.clone(), looped, volume });
+        out.push(Action::PlayMusic { src: src.to_string(), intro, fade, looped, volume });
     }
 
     fn play_loop(&mut self, out: &mut Vec<Action>, src: &str, fade: f32, volume: f32) {
@@ -226,7 +239,7 @@ mod tests {
     use quillstone_script::parse;
 
     fn music(src: &str, fade: f32, volume: f32) -> Action {
-        Action::PlayMusic { src: src.into(), fade, looped: true, volume }
+        Action::PlayMusic { src: src.into(), intro: None, fade, looped: true, volume }
     }
 
     #[test]
@@ -263,7 +276,7 @@ mod tests {
     #[test]
     fn a_new_track_crossfades_and_the_same_track_only_changes_volume() {
         let mut mixer = Mixer::new();
-        let play = |src: &str, fade: f32, volume: f32| Cmd::PlayMusic { src: src.into(), fade, looped: true, volume };
+        let play = |src: &str, fade: f32, volume: f32| Cmd::PlayMusic { src: src.into(), intro: None, fade, looped: true, volume };
         mixer.apply(&[play("a.ogg", 0.0, 1.0)]);
         assert_eq!(
             mixer.apply(&[play("b.ogg", 2.0, 1.0)]),
@@ -282,7 +295,7 @@ mod tests {
     #[test]
     fn a_finished_one_shot_track_can_be_played_again() {
         let mut mixer = Mixer::new();
-        let once = Cmd::PlayMusic { src: "jingle.ogg".into(), fade: 0.0, looped: false, volume: 1.0 };
+        let once = Cmd::PlayMusic { src: "jingle.ogg".into(), intro: None, fade: 0.0, looped: false, volume: 1.0 };
         mixer.apply(std::slice::from_ref(&once));
         mixer.music_ended();
         assert_eq!(mixer.apply(&[once]).len(), 1);
@@ -486,5 +499,69 @@ mod tests {
         let out = mixer.apply(&[Cmd::PlaySfx { src: "rain.ogg".into(), volume: 1.0 }]);
         assert_eq!(out, vec![Action::PlaySfx { src: "rain.ogg".into(), volume: 1.0 }]);
         assert!(mixer.has_sfx_loops());
+    }
+
+    // ---- music intro -------------------------------------------------------------
+
+    fn intro_play(src: &str, intro: Option<&str>, fade: f32) -> Cmd {
+        Cmd::PlayMusic { src: src.into(), intro: intro.map(Into::into), fade, looped: true, volume: 1.0 }
+    }
+
+    fn intro_action(src: &str, intro: Option<&str>, fade: f32) -> Action {
+        Action::PlayMusic { src: src.into(), intro: intro.map(Into::into), fade, looped: true, volume: 1.0 }
+    }
+
+    #[test]
+    fn a_track_with_an_intro_starts_once_and_the_same_one_never_restarts() {
+        let mut mixer = Mixer::new();
+        let play = intro_play("loop.ogg", Some("intro.ogg"), 1.0);
+        assert_eq!(mixer.apply(std::slice::from_ref(&play)), vec![intro_action("loop.ogg", Some("intro.ogg"), 1.0)]);
+        assert_eq!(mixer.music(), Some("loop.ogg"));
+        assert!(mixer.apply(&[play]).is_empty(), "the same (src, intro) keeps playing");
+        // only the volume follows
+        let quieter = Cmd::PlayMusic { src: "loop.ogg".into(), intro: Some("intro.ogg".into()), fade: 2.0, looped: true, volume: 0.5 };
+        assert_eq!(mixer.apply(&[quieter]), vec![Action::SetMusicVolume { volume: 0.5, fade: 2.0 }]);
+    }
+
+    #[test]
+    fn a_redraw_or_load_of_the_same_intro_track_keeps_it_and_starts_afresh_otherwise() {
+        let p = parse("::music{src=loop.ogg intro=intro.ogg}\n**A:** one\n**A:** two\n").unwrap();
+        let (mut game, first) = Session::start(&p);
+        let mut mixer = Mixer::new();
+        assert_eq!(mixer.apply(&first), vec![intro_action("loop.ogg", Some("intro.ogg"), 0.0)]);
+        mixer.apply(&game.input(Input::Advance));
+        assert!(mixer.apply(&game.rollback().unwrap()).is_empty(), "rollback while it plays: untouched");
+        let text = game.save();
+        let (_, loaded) = Session::load(&p, &text).unwrap();
+        assert!(mixer.apply(&loaded).is_empty(), "so is a load of the same moment");
+        // a fresh mixer (nothing playing, e.g. after the menu) starts from the intro
+        let mut fresh = Mixer::new();
+        assert_eq!(fresh.apply(&loaded), vec![intro_action("loop.ogg", Some("intro.ogg"), 0.0)]);
+    }
+
+    #[test]
+    fn another_intro_or_no_intro_crossfades() {
+        let mut mixer = Mixer::new();
+        mixer.apply(&[intro_play("loop.ogg", Some("a.ogg"), 0.0)]);
+        assert_eq!(
+            mixer.apply(&[intro_play("loop.ogg", Some("b.ogg"), 2.0)]),
+            vec![Action::StopMusic { fade: 2.0 }, intro_action("loop.ogg", Some("b.ogg"), 2.0)]
+        );
+        assert_eq!(
+            mixer.apply(&[intro_play("loop.ogg", None, 1.0)]),
+            vec![Action::StopMusic { fade: 1.0 }, intro_action("loop.ogg", None, 1.0)]
+        );
+        assert_eq!(
+            mixer.apply(&[intro_play("other.ogg", Some("b.ogg"), 1.0)]),
+            vec![Action::StopMusic { fade: 1.0 }, intro_action("other.ogg", Some("b.ogg"), 1.0)]
+        );
+    }
+
+    #[test]
+    fn a_music_room_entry_unlocks_for_the_loop_file_not_the_intro() {
+        let p = parse("---\npersistent: { done: false }\nmusic_room: [loop.ogg]\n---\n::music{src=loop.ogg intro=intro.ogg}\n**A:** hi\n").unwrap();
+        assert!(p.assets().any(|(_, _, f)| f == "intro.ogg"), "the intro is still a game file");
+        let (_, cmds) = Session::start(&p);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::PlayMusic { src, .. } if src == "loop.ogg")));
     }
 }

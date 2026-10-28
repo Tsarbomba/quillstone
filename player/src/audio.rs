@@ -8,7 +8,9 @@
 //! handle of each is kept per file so the mixer can stop or retune it. A loop that
 //! cannot start, or ends without being stopped, is reported (see
 //! `Audio::take_failed_loops`) so the mixer forgets it. Opus files are decoded by
-//! FFmpeg (see `ffaudio`), the rest by kira. Without the `audio` feature, or without a sound device, the game
+//! FFmpeg (see `ffaudio`), the rest by kira. A music track with an intro is two streams:
+//! the intro starts at a time on a kira clock and the loop at that time plus the
+//! intro's length, so the join is sample-accurate to within one kira buffer (about 3 ms). Without the `audio` feature, or without a sound device, the game
 //! simply runs silent.
 
 use std::path::Path;
@@ -58,12 +60,19 @@ mod real {
     use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
     use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
     use kira::sound::{FromFileError, PlaybackState};
+    use kira::clock::{ClockHandle, ClockSpeed};
     use kira::track::{TrackBuilder, TrackHandle};
     use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Tween};
     use quillstone_audio::{amplitude_to_db, channel_gain_db, Channel};
 
     /// A short fade instead of a hard cut, which would click.
     const DECLICK: f32 = 0.05;
+
+    /// The music clock ticks this many times a second (the intro's length is counted in them).
+    const CLOCK_HZ: f64 = 1000.0;
+    /// How far ahead of the clock an intro is scheduled, in ticks: both streams must
+    /// be queued before their start time passes, whatever the main thread's lag.
+    const LEAD_TICKS: f64 = 60.0;
 
     pub struct Audio {
         root: PathBuf,
@@ -72,7 +81,12 @@ mod real {
         music_track: TrackHandle,
         sfx_track: TrackHandle,
         voice_track: TrackHandle,
+        /// Times the start of a music intro and the loop that follows it.
+        clock: ClockHandle,
+        /// The track that is playing (the loop part, when there is an intro).
         music: Option<StreamingSoundHandle<FromFileError>>,
+        /// The intro, while it may still be playing.
+        music_intro: Option<StreamingSoundHandle<FromFileError>>,
         voice: Option<StreamingSoundHandle<FromFileError>>,
         sfx: HashMap<String, StaticSoundData>,
         /// The playing (streamed) loop of each looping sound effect, by file.
@@ -98,6 +112,8 @@ mod real {
             };
             let mut track = || manager.add_sub_track(TrackBuilder::new()).ok();
             let (music_track, sfx_track, voice_track) = (track()?, track()?, track()?);
+            let mut clock = manager.add_clock(ClockSpeed::TicksPerSecond(CLOCK_HZ)).ok()?;
+            clock.start();
 
             let mut audio = Audio {
                 root: root.to_path_buf(),
@@ -105,7 +121,9 @@ mod real {
                 music_track,
                 sfx_track,
                 voice_track,
+                clock,
                 music: None,
+                music_intro: None,
                 voice: None,
                 sfx: HashMap::new(),
                 sfx_loops: HashMap::new(),
@@ -132,6 +150,9 @@ mod real {
             if self.voice.as_ref().is_some_and(|v| v.state() == PlaybackState::Stopped) {
                 self.voice = None;
             }
+            if self.music_intro.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped) {
+                self.music_intro = None;
+            }
             let ended = self.music.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped);
             if ended {
                 self.music = None;
@@ -146,27 +167,14 @@ mod real {
 
         pub fn run(&mut self, action: Action) {
             match action {
-                Action::PlayMusic { src, fade, looped, volume } => {
-                    let Some(data) = self.stream(&src) else { return };
-                    let mut data = data.volume(amplitude_to_db(volume));
-                    if looped {
-                        data = data.loop_region(..);
-                    }
-                    if fade > 0.0 {
-                        data = data.fade_in_tween(tween(fade));
-                    }
-                    match self.music_track.play(data) {
-                        Ok(handle) => self.music = Some(handle),
-                        Err(e) => self.warn(&src, e),
-                    }
-                }
+                Action::PlayMusic { src, intro, fade, looped, volume } => self.play_music(&src, intro.as_deref(), fade, looped, volume),
                 Action::StopMusic { fade } => {
-                    if let Some(mut music) = self.music.take() {
+                    for mut music in [self.music.take(), self.music_intro.take()].into_iter().flatten() {
                         music.stop(tween(fade.max(DECLICK)));
                     }
                 }
                 Action::SetMusicVolume { volume, fade } => {
-                    if let Some(music) = &mut self.music {
+                    for music in [self.music.as_mut(), self.music_intro.as_mut()].into_iter().flatten() {
                         music.set_volume(amplitude_to_db(volume), tween(fade));
                     }
                 }
@@ -225,6 +233,45 @@ mod real {
                     };
                     track.set_volume(channel_gain_db(volume), tween(DECLICK));
                 }
+            }
+        }
+
+        /// Start a music track. With an `intro` that opens, the intro and the loop are
+        /// both queued on the music clock: the intro at a moment just ahead, the loop
+        /// exactly one intro-length after it, so the loop begins as the intro ends.
+        /// An intro that cannot be opened is skipped (warned once): the loop plays alone.
+        fn play_music(&mut self, src: &str, intro: Option<&str>, fade: f32, looped: bool, volume: f32) {
+            let Some(main) = self.stream(src) else { return };
+            let gain = amplitude_to_db(volume);
+            let mut main = main.volume(gain);
+            if looped {
+                main = main.loop_region(..);
+            }
+            let intro = intro.and_then(|name| self.stream(name).map(|data| (name, data)));
+            let Some((intro_name, intro)) = intro else {
+                if fade > 0.0 {
+                    main = main.fade_in_tween(tween(fade));
+                }
+                match self.music_track.play(main) {
+                    Ok(handle) => self.music = Some(handle),
+                    Err(e) => self.warn(src, e),
+                }
+                return;
+            };
+            let begin = self.clock.time() + LEAD_TICKS;
+            let join = begin + intro.duration().as_secs_f64() * CLOCK_HZ;
+            let mut intro = intro.volume(gain).start_time(begin);
+            if fade > 0.0 {
+                intro = intro.fade_in_tween(tween(fade)); // only the intro fades in; the loop joins at full level
+            }
+            let main = main.start_time(join);
+            match self.music_track.play(intro) {
+                Ok(handle) => self.music_intro = Some(handle),
+                Err(e) => return self.warn(intro_name, e),
+            }
+            match self.music_track.play(main) {
+                Ok(handle) => self.music = Some(handle),
+                Err(e) => self.warn(src, e),
             }
         }
 

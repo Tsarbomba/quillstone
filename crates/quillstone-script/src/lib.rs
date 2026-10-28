@@ -13,6 +13,6 @@ mod parser;
 pub use expr::{is_ident, parse_effect, parse_expr, parse_list, parse_value};
 pub use ops::{
     is_inside, kind_from_path, AssetKind, AssignOp, Area, Character, ChoiceOption, Cmp, Cond, Ease, Effect, Expr,
-    Fit, Item, Op, Program, ShopEntry, Value, Vars, Wipe, ONCE, SEEN,
+    Axis, Fit, Item, Op, Program, ShopEntry, Value, Vars, Wipe, ONCE, SEEN,
 };
 pub use parser::{parse, ParseError};

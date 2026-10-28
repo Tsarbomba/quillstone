@@ -146,7 +146,7 @@ fn consistent(state: &State, program: &Program) -> bool {
     match &state.pending {
         None => state.finished,
         Some(Cmd::Say { .. }) => matches!(op, Some(Op::Say { .. })),
-        Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. })),
+        Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. } | Op::FadeOut { .. })),
         Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
         Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
         Some(Cmd::ShowInventory) => matches!(op, Some(Op::Inventory)),
@@ -283,8 +283,20 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         w(format!("bg {}", q(bg)));
     }
     for sp in &s.sprites {
-        // `y` and `z` come last: saves from before they existed have only the first four.
-        w(format!("sprite {} {} {} {} {} {}", q(&sp.id), q(&sp.src), sp.x, sp.scale, sp.y, sp.z));
+        // New fields are appended: `y` and `z` came after the first four, then `flip`,
+        // `xscale` and `yscale`; an older save has fewer and loads with the defaults.
+        w(format!(
+            "sprite {} {} {} {} {} {} {} {} {}",
+            q(&sp.id),
+            q(&sp.src),
+            sp.x,
+            sp.scale,
+            sp.y,
+            sp.z,
+            sp.flip,
+            sp.xscale,
+            sp.yscale
+        ));
     }
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
@@ -293,8 +305,16 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     if s.textbox_hidden {
         w("textbox hidden".to_string());
     }
+    // Saves from before `::fade` existed have no such record: they load uncovered.
+    if s.cover.is_some() {
+        w(format!("cover {}", color(s.cover)));
+    }
+    // The intro, if any, is a fourth value; saves from before it existed load without one.
     if let Some(m) = &s.music {
-        w(format!("music {} {} {}", q(&m.src), m.looped, m.volume));
+        match &m.intro {
+            Some(intro) => w(format!("music {} {} {} {}", q(&m.src), m.looped, m.volume, q(intro))),
+            None => w(format!("music {} {} {}", q(&m.src), m.looped, m.volume)),
+        }
     }
     // Saves from before looping sounds existed have no such record: they load with none.
     for l in &s.sfx_loops {
@@ -467,10 +487,22 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 scale: sane(f(4)?, 0.05, 10.0, 1.0),
                 y: if t.len() > 5 { sane(f(5)?, -0.5, 1.5, 1.0) } else { 1.0 },
                 z: if t.len() > 6 { num::<i32>(arg(6)?, n)?.clamp(-100, 100) } else { 0 },
+                // lenient: a damaged flag is just "not flipped"
+                flip: t.get(7).is_some_and(|v| v == "true"),
+                xscale: if t.len() > 8 { sane(f(8)?, 0.05, 10.0, 1.0) } else { 1.0 },
+                yscale: if t.len() > 9 { sane(f(9)?, 0.05, 10.0, 1.0) } else { 1.0 },
             }),
             "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
-            "music" => s.music = Some(MusicState { src: path(1)?, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) }),
+            "music" => {
+                let intro = if t.len() > 4 { Some(path(4)?) } else { None };
+                s.music = Some(MusicState { src: path(1)?, intro, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) });
+            }
+            "cover" => {
+                let parts: Vec<f32> = arg(1)?.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
+                let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{}`", arg(1)?)) };
+                s.cover = Some([sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)]);
+            }
             "sfxloop" => {
                 let volume = f(2)?;
                 let src = path(1)?;

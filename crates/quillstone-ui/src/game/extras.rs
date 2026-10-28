@@ -74,7 +74,7 @@ impl Game<'_> {
             // Back to the menu's own music.
             let mut cmds = vec![Cmd::StopMusic { fade: 1.0 }];
             if let Some(src) = self.theme().menu_music.clone() {
-                cmds.push(Cmd::PlayMusic { src, fade: 1.0, looped: true, volume: 1.0 });
+                cmds.push(Cmd::PlayMusic { src, intro: None, fade: 1.0, looped: true, volume: 1.0 });
             }
             self.show(&cmds);
         }
@@ -198,7 +198,7 @@ impl Game<'_> {
             }
             Tab::Music => {
                 self.extras.playing = Some(index);
-                self.show(&[Cmd::PlayMusic { src, fade: 0.5, looped: true, volume: 1.0 }]);
+                self.show(&[Cmd::PlayMusic { src, intro: None, fade: 0.5, looped: true, volume: 1.0 }]);
             }
         }
     }

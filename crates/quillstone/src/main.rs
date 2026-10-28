@@ -665,6 +665,9 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
+            Cmd::FadeOut { time, .. } if *time > 0.0 => println!("[the screen fades out]"),
+            Cmd::FadeOut { .. } => println!("[the screen is covered]"),
+            Cmd::FadeIn { .. } => println!("[the screen fades in]"),
             Cmd::Textbox { .. } => {} // nothing to show in text mode
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
@@ -779,6 +782,21 @@ mod tests {
         assert!(err.contains("1 problem"), "AAC isn't shipped: {err}");
         // a `stop` names a file but plays nothing, so it needs no file of its own
         assert!(checked("::sfx{src=assets/rain.ogg loop}\n::sfx{stop}\nHi.\n", &[("assets/rain.ogg", CALM)]).is_ok());
+    }
+
+    #[test]
+    fn check_validates_the_intro_of_a_music_track_like_its_loop() {
+        const CALM: &[u8] = include_bytes!("../../../examples/assets/calm.ogg");
+        let script = "::music{src=assets/loop.ogg intro=assets/intro.ogg}\nHi.\n";
+        let both = [("assets/loop.ogg", CALM), ("assets/intro.ogg", CALM)];
+        assert!(checked(script, &both).is_ok());
+        let err = checked(script, &[("assets/loop.ogg", CALM)]).unwrap_err();
+        assert!(err.contains("1 problem"), "a missing intro file: {err}");
+        let err = checked(script, &[("assets/loop.ogg", CALM), ("assets/intro.ogg", b"not a sound")]).unwrap_err();
+        assert!(err.contains("1 problem"), "an unplayable intro file: {err}");
+        let m4a = script.replace("intro.ogg", "intro.m4a");
+        let err = checked(&m4a, &[("assets/loop.ogg", CALM), ("assets/intro.m4a", CALM)]).unwrap_err();
+        assert!(err.contains("1 problem"), "AAC isn't shipped: {err}");
     }
 
     #[test]

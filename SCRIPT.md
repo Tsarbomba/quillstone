@@ -164,34 +164,49 @@ Rollback and saves keep the counts; they belong to one playthrough.
 | Command | What it does |
 | --- | --- |
 | `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped). |
+| `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
 | `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
 | `::show{mika happy y=0.9 z=2}` | `y`: where the sprite's **bottom edge** is, as a fraction of the screen height (a number or `N%`, from -0.5 to 1.5; default 1, the bottom of the screen). Less than 1 lifts the sprite, more than 1 sinks it below the screen edge; the screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
+| `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps standing on its `y` line and stays centred on `at`. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
 | `::show{src=assets/ghost.png id=ghost at=center}` | A sprite that isn't a character. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
 | `::move{mika at=right time=0.8}` | Slide a sprite. |
 | `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `at` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
+| `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `at`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
+| `::shake{axis=x}` / `::shake{axis=y}` | Shake along one axis only: `x` sideways, `y` up and down, `both` (the default) both ways. A one-axis shake moves the stage by up to `strength` pixels along its axis and not at all along the other, and zooms in only as far as that axis needs. |
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
+| `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
+| `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
 Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
 940 px tall at `scale=1` (on a 1920x1080 screen), and the text box draws over their
-lower part. The camera, sprite sizes, heights and `z` are
-part of the scene, so rollback and saves restore
-them; a shake or a flash is a moment and isn't replayed. A flash stands still while
-a menu is open and ends at once when the player skips.
+lower part. To put one sprite behind another, give it a lower `z`. The camera, sprite sizes,
+heights, stretch, mirroring, `z` and the colour cover are part of the scene, so rollback
+and saves restore them (a save made before `::fade` existed loads uncovered, one made
+before `flip` and the scales existed loads with unflipped, unstretched sprites); a shake or a flash is a moment and
+isn't replayed. A flash stands still while a menu is open and ends at once when the
+player skips.
+
+The cover is drawn over the stage, inline images, video and hotspot pictures, under a
+`::flash` and under the textbox and everything else on the interface. Rollback goes
+past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
+through a fade, and roll forward does the same. The last line stays on screen while the
+screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
 
 ## Sound and video
 
 | Command | What it does |
 | --- | --- |
 | `::music{src=... fade=1 volume=0.8 loop=false}` | Background music; loops unless `loop=false`. `volume` 0 to 1. A different track crossfades over `fade` seconds. |
+| `::music{src=loop.ogg intro=intro.ogg}` | A track with an **intro**: `intro` plays once, and `src` then loops, without a gap. `intro` needs `src` (the loop) and a looping track (so not `loop=false`). `fade` fades the intro in. Both files are checked and packaged like any sound. |
 | `::music{stop fade=2}` | Stop it. |
 | `::sfx{src=door.ogg volume=0.5}` | One-shot sound effect. |
 | `::sfx{src=rain.ogg loop volume=0.6 fade=1}` | A **looping** sound effect, fading in over `fade` seconds. It belongs to the scene, like music. |
@@ -225,6 +240,14 @@ How sound behaves:
 - `::music` with the track that is **already playing** doesn't restart it; only
   the volume changes (fading over `fade`). So it's safe to repeat a scene's
   `::music` line. A `loop=false` track that has finished does start again.
+- A track with an `intro` is the pair of files. The same `src` and `intro` already
+  playing never restarts, so repeating the line is safe, and rollback or loading a
+  save into a scene where that pair is playing leaves it alone. The playing position
+  is not saved: whenever the pair is started afresh (a save loaded from the main
+  menu, another track playing before it) it starts from the intro. `src` with a
+  different `intro`, or none, is another piece and crossfades. In the music room an
+  entry is unlocked by its `src` file, and playing it there plays that file alone,
+  without the intro.
 - Rollback keeps the music going if the earlier moment had the same track, and
   switches or stops it otherwise. A voiced line's clip plays again when you roll
   back to it. One-shot sound effects are never replayed by rollback.
@@ -508,13 +531,13 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 ## What rollback restores
 
 Going back one step restores variables, the call stack, background, sprites and
-their positions, heights, depths and sizes, the camera, music, looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch and mirroring, the camera, the colour cover of `::fade{out}`, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;
 going back further simply stops there, and the backlog lists what that history holds.
 Roll forward is dropped when the state rolled back to moves on by itself (a
-`::wait`, a video or a line ending in `{nw}`): rollback goes past those, so there is
+`::wait`, the wait of a `::fade{out}`, a video or a line ending in `{nw}`): rollback goes past those, so there is
 nothing to come back to. Persistent variables are never rolled back: a rollback or a
 loaded save shows the screen (choices, hotspots, shop stock, a line's `{variables}`)
 rebuilt with their current values.

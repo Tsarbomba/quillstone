@@ -329,18 +329,25 @@ fn the_staging_demo_plays_through() {
     let mut g = new_game(&p, instant());
     let first = g.take_audio();
     assert!(first.iter().any(|a| matches!(a, Action::PlaySfxLoop { src, .. } if src == "assets/calm.ogg")), "{first:?}");
-    let mut flashed = false;
-    let mut broke = false;
-    for _ in 0..40 {
+    let (mut flashed, mut broke, mut dark_line, mut flipped, mut stretched) = (false, false, false, false, false);
+    for _ in 0..80 {
         if !g.view().choices.is_empty() {
             break;
         }
         flashed |= flash_alpha(&g).is_some();
         broke |= line(&g).contains('\n');
+        // the narration that comes over the fully black screen
+        dark_line |= line(&g).starts_with("The screen is black") && cover_alpha(&g) == 1.0;
+        flipped |= g.view().sprites.iter().any(|s| s.flip);
+        stretched |= g.view().sprites.iter().any(|s| s.xscale > 1.0 && s.yscale < 1.0);
         key(&mut g, Key::Space);
         g.tick(0.0, false); // the `{nw}` line goes on by itself
     }
     assert!(flashed && broke, "the demo flashes and has a line with a {{p}} break");
+    assert!(dark_line, "a line of narration shows over the black screen");
+    assert!(flipped && stretched, "a sprite is flipped and a sprite is stretched");
+    g.tick(2.0, false);
+    assert_eq!(cover_alpha(&g), 0.0, "the dip is over by the end");
     assert_eq!(g.view().choices.len(), 2);
     assert!(g.take_audio().iter().any(|a| matches!(a, Action::StopSfx { src: Some(s), .. } if s == "assets/calm.ogg")));
     assert!(!g.mixer.has_sfx_loops());
@@ -2776,4 +2783,112 @@ fn a_custom_textbox_moves_the_quick_menu_and_its_clicks() {
     // the old place is just the stage now
     click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Settings)));
     assert_eq!(g.screen(), Screen::Story);
+}
+
+// ---- ::fade (dip to colour) -------------------------------------------------------
+
+const DIP: &str = "**A:** before\n::fade{out time=1 color=#000000}\n**A:** in the dark\n::fade{in time=1}\n**A:** after\n";
+
+fn cover_alpha(g: &Game) -> f32 {
+    g.view().cover().map_or(0.0, |(_, a)| a)
+}
+
+#[test]
+fn a_fade_out_waits_for_its_time_and_the_line_comes_over_the_black_screen() {
+    let p = parse(DIP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space); // leave "before": the fade begins
+    assert!(g.needs_ticks(), "the fade is a timer");
+    g.tick(0.5, false);
+    assert_eq!(line(&g), "before", "still waiting for the fade");
+    assert!((cover_alpha(&g) - 0.5).abs() < 1e-3);
+    g.tick(0.6, false); // the fade is over: the story goes on by itself
+    assert_eq!(line(&g), "in the dark");
+    assert_eq!(cover_alpha(&g), 1.0, "and the screen stays covered");
+    // the dialogue box is not covered: its draw call comes after the cover's
+    let draws = g.draw_list(&|_| None);
+    let cover = draws.iter().position(|d| matches!(d, Draw::Rect { color, .. } if color[..3] == [0.0; 3] && color[3] == 1.0)).unwrap();
+    assert!(draws.iter().skip(cover).any(|d| matches!(d, Draw::Text { text, .. } if text == "in the dark")));
+}
+
+#[test]
+fn a_click_ends_the_fade_out_at_once_and_the_story_continues() {
+    let p = parse(DIP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.tick(0.2, false);
+    key(&mut g, Key::Space); // a click during the fade
+    assert_eq!(line(&g), "in the dark");
+    assert_eq!(cover_alpha(&g), 1.0, "covered fully, not left half way");
+}
+
+#[test]
+fn a_fade_in_does_not_wait_and_finishes_by_itself() {
+    let p = parse(DIP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space); // skip the fade out
+    key(&mut g, Key::Space); // leave the dark line: the fade in starts and "after" shows
+    assert_eq!(line(&g), "after");
+    assert!(cover_alpha(&g) > 0.9);
+    g.tick(0.5, false);
+    assert!((cover_alpha(&g) - 0.5).abs() < 1e-3);
+    g.tick(0.6, false);
+    assert_eq!(cover_alpha(&g), 0.0);
+    assert!(!g.needs_ticks());
+}
+
+#[test]
+fn skip_mode_runs_through_fades_without_waiting_for_them() {
+    let p = parse(DIP).unwrap();
+    let mut first = new_game(&p, instant());
+    for _ in 0..3 {
+        key(&mut first, Key::Space); // read everything once
+    }
+    first.autosave();
+    let mut g = reread(&p, &first, instant());
+    g.handle(Event::Key(Key::Tab)); // toggle skip
+    run(&mut g, 12);
+    assert_eq!(line(&g), "after");
+    assert_eq!(cover_alpha(&g), 0.0, "the fade in was cut short too");
+}
+
+#[test]
+fn rollback_goes_past_the_fade_wait_and_back_to_the_dark_line_covered_again() {
+    let p = parse(DIP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space); // "in the dark", covered
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "before", "not stuck on the half-faded wait");
+    assert_eq!(cover_alpha(&g), 0.0);
+    g.handle(Event::Wheel(-1.0)); // roll forward
+    assert_eq!(line(&g), "in the dark");
+    assert_eq!(cover_alpha(&g), 1.0);
+}
+
+#[test]
+fn a_saved_covered_scene_loads_covered_and_an_uncovered_one_uncovered() {
+    let p = parse(DIP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space); // "in the dark", covered
+    key(&mut g, Key::F5);
+    key(&mut g, Key::Space); // the fade in, and "after"
+    g.tick(2.0, false);
+    assert_eq!(cover_alpha(&g), 0.0);
+    key(&mut g, Key::F9);
+    key(&mut g, Key::Enter); // yes, load
+    assert_eq!(line(&g), "in the dark");
+    assert_eq!(cover_alpha(&g), 1.0, "the cover came back with the save");
+    // a save made before the first fade loads uncovered
+    key(&mut g, Key::Backspace);
+    key(&mut g, Key::F5);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    assert_eq!(cover_alpha(&g), 1.0);
+    key(&mut g, Key::F9);
+    key(&mut g, Key::Enter);
+    assert_eq!(line(&g), "before");
+    assert_eq!(cover_alpha(&g), 0.0);
 }

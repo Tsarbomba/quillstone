@@ -513,6 +513,26 @@ impl Ease {
     }
 }
 
+/// Which way a `::shake` moves the stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Axis {
+    X,
+    Y,
+    #[default]
+    Both,
+}
+
+impl Axis {
+    pub fn parse(s: &str) -> Option<Axis> {
+        match s {
+            "x" => Some(Axis::X),
+            "y" => Some(Axis::Y),
+            "both" => Some(Axis::Both),
+            _ => None,
+        }
+    }
+}
+
 /// The direction a wipe's edge travels (`wipe=` on `::bg`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wipe {
@@ -602,18 +622,44 @@ pub enum Op {
     /// the sprite's bottom edge is, as a fraction of the screen height (-0.5 to
     /// 1.5; new sprites stand on the bottom edge, 1.0). `z` orders sprites (-100
     /// to 100, default 0; higher is in front). Both keep the current value when `None`.
-    Show { id: String, src: String, at: Option<f32>, y: Option<f32>, z: Option<i32>, scale: Option<f32>, fade: f32 },
+    /// `flip` mirrors the picture left to right; `xscale` and `yscale` (0.05 to 10)
+    /// stretch it along one axis, on top of `scale`. All three keep the sprite's
+    /// current value when `None` (and are off / 1 for a new sprite).
+    Show {
+        id: String,
+        src: String,
+        at: Option<f32>,
+        y: Option<f32>,
+        z: Option<i32>,
+        scale: Option<f32>,
+        flip: Option<bool>,
+        xscale: Option<f32>,
+        yscale: Option<f32>,
+        fade: f32,
+    },
     /// Hide one sprite, or all of them when `id` is `None`.
     Hide { id: Option<String>, fade: f32 },
-    /// Slide and/or resize a sprite. `None` leaves that property as it is.
-    Move { id: String, at: Option<f32>, y: Option<f32>, scale: Option<f32>, time: f32, ease: Ease },
+    /// Slide and/or resize a sprite. `None` leaves that property as it is. `flip`
+    /// switches at the start of the move; the rest animate.
+    Move {
+        id: String,
+        at: Option<f32>,
+        y: Option<f32>,
+        scale: Option<f32>,
+        flip: Option<bool>,
+        xscale: Option<f32>,
+        yscale: Option<f32>,
+        time: f32,
+        ease: Ease,
+    },
     /// Shake the stage (background and sprites) for `time` seconds, by up to
-    /// `strength` pixels (at 1920x1080). Doesn't wait.
-    Shake { time: f32, strength: f32 },
+    /// `strength` pixels (at 1920x1080) along `axis`. Doesn't wait.
+    Shake { time: f32, strength: f32, axis: Axis },
     /// Pan and zoom the stage: `zoom` (1 = whole stage) centred on the point
     /// `x`, `y` (0..1 across and down the stage). `None` keeps the current value.
     Camera { zoom: Option<f32>, x: Option<f32>, y: Option<f32>, time: f32, ease: Ease },
-    Music { src: String, fade: f32, looped: bool, volume: f32 },
+    /// Background music. With an `intro`, that file plays once and `src` then loops.
+    Music { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
     /// One-shot sound effect.
     Sfx { src: String, volume: f32 },
@@ -628,6 +674,11 @@ pub enum Op {
     Textbox { hidden: bool, fade: f32 },
     /// A full-screen flash of `color` that fades out over `time` seconds. Doesn't wait.
     Flash { time: f32, color: [f32; 3] },
+    /// Fade the stage to `color` over `time` seconds and keep it covered. Waits
+    /// until the fade is done (like a `::wait`).
+    FadeOut { time: f32, color: [f32; 3] },
+    /// Fade the cover away over `time` seconds. Doesn't wait.
+    FadeIn { time: f32 },
     /// Voice clip for the next line.
     Voice { src: String },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.
@@ -677,6 +728,10 @@ impl Op {
                 .filter_map(|o| o.area.as_ref()?.image.as_deref())
                 .map(|i| (AssetKind::Image, i))
                 .collect(),
+            Op::Music { src, intro, .. } => {
+                let intro = intro.iter().map(|i| (AssetKind::Audio, i.as_str()));
+                std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()
+            }
             _ => self.asset().into_iter().collect(),
         }
     }
@@ -821,7 +876,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), at: None, y: None, z: None, scale: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);
