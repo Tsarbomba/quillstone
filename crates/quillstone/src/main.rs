@@ -584,6 +584,7 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
                 let frame = quillstone_script::anim_id(s).and_then(|id| program.anims.get(id)).is_some_and(|a| a.frames.iter().any(|f| f.file == src));
                 s == src || quillstone_script::pattern_matches(s, src) || frame
             }
+            Op::Video { src: s, .. } => s == src || quillstone_script::pattern_matches(s, src),
             _ => false,
         })
     };
@@ -599,12 +600,12 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
         let place = if in_gallery { "gallery" } else { "music room" };
         if !file.exists() {
             problem(format!("missing {place} file `{asset}`"));
-        } else if in_gallery && kind != AssetKind::Image {
-            problem(format!("`{asset}` in the gallery isn't a picture"));
-        } else if let Some(why) = if in_gallery { picture::read_picture(&file).err() } else { unplayable(&file, kind) } {
+        } else if in_gallery && kind == AssetKind::Audio {
+            problem(format!("`{asset}` in the gallery isn't a picture or a video"));
+        } else if let Some(why) = if kind == AssetKind::Image { picture::read_picture(&file).err() } else { unplayable(&file, kind) } {
             problem(format!("`{asset}` won't play in a shipped game: {why}"));
         } else if in_gallery && !shown(asset) {
-            problem(format!("`{asset}` is in the gallery, but no `::bg` or image shows it, so it can never unlock"));
+            problem(format!("`{asset}` is in the gallery, but no `::bg`, `::video` or image shows it, so it can never unlock"));
         } else if !in_gallery && !played(asset) {
             problem(format!("`{asset}` is in the music room, but no `::music` plays it, so it can never unlock"));
         }
@@ -1466,6 +1467,26 @@ mod tests {
         let script = "---\nvars: { place: \"a\" }\ngallery: [assets/places/a.png]\n---\n::bg{src=\"assets/places/{place}.png\"}\nHi.\n";
         let ok = in_dir(&[("assets/places/a.png", &png)], |dir| check_extras(&parse(script).unwrap(), &dir.join("s.quill.md"), dir));
         assert_eq!(ok, 0);
+    }
+
+    #[test]
+    fn gallery_videos_are_probed_like_background_videos() {
+        const VP9: &[u8] = include_bytes!("../../../player/tests/data/bars-vp9.webm");
+        const AV1: &[u8] = include_bytes!("../../../player/tests/data/bars-av1.webm");
+        let png = picture::fake_png(10, 10);
+        let script = |entry: &str, story: &str| format!("---\ngallery: [assets/a.png, {entry}]\n---\n::bg{{src=assets/a.png}}\n{story}\nHi.\n");
+        let run = |entry: &str, story: &str, files: &[(&str, &[u8])]| {
+            let mut files = files.to_vec();
+            files.push(("assets/a.png", &png));
+            in_dir(&files, |dir| check_extras(&parse(&script(entry, story)).unwrap(), &dir.join("s.quill.md"), dir))
+        };
+        let ok: &[(&str, &[u8])] = &[("assets/c.webm", VP9)];
+        assert_eq!(run("assets/c.webm", "::bg{src=assets/c.webm}", ok), 0, "shown as a looped background");
+        assert_eq!(run("assets/c.webm", "::video{src=assets/c.webm}", ok), 0, "or as a cutscene");
+        assert_eq!(run("assets/c.webm", "", ok), 1, "a clip the story never shows can never unlock");
+        assert_eq!(run("assets/c.webm", "::bg{src=assets/c.webm}", &[]), 1, "missing");
+        assert_eq!(run("assets/c.webm", "::bg{src=assets/c.webm}", &[("assets/c.webm", AV1)]), 1, "AV1 is not shipped");
+        assert_eq!(run("assets/c.ogg", "", &[("assets/c.ogg", b"OggS")]), 1, "a sound is not a gallery entry");
     }
 
     #[test]

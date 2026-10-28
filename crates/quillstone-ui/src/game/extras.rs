@@ -40,6 +40,12 @@ impl Game<'_> {
         !self.program.gallery.is_empty() || !self.program.music_room.is_empty() || !self.program.replays.is_empty()
     }
 
+    /// The gallery video open in the viewer, if that is what Extras is showing.
+    pub(super) fn viewed_video(&self) -> Option<&str> {
+        let src = self.program.gallery.get(self.extras.viewing?)?;
+        (self.screen == Screen::Extras && quillstone_script::kind_from_path(src) == AssetKind::Video).then_some(src)
+    }
+
     /// Write the persistent data if the story changed it.
     pub(super) fn save_persistent(&mut self) {
         let changed = self.session.take_persistent_changed();

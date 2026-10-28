@@ -4029,6 +4029,16 @@ mod tests {
     }
 
     #[test]
+    fn a_gallery_mixes_pictures_and_videos_and_keeps_the_path_rules() {
+        let p = ok("---\ngallery: [a.png, assets/clip1.webm, \"my clip.WEBM\"]\ngallery: [assets/clip1.webm]\n---\nHi.\n");
+        assert_eq!(p.gallery, ["a.png", "assets/clip1.webm", "my clip.WEBM"]);
+        let kinds: Vec<_> = p.extra_assets().map(|(k, _)| k).collect();
+        assert_eq!(kinds, [AssetKind::Image, AssetKind::Video, AssetKind::Video]);
+        assert!(has_err("---\ngallery: [../x.webm]\n---\nHi.\n", "inside the game folder"));
+        assert!(has_err("---\nvars: { n: \"a\" }\ngallery: [clips/{n}.webm]\n---\nHi.\n", "{"));
+    }
+
+    #[test]
     fn text_tags_are_checked_where_they_are_written() {
         ok("Some **bold**, *italic*, {color=#f80}colour{/color} and a pause{w=0.3}.\n::choice\n- [*Quietly*](#a)\n::\n# a\nX.\n");
         let e = errs("A line.\nAn **unclosed line.\n\nNext.\n");

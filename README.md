@@ -7,7 +7,7 @@ markdown, and seamless video playback is a first-class feature.
 **What it does:** characters (a name can come from a variable, such as one the player typed) and sprites (placed anywhere on screen, layered with `z`) with fades, layered sprites (swap an expression or outfit layer by layer), frame animations (blinking, talking) and looping moves, ambient snow, rain or falling petals, a colour wash over the stage (`::tint`, for night or a memory), music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
 conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), stories split over several files (`::include`), translations (players switch language in Settings; translators work in plain `lang/<code>.txt` files and never touch the script), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
-rollback, history, skip and auto-forward, save/load slots, a gallery, music
+rollback, history, skip and auto-forward, save/load slots, a gallery of pictures and looping clips, music
 room and scene replays, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
 double-click. The full language is in [SCRIPT.md](SCRIPT.md).

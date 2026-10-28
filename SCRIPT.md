@@ -1050,9 +1050,16 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   them to is still there in every new game and every loaded save, and rolling
   back doesn't undo it. Replaying a line that *adds* to one adds again, so
   yes/no flags are the safe kind.
-- **`gallery:`** lists pictures for the main menu's **Extras** screen; each one
+- **`gallery:`** lists pictures and video clips for the main menu's **Extras** screen; each one
   unlocks the first time the story shows it (`::bg` or an inline image; a `::bg{anim=...}` unlocks
-  every listed picture that is one of its frames).
+  every listed picture that is one of its frames). An entry that is a video (`.webm`, or any
+  format `quillstone check` accepts for `::bg`) unlocks the first time the story plays it as a
+  looping `::bg` background or as a `::video`; pictures and clips can be mixed freely
+  (`gallery: [assets/cg1.png, assets/clip1.webm]`). A clip's tile in the grid is a dark
+  placeholder with a play symbol and the clip's name (no thumbnail is made). Opening a clip
+  plays it on repeat, full screen and fitted like a picture, without sound; click, Esc or
+  Enter closes it, Left/Right move to the next unlocked entry, picture or clip. The clip stops
+  as soon as it is closed.
   **`music_room:`** does the same for `::music` tracks (named after their file:
   `rainy_day.ogg` shows as "Rainy day"). The keys may repeat to make long lists.
   `quillstone check` complains about entries the story never shows or plays,

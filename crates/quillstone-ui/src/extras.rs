@@ -3,7 +3,7 @@
 //! drawing; what the input does is in `game/extras.rs`.
 
 use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
-use quillstone_script::Fit;
+use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::screens::slots_back_rect;
 
@@ -169,6 +169,14 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
         let on = s.hover == Some(Hit::Item(i)) || s.focus == Some(i);
         out.push(Draw::Rect { rect: r, color: lit(on) });
         match (s.tab, unlocked) {
+            (Tab::Gallery, true) if kind_from_path(src) == AssetKind::Video => {
+                // No thumbnail decoding: a dark tile with a play glyph and the clip's name.
+                let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
+                out.push(Draw::Rect { rect: inner, color: [0.04, 0.04, 0.06, 1.0] });
+                text(out, "\u{25B6}", Rect::new(inner.x, inner.y, inner.w, inner.h - 30.0), 72.0, theme.accent_color, Align::Center);
+                let name = Rect::new(inner.x + 10.0, inner.y + inner.h - 44.0, inner.w - 20.0, 36.0);
+                text(out, track_name(src), name, 22.0, theme.dim_color, Align::Center);
+            }
             (Tab::Gallery, true) => {
                 let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
                 if let Some(size) = image_size(src) {

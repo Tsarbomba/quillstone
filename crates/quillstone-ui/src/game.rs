@@ -695,11 +695,15 @@ impl<'p> Game<'p> {
     // ---- video ---------------------------------------------------------------------------
 
     /// The videos that should be playing now: the cutscene, a video background
-    /// (and the one it is crossfading from), or a video menu background.
+    /// (and the one it is crossfading from), a video menu background, or the gallery clip being viewed.
     pub fn wanted_videos(&self) -> Vec<Wanted> {
         let is_video = |src: &str| kind_from_path(src) == AssetKind::Video;
         let looping = |src: &str| Wanted { src: src.to_string(), looped: true, generation: 0 };
         let mut out = Vec::new();
+        // A gallery clip open full screen is the only thing playing (muted, like every video).
+        if let Some(src) = self.viewed_video() {
+            return vec![looping(src)];
+        }
         if !self.in_story {
             out.extend(self.theme().menu_background.as_deref().filter(|s| is_video(s)).map(looping));
             return out;
@@ -1273,3 +1277,5 @@ mod timed_tests;
 mod lang_tests;
 #[cfg(test)]
 mod name_tests;
+#[cfg(test)]
+mod gallery_video_tests;

@@ -153,7 +153,10 @@ impl<'p> Session<'p> {
                 }
             }
             let (src, list) = match cmd {
-                Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } => (src, &self.program.gallery),
+                // a video entry unlocks as a looped background (or as a `::video`)
+                Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } | Cmd::PlayVideo { src, .. } => {
+                    (src, &self.program.gallery)
+                }
                 Cmd::PlayMusic { src, .. } => (src, &self.program.music_room),
                 _ => continue,
             };
@@ -264,6 +267,36 @@ mod tests {
         let vars = read_persistent(&text);
         assert_eq!(vars.keys().collect::<Vec<_>>(), ["a", "c"]);
         assert!(read_persistent("something else\nvar \"a\" int 1\n").is_empty());
+    }
+
+    // ---- video entries ----
+
+    const CLIPS: &str = "---\ngallery: [cg.png, loop.webm, cut.webm, other.webm]\n---\n# start\nHi.\n::bg{src=loop.webm}\nOne.\n::video{src=cut.webm}\nTwo.\n";
+
+    #[test]
+    fn a_gallery_video_unlocks_as_a_background_or_a_cutscene_and_survives_the_file() {
+        let p = parse(CLIPS).unwrap();
+        let (mut s, _) = Session::start(&p);
+        assert!(!s.unlocked("loop.webm"));
+        s.input(Input::Advance);
+        assert!(s.unlocked("loop.webm") && !s.unlocked("cut.webm") && !s.unlocked("cg.png"));
+        s.input(Input::Advance);
+        s.input(Input::Advance);
+        assert!(s.unlocked("cut.webm") && !s.unlocked("other.webm"));
+        let kept = read_persistent(&write_persistent(s.persistent()));
+        assert_eq!(&kept, s.persistent(), "same records as for pictures");
+        s.rollback();
+        assert!(s.unlocked("loop.webm"), "going back takes nothing away");
+    }
+
+    #[test]
+    fn an_unlock_file_cannot_unlock_what_the_script_does_not_list() {
+        let p = parse(CLIPS).unwrap();
+        let text = format!("{MAGIC}\nvar \"unlocked:evil.webm\" bool true\nvar \"unlocked:loop.webm\" bool true\n");
+        let (s, _) = Session::start_with(&p, read_persistent(&text));
+        assert!(s.unlocked("loop.webm"));
+        // the gallery is the script's list: an entry nobody declared is never offered
+        assert!(!p.gallery.iter().any(|g| g == "evil.webm") && !s.unlocked("other.webm"));
     }
 
     // ---- list variables ----
