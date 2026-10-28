@@ -11,6 +11,8 @@ use crate::screens::slots_back_rect;
 pub enum Tab {
     Gallery,
     Music,
+    /// Scenes that can be replayed (front matter `replays:`).
+    Scenes,
 }
 
 /// Pictures per gallery page (a 4 x 3 grid) and tracks per music room page.
@@ -35,6 +37,11 @@ pub enum Hit {
 
 /// The tabs there are: only kinds the game has entries for.
 pub fn tabs(gallery: usize, music: usize) -> Vec<Tab> {
+    tabs_for(gallery, music, 0)
+}
+
+/// [`tabs`] with the replayable scenes too.
+pub fn tabs_for(gallery: usize, music: usize, scenes: usize) -> Vec<Tab> {
     let mut out = Vec::new();
     if gallery > 0 {
         out.push(Tab::Gallery);
@@ -42,13 +49,16 @@ pub fn tabs(gallery: usize, music: usize) -> Vec<Tab> {
     if music > 0 {
         out.push(Tab::Music);
     }
+    if scenes > 0 {
+        out.push(Tab::Scenes);
+    }
     out
 }
 
 pub fn per_page(tab: Tab) -> usize {
     match tab {
         Tab::Gallery => GALLERY_PAGE,
-        Tab::Music => MUSIC_PAGE,
+        Tab::Music | Tab::Scenes => MUSIC_PAGE,
     }
 }
 
@@ -82,7 +92,7 @@ pub fn next_rect() -> Rect {
 fn item_rect(tab: Tab, i: usize) -> Rect {
     match tab {
         Tab::Gallery => cell_rect(i),
-        Tab::Music => track_rect(i),
+        Tab::Music | Tab::Scenes => track_rect(i),
     }
 }
 
@@ -123,7 +133,7 @@ pub struct ExtrasScreen<'a> {
     pub tab: Tab,
     pub page: usize,
     pub pages: usize,
-    /// This page's entries: file, and whether it is unlocked.
+    /// This page's entries: file (a scene's title), and whether it is unlocked.
     pub entries: &'a [(&'a str, bool)],
     /// The entry the keyboard is on (on this page).
     pub focus: Option<usize>,
@@ -147,7 +157,11 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
     for (i, &t) in s.tabs.iter().enumerate() {
         let r = tab_rect(i, s.tabs.len());
         out.push(Draw::Rect { rect: r, color: lit(t == s.tab || s.hover == Some(Hit::Tab(t))) });
-        let label = if t == Tab::Gallery { "Gallery" } else { "Music room" };
+        let label = match t {
+            Tab::Gallery => "Gallery",
+            Tab::Music => "Music room",
+            Tab::Scenes => "Scenes",
+        };
         text(out, label, r, 30.0, if t == s.tab { theme.accent_color } else { theme.text_color }, Align::Center);
     }
     for (i, &(src, unlocked)) in s.entries.iter().enumerate() {
@@ -169,7 +183,11 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
                 let color = if s.playing == Some(i) { theme.accent_color } else { theme.text_color };
                 text(out, format!("{mark}{}", track_name(src)), label, 34.0, color, Align::Left);
             }
-            (Tab::Music, false) => {
+            (Tab::Scenes, true) => {
+                let label = Rect::new(r.x + 30.0, r.y, r.w - 60.0, r.h);
+                text(out, src, label, 34.0, theme.text_color, Align::Left);
+            }
+            (Tab::Music | Tab::Scenes, false) => {
                 text(out, "???", Rect::new(r.x + 30.0, r.y, r.w - 60.0, r.h), 34.0, theme.dim_color, Align::Left);
             }
         }
@@ -217,6 +235,9 @@ mod tests {
         assert_eq!(tabs(3, 0), [Tab::Gallery]);
         assert_eq!(tabs(0, 2), [Tab::Music]);
         assert_eq!(tabs(1, 1), [Tab::Gallery, Tab::Music]);
+        assert_eq!(tabs_for(1, 1, 2), [Tab::Gallery, Tab::Music, Tab::Scenes]);
+        assert_eq!(tabs_for(0, 0, 2), [Tab::Scenes]);
+        assert_eq!(pages(Tab::Scenes, 9), 2);
         assert_eq!(pages(Tab::Gallery, 13), 2);
         assert_eq!(pages(Tab::Music, 0), 1);
     }

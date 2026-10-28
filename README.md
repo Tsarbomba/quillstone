@@ -7,8 +7,8 @@ markdown, and seamless video playback is a first-class feature.
 **What it does:** characters and sprites (placed anywhere on screen, layered with `z`) with fades, frame animations (blinking, talking) and looping moves, music, sound effects,
 voice (including auto-voice), video cutscenes, branching choices with
 conditions, clickable hotspots (maps, collectibles, point-and-click scenes), variables with whole-number arithmetic, dice rolls and grouped names like `hero.hp`, list variables, text input (ask for a name), items with an inventory screen and shops (both styled by your theme), `call`/`return`, bold/italic/colour/size text, full
-rollback, history, skip and auto-forward, save/load slots, a gallery and music
-room, gamepad support and hot reload. The `quillstone` tool checks a script,
+rollback, history, skip and auto-forward, save/load slots, a gallery, music
+room and scene replays, gamepad support and hot reload. The `quillstone` tool checks a script,
 plays every branch to find story bugs, and packages a game into a folder players
 double-click. The full language is in [SCRIPT.md](SCRIPT.md).
 
@@ -123,7 +123,7 @@ around. Building on Linux needs libudev's development files for this
 (`sudo apt install libudev-dev`), or build with `--no-default-features --features text,audio,video`.
 
 The game opens at a main menu (Start, Continue, Load, Extras when the game has a
-gallery or music room, Settings, Quit) and
+gallery, music room or scene replays, Settings, Quit) and
 returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
 Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same with the mouse; a game may show it
 only while the mouse is over the textbox, or not at all, and Settings lets you choose. The game saves automatically

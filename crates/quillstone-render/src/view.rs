@@ -804,6 +804,7 @@ impl View {
                 }
                 Cmd::Finished => self.finished = true,
                 Cmd::Stopped { .. } | Cmd::Warning { .. } => {} // for the author and player; the game shows it as a notice
+                Cmd::ReplayReached { .. } | Cmd::EndReplay => {} // bookkeeping for the session and the game
                 // The inventory, shop and text entry are screens of their own (see quillstone-ui).
                 Cmd::ShowInventory | Cmd::ShowShop { .. } | Cmd::AskInput { .. } => {}
                 // Audio is not the view's business.

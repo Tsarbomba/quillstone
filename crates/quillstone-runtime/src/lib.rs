@@ -27,7 +27,7 @@ pub use quillstone_script::DEFAULT_SEED;
 pub fn next_seed(seed: &mut u64) -> u64 {
     quillstone_script::splitmix64(seed)
 }
-pub use persist::{read_persistent, write_persistent, UNLOCKED};
+pub use persist::{read_persistent, write_persistent, REPLAY, UNLOCKED};
 pub use save::{line_id, q as quote, tokens, voice_name, MAX_LIST_ITEMS, SAVE_HISTORY};
 
 /// Something the frontend should do.
@@ -132,6 +132,11 @@ pub enum Cmd {
     /// name couldn't be built from a variable). Says what, for the player and the
     /// author; the frontend shows it once.
     Warning { message: String },
+    /// The story reached the start of a label listed in `replays:` (the frontend
+    /// may ignore it; [`Session`] records it as unlocked).
+    ReplayReached { label: String },
+    /// `::end_replay` ran. A scene replay ends here; in normal play it means nothing.
+    EndReplay,
     Finished,
 }
 
@@ -729,6 +734,9 @@ pub(crate) fn step_traced(
         }
         let Some(op) = program.ops.get(state.pc) else { break };
         ran(state.pc);
+        if let Some(labels) = program.replay_at.get(&state.pc) {
+            out.extend(labels.iter().map(|label| Cmd::ReplayReached { label: label.clone() }));
+        }
         // Passing a label that some `seen(label)` asks about.
         for var in program.counted.get(&state.pc).into_iter().flatten() {
             let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(0);
@@ -981,6 +989,10 @@ pub(crate) fn step_traced(
             },
             Op::Set(effect) => {
                 run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
+                state.pc += 1;
+            }
+            Op::EndReplay => {
+                out.push(Cmd::EndReplay);
                 state.pc += 1;
             }
             Op::End => break,

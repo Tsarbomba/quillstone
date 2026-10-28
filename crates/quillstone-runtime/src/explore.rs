@@ -306,6 +306,7 @@ impl Explorer<'_> {
         if !self.report.partial {
             self.stuck();
             self.unreached();
+            self.locked_replays();
             self.never_offered();
         }
         self.unset_variables();
@@ -345,6 +346,18 @@ impl Explorer<'_> {
                 if self.error(self.nodes[id].pc, "stuck", msg, Some(id)) {
                     reported += 1;
                 }
+            }
+        }
+    }
+
+    /// Replays whose label no branch reaches: the Scenes tab would never unlock them.
+    fn locked_replays(&mut self) {
+        let program = self.program;
+        for replay in &program.replays {
+            let at = program.labels[&replay.label];
+            if at < self.ran.len() && !self.ran[at] {
+                let msg = format!("replay `{}` can never be unlocked: no branch reaches its label", replay.label);
+                self.report.warnings.push(Finding { line: self.line(at), message: msg, path: None });
             }
         }
     }
@@ -802,6 +815,19 @@ mod tests {
         assert!(r.errors[0].message.contains("hangs"), "{:?}", messages(&r.errors));
         let r = test("# a\nHi.\n# deep\n::call{to=deep}\n");
         assert!(r.errors[0].message.contains("256 deep"), "{:?}", messages(&r.errors));
+    }
+
+    #[test]
+    fn a_replay_no_branch_reaches_can_never_be_unlocked() {
+        let src = "---\nreplays: { seen: \"Seen\", hidden: \"Hidden\", lost: \"Lost\" }\n---\n# start\nHi.\n::choice\n- [Go](#seen)\n::\n# seen\nSeen.\n::end_replay\n::end\n# hidden\nH.\n::end\n# lost\n::jump{to=hidden}\n";
+        let w = messages(&test(src).warnings);
+        assert!(w.iter().any(|m| m.contains("replay `hidden` can never be unlocked")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("replay `lost` can never be unlocked")), "{w:?}");
+        assert!(!w.iter().any(|m| m.contains("replay `seen`")), "{w:?}");
+        let fine = test(&src.replace("::choice\n- [Go](#seen)\n::\n", "::choice\n- [Go](#seen)\n- [Hid](#hidden)\n- [Lost](#lost)\n::\n"));
+        assert!(!messages(&fine.warnings).iter().any(|m| m.contains("replay `")), "{:?}", messages(&fine.warnings));
+        // `::end_replay` is a no-op for the tester: the story runs on to the end
+        assert!(test(src).errors.is_empty());
     }
 
     #[test]

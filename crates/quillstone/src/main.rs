@@ -173,12 +173,34 @@ fn check(path: &Path) -> Result<(), String> {
     for (line, msg) in line_warnings(&program, root) {
         eprintln!("{}:{line}: warning: {msg}", path.display());
     }
+    for (line, msg) in replay_warnings(&program) {
+        eprintln!("{}:{line}: warning: {msg}", path.display());
+    }
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
         return Err(format!("{missing} problem(s) (paths are relative to the script's folder)"));
     }
     println!("ok: {} ops, {} labels{voiced}", program.ops.len(), program.labels.len());
     Ok(())
+}
+
+/// Replays that no `::end_replay` follows: `(line, message)`. A static scan along every
+/// jump, call and choice from the label, so approximate (it can't tell which branches
+/// a player can really take), and only a warning.
+fn replay_warnings(program: &Program) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for replay in &program.replays {
+        let at = program.labels[&replay.label];
+        let ends = program.ops_ahead(at, program.ops.len() + 1).into_iter().any(|i| matches!(program.ops[i], Op::EndReplay));
+        if !ends {
+            let msg = format!(
+                "replay `{}` has no `::end_replay` after it, so it will run to the end of the game (or its `::return`)",
+                replay.label
+            );
+            out.push((program.lines.get(at).copied().unwrap_or(0), msg));
+        }
+    }
+    out
 }
 
 /// More files than this behind one picture name `{variable}` is probably a folder of unrelated art:
@@ -793,6 +815,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
             Cmd::Warning { message } => eprintln!("warning: {message}"),
+            Cmd::ReplayReached { .. } | Cmd::EndReplay => {} // scene replays are for the player
         }
     }
 }
@@ -824,6 +847,17 @@ mod tests {
             let p = parse(&format!("# a\n::hotspots\n{fine}\n::\n")).unwrap();
             assert!(hidden_hotspots(&p).is_empty(), "{fine}");
         }
+    }
+
+    #[test]
+    fn check_warns_when_a_replay_has_no_end_replay_after_it() {
+        let front = "---\nreplays: { a: \"A\", b: \"B\", c: \"C\" }\n---\n";
+        let p = parse(&format!("{front}# a\nHi.\n::end_replay\n# b\nBye.\n::jump{{to=a}}\n# c\n::if{{x}}\nMaybe.\n::endif\nEnd.\n")).unwrap();
+        let w = replay_warnings(&p);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].1.contains("replay `c`") && w[0].1.contains("run to the end of the game"), "{w:?}");
+        assert_eq!(w[0].0, p.lines[p.labels["c"]]);
+        assert!(checked("---\nreplays: { a: \"A\" }\n---\n# a\nHi.\n", &[]).is_ok(), "only a warning");
     }
 
     /// A script in a fresh folder, with the files `(name, bytes)` beside it.

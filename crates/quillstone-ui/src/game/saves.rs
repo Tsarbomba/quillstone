@@ -29,6 +29,9 @@ impl Game<'_> {
     /// Called at every choice and when quitting; the frontend should call it
     /// when the window is closed, too.
     pub fn autosave(&mut self) {
+        if self.replay.is_some() {
+            return self.save_persistent(); // a replay is never saved (this only retries an earlier failed write)
+        }
         self.save_read();
         self.save_persistent(); // a write that failed earlier gets its last chance
         if self.in_story && self.session.can_rollback() && !self.session.state().finished {
@@ -69,6 +72,7 @@ impl Game<'_> {
                 self.autosave();
                 self.requests.push(Request::Quit);
             }
+            Then::MainMenu if self.replay.is_some() => self.end_replay(),
             Then::MainMenu => {
                 self.autosave();
                 self.go_to_menu();
@@ -83,6 +87,9 @@ impl Game<'_> {
     // ---- the slot screens ----------------------------------------------------------
 
     pub(super) fn open_slots(&mut self, screen: Screen) {
+        if self.replay.is_some() {
+            return self.notify(super::replay::NOT_IN_REPLAY);
+        }
         self.stop_skip();
         self.cover_bag();
         self.screen = screen;
@@ -226,6 +233,9 @@ impl Game<'_> {
     }
 
     pub(super) fn quick_save(&mut self) {
+        if self.replay.is_some() {
+            return self.notify(super::replay::NOT_IN_REPLAY);
+        }
         let slot = next_rotating_slot(&*self.storage, Page::Quick);
         if self.save_to(slot) {
             self.notify("Quick saved");
@@ -233,6 +243,9 @@ impl Game<'_> {
     }
 
     pub(super) fn quick_load(&mut self) {
+        if self.replay.is_some() {
+            return self.notify(super::replay::NOT_IN_REPLAY);
+        }
         match newest_slot(&*self.storage, Page::Quick) {
             Some(slot) => self.ask("Load the quick save?\nUnsaved progress will be lost.", Then::Load(slot)),
             None => self.notify("No quick save yet"),

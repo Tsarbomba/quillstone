@@ -35,14 +35,23 @@ impl Default for Extras {
 }
 
 impl Game<'_> {
-    /// Whether the game has a gallery or music room (the main menu offers Extras).
+    /// Whether the game has a gallery, a music room or replays (the main menu offers Extras).
     pub fn has_extras(&self) -> bool {
-        !self.program.gallery.is_empty() || !self.program.music_room.is_empty()
+        !self.program.gallery.is_empty() || !self.program.music_room.is_empty() || !self.program.replays.is_empty()
     }
 
     /// Write the persistent data if the story changed it.
     pub(super) fn save_persistent(&mut self) {
-        self.persistent_dirty |= self.session.take_persistent_changed();
+        let changed = self.session.take_persistent_changed();
+        if let Some(run) = &self.replay {
+            // A replay changes nothing that lasts: what it did is dropped, and only a
+            // write that failed before it began is still retried (with the real data).
+            if self.persistent_dirty && self.storage.write(PERSISTENT_FILE, &write_persistent(&run.persistent)).is_ok() {
+                self.persistent_dirty = false;
+            }
+            return;
+        }
+        self.persistent_dirty |= changed;
         if !self.persistent_dirty {
             return;
         }
@@ -52,14 +61,24 @@ impl Game<'_> {
         }
     }
 
-    fn extras_tabs(&self) -> Vec<Tab> {
-        ex::tabs(self.program.gallery.len(), self.program.music_room.len())
+    pub(super) fn extras_tabs(&self) -> Vec<Tab> {
+        ex::tabs_for(self.program.gallery.len(), self.program.music_room.len(), self.program.replays.len())
     }
 
+    /// The gallery or music room entries (a scenes tab has none: see `extras_len`).
     fn extras_list(&self) -> &[String] {
         match self.extras.tab {
             Tab::Gallery => &self.program.gallery,
             Tab::Music => &self.program.music_room,
+            Tab::Scenes => &[],
+        }
+    }
+
+    /// How many entries the current tab has.
+    fn extras_len(&self) -> usize {
+        match self.extras.tab {
+            Tab::Scenes => self.program.replays.len(),
+            _ => self.extras_list().len(),
         }
     }
 
@@ -67,6 +86,19 @@ impl Game<'_> {
         let Some(&tab) = self.extras_tabs().first() else { return };
         self.extras = Extras { tab, ..Extras::default() };
         self.screen = Screen::Extras;
+    }
+
+    /// After a reload: stay on the tab if it is still there (the page is kept in range).
+    pub(super) fn refresh_extras(&mut self) {
+        let tab = self.extras.tab;
+        if !self.extras_tabs().contains(&tab) {
+            return self.open_extras();
+        }
+        self.extras.viewing = self.extras.viewing.filter(|&i| i < self.program.gallery.len());
+        self.extras.playing = self.extras.playing.filter(|&i| i < self.program.music_room.len());
+        self.extras.page = self.extras.page.min(self.extras_pages() - 1);
+        let on_page = self.extras_entries().len();
+        self.extras.focus = self.extras.focus.map(|f| f.min(on_page.saturating_sub(1))).filter(|_| on_page > 0);
     }
 
     fn close_extras(&mut self) {
@@ -84,12 +116,16 @@ impl Game<'_> {
     /// The current page's entries and whether each is unlocked.
     pub(super) fn extras_entries(&self) -> Vec<(&str, bool)> {
         let per = ex::per_page(self.extras.tab);
+        if self.extras.tab == Tab::Scenes {
+            let rows = self.program.replays.iter().skip(self.extras.page * per).take(per);
+            return rows.map(|r| (r.title.as_str(), self.session.replay_unlocked(&r.label))).collect();
+        }
         let list = self.extras_list();
         list.iter().skip(self.extras.page * per).take(per).map(|s| (s.as_str(), self.session.unlocked(s))).collect()
     }
 
     fn extras_pages(&self) -> usize {
-        ex::pages(self.extras.tab, self.extras_list().len())
+        ex::pages(self.extras.tab, self.extras_len())
     }
 
     /// The extras screen as drawn (`hover` from the cursor).
@@ -186,12 +222,22 @@ impl Game<'_> {
     /// Open a picture or play (or stop) a track; locked entries do nothing.
     fn activate(&mut self, i: usize) {
         let index = self.extras.page * ex::per_page(self.extras.tab) + i;
+        if self.extras.tab == Tab::Scenes {
+            let Some(replay) = self.program.replays.get(index) else { return };
+            if !self.session.replay_unlocked(&replay.label) {
+                return self.notify("Not unlocked yet");
+            }
+            let label = replay.label.clone();
+            self.start_replay(&label);
+            return;
+        }
         let Some(src) = self.extras_list().get(index).cloned() else { return };
         if !self.session.unlocked(&src) {
             return self.notify("Not unlocked yet");
         }
         match self.extras.tab {
             Tab::Gallery => self.extras.viewing = Some(index),
+            Tab::Scenes => {}
             Tab::Music if self.extras.playing == Some(index) => {
                 self.extras.playing = None;
                 self.show(&[Cmd::StopMusic { fade: 0.5 }]);

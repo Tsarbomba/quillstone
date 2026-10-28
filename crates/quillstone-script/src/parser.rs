@@ -47,7 +47,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, textbox, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end";
+                        choice, hotspots, item, inventory, shop, input, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -84,6 +84,8 @@ struct Parser {
     param_labels: Vec<(String, usize)>,
     /// `::sfx{stop=file}` targets, checked against the files the script plays.
     sfx_stops: Vec<(String, usize)>,
+    /// `replays:` entries (line, label, title), checked once all labels are known.
+    replay_decls: Vec<(usize, String, String)>,
     /// Ops a command adds right after its own (the fade back in of `::bg{through}`).
     trailing: Vec<Op>,
 }
@@ -309,6 +311,24 @@ impl Parser {
             }
         }
         self.program.counted = counted;
+
+        // `replays:`: each label must exist and take no parameters.
+        for (line, label, title) in std::mem::take(&mut self.replay_decls) {
+            match self.program.labels.get(&label).copied() {
+                None => {
+                    let known: Vec<&str> = self.program.labels.keys().map(String::as_str).collect();
+                    self.err(line, format!("`replays`: there is no label `{label}` (known: {})", known.join(", ")));
+                }
+                Some(_) if self.program.params.contains_key(&label) => self.err(
+                    line,
+                    format!("`replays`: label `{label}` has parameters, so it can't start a scene (a replay starts without a `::call`)"),
+                ),
+                Some(at) => {
+                    self.program.replay_at.entry(at).or_default().push(label.clone());
+                    self.program.replays.push(Replay { label, title });
+                }
+            }
+        }
         for (line, label) in unknown {
             self.err(line, format!("`seen({label})`: there is no label `{label}`"));
         }
@@ -346,6 +366,7 @@ impl Parser {
                 "vars" => self.front_vars(line, val, false),
                 "persistent" => self.front_vars(line, val, true),
                 "gallery" | "music_room" => self.front_list(line, key, val),
+                "replays" => self.front_replays(line, val),
                 "inventory" => match unquote(val) {
                     name if is_ident(name) => inventory = Some((line, name.to_string())),
                     _ => self.err(line, "`inventory` names a list variable, like `inventory: bag`"),
@@ -413,6 +434,38 @@ impl Parser {
             let list = if key == "gallery" { &mut self.program.gallery } else { &mut self.program.music_room };
             if !list.iter().any(|p| p == item) {
                 list.push(item.to_string());
+            }
+        }
+    }
+
+    /// `replays: { rooftop: "The rooftop", ending-a: "Ending A" }`: label -> title.
+    fn front_replays(&mut self, line: usize, val: &str) {
+        let Some(inner) = val.strip_prefix('{').and_then(|v| v.strip_suffix('}')) else {
+            self.err(line, "`replays` must look like `{ rooftop: \"The rooftop\", ending-a: \"Ending A\" }`");
+            return;
+        };
+        for part in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
+            let Some((key, title)) = part.split_once(':') else {
+                self.err(line, format!("bad replay `{part}` (expected `label: \"Title\"`)"));
+                continue;
+            };
+            let label = slug(unquote(key.trim()));
+            let title = unquote(title.trim()).trim().to_string();
+            if label.is_empty() {
+                self.err(line, format!("bad replay `{part}`: the label is empty"));
+            } else if title.is_empty() {
+                self.err(line, format!("replay `{label}` needs a title, like `{label}: \"The rooftop\"`"));
+            } else if title.chars().any(char::is_control) {
+                self.err(line, format!("the title of replay `{label}` can't hold control characters"));
+            } else if self.replay_decls.iter().any(|(_, l, _)| *l == label) {
+                self.err(line, format!("replay `{label}` is listed twice"));
+            } else if self.replay_decls.iter().any(|(_, _, t)| *t == title) {
+                self.err(line, format!("two replays are titled \"{title}\"; titles must differ"));
+            } else if self.replay_decls.len() >= MAX_REPLAYS {
+                self.err(line, format!("at most {MAX_REPLAYS} replays"));
+                return;
+            } else {
+                self.replay_decls.push((line, label, title));
             }
         }
     }
@@ -1229,6 +1282,7 @@ impl Parser {
                 Some((Op::Input { var, prompt, default, max }, None))
             }
             "end" => Some((Op::End, None)),
+            "end_replay" => Some((Op::EndReplay, None)),
             other => {
                 self.err(line, format!("unknown command `::{other}` (known: {COMMANDS})"));
                 None
@@ -4382,5 +4436,73 @@ mod tests {
         let p = ok(include_str!("../../../examples/places.quill.md"));
         let pats: Vec<&str> = p.assets().map(|(_, _, a)| a).filter(|a| crate::is_pattern(a)).collect();
         assert!(pats.contains(&"assets/places/{place}.png") && pats.contains(&"assets/mika_{mood}.png"), "{pats:?}");
+    }
+
+    // ---- scene replays ----
+
+    const REPLAYABLE: &str = "# Start\nHi.\n# The rooftop\nUp here.\n::end_replay\n# Night walk\nOut.\n";
+
+    #[test]
+    fn replays_name_labels_with_titles_in_declaration_order() {
+        let p = ok(&format!("---\nreplays: {{ night-walk: \"A walk, at night\", the-rooftop: \"The rooftop\" }}\n---\n{REPLAYABLE}"));
+        let got: Vec<(&str, &str)> = p.replays.iter().map(|r| (r.label.as_str(), r.title.as_str())).collect();
+        assert_eq!(got, [("night-walk", "A walk, at night"), ("the-rooftop", "The rooftop")]);
+        assert_eq!(p.replay_at[&p.labels["the-rooftop"]], ["the-rooftop"]);
+        assert!(p.ops.contains(&Op::EndReplay));
+        // keys are slugified like `::jump` targets, and a second line adds to the list
+        let q = ok(&format!("---\nreplays: {{ The_Rooftop: Roof }}\nreplays: {{ \"night walk\": 'Walk' }}\n---\n{REPLAYABLE}"));
+        assert_eq!(q.replays.len(), 2);
+        assert_eq!(q.replays[0].label, "the-rooftop");
+        assert!(ok("Hi.\n").replays.is_empty());
+    }
+
+    #[test]
+    fn bad_replays_are_errors_with_the_front_matter_line() {
+        let front = |r: &str| format!("---\ntitle: T\nreplays: {r}\n---\n{REPLAYABLE}");
+        for (bad, needle) in [
+            ("{ nowhere: \"X\" }", "there is no label `nowhere`"),
+            ("{ the-rooftop: \"\" }", "needs a title"),
+            ("{ the-rooftop: }", "needs a title"),
+            ("{ the-rooftop: \"A\", the-rooftop: \"B\" }", "listed twice"),
+            ("{ the-rooftop: \"A\", night-walk: \"A\" }", "titles must differ"),
+            ("the-rooftop", "must look like"),
+            ("{ the-rooftop }", "bad replay"),
+            ("{ !!!: \"A\" }", "label is empty"),
+        ] {
+            let e = errs(&front(bad));
+            let found = e.iter().find(|e| e.message.contains(needle)).unwrap_or_else(|| panic!("{bad}: {e:?}"));
+            assert_eq!(found.line, 3, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_replay_label_may_not_take_parameters_and_there_are_at_most_64() {
+        let src = "---\nreplays: { heal: \"Heal\" }\n---\n# Start\n::call{to=heal amount=1}\n::end\n# heal(amount)\nHi.\n::return\n";
+        let e = errs(src);
+        assert!(e.iter().any(|e| e.line == 2 && e.message.contains("has parameters")), "{e:?}");
+
+        let many = |n: usize| {
+            let list: Vec<String> = (0..n).map(|i| format!("s{i}: \"Scene {i}\"")).collect();
+            let labels: String = (0..n).map(|i| format!("# s{i}\nHi.\n")).collect();
+            format!("---\nreplays: {{ {} }}\n---\n{labels}", list.join(", "))
+        };
+        assert_eq!(ok(&many(64)).replays.len(), 64);
+        let e = errs(&many(65));
+        assert!(e.iter().any(|e| e.line == 2 && e.message.contains("at most 64")), "{e:?}");
+    }
+
+    #[test]
+    fn end_replay_takes_no_attributes() {
+        assert!(has_err("# a\n::end_replay{now}\n", "end_replay"));
+        assert!(has_err("# a\n::end_replay{x=1}\n", "unknown attribute `x`"));
+        assert_eq!(ok("# a\n::end_replay\nHi.\n").ops[0], Op::EndReplay);
+        assert!(has_err("# a\n::end_repaly\n", "end_replay"), "the command list names it");
+    }
+
+    #[test]
+    fn the_replay_demo_parses() {
+        let p = ok(include_str!("../../../examples/replay.quill.md"));
+        assert_eq!(p.replays.len(), 2);
+        assert!(p.ops.iter().filter(|o| matches!(o, Op::EndReplay)).count() == 2);
     }
 }

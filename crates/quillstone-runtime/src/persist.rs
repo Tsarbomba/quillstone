@@ -7,7 +7,8 @@
 //!   here, and every new game, loaded save and rollback gets them back, so going
 //!   back never takes an unlock away. (Replaying a line that adds
 //!   to one adds again: yes/no flags are the safe kind.)
-//! - `unlocked:<file>` for gallery pictures shown and music room tracks played.
+//! - `unlocked:<file>` for gallery pictures shown and music room tracks played, and
+//!   `replay:<label>` for scenes reached (the Extras "Scenes" tab).
 
 use quillstone_script::{Program, Value, Vars};
 
@@ -17,6 +18,10 @@ use crate::{step, Cmd, Session, State};
 /// Persistent entries `unlocked:<file>` mark gallery pictures and music room
 /// tracks the player has seen or heard.
 pub const UNLOCKED: &str = "unlocked:";
+
+/// Persistent entries `replay:<label>` mark scenes the story has reached, which
+/// the Extras menu then lets the player replay.
+pub const REPLAY: &str = "replay:";
 
 const MAGIC: &str = "quillstone-persistent 1";
 
@@ -43,6 +48,28 @@ impl<'p> Session<'p> {
         let cmds = step(&mut session.state, program, None);
         session.note(&cmds);
         (session, cmds)
+    }
+
+    /// Begin a scene replay: a fresh game (the script's starting variables, `persistent`
+    /// applied, an empty scene, an empty call stack) that starts at `label`. `None` if
+    /// there is no such label. The host decides what to keep of what happens in it.
+    pub fn start_replay(program: &'p Program, persistent: Vars, seed: u64, label: &str) -> Option<(Session<'p>, Vec<Cmd>)> {
+        let pc = *program.labels.get(label)?;
+        let mut session = Session {
+            program,
+            state: State::with_seed(program, seed),
+            history: Vec::new(),
+            redo: Vec::new(),
+            redo_tip: None,
+            persistent,
+            persistent_changed: false,
+        };
+        session.state.pc = pc;
+        session.overlay();
+        let mut cmds = vec![Cmd::ClearScene];
+        cmds.extend(step(&mut session.state, program, None));
+        session.note(&cmds);
+        Some((session, cmds))
     }
 
     /// [`Session::load`], keeping `persistent` (the save's own copies of persistent
@@ -91,6 +118,11 @@ impl<'p> Session<'p> {
         self.persistent.get(&format!("{UNLOCKED}{file}")).is_some_and(Value::truthy)
     }
 
+    /// Whether the story has reached the label of the replay `label`.
+    pub fn replay_unlocked(&self, label: &str) -> bool {
+        self.persistent.get(&format!("{REPLAY}{label}")).is_some_and(Value::truthy)
+    }
+
     /// Keep what the story just did that lasts: persistent variables, extras shown.
     pub(crate) fn note(&mut self, cmds: &[Cmd]) {
         for name in &self.program.persistent {
@@ -102,6 +134,12 @@ impl<'p> Session<'p> {
             }
         }
         for cmd in cmds {
+            if let Cmd::ReplayReached { label } = cmd {
+                if self.persistent.insert(format!("{REPLAY}{label}"), Value::Bool(true)).is_none() {
+                    self.persistent_changed = true;
+                }
+                continue;
+            }
             let (src, list) = match cmd {
                 Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } => (src, &self.program.gallery),
                 Cmd::PlayMusic { src, .. } => (src, &self.program.music_room),
@@ -245,5 +283,80 @@ mod tests {
         odd.insert("other".into(), Value::List(vec!["x".into()]));
         let (s, _) = Session::start_with(&p, odd);
         assert_eq!(s.state().vars["other"], Value::Int(0));
+    }
+
+    // ---- scene replays ----
+
+    const SCENES: &str = "---\nvars: { n: 0 }\npersistent: { flag: false }\nreplays: { first: \"First\", second: \"Second\", third: \"Third\", sub: \"Sub\" }\n---\n# first\n::set{n += 1}\n**A:** in first\n::end_replay\n**A:** after first\n::choice\n- [Go](#second)\n- [Jump](#elsewhere)\n::\n# second\n**A:** in second\n::call{to=sub}\n::jump{to=third}\n# sub\n**A:** in sub\n::return\n# third\n**A:** in third\n::end\n# elsewhere\n::end\n";
+
+    #[test]
+    fn a_scene_unlocks_when_the_story_reaches_its_label() {
+        let p = parse(SCENES).unwrap();
+        let (mut s, first) = Session::start(&p);
+        // the script starts at `first`: reaching a label by running into it counts
+        assert!(first.contains(&Cmd::ReplayReached { label: "first".into() }));
+        assert!(s.replay_unlocked("first") && !s.replay_unlocked("second") && !s.replay_unlocked("third"));
+        assert!(s.take_persistent_changed());
+        assert_eq!(s.persistent()["replay:first"], Value::Bool(true));
+        for _ in 0..2 {
+            s.input(Input::Advance); // ::end_replay does nothing in a real game
+        }
+        let cmds = s.input(Input::Choose(0)); // `::choice` link to #second
+        assert!(cmds.contains(&Cmd::ReplayReached { label: "second".into() }));
+        assert!(s.replay_unlocked("second") && !s.replay_unlocked("sub"));
+        s.input(Input::Advance); // ::call into `sub`
+        assert!(s.replay_unlocked("sub"), "::call reaches it");
+        assert!(!s.replay_unlocked("third"));
+        s.input(Input::Advance); // ::return, then ::jump to `third`
+        assert!(s.replay_unlocked("third"), "::jump reaches it");
+        // the record is written with the other persistent data and read back
+        let kept = read_persistent(&write_persistent(s.persistent()));
+        let (again, _) = Session::start_with(&p, kept);
+        assert!(again.replay_unlocked("third"));
+    }
+
+    #[test]
+    fn rollback_and_old_saves_dont_take_a_scene_away() {
+        let p = parse(SCENES).unwrap();
+        let (mut s, _) = Session::start(&p);
+        let early = s.save();
+        s.input(Input::Advance);
+        s.input(Input::Advance);
+        s.input(Input::Choose(0));
+        s.rollback();
+        s.rollback();
+        s.rollback();
+        assert!(s.replay_unlocked("second"), "still unlocked after going back");
+        let (loaded, _) = Session::load_with(&p, &early, s.persistent().clone()).unwrap();
+        assert!(loaded.replay_unlocked("second"));
+    }
+
+    #[test]
+    fn a_replay_session_starts_fresh_at_the_label() {
+        let p = parse(SCENES).unwrap();
+        let mut kept = Vars::new();
+        kept.insert("flag".into(), Value::Bool(true));
+        kept.insert("n".into(), Value::Int(9)); // not a persistent variable: ignored
+        let (s, cmds) = Session::start_replay(&p, kept, 7, "second").unwrap();
+        assert_eq!(cmds[0], Cmd::ClearScene, "an empty stage");
+        assert!(says(&cmds, "in second"));
+        assert_eq!(s.state().vars["n"], Value::Int(0), "the script's starting variables");
+        assert_eq!(s.state().vars["flag"], Value::Bool(true), "the player's persistent data");
+        assert!(s.state().stack.is_empty() && s.state().background.is_none() && s.state().sprites.is_empty());
+        assert!(Session::start_replay(&p, Vars::new(), 7, "nowhere").is_none());
+        // `::return` with nothing to return to ends it, like `::end_replay` says so
+        let (mut s, _) = Session::start_replay(&p, Vars::new(), 7, "sub").unwrap();
+        assert_eq!(s.input(Input::Advance), vec![Cmd::Finished]);
+        let (mut s, _) = Session::start_replay(&p, Vars::new(), 7, "first").unwrap();
+        assert_eq!(s.state().vars["n"], Value::Int(1));
+        assert!(s.input(Input::Advance).contains(&Cmd::EndReplay));
+    }
+
+    #[test]
+    fn end_replay_in_a_real_game_lets_the_story_go_on() {
+        let p = parse("**A:** one\n::end_replay\n**A:** two\n").unwrap();
+        let (mut s, _) = Session::start(&p);
+        let cmds = s.input(Input::Advance);
+        assert!(says(&cmds, "two"), "{cmds:?}");
     }
 }

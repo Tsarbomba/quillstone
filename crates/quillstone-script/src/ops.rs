@@ -482,6 +482,18 @@ pub struct ShopEntry {
     pub cond: Option<Cond>,
 }
 
+/// One entry of the Extras "Scenes" tab (front matter `replays:`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replay {
+    /// A label without parameters (its slug, as `::jump` writes it).
+    pub label: String,
+    /// What the menu shows once it is unlocked.
+    pub title: String,
+}
+
+/// Most scenes a game may list for replay.
+pub const MAX_REPLAYS: usize = 64;
+
 /// A fully compiled script: a flat list of ops with all jumps resolved to indices.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
@@ -515,6 +527,11 @@ pub struct Program {
     pub gallery: Vec<String>,
     /// Tracks for the extras music room, unlocked when the story plays them.
     pub music_room: Vec<String>,
+    /// Scenes the player can replay from Extras (front matter `replays:`), in
+    /// declaration order; each unlocks the first time the story reaches its label.
+    pub replays: Vec<Replay>,
+    /// Op index -> the `replays` labels that start there (the unlock points).
+    pub replay_at: BTreeMap<usize, Vec<String>>,
     /// Auto-voice: the folder of voice files named after their lines (front
     /// matter `voice:`), relative to the script. See `voice_name` in the runtime.
     pub voice_folder: Option<String>,
@@ -1059,6 +1076,9 @@ pub enum Op {
     Call { target: usize, args: Vec<(String, Expr)> },
     Return,
     Set(Effect),
+    /// `::end_replay`: ends a scene replay (see `Program::replays`); in normal play
+    /// it does nothing.
+    EndReplay,
     /// End of the script. The parser always appends one.
     End,
 }

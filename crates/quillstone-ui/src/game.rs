@@ -18,11 +18,14 @@ use crate::slots::{Page, SlotInfo, Storage};
 mod bag;
 mod extras;
 mod input;
+mod replay;
 mod saves;
 mod skip;
 use bag::Bag;
 use extras::Extras;
 use input::InputField;
+use replay::ReplayRun;
+use crate::extras as ex;
 use saves::{Confirm, Then};
 pub use skip::{SkipMode, SKIP_DELAY};
 #[cfg(test)]
@@ -191,6 +194,8 @@ pub struct Game<'p> {
     quick_alpha: f32,
     /// Where the next new game's `random` rolls start (see [`Game::set_seed`]).
     seed: u64,
+    /// A scene replay in progress (see `replay.rs`): nothing it does is saved.
+    replay: Option<ReplayRun>,
 }
 
 impl<'p> Game<'p> {
@@ -244,6 +249,7 @@ impl<'p> Game<'p> {
             ui_hidden: false,
             quick_alpha: 0.0,
             seed: quillstone_runtime::DEFAULT_SEED,
+            replay: None,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -334,6 +340,12 @@ impl<'p> Game<'p> {
     /// spot, as a save of it would load (see `quillstone_runtime::Session::load`),
     /// keeping what was unlocked. On an error the old script keeps running.
     pub fn reload(&mut self, program: &'p Program) -> Result<(), String> {
+        if self.replay.as_ref().is_some_and(|r| !program.labels.contains_key(&r.label)) {
+            // The scene being replayed is gone: back to Extras.
+            self.program = program;
+            self.end_replay();
+            self.notify("The replayed scene was removed from the script");
+        }
         let persistent = self.session.persistent().clone();
         if self.in_story {
             let (session, cmds) = Session::reload_with(program, &self.session.save(), persistent)?;
@@ -354,7 +366,7 @@ impl<'p> Game<'p> {
         self.bag_resync();
         self.input_resync();
         match self.screen {
-            Screen::Extras if self.has_extras() => self.open_extras(),
+            Screen::Extras if self.has_extras() => self.refresh_extras(),
             Screen::Extras => self.screen = Screen::MainMenu,
             Screen::Save | Screen::Load => self.refresh_slots(),
             _ => {}
@@ -790,19 +802,28 @@ impl<'p> Game<'p> {
 
     fn story_click(&mut self) {
         if let Some(button) = self.quick_button_under_cursor() {
-            return match button {
-                QuickButton::Back => self.rollback(),
-                QuickButton::History => self.open_backlog(),
-                QuickButton::Skip => self.start_skip(SkipMode::Toggled),
-                QuickButton::Auto => self.toggle_auto(),
-                QuickButton::Save => self.open_slots(Screen::Save),
-                QuickButton::Load => self.open_slots(Screen::Load),
-                QuickButton::QuickSave => self.quick_save(),
-                QuickButton::QuickLoad => self.quick_load(),
-                QuickButton::Settings => self.open_settings(),
-                QuickButton::Items => self.open_inventory_overlay(),
-            };
+            return self.quick_press(button);
         }
+        self.story_click_on_stage();
+    }
+
+    fn quick_press(&mut self, button: QuickButton) {
+        match button {
+            QuickButton::Back => self.rollback(),
+            QuickButton::History => self.open_backlog(),
+            QuickButton::Skip => self.start_skip(SkipMode::Toggled),
+            QuickButton::Auto => self.toggle_auto(),
+            QuickButton::Save => self.open_slots(Screen::Save),
+            QuickButton::Load => self.open_slots(Screen::Load),
+            QuickButton::QuickSave => self.quick_save(),
+            QuickButton::QuickLoad => self.quick_load(),
+            QuickButton::Settings => self.open_settings(),
+            QuickButton::Items => self.open_inventory_overlay(),
+        }
+    }
+
+    /// A click that isn't on the quick menu: advance, or pick a choice or hotspot.
+    fn story_click_on_stage(&mut self) {
         if self.view.choices.is_empty() && self.view.hotspots.is_empty() {
             return self.advance();
         }
@@ -986,6 +1007,12 @@ impl<'p> Game<'p> {
         let purchase = matches!(input, Input::Buy(_));
         let cmds = self.session.input(input);
         self.show(&cmds);
+        if self.replay.is_some() {
+            self.replay_check(&cmds);
+            if self.replay.is_none() {
+                return;
+            }
+        }
         if self.skip.is_some() {
             self.skip_arrived();
         }
@@ -993,7 +1020,7 @@ impl<'p> Game<'p> {
         let arrived = cmds
             .iter()
             .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. }));
-        if arrived && !purchase {
+        if arrived && !purchase && self.replay.is_none() {
             self.autosave();
         }
     }
@@ -1071,7 +1098,11 @@ impl<'p> Game<'p> {
                 Some(SettingsHit::Button(SettingsButton::Back)) => self.close_settings(),
                 Some(SettingsHit::Button(SettingsButton::MainMenu)) => {
                     // Settings stays open beneath the question, so No comes back to it.
-                    self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
+                    if self.replay.is_some() {
+                        self.ask("Leave this replay and go back to Extras?", Then::MainMenu);
+                    } else {
+                        self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
+                    }
                 }
                 Some(SettingsHit::Button(SettingsButton::Quit)) => {
                     if self.in_story {
@@ -1176,3 +1207,5 @@ mod anim_tests;
 mod dynpic_tests;
 #[cfg(test)]
 mod hud_tests;
+#[cfg(test)]
+mod replay_tests;

@@ -32,8 +32,9 @@ She looks away.
 
 - **Front matter** (optional, between `---` lines): `title:` (also shown on the
   main menu), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
-  `inventory:` (see [Inventory](#inventory)), and `persistent:`, `gallery:` and
-  `music_room:` (see [Kept across playthroughs](#kept-across-playthroughs)).
+  `inventory:` (see [Inventory](#inventory)), and `persistent:`, `gallery:`,
+  `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
+  and [Scene replays](#scene-replays)).
 - **Headings** (`#` to `######`) are *labels*: places to jump to. `# The Roof` is
   the label `the-roof` (lowercase, words joined by dashes). A heading like
   `# heal(amount, who)` is a label with parameters, see
@@ -592,6 +593,7 @@ is really playing, so a file that can't be decoded never traps the player.
 ::call{to=heal amount=5 who="Mika"}     ...which may take parameters (see below)
 ::return                                ...and come back after the ::call
 ::end                                   finish the story
+::end_replay                            end a scene replay (see below); otherwise does nothing
 
 ::if{trust > 1}
 **Mika:** Great.
@@ -881,8 +883,53 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   `rainy_day.ogg` shows as "Rainy day"). The keys may repeat to make long lists.
   `quillstone check` complains about entries the story never shows or plays,
   since they could never unlock.
+- **`replays:`** lets players watch scenes again from Extras: see [Scene replays](#scene-replays).
 - `quillstone test` plays the story from a first playthrough and also from
   later ones (each value the script gives a persistent variable).
+
+## Scene replays
+
+````markdown
+---
+replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
+---
+
+# The rooftop
+...
+::end_replay
+::jump{to=finale}
+````
+
+- **`replays:`** lists scenes the player can watch again. Each entry is a label (written the
+  way a `::jump` writes it: `# The rooftop` is `the-rooftop`; spaces and underscores
+  become dashes) and the title shown in the menu. The label must exist and
+  take no parameters; titles must be different and not empty; there can be up to 64.
+  Entries show in the order written (several `replays:` lines add up).
+- A scene **unlocks** the first time the story reaches its label, however it gets there
+  (falling in from above, `::jump`, `::call`, a choice). Like gallery pictures, it stays
+  unlocked for good: rolling back or loading an older save never takes it away.
+- The main menu's **Extras** screen then has a third tab, **Scenes** (Extras appears when the
+  game has a gallery, a music room or replays; Tab switches tabs). Unlocked scenes show their
+  title, locked ones show `???`. Enter, a click or the gamepad's A starts a scene.
+- A replay starts a **fresh game at that label**: the script's starting variables, the
+  player's persistent variables as they are, an empty stage (nothing carries over from
+  whatever the player did), and no menu music. Everything works as in the story: choices,
+  waits, hotspots, shops, text input, videos, rollback (back as far as the start), history
+  and settings.
+- It ends back on the Scenes tab, with the menu music resumed, at **`::end_replay`**, or when
+  the story ends (`::end`, `::return` with nothing to return to, the end of the script). In the
+  normal game `::end_replay` does nothing, so you can put it where a scene ends and the story
+  carries on after it. It takes no attributes.
+- A replay **changes nothing that lasts**: no auto save, and Save, Load, Quick save and Quick
+  load show "Not available during a replay"; variables the scene sets, persistent variables,
+  gallery, music room and scene unlocks, and which lines were read are all thrown away when
+  it ends. (Skip uses the player's real read record, so it stops at lines the player has
+  not read yet.) Settings' "Main menu" asks "Leave this replay?" and goes back to Extras;
+  Quit still quits the program.
+- `quillstone test` warns about a replay whose label no branch can reach ("can never be
+  unlocked"), and `quillstone check` warns when no `::end_replay` follows a scene, so it
+  would run to the end of the game (a scan along every jump and choice, so approximate).
+  The demo `examples/replay.quill.md` has two scenes.
 
 ## What rollback restores
 

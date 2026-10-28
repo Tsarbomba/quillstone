@@ -56,8 +56,8 @@ impl Game<'_> {
 
     /// The player is leaving the line on screen: it has been read.
     pub(super) fn mark_current_read(&mut self) {
-        if !self.waiting_on_a_line() {
-            return;
+        if self.replay.is_some() || !self.waiting_on_a_line() {
+            return; // (a replay only reads the record)
         }
         if let Some(id) = line_id(self.program, self.session.state().pc) {
             self.read_dirty |= self.read.insert(id);
