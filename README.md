@@ -131,6 +131,11 @@ whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
 Linux: `~/.local/share/quillstone/<game>/`). `<game>` is the script's `id:` front matter key; without one it is
 the title (so renaming the title moves the saves: set `id:` before you ship), or the script's file name.
+The first time, the window opens at 1920x1080 (the game's own size), or at the largest 16:9 size that fits
+the monitor with some margin, centred; after that the player remembers the window's size, position and
+full-screen state (in `settings.txt`) and restores them, kept on screen if the monitors changed.
+`quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as unlocked for that run
+(to test the Extras screen); nothing is written to the saved unlocks.
 Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations and timed
 choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.

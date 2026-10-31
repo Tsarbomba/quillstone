@@ -163,6 +163,8 @@ pub enum Cmd {
     /// The story reached the start of a label listed in `replays:` (the frontend
     /// may ignore it; [`Session`] records it as unlocked).
     ReplayReached { label: String },
+    /// `::unlock`: a gallery or music room entry is unlocked ([`Session`] records it; the frontend may ignore it).
+    Unlock { src: String },
     /// `::end_replay` ran. A scene replay ends here; in normal play it means nothing.
     EndReplay,
     Finished,
@@ -1050,6 +1052,10 @@ pub(crate) fn step_traced(
             }
             Op::Notify { text, time } => {
                 out.push(Cmd::Notify { text: interpolate(text, &state.vars), time: *time });
+                state.pc += 1;
+            }
+            Op::Unlock { src } => {
+                out.push(Cmd::Unlock { src: src.clone() });
                 state.pc += 1;
             }
             Op::Textbox { hidden, fade } => {

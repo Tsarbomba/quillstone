@@ -332,6 +332,7 @@ rest were not tried.
 | `::shake{axis=x}` / `::shake{axis=y}` | Shake along one axis only: `x` sideways, `y` up and down, `both` (the default) both ways. A one-axis shake moves the stage by up to `strength` pixels along its axis and not at all along the other, and zooms in only as far as that axis needs. |
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
 | `::notify{text="Saved" time=3}` | A small message in the top right corner, on the theme's panel colour and text colour, for `time` seconds (0.5 to 30; default 3): it fades in, stays, and fades out. `text` can hold `{variable}` values and the same markup as a `::hud` text (`**bold**`, `{color=...}`) (filled in when the command runs). Doesn't wait and doesn't stop the story; a new `::notify` replaces one still showing. It is a passing message: not saved, not shown again by rollback, and it ends at once when the player skips. Not part of the translation files. |
+| `::unlock{src=assets/cg1.png}` | Unlocks a `gallery:` or `music_room:` entry for the Extras screen without showing or playing it; see [Kept across playthroughs](#kept-across-playthroughs). Doesn't wait or show anything. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
 | `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites. Doesn't wait. See [Ambient particles](#ambient-particles). |
@@ -1058,8 +1059,13 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   every listed picture that is one of its frames). An entry that is a video (`.webm`, or any
   format `quillstone check` accepts for `::bg`) unlocks the first time the story plays it as a
   looping `::bg` background or as a `::video`; pictures and clips can be mixed freely
-  (`gallery: [assets/cg1.png, assets/clip1.webm]`). A clip's tile in the grid is a dark
-  placeholder with a play symbol and the clip's name (no thumbnail is made). Opening a clip
+  (`gallery: [assets/cg1.png, assets/clip1.webm]`). An entry can name the picture its tile
+  shows after a `|` (spaces around it are optional): `gallery: [assets/cg1.png, assets/clip1.webm | assets/thumbs/clip1.png]`.
+  A thumbnail is a picture (PNG, JPEG or WebP) in the game folder; `quillstone check` reports a
+  missing or unreadable one and `package` ships it. It is only the tile of an unlocked entry (a
+  locked tile stays a `?`, and the entry itself unlocks as above, never the thumbnail). Without a
+  thumbnail a picture's tile shows the picture and a clip's tile is a dark placeholder with a play
+  symbol and the clip's name (no thumbnail is made from the video). Opening a clip
   plays it on repeat, full screen and fitted like a picture, without sound; click, Esc or
   Enter closes it, Left/Right move to the next unlocked entry, picture or clip. The clip stops
   as soon as it is closed.
@@ -1067,6 +1073,12 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   `rainy_day.ogg` shows as "Rainy day"). The keys may repeat to make long lists.
   `quillstone check` complains about entries the story never shows or plays,
   since they could never unlock.
+  **`::unlock{src=assets/clip1.webm}`** unlocks a `gallery:` or `music_room:` entry by its file
+  (the entry's own path, not its thumbnail) without showing or playing it: for a picture that is
+  a composed scene, a clip or track unlocked by a story flag, or a bonus. `src` must be a listed
+  entry (`quillstone check` and the parser report anything else, with the line), and `check`
+  counts it as showing or playing the entry. Like any unlock it is kept across playthroughs,
+  rollback and loading a save never take it away, and `quillstone test` simply goes past it.
 - **`replays:`** lets players watch scenes again from Extras: see [Scene replays](#scene-replays).
 - `quillstone test` plays the story from a first playthrough and also from
   later ones (each value the script gives a persistent variable).

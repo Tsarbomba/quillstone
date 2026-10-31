@@ -214,6 +214,8 @@ pub struct Game<'p> {
     focused: bool,
     /// The window is minimised (or hidden): the whole game stands still, see [`Game::set_minimized`].
     minimized: bool,
+    /// Every extras entry shows as unlocked (for testing); nothing is written for it.
+    unlock_all: bool,
 }
 
 impl<'p> Game<'p> {
@@ -277,6 +279,7 @@ impl<'p> Game<'p> {
             choice_elapsed: 0.0,
             focused: true,
             minimized: false,
+            unlock_all: false,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -594,6 +597,12 @@ impl<'p> Game<'p> {
     /// (The frontend stops drawing and pauses the sound itself.)
     pub fn set_minimized(&mut self, minimized: bool) {
         self.minimized = minimized;
+    }
+
+    /// Show every gallery, music room and scene entry as unlocked for this run (the player's `--unlock-all`).
+    /// Only the screen changes: the unlocks kept in `persistent.txt` are not touched.
+    pub fn set_unlock_all(&mut self, on: bool) {
+        self.unlock_all = on;
     }
 
     /// Whether the line waiting is one that ends in `{nw}`.

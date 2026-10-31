@@ -134,10 +134,10 @@ impl Game<'_> {
         let per = ex::per_page(self.extras.tab);
         if self.extras.tab == Tab::Scenes {
             let rows = self.program.replays.iter().skip(self.extras.page * per).take(per);
-            return rows.map(|r| (self.tr(r.title.as_str()), self.session.replay_unlocked(&r.label))).collect();
+            return rows.map(|r| (self.tr(r.title.as_str()), self.unlock_all || self.session.replay_unlocked(&r.label))).collect();
         }
         let list = self.extras_list();
-        list.iter().skip(self.extras.page * per).take(per).map(|s| (self.tr(s.as_str()), self.session.unlocked(s))).collect()
+        list.iter().skip(self.extras.page * per).take(per).map(|s| (self.tr(s.as_str()), self.unlock_all || self.session.unlocked(s))).collect()
     }
 
     fn extras_pages(&self) -> usize {
@@ -160,12 +160,19 @@ impl Game<'_> {
             .and_then(|p| p.checked_sub(start))
             .filter(|&p| p < per);
         let hover = self.pointer().and_then(|(x, y)| ex::hit(x, y, &tabs, self.extras.tab, entries.len(), self.extras.page, pages));
+        let thumbs: Vec<Option<&str>> = if self.extras.tab == Tab::Gallery {
+            let page = self.program.gallery.iter().skip(start).take(per);
+            page.map(|g| self.program.gallery_thumbs.get(g).map(String::as_str)).collect()
+        } else {
+            Vec::new()
+        };
         let shown = ex::ExtrasScreen {
             tabs: &tabs,
             tab: self.extras.tab,
             page: self.extras.page,
             pages,
             entries: &entries,
+            thumbs: &thumbs,
             focus: self.extras.focus,
             playing,
             hover,
@@ -240,7 +247,7 @@ impl Game<'_> {
         let index = self.extras.page * ex::per_page(self.extras.tab) + i;
         if self.extras.tab == Tab::Scenes {
             let Some(replay) = self.program.replays.get(index) else { return };
-            if !self.session.replay_unlocked(&replay.label) {
+            if !self.unlock_all && !self.session.replay_unlocked(&replay.label) {
                 return self.notify("Not unlocked yet");
             }
             let label = replay.label.clone();
@@ -248,7 +255,7 @@ impl Game<'_> {
             return;
         }
         let Some(src) = self.extras_list().get(index).cloned() else { return };
-        if !self.session.unlocked(&src) {
+        if !self.unlock_all && !self.session.unlocked(&src) {
             return self.notify("Not unlocked yet");
         }
         match self.extras.tab {
@@ -277,7 +284,7 @@ impl Game<'_> {
             _ => return,
         };
         let n = self.program.gallery.len();
-        let next = (1..n).map(|k| (i + k * step) % n).find(|&j| self.session.unlocked(&self.program.gallery[j]));
+        let next = (1..n).map(|k| (i + k * step) % n).find(|&j| self.unlock_all || self.session.unlocked(&self.program.gallery[j]));
         if let Some(j) = next {
             self.extras.viewing = Some(j);
         }

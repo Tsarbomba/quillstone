@@ -551,6 +551,8 @@ pub struct Program {
     pub persistent: BTreeSet<String>,
     /// Pictures for the extras gallery, unlocked when the story shows them.
     pub gallery: Vec<String>,
+    /// Gallery entry -> the picture its unlocked tile shows instead of the entry itself (`a.webm | t.png`).
+    pub gallery_thumbs: BTreeMap<String, String>,
     /// Tracks for the extras music room, unlocked when the story plays them.
     pub music_room: Vec<String>,
     /// Scenes the player can replay from Extras (front matter `replays:`), in
@@ -618,10 +620,11 @@ impl Program {
         self.sources.iter().map(|s| s.file.as_str())
     }
 
-    /// Files named in the front matter (gallery pictures and music room tracks).
+    /// Files named in the front matter (gallery pictures and thumbnails, music room tracks).
     pub fn extra_assets(&self) -> impl Iterator<Item = (AssetKind, &str)> {
         let gallery = self.gallery.iter().map(|p| (kind_from_path(p), p.as_str()));
-        gallery.chain(self.music_room.iter().map(|p| (AssetKind::Audio, p.as_str())))
+        let thumbs = self.gallery_thumbs.values().map(|p| (AssetKind::Image, p.as_str()));
+        gallery.chain(thumbs).chain(self.music_room.iter().map(|p| (AssetKind::Audio, p.as_str())))
     }
 
     /// The indices of the ops within `steps` ops of `pc`, nearest first, following
@@ -1193,6 +1196,8 @@ pub enum Op {
     /// A small message in a corner of the screen for `time` seconds (`::notify`). Doesn't wait;
     /// `{var}` values are filled in when it runs.
     Notify { text: String, time: f32 },
+    /// Unlock a gallery or music room entry without showing or playing it (`::unlock{src=...}`).
+    Unlock { src: String },
     /// Fade the stage to `color` over `time` seconds and keep it covered. Waits
     /// until the fade is done (like a `::wait`).
     FadeOut { time: f32, color: [f32; 3] },

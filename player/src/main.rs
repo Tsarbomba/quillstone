@@ -29,10 +29,11 @@ use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
 use quillstone_script::{AssetKind, Op, Program};
+use quillstone_ui::settings::{window_placement, Area};
 use quillstone_ui::{Assets, Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, NamedKey};
@@ -56,6 +57,9 @@ struct App {
     watch: reload::Watch,
     /// Where settings are saved; `None` if no per-user folder could be found.
     settings_file: Option<PathBuf>,
+    /// The window's size and position while it is a normal window, saved with the settings.
+    window_size: Option<(u32, u32)>,
+    window_pos: Option<(i32, i32)>,
     /// `None` when there is no sound device (or the `audio` feature is off).
     audio: Option<Audio>,
     /// Images on the GPU come and go as the story needs them (see `images.rs`).
@@ -109,7 +113,11 @@ fn main() {
             let _ = std::fs::write(dir.join("error.txt"), format!("the game crashed: {info}\n"));
         }
     }));
-    let (assets, path) = match std::env::args().nth(1) {
+    // `--unlock-all` (anywhere on the line) shows every extras entry as unlocked, for testing.
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let unlock_all = args.iter().any(|a| a == "--unlock-all");
+    args.retain(|a| a != "--unlock-all");
+    let (assets, path) = match args.first().cloned() {
         Some(p) if p.ends_with(".qsa") => open_archive(Path::new(&p)),
         Some(p) => open_folder(PathBuf::from(p)),
         None => find_game().unwrap_or_else(|| {
@@ -155,8 +163,10 @@ fn main() {
     });
     let audio = Audio::new(&assets, sfx);
 
+    let game_settings_window = (settings.window_size, settings.window_pos);
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
     game.set_voice_files(voice_files(program, &assets));
+    game.set_unlock_all(unlock_all);
     game.set_theme(theme);
     let (translations, problems) = quillstone_ui::source::load_translations_in(&assets, program);
     for p in &problems {
@@ -177,6 +187,8 @@ fn main() {
         script_name,
         script_path: path.clone(),
         root: root.clone(),
+        window_size: game_settings_window.0,
+        window_pos: game_settings_window.1,
         settings_file,
         audio,
         images: images::Images::new(assets.clone()),
@@ -422,21 +434,43 @@ impl App {
         }
         for request in self.game.take_requests() {
             match request {
-                Request::Quit => event_loop.exit(),
+                Request::Quit => {
+                    self.save_settings();
+                    event_loop.exit();
+                }
                 Request::Fullscreen(on) => {
                     if let Some(window) = &self.window {
                         window.set_fullscreen(fullscreen(on));
                     }
                 }
-                Request::SaveSettings => {
-                    if let Some(file) = &self.settings_file {
-                        if let Err(e) = write_file(file, &self.game.settings().to_text()) {
-                            eprintln!("warning: cannot save settings to {}: {e}", file.display());
-                            self.game.show_notice(format!("Could not save settings: {e}"));
-                        }
-                    }
-                }
+                Request::SaveSettings => self.save_settings(),
             }
+        }
+    }
+
+    /// Write the settings file, with the window's size and position.
+    fn save_settings(&mut self) {
+        let Some(file) = &self.settings_file else { return };
+        let mut settings = self.game.settings().clone();
+        (settings.window_size, settings.window_pos) = (self.window_size, self.window_pos);
+        if let Err(e) = write_file(file, &settings.to_text()) {
+            eprintln!("warning: cannot save settings to {}: {e}", file.display());
+            self.game.show_notice(format!("Could not save settings: {e}"));
+        }
+    }
+
+    /// Remember the window's size and position, unless it is full screen or minimised (their values are no use).
+    fn note_window(&mut self) {
+        let Some(w) = &self.window else { return };
+        if w.fullscreen().is_some() || w.is_minimized() == Some(true) {
+            return;
+        }
+        let size = w.inner_size();
+        if size.width > 0 && size.height > 0 {
+            self.window_size = Some((size.width, size.height));
+        }
+        if let Ok(p) = w.outer_position() {
+            self.window_pos = Some((p.x, p.y));
         }
     }
 
@@ -624,9 +658,18 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
+        let monitors: Vec<Area> = event_loop
+            .primary_monitor()
+            .into_iter()
+            .chain(event_loop.available_monitors())
+            .map(|m| Area { x: m.position().x, y: m.position().y, w: m.size().width, h: m.size().height })
+            .collect();
+        // (the primary monitor is listed twice if it is also in the list: harmless)
+        let (size, pos) = window_placement(self.window_size, self.window_pos, &monitors);
         let attributes = Window::default_attributes()
             .with_title(&self.title)
-            .with_inner_size(LogicalSize::new(1280.0, 720.0))
+            .with_inner_size(PhysicalSize::new(size.0, size.1))
+            .with_position(PhysicalPosition::new(pos.0, pos.1))
             .with_fullscreen(fullscreen(self.game.settings().fullscreen));
         let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
 
@@ -643,15 +686,18 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 self.game.autosave();
+                self.save_settings();
                 event_loop.exit();
             }
             // macOS and others tell when the window is hidden; Windows only reports a 0x0 size.
             WindowEvent::Occluded(hidden) => self.set_minimized(hidden),
+            WindowEvent::Moved(_) => self.note_window(),
             WindowEvent::Resized(size) => {
                 // Minimizing reports 0x0; keep the old surface, pause the game and sound and stop
                 // drawing (see `redraw`) until a real size comes back.
                 self.set_minimized(size.width == 0 || size.height == 0);
                 if size.width > 0 && size.height > 0 {
+                    self.note_window();
                     if let Some(gfx) = &mut self.gfx {
                         gfx.resize(size.width, size.height);
                     }

@@ -2,7 +2,7 @@
 //! plays only while it is open, and arrows through pictures and clips alike.
 
 use super::*;
-use crate::extras::cell_rect;
+use crate::extras::{cell_rect, Tab};
 use quillstone_runtime::write_persistent;
 use quillstone_script::{parse, Vars};
 
@@ -129,4 +129,53 @@ fn a_locked_clip_does_not_open_and_undeclared_unlocks_offer_nothing() {
     assert_eq!(g.extras.viewing, None);
     assert!(wanted(&g).is_empty());
     assert!(g.extras_entries().iter().all(|(name, _)| *name != "evil.webm"), "only the declared list is shown");
+}
+
+const THUMBS: &str = "---\ngallery: [a.png | ta.png, loop.webm | tl.png, b.png, cut.webm, locked.webm | tk.png]\n---\n**A:** hi\n";
+
+#[test]
+fn an_unlocked_tile_shows_its_own_thumbnail_and_a_locked_one_stays_a_question_mark() {
+    let p = parse(THUMBS).unwrap();
+    let g = game(&p);
+    let draws = texts(&g);
+    let images = |name: &str| draws.iter().any(|d| matches!(d, Draw::Image { src, .. } if src == name));
+    assert!(images("ta.png") && images("tl.png"), "thumbnails stand in for the entry");
+    assert!(!images("a.png") && !images("loop.webm"), "the entry itself isn't drawn in the grid");
+    assert!(images("b.png"), "no thumbnail: a picture shows itself");
+    assert!(!images("tk.png"), "a locked tile shows no thumbnail");
+    let glyphs = draws.iter().filter(|d| matches!(d, Draw::Text { text, .. } if text == "\u{25B6}")).count();
+    assert_eq!(glyphs, 1, "only the clip without a thumbnail keeps the play mark");
+    assert_eq!(draws.iter().filter(|d| matches!(d, Draw::Text { text, .. } if text == "?")).count(), 1);
+}
+
+#[test]
+fn opening_a_tile_with_a_thumbnail_views_the_entry_and_unlocking_keys_on_the_entry() {
+    let p = parse(THUMBS).unwrap();
+    let mut g = game(&p);
+    click_cell(&mut g, 0);
+    assert!(texts(&g).iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "a.png")), "the full picture");
+    g.handle(Event::Press(Button::Left));
+    click_cell(&mut g, 4);
+    assert_eq!(g.extras.viewing, None, "the locked clip stays shut (its thumbnail doesn't unlock it)");
+}
+
+#[test]
+fn unlock_all_shows_every_entry_unlocked_and_writes_nothing() {
+    let p = parse("---\ngallery: [a.png, b.png]\nmusic_room: [m.ogg]\nreplays: { first: \"One\" }\n---\n# first\n**A:** hi\n").unwrap();
+    let storage = crate::MemoryStorage::default();
+    let mut g = Game::new(&p, Settings::default(), Box::new(storage));
+    g.open_extras();
+    assert!(g.extras_entries().iter().all(|e| !e.1));
+    g.set_unlock_all(true);
+    assert!(g.extras_entries().iter().all(|e| e.1), "gallery");
+    click_cell(&mut g, 1);
+    assert_eq!(g.extras.viewing, Some(1), "and it opens");
+    g.handle(Event::Press(Button::Left));
+    g.extras.tab = Tab::Music;
+    assert!(g.extras_entries().iter().all(|e| e.1), "music room");
+    g.extras.tab = Tab::Scenes;
+    assert!(g.extras_entries().iter().all(|e| e.1), "scenes");
+    g.save_persistent();
+    assert!(!g.session.unlocked("a.png"), "nothing was recorded");
+    assert!(g.storage.load("persistent.txt").unwrap().is_none(), "and nothing was written");
 }

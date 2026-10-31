@@ -158,6 +158,9 @@ impl<'p> Session<'p> {
                     (src, &self.program.gallery)
                 }
                 Cmd::PlayMusic { src, .. } => (src, &self.program.music_room),
+                // listed in either (the parser only lets `::unlock` name an entry)
+                Cmd::Unlock { src } if self.program.gallery.contains(src) => (src, &self.program.gallery),
+                Cmd::Unlock { src } => (src, &self.program.music_room),
                 _ => continue,
             };
             if list.contains(src) {
@@ -291,6 +294,22 @@ mod tests {
         assert_eq!(&kept, s.persistent(), "same records as for pictures");
         s.rollback();
         assert!(s.unlocked("loop.webm"), "going back takes nothing away");
+    }
+
+    #[test]
+    fn unlock_unlocks_an_entry_without_showing_it_and_is_never_taken_back() {
+        let p = parse("---\ngallery: [cg.png, loop.webm | t.png]\nmusic_room: [song.ogg]\n---\n# start\nHi.\n::unlock{src=loop.webm}\nOne.\n::unlock{src=song.ogg}\nTwo.\n").unwrap();
+        let (mut s, _) = Session::start(&p);
+        s.input(Input::Advance);
+        assert!(s.unlocked("loop.webm") && !s.unlocked("t.png") && !s.unlocked("cg.png") && !s.unlocked("song.ogg"));
+        s.input(Input::Advance);
+        assert!(s.unlocked("song.ogg"));
+        s.rollback();
+        s.rollback();
+        assert!(s.unlocked("loop.webm") && s.unlocked("song.ogg"), "going back takes nothing away");
+        let kept = read_persistent(&write_persistent(s.persistent()));
+        let (again, _) = Session::start_with(&p, kept);
+        assert!(again.unlocked("loop.webm"), "kept across runs");
     }
 
     #[test]

@@ -599,10 +599,13 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
                 s == src || quillstone_script::pattern_matches(s, src) || frame
             }
             Op::Video { src: s, .. } => s == src || quillstone_script::pattern_matches(s, src),
+            Op::Unlock { src: s } => s == src,
             _ => false,
         })
     };
-    let played = |src: &str| program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } if s == src));
+    let played = |src: &str| {
+        program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } | Op::Unlock { src: s } if s == src))
+    };
     let mut count = 0;
     let mut problem = |msg: String| {
         count += 1;
@@ -611,7 +614,8 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
     for (kind, asset) in program.extra_assets() {
         let file = root.join(asset);
         let in_gallery = program.gallery.iter().any(|g| g == asset);
-        let place = if in_gallery { "gallery" } else { "music room" };
+        let thumb_only = !in_gallery && program.gallery_thumbs.values().any(|t| t == asset);
+        let place = if in_gallery || thumb_only { "gallery" } else { "music room" };
         if !file.exists() {
             problem(format!("missing {place} file `{asset}`"));
         } else if in_gallery && kind == AssetKind::Audio {
@@ -620,7 +624,7 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> usize {
             problem(format!("`{asset}` won't play in a shipped game: {why}"));
         } else if in_gallery && !shown(asset) {
             problem(format!("`{asset}` is in the gallery, but no `::bg`, `::video` or image shows it, so it can never unlock"));
-        } else if !in_gallery && !played(asset) {
+        } else if !in_gallery && !thumb_only && !played(asset) {
             problem(format!("`{asset}` is in the music room, but no `::music` plays it, so it can never unlock"));
         }
     }
@@ -1033,7 +1037,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
             Cmd::Warning { message } => eprintln!("warning: {message}"),
-            Cmd::ReplayReached { .. } | Cmd::EndReplay => {} // scene replays are for the player
+            Cmd::ReplayReached { .. } | Cmd::Unlock { .. } | Cmd::EndReplay => {} // scene replays are for the player
         }
     }
 }
@@ -1604,6 +1608,24 @@ mod tests {
         assert_eq!(run("assets/c.webm", "::bg{src=assets/c.webm}", &[]), 1, "missing");
         assert_eq!(run("assets/c.webm", "::bg{src=assets/c.webm}", &[("assets/c.webm", AV1)]), 1, "AV1 is not shipped");
         assert_eq!(run("assets/c.ogg", "", &[("assets/c.ogg", b"OggS")]), 1, "a sound is not a gallery entry");
+    }
+
+    #[test]
+    fn check_looks_at_gallery_thumbnails_and_counts_unlock_as_showing() {
+        let png = picture::fake_png(10, 10);
+        let files: &[(&str, &[u8])] = &[("assets/a.png", &png), ("assets/t.png", &png)];
+        let errors = |script: &str, files: &[(&str, &[u8])]| {
+            in_dir(files, |dir| check_extras(&parse(script).unwrap(), &dir.join("s.quill.md"), dir))
+        };
+        let story = |front: &str, body: &str| format!("---\ngallery: [{front}]\n---\n{body}\nHi.\n");
+        assert_eq!(errors(&story("assets/a.png | assets/t.png", "::bg{src=assets/a.png}"), files), 0);
+        assert_eq!(errors(&story("assets/a.png | assets/nope.png", "::bg{src=assets/a.png}"), files), 1, "missing thumbnail");
+        assert_eq!(errors(&story("assets/a.png | assets/bad.png", "::bg{src=assets/a.png}"), &[("assets/a.png", &png), ("assets/bad.png", b"x")]), 1, "not a picture");
+        assert_eq!(errors(&story("assets/a.png | assets/t.png", ""), files), 1, "the entry, not its thumbnail, must be shown");
+        assert_eq!(errors(&story("assets/a.png | assets/t.png", "::unlock{src=assets/a.png}"), files), 0, "::unlock is enough");
+        const CALM: &[u8] = include_bytes!("../../../examples/assets/calm.ogg");
+        let music = "---\nmusic_room: [assets/m.ogg]\n---\n::unlock{src=assets/m.ogg}\nHi.\n";
+        assert_eq!(errors(music, &[("assets/m.ogg", CALM)]), 0, "a track never played but unlocked");
     }
 
     #[test]

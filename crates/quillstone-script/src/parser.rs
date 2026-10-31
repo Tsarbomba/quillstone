@@ -98,7 +98,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -113,6 +113,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "notify" => &["text", "time"],
+        "unlock" => &["src"],
         "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "particles" => &["snow", "rain", "none", "off", "src", "amount", "speed", "wind", "fade", "layer"],
@@ -572,20 +573,37 @@ impl Parser {
         }
     }
 
-    /// `gallery: [a.png, b.png]` or `music_room: [...]`; the key may repeat.
+    /// `gallery: [a.png, b.png]` or `music_room: [...]`; the key may repeat. A gallery entry may name
+    /// its own thumbnail, `clip.webm | thumbs/clip.png`.
     fn front_list(&mut self, line: usize, key: &str, val: &str) {
         let Some(inner) = val.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
             self.err(line, format!("`{key}` must look like `[assets/one.png, assets/two.png]`"));
             return;
         };
-        for item in split_top_level(inner, ',').into_iter().map(|p| unquote(p.trim())).filter(|p| !p.is_empty()) {
-            if let Err(m) = check_inside(key, item) {
+        for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
+            let (entry, thumb) = match item.split_once('|') {
+                Some((e, t)) if key == "gallery" => (unquote(e.trim()), Some(unquote(t.trim()))),
+                _ => (unquote(item), None),
+            };
+            if entry.is_empty() {
+                continue;
+            }
+            if let Err(m) = check_inside(key, entry) {
                 self.err(line, m);
                 continue;
             }
+            if let Some(t) = thumb {
+                if let Err(m) = check_inside("thumbnail", t) {
+                    self.err(line, m);
+                } else if kind_from_path(t) != AssetKind::Image {
+                    self.err(line, format!("the thumbnail `{t}` of `{entry}` must be a picture (PNG, JPEG or WebP)"));
+                } else {
+                    self.program.gallery_thumbs.entry(entry.to_string()).or_insert_with(|| t.to_string());
+                }
+            }
             let list = if key == "gallery" { &mut self.program.gallery } else { &mut self.program.music_room };
-            if !list.iter().any(|p| p == item) {
-                list.push(item.to_string());
+            if !list.iter().any(|p| p == entry) {
+                list.push(entry.to_string());
             }
         }
     }
@@ -1221,6 +1239,15 @@ impl Parser {
                     },
                 };
                 Some((Op::Notify { text, time }, None))
+            }
+            "unlock" => {
+                let src = self.require(line, name, a, "src")?;
+                let p = &self.program;
+                if !p.gallery.contains(&src) && !p.music_room.contains(&src) {
+                    self.err(line, format!("`::unlock{{src={src}}}`: `{src}` is not a `gallery:` or `music_room:` entry"));
+                    return None;
+                }
+                Some((Op::Unlock { src }, None))
             }
             "fade" => {
                 let (out, into) = (a.flag("out"), a.flag("in"));
@@ -3563,7 +3590,7 @@ mod tests {
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
         assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, anim, fade, wipe, through)"));
-        assert!(has_err("::frobnicate\n", "shake, flash, notify, fade, camera"));
+        assert!(has_err("::frobnicate\n", "shake, flash, notify, unlock, fade, camera"));
     }
 
     #[test]
@@ -4073,6 +4100,33 @@ mod tests {
         assert!(has_err("---\nvars: { x: 0 }\npersistent: { x: 1 }\n---\nHi.\n", "both `vars` and `persistent`"));
         assert!(has_err("---\ngallery: a.png\n---\nHi.\n", "must look like `["));
         assert_eq!(ok("---\nvoice: audio/voice/\n---\nHi.\n").voice_folder.as_deref(), Some("audio/voice"));
+    }
+
+    #[test]
+    fn a_gallery_entry_can_name_its_own_thumbnail() {
+        let p = ok("---\ngallery: [a.png, assets/c1.webm | assets/t/c1.png, \"my clip.webm\"|\"my thumb.jpg\"]\n---\nHi.\n");
+        assert_eq!(p.gallery, ["a.png", "assets/c1.webm", "my clip.webm"]);
+        assert_eq!(p.gallery_thumbs.len(), 2);
+        assert_eq!(p.gallery_thumbs["assets/c1.webm"], "assets/t/c1.png");
+        assert_eq!(p.gallery_thumbs["my clip.webm"], "my thumb.jpg");
+        let files: Vec<_> = p.extra_assets().map(|(_, f)| f).collect();
+        assert!(files.contains(&"assets/t/c1.png") && files.contains(&"my thumb.jpg"), "shipped with the game");
+        assert!(has_err("---\ngallery: [a.webm | b.webm]\n---\nHi.\n", "must be a picture"));
+        assert!(has_err("---\ngallery: [a.webm | ../b.png]\n---\nHi.\n", "inside the game folder"));
+        assert!(has_err("---\ngallery: [../a.webm | b.png]\n---\nHi.\n", "inside the game folder"));
+        assert!(ok("---\nmusic_room: [a.ogg]\n---\nHi.\n").gallery_thumbs.is_empty());
+    }
+
+    #[test]
+    fn unlock_names_a_gallery_or_music_room_entry() {
+        let p = ok("---\ngallery: [a.webm | t.png]\nmusic_room: [m.ogg]\n---\n::unlock{src=a.webm}\n::unlock{src=m.ogg}\nHi.\n");
+        assert_eq!(p.ops[0], Op::Unlock { src: "a.webm".into() });
+        assert_eq!(p.ops[1], Op::Unlock { src: "m.ogg".into() });
+        assert!(has_err("---\ngallery: [a.webm | t.png]\n---\n::unlock{src=t.png}\n", "not a `gallery:` or `music_room:` entry"));
+        assert!(has_err("---\ngallery: [a.png]\n---\nHi.\n::unlock{src=b.png}\n", "b.png"));
+        assert!(has_err("---\ngallery: [a.png]\n---\n::unlock\n", "src"));
+        let errors = parse("---\ngallery: [a.png]\n---\nHi.\n::unlock{src=b.png}\n").unwrap_err();
+        assert_eq!(errors[0].line, 5, "line numbered");
     }
 
     #[test]
