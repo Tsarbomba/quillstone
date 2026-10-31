@@ -33,7 +33,9 @@ USAGE:
                                 script's `languages:`: new texts are added, texts no longer in
                                 the script are flagged obsolete (translations are never deleted)
     quillstone dump  <script>   print the compiled ops and labels
-    quillstone run   <script>   play the script in the terminal
+    quillstone run   <script> [--start <label>] [--set var=value]...
+                                play the script in the terminal; --start begins at a label and
+                                --set (repeatable) gives variables their starting values
     quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder]
                                 build a folder players can unzip and run: the player
                                 (renamed after the title, or --name), FFmpeg's libraries
@@ -62,7 +64,7 @@ fn main() -> ExitCode {
         ["dump", file] => dump(Path::new(file)),
         ["voices", file] => voices(Path::new(file)),
         ["lang", "export", file, code] => load(Path::new(file)).and_then(|p| lang::export(Path::new(file), &p, code)),
-        ["run", file] => run(Path::new(file)),
+        ["run", file, flags @ ..] => run_flags(flags).and_then(|at| run(Path::new(file), &at)),
         ["package", file, rest @ ..] => package_cmd(Path::new(file), rest),
         ["unpack", file, "--out", out] => package::unpack(Path::new(file), Path::new(out)),
         _ => {
@@ -908,9 +910,23 @@ fn dump(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run(path: &Path) -> Result<(), String> {
+/// `--start <label>` and `--set var=value` for `run`.
+fn run_flags(flags: &[&str]) -> Result<quillstone_runtime::StartAt, String> {
+    let mut args: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+    let at = quillstone_runtime::start_flags(&mut args)?;
+    match args.first() {
+        Some(other) => Err(format!("unknown option `{other}`\n\n{USAGE}")),
+        None => Ok(at),
+    }
+}
+
+fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
     let program = load(path)?;
-    let (mut session, first) = Session::start(&program);
+    let (mut session, first) = if *at == quillstone_runtime::StartAt::default() {
+        Session::start(&program)
+    } else {
+        Session::start_at(&program, Default::default(), quillstone_runtime::DEFAULT_SEED, at)?
+    };
     print_cmds(&first);
 
     let stdin = io::stdin();
@@ -1072,6 +1088,14 @@ fn print_cmds(cmds: &[Cmd]) {
 mod tests {
     use super::*;
     use quillstone_script::parse;
+
+    #[test]
+    fn run_takes_start_and_set_and_nothing_else() {
+        let at = run_flags(&["--set", "a=1", "--start", "shop"]).unwrap();
+        assert_eq!((at.label.as_deref(), at.sets.len()), (Some("shop"), 1));
+        assert!(run_flags(&["--bogus"]).unwrap_err().contains("unknown option `--bogus`"));
+        assert!(run_flags(&["--start"]).is_err());
+    }
 
     #[test]
     fn a_hotspots_block_with_only_hidden_regions_is_flagged() {

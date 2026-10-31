@@ -1495,6 +1495,30 @@ and more pages rather than overflowing. `quillstone check` validates the picture
 and the colours; a line that can't be read is reported with its line number and
 ignored.
 
+## Developer tools
+
+For trying a story, not for players: a game you ship has none of this unless it is started with `--dev`.
+
+- `quillstone-player <game> --dev` turns on the console. Press F12 while the story is showing; a line opens at the
+  top of the screen and the game stands still until Esc (or F12 again) closes it. Folder mode does not turn it on
+  by itself, so you test the game the way players get it. Without `--dev` the key does nothing.
+- Commands (one line, then Enter; errors show as a line and leave it open):
+  - `get <var>`, or just the name: the value (`gold = 5`, text in quotes, lists in brackets).
+  - `vars [prefix]`: the variables, sorted, at most 10 (the rest is counted; a prefix narrows it).
+  - `set <var> = <expression>`: the same assignment `::set` takes (`=`, `+=`, `-=`, `random(1,6)` too). A variable the
+    script declares keeps its kind: a number can't become text, and a list changes only with `+=` / `-=`.
+    The line on screen is redrawn with the new value.
+  - `jump <label>`: go there now, as `::jump` does: variables, call stack and the picture stay. It is an ordinary
+    step, so rollback comes back to where you were.
+  - `help`.
+- What the console changes is real: saves made afterwards include it. Setting a variable is not a rollback step
+  (rolling back to an earlier screen brings that screen's variables back). The console opens only over the story, not
+  over a text input, shop, settings or a scene replay.
+- `quillstone-player <game> --dev --start <label> --set gold=50 --set met=true` starts a new game at a label with those
+  variables (`--set` repeats; the value is read by the variable's declared type, text needs no quotes; the variable
+  must be declared in `vars:`). `--start` and `--set` without `--dev` are refused.
+- `quillstone run <script> --start <label> --set var=value` does the same in the terminal.
+
 ## Not (yet) in the language
 
 Pasting into a text input,

@@ -28,5 +28,5 @@ pub use ops::{
     Axis, Fit, Func, HudElem, HudExpr, HudKind, Item, Op, Program, Language, MAX_LANGUAGES, Replay, SourceSpan, ShopEntry, Value, Vars, Wipe, BG_COLOR_PREFIX, MAX_CHOICE_TIME, MIN_CHOICE_TIME, DEFAULT_SEED, FUNCTIONS, INPUT_MAX_DEFAULT, INPUT_MAX_LIMIT, MAX_LIST_ITEMS, MAX_REPLAYS, ONCE, SEEN, POSITION,
     roll, splitmix64, ParticleKind, Particles, DEFAULT_PARTICLES, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, Tint, DEFAULT_TINT_ALPHA, TINT_ALPHA,
 };
-pub use parser::{parse, parse_files, Loader, ParseError, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH};
+pub use parser::{parse, parse_files, slug, Loader, ParseError, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH};
 pub use translate::{check_translation, language_file, placeholders, Catalog, Entry, Source, TranslationError, MAX_ENTRIES, MAX_FILE_BYTES, MAX_TEXT_BYTES};

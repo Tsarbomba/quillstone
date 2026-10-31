@@ -17,6 +17,7 @@ use crate::slots::{Page, SlotInfo, Storage};
 
 mod bag;
 mod extras;
+mod console;
 mod input;
 mod lang;
 mod replay;
@@ -59,6 +60,8 @@ pub enum Key {
     F5,
     F9,
     F11,
+    /// Opens the developer console (only with [`Game::set_dev`]).
+    F12,
     Char(char),
 }
 
@@ -190,6 +193,9 @@ pub struct Game<'p> {
     bag: Bag,
     /// What is typed at an `::input`.
     input: InputField,
+    /// The developer console is allowed (`--dev`), and it is open.
+    dev: bool,
+    console: Option<crate::console::Console>,
     /// The shop, inventory or text-entry screen that Settings, the history or a save screen
     /// is open over (or that is waiting for one to close after a reload): closing
     /// that screen goes back to it instead of to the story.
@@ -270,6 +276,8 @@ impl<'p> Game<'p> {
             slot_focus: None,
             bag: Bag::default(),
             input: InputField::default(),
+            dev: false,
+            console: None,
             ui_hidden: false,
             quick_alpha: 0.0,
             quick_sizes: Default::default(),
@@ -509,6 +517,12 @@ impl<'p> Game<'p> {
 
     /// Send an event to the screen it is for.
     fn route(&mut self, event: Event) {
+        if self.console.is_some() {
+            return self.console_event(event);
+        }
+        if event == Event::Key(Key::F12) {
+            return self.open_console();
+        }
         if self.confirm.is_some() {
             return self.confirm_event(event);
         }
@@ -539,6 +553,10 @@ impl<'p> Game<'p> {
             if *left <= 0.0 {
                 self.notice = None;
             }
+        }
+        if let Some(c) = &mut self.console {
+            c.since_key = (c.since_key + dt) % crate::input::BLINK_PERIOD;
+            return; // the game stands still under the console
         }
         if self.screen == Screen::Input {
             self.tick_input(dt);
@@ -626,6 +644,7 @@ impl<'p> Game<'p> {
     pub fn needs_ticks(&self) -> bool {
         self.notice.is_some()
             || self.screen == Screen::Input // the caret blinks
+            || self.console.is_some()
             || self.auto
             || self.skip.is_some()
             || self.running_timer().is_some()
@@ -720,6 +739,9 @@ impl<'p> Game<'p> {
         if let Some(confirm) = &self.confirm {
             let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
             draw_confirm(&mut out, theme, &confirm.message, hover);
+        }
+        if let Some(c) = &self.console {
+            crate::console::draw_console(&mut out, theme, c);
         }
         if let Some((message, _)) = &self.notice {
             draw_notice(&mut out, theme, message);
@@ -1383,3 +1405,5 @@ mod name_tests;
 mod gallery_video_tests;
 #[cfg(test)]
 mod quickicon_tests;
+#[cfg(test)]
+mod console_tests;

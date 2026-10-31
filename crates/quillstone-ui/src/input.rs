@@ -108,7 +108,7 @@ pub struct InputScreen<'a> {
     pub hover_ok: bool,
 }
 
-fn line(out: &mut Vec<Draw>, rect: Rect, color: [f32; 4]) {
+pub(crate) fn line(out: &mut Vec<Draw>, rect: Rect, color: [f32; 4]) {
     out.push(Draw::Rect { rect, color });
 }
 
@@ -120,7 +120,7 @@ fn outline(out: &mut Vec<Draw>, r: Rect, color: [f32; 4]) {
     line(out, Rect::new(r.x + r.w - 2.0, r.y, 2.0, r.h), color);
 }
 
-fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
+pub(crate) fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
     out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 

@@ -136,6 +136,9 @@ the monitor with some margin, centred; after that the player remembers the windo
 full-screen state (in `settings.txt`) and restores them, kept on screen if the monitors changed.
 `quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as unlocked for that run
 (to test the Extras screen); nothing is written to the saved unlocks.
+`quillstone-player <game> --dev` adds a developer console on F12 (inspect and set variables, jump to a label) and allows
+`--start <label>` and `--set var=value` (repeatable) to begin a new game there; see "Developer tools" in SCRIPT.md.
+Only the flag turns it on, so a shipped game has none of it.
 Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations and timed
 choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.

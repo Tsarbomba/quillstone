@@ -3037,7 +3037,7 @@ fn standalone_image(t: &str) -> Option<(&str, &str)> {
 }
 
 /// Normalise a heading or link target to a label: `The Roof!` -> `the-roof`.
-pub(crate) fn slug(s: &str) -> String {
+pub fn slug(s: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
     for c in s.chars() {

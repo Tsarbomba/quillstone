@@ -33,7 +33,7 @@ impl Game<'_> {
     /// Whether the player is typing into the game: the frontend sends [`Event::Text`]
     /// (and lets Backspace repeat) only then, and may switch its text-input method on.
     pub fn wants_text(&self) -> bool {
-        self.in_story && self.screen == Screen::Input && self.confirm.is_none()
+        self.console.is_some() || self.in_story && self.screen == Screen::Input && self.confirm.is_none()
     }
 
     /// The prompt, default and character limit of the input the story waits at.

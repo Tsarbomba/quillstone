@@ -15,6 +15,7 @@
 pub mod archive;
 pub mod assets;
 pub mod bag;
+pub mod console;
 pub mod extras;
 pub mod game;
 pub mod input;
@@ -26,5 +27,5 @@ pub mod source;
 pub use assets::Assets;
 pub use game::{Button, Event, Game, Key, Request, Screen, AUTO_PER_CHAR};
 pub use settings::{QuickMenuSetting, Settings};
-pub use quillstone_runtime::MAX_SAVE_BYTES;
+pub use quillstone_runtime::{start_flags, StartAt, MAX_SAVE_BYTES};
 pub use slots::{MemoryStorage, Storage, Timestamp};

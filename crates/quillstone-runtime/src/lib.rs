@@ -37,8 +37,12 @@ mod localize;
 mod localize_tests;
 #[cfg(test)]
 mod name_tests;
+mod dev;
+#[cfg(test)]
+mod dev_tests;
 mod persist;
 mod save;
+pub use dev::{start_flags, StartAt};
 pub use explore::{explore, Finding, Report};
 pub use quillstone_script::DEFAULT_SEED;
 

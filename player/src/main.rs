@@ -117,6 +117,13 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let unlock_all = args.iter().any(|a| a == "--unlock-all");
     args.retain(|a| a != "--unlock-all");
+    // `--dev` turns on the developer console (F12) and allows `--start <label>` / `--set var=value`.
+    let dev = args.iter().any(|a| a == "--dev");
+    args.retain(|a| a != "--dev");
+    let start = quillstone_ui::start_flags(&mut args).unwrap_or_else(|e| fatal(e));
+    if !dev && start != quillstone_ui::StartAt::default() {
+        fatal("--start and --set need --dev".into());
+    }
     let (assets, path) = match args.first().cloned() {
         Some(p) if is_archive(&p) => open_archive(Path::new(&p)),
         Some(p) => open_folder(PathBuf::from(p)),
@@ -168,6 +175,7 @@ fn main() {
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
     game.set_voice_files(voice_files(program, &assets));
     game.set_unlock_all(unlock_all);
+    game.set_dev(dev);
     game.set_theme(theme);
     let (translations, problems) = quillstone_ui::source::load_translations_in(&assets, program);
     for p in &problems {
@@ -179,6 +187,9 @@ fn main() {
     }
     // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
     game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
+    if start != quillstone_ui::StartAt::default() {
+        game.start_dev(&start).unwrap_or_else(|e| fatal(e));
+    }
     let mut app = App {
         title: game.title(),
         game,
@@ -653,6 +664,7 @@ fn map_key(key: &WinitKey, repeat: bool, typing: bool) -> Option<Key> {
             NamedKey::F5 => Key::F5,
             NamedKey::F9 => Key::F9,
             NamedKey::F11 => Key::F11,
+            NamedKey::F12 => Key::F12,
             _ => return None,
         },
         WinitKey::Character(s) => Key::Char(s.chars().next()?),
