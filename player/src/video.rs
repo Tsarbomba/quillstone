@@ -16,7 +16,7 @@ pub fn opener(assets: &Assets) -> OpenFn {
         return Box::new(|_src: &str| Ok(Box::new(TestPattern::new(640, 360, 30, 90)) as Box<dyn Decoder>));
     }
     let assets = assets.clone();
-    Box::new(move |src: &str| open(&assets.ffmpeg_url(src)))
+    Box::new(move |src: &str| open(&assets.ffmpeg_url(src).map_err(|e| e.to_string())?))
 }
 
 #[cfg(not(feature = "video"))]
@@ -243,7 +243,7 @@ mod real {
             quillstone_ui::archive::write(&dir.join("game.qsa"), "main.quill.md", &list).unwrap();
             let archive = quillstone_ui::archive::Archive::open(&dir.join("game.qsa")).unwrap();
             let assets = Assets::archive(archive, None);
-            let mut d = FfmpegDecoder::open(&assets.ffmpeg_url("bars.webm")).unwrap();
+            let mut d = FfmpegDecoder::open(&assets.ffmpeg_url("bars.webm").unwrap()).unwrap();
             assert_eq!(all_frames(&mut d).len(), 12);
             d.rewind().unwrap();
             assert_eq!(all_frames(&mut d).len(), 12, "seeking works inside the range");

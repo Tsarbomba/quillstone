@@ -172,17 +172,18 @@ impl Assets {
     }
 
     /// What to hand FFmpeg to open `path`: the file's path, or for an archive entry FFmpeg's `subfile` protocol
-    /// naming the archive and the entry's byte range.
-    pub fn ffmpeg_url(&self, path: &str) -> String {
-        if let Ok(Some(file)) = self.loose(path) {
-            return file.to_string_lossy().into_owned();
+    /// naming the archive and the entry's byte range. A path outside the game folder or not in the game is an
+    /// error, never handed to FFmpeg as it is (FFmpeg would take `http:...` and the like as a URL).
+    pub fn ffmpeg_url(&self, path: &str) -> io::Result<String> {
+        if let Some(file) = self.loose(path)? {
+            return Ok(file.to_string_lossy().into_owned());
         }
         match &*self.0 {
-            Backend::Archive { archive, .. } => match archive.range(path) {
-                Some((start, len)) => subfile_url(&archive.path().to_string_lossy(), start, len),
-                None => path.to_string(),
-            },
-            Backend::Folder(_) => path.to_string(),
+            Backend::Archive { archive, .. } => archive
+                .range(path)
+                .map(|(start, len)| subfile_url(&archive.path().to_string_lossy(), start, len))
+                .ok_or_else(|| not_found(path)),
+            Backend::Folder(_) => Err(not_found(path)),
         }
     }
 }
@@ -237,7 +238,7 @@ mod tests {
         names.sort();
         assert_eq!(names, ["b.txt", "c.txt"]);
         assert!(a.list("nope").is_empty() && a.list("..").is_empty());
-        assert_eq!(a.ffmpeg_url("a/b.txt"), d.join("a/b.txt").to_string_lossy());
+        assert_eq!(a.ffmpeg_url("a/b.txt").unwrap(), d.join("a/b.txt").to_string_lossy());
         assert_eq!(a.main_script(), None);
     }
 
@@ -295,8 +296,11 @@ mod tests {
         let (a, d) = game("url", &[("main.quill.md", "m"), ("v.webm", "video")], &[("loose.webm", "x")]);
         let (start, len) = (8192, 5); // the script takes the first 4096-byte page
         let archive = d.join("game.qsa").to_string_lossy().into_owned();
-        assert_eq!(a.ffmpeg_url("v.webm"), format!("subfile,,start,{start},end,{},,:{archive}", start + len));
-        assert_eq!(a.ffmpeg_url("loose.webm"), d.join("game/loose.webm").to_string_lossy(), "a loose file is plain");
+        assert_eq!(a.ffmpeg_url("v.webm").unwrap(), format!("subfile,,start,{start},end,{},,:{archive}", start + len));
+        assert_eq!(a.ffmpeg_url("loose.webm").unwrap(), d.join("game/loose.webm").to_string_lossy(), "a loose file is plain");
+        for bad in ["http://example.com/v.webm", "../v.webm", "missing.webm"] {
+            assert!(a.ffmpeg_url(bad).is_err(), "{bad} must never reach FFmpeg");
+        }
         assert_eq!(
             subfile_url(r"C:\Games\My Game\game.qsa", 8192, 100),
             r"subfile,,start,8192,end,8292,,:C:\Games\My Game\game.qsa"

@@ -53,11 +53,11 @@ mod imp {
     use kira::Frame;
 
     pub fn open(assets: &Assets, src: &str) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
-        Ok(StreamingSoundData::from_decoder(FfmpegAudio::open(&assets.ffmpeg_url(src))?))
+        Ok(StreamingSoundData::from_decoder(FfmpegAudio::open(&assets.ffmpeg_url(src).map_err(error)?)?))
     }
 
     pub fn load(assets: &Assets, src: &str) -> Result<StaticSoundData, FromFileError> {
-        let mut d = FfmpegAudio::open(&assets.ffmpeg_url(src))?;
+        let mut d = FfmpegAudio::open(&assets.ffmpeg_url(src).map_err(error)?)?;
         let mut frames = Vec::with_capacity(d.length);
         while let Some(chunk) = d.next_chunk()? {
             frames.extend(chunk);
@@ -238,7 +238,7 @@ mod imp {
 
         #[test]
         fn streaming_gives_the_stated_length_and_loops_back_exactly() {
-            let mut d = FfmpegAudio::open(&assets().ffmpeg_url(CLIP)).unwrap();
+            let mut d = FfmpegAudio::open(&assets().ffmpeg_url(CLIP).unwrap()).unwrap();
             let length = d.num_frames();
             let mut first = Vec::new();
             while first.len() < length {
