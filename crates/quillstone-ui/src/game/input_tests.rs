@@ -183,7 +183,7 @@ fn enter_with_an_empty_field_takes_the_default_and_without_one_does_nothing() {
     type_in(&mut g, "  ");
     key(&mut g, Key::Enter);
     assert_eq!(g.screen(), Screen::Input, "nothing to confirm");
-    click(&mut g, crate::input::ok_rect());
+    click(&mut g, crate::input::ok_rect(&Theme::default()));
     assert_eq!(g.screen(), Screen::Input, "OK is dimmed and does nothing");
     type_in(&mut g, "Bo");
     key(&mut g, Key::Enter);
@@ -195,10 +195,10 @@ fn the_ok_button_confirms_and_clicks_elsewhere_do_not() {
     let p = parse(ASK).unwrap();
     let mut g = at_input(&p);
     type_in(&mut g, "Kim");
-    click(&mut g, crate::input::field_rect());
+    click(&mut g, crate::input::field_rect(&Theme::default()));
     click(&mut g, Rect::new(10.0, 10.0, 5.0, 5.0));
     assert_eq!((g.screen(), field(&g)), (Screen::Input, "Kim".to_string()));
-    click(&mut g, crate::input::ok_rect());
+    click(&mut g, crate::input::ok_rect(&Theme::default()));
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "Hi Kim!");
 }
@@ -211,7 +211,7 @@ fn ok_is_dimmed_only_while_there_is_nothing_to_confirm() {
         g.draw_list(&|_| None)
             .iter()
             .find_map(|d| match d {
-                Draw::Rect { rect, color } if *rect == crate::input::ok_rect() => Some(color[3]),
+                Draw::Rect { rect, color } if *rect == crate::input::ok_rect(g.theme()) => Some(color[3]),
                 _ => None,
             })
             .unwrap()

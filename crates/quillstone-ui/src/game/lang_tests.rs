@@ -112,7 +112,7 @@ fn a_click_on_the_row_cycles_and_the_title_follows() {
     let mut g = game(&p, instant());
     assert_eq!(g.title(), "Tale");
     key(&mut g, Key::Escape);
-    let c = crate::screens::control_rect(8, crate::screens::rows(true));
+    let c = crate::screens::control_rect(8, crate::screens::rows(true), &Theme::default());
     g.handle(Event::CursorMoved(Some((c.x + c.w / 2.0, c.y + c.h / 2.0))));
     g.handle(Event::Press(Button::Left));
     g.handle(Event::Release(Button::Left));

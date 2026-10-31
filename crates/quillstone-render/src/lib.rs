@@ -31,7 +31,7 @@ pub use layout::{
 };
 pub use theme::{CellStyle, QuickMenu, Theme};
 pub use view::{
-    Align, Background, Dialogue, Draw, InlineImage, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
+    Align, Background, Dialogue, Draw, InlineImage, Outline, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,
 };
 pub use view::{choice_rects, dialogue_body, dialogue_lines, dialogue_lines_tagged, faded, name_plate_rect, textbox_rect};

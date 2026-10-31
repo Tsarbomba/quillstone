@@ -693,8 +693,9 @@ impl<'p> Game<'p> {
             Screen::MainMenu | Screen::Story => {}
             Screen::Settings => {
                 let rows = rows(self.has_language_row());
-                let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story, rows));
-                draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover, self.has_language_row().then(|| self.language_name()));
+                let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story, rows, theme));
+                let language = self.has_language_row().then(|| self.language_name());
+                draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover, language, image_size);
             }
             Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll),
             Screen::Save | Screen::Load => {
@@ -707,7 +708,7 @@ impl<'p> Game<'p> {
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
-            Screen::Input => self.draw_input_screen(&mut out),
+            Screen::Input => self.draw_input_screen(&mut out, image_size),
         }
         if let Some(confirm) = &self.confirm {
             let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
@@ -1213,17 +1214,17 @@ impl<'p> Game<'p> {
         match event {
             Event::CursorMoved(Some((x, _))) => {
                 if let Some(i) = self.dragging {
-                    self.set_slider(i, slider_pos_at(x));
+                    self.set_slider(i, slider_pos_at(x, self.view.theme()));
                 }
             }
-            Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| settings_at(x, y, self.in_story, rows)) {
+            Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| settings_at(x, y, self.in_story, rows, self.view.theme())) {
                 Some(SettingsHit::Control(i)) => {
                     self.focus = i;
                     match (rows[i].is_toggle(), self.cursor) {
                         (true, _) => self.toggle_row(rows[i]),
                         (false, Some((x, _))) => {
                             self.dragging = Some(i);
-                            self.set_slider(i, slider_pos_at(x));
+                            self.set_slider(i, slider_pos_at(x, self.view.theme()));
                         }
                         _ => {}
                     }

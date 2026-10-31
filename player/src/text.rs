@@ -64,6 +64,33 @@ mod real {
         starts
     }
 
+    /// Put `outline` under the letters already in `acc` (premultiplied): every lit pixel stamps its
+    /// coverage on the pixels within the outline's radius, the strongest stamp wins, and the letters
+    /// are laid over the result. Costs one disc per lit pixel, so it is cheap for a thin outline.
+    fn add_outline(acc: &mut [[f32; 4]], w: usize, h: usize, outline: &quillstone_render::Outline) {
+        let r = outline.size.round().max(1.0) as i32;
+        let disc: Vec<(i32, i32)> = (-r..=r)
+            .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
+            .filter(|(dx, dy)| dx * dx + dy * dy <= r * r + r) // a little over r, so small discs are round
+            .collect();
+        let mut ring = vec![0.0f32; w * h];
+        for (i, px) in acc.iter().enumerate().filter(|(_, px)| px[3] > 0.0) {
+            let (x, y) = ((i % w) as i32, (i / w) as i32);
+            for (dx, dy) in &disc {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                    let at = &mut ring[ny as usize * w + nx as usize];
+                    *at = at.max(px[3]);
+                }
+            }
+        }
+        let [r, g, b, a] = outline.color;
+        for (px, cover) in acc.iter_mut().zip(ring) {
+            let under = cover * a * (1.0 - px[3]); // what the letters leave uncovered
+            *px = [px[0] + r * under, px[1] + g * under, px[2] + b * under, px[3] + under];
+        }
+    }
+
     pub struct TextRenderer {
         fonts: FontSystem,
         swash: SwashCache,
@@ -238,6 +265,10 @@ mod real {
                 }
             }
 
+            if let Some(outline) = &job.outline {
+                add_outline(&mut acc, width as usize, height as usize, outline);
+            }
+
             // Back to straight alpha; `a` scales the whole text's opacity.
             let opacity = a as f32 / 255.0;
             let mut rgba = vec![0u8; (width * height * 4) as usize];
@@ -271,6 +302,7 @@ mod tests {
             size: 40.0,
             color: [1.0; 4],
             align: Align::Left,
+            outline: None,
         };
         build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
     }
@@ -322,6 +354,7 @@ mod tests {
                 size: 40.0,
                 color: [1.0; 4],
                 align: Align::Left,
+                outline: None,
             };
             build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
         };
@@ -341,6 +374,7 @@ mod tests {
             size: 40.0,
             color: [1.0; 4],
             align: Align::Left,
+            outline: None,
         };
         build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
     }
@@ -372,5 +406,34 @@ mod tests {
         let blank = renderer.rasterize(&job("{size=+30}A{p}{p}B{/size}")).unwrap();
         let filled = renderer.rasterize(&job("{size=+30}A{p}x{p}B{/size}")).unwrap();
         assert_eq!(bottom(&blank), bottom(&filled), "the empty line has the sized height");
+    }
+
+    #[test]
+    fn an_outline_adds_a_ring_in_its_colour_under_the_letters_and_is_part_of_the_cache_key() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        let plain = job("Hello there");
+        let plain_map = renderer.rasterize(&plain).unwrap();
+        if bottom(&plain_map) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): outline test did not run");
+            return;
+        }
+        let mut outlined = plain.clone();
+        outlined.outline = Some(quillstone_render::Outline { size: 2.0, color: [1.0, 0.0, 0.0, 1.0] });
+        assert_ne!(plain.key(), outlined.key());
+        let ringed = renderer.rasterize(&outlined).unwrap();
+        let lit = |b: &Bitmap| b.rgba.chunks(4).filter(|p| p[3] > 0).count();
+        assert!(lit(&ringed) > lit(&plain_map) * 11 / 10, "the outline widens the letters");
+        // white letters stay white where they were solid; the new pixels around them are red
+        let (mut solid, mut ring) = (0, 0);
+        for (before, after) in plain_map.rgba.chunks(4).zip(ringed.rgba.chunks(4)) {
+            if before[3] == 255 {
+                assert_eq!(after[..3], before[..3], "solid letter pixels are untouched");
+                solid += 1;
+            } else if before[3] == 0 && after[3] == 255 {
+                assert_eq!(after[..3], [255, 0, 0], "outside the letters it is the outline colour");
+                ring += 1;
+            }
+        }
+        assert!(solid > 0 && ring > 0, "{solid} solid, {ring} ring pixels");
     }
 }

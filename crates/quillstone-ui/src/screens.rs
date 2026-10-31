@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::theme::{QuickIcon, QUICK_ICON_SIDE};
+use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
@@ -15,7 +15,7 @@ const FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.06];
 const TRACK: [f32; 4] = [0.35, 0.35, 0.42, 1.0];
 
 fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
-    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align });
+    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
 fn screen() -> Rect {
@@ -478,61 +478,83 @@ pub enum SettingsHit {
     Button(SettingsButton),
 }
 
+/// The settings panel (where the theme puts it) and the factor the theme's `options_text_size` makes
+/// of every size on the screen (1 at the default size, so the default layout is the old fixed one).
+fn panel(t: &Theme) -> Rect {
+    let [x, y, w, h] = t.options_rect;
+    Rect::new(x, y, w, h)
+}
+
+fn factor(t: &Theme) -> f32 {
+    t.options_text_size / DEFAULT_OPTIONS_TEXT_SIZE
+}
+
 /// Top and height of a row: tighter with nine rows so the buttons still clear the hint line.
-fn row_y(n: usize) -> f32 {
-    if n > 8 { 170.0 } else { 190.0 }
+fn row_y(n: usize, t: &Theme) -> f32 {
+    panel(t).y + factor(t) * if n > 8 { 80.0 } else { 100.0 }
 }
 
-fn row_h(n: usize) -> f32 {
-    if n > 8 { 66.0 } else { 72.0 }
+fn row_h(n: usize, t: &Theme) -> f32 {
+    factor(t) * if n > 8 { 66.0 } else { 72.0 }
 }
-const TRACK_X: f32 = 880.0;
-const TRACK_W: f32 = 440.0;
 
-pub fn row_rect(i: usize, n: usize) -> Rect {
-    Rect::new(400.0, row_y(n) + i as f32 * row_h(n), 1120.0, row_h(n) - 12.0)
+/// The slider tracks start 480/1120 and are 440/1120 of the panel's width across.
+fn track_x(t: &Theme) -> f32 {
+    let p = panel(t);
+    p.x + p.w * 480.0 / 1120.0
+}
+
+fn track_w(t: &Theme) -> f32 {
+    panel(t).w * 440.0 / 1120.0
+}
+
+pub fn row_rect(i: usize, n: usize, t: &Theme) -> Rect {
+    let p = panel(t);
+    Rect::new(p.x, row_y(n, t) + i as f32 * row_h(n, t), p.w, row_h(n, t) - 12.0 * factor(t))
 }
 
 /// The visible slider track of row `i`.
-pub fn track_rect(i: usize, n: usize) -> Rect {
-    Rect::new(TRACK_X, row_rect(i, n).y + 24.0, TRACK_W, 12.0)
+pub fn track_rect(i: usize, n: usize, t: &Theme) -> Rect {
+    Rect::new(track_x(t), row_rect(i, n, t).y + 24.0 * factor(t), track_w(t), 12.0 * factor(t))
 }
 
 /// Where a row's control reacts to the mouse (taller than the thin track).
-pub fn control_rect(i: usize, rows: &[Row]) -> Rect {
-    let row = row_rect(i, rows.len());
+pub fn control_rect(i: usize, rows: &[Row], t: &Theme) -> Rect {
+    let (row, k) = (row_rect(i, rows.len(), t), factor(t));
     if rows[i].is_toggle() {
         let w = if matches!(rows[i], Row::QuickMenu | Row::Language) { 260.0 } else { 160.0 };
-        Rect::new(TRACK_X, row.y + 4.0, w, 52.0)
+        Rect::new(track_x(t), row.y + 4.0 * k, w * k, 52.0 * k)
     } else {
-        Rect::new(TRACK_X - 12.0, row.y, TRACK_W + 24.0, row.h)
+        Rect::new(track_x(t) - 12.0, row.y, track_w(t) + 24.0, row.h)
     }
 }
 
-/// Where button `b` sits; the buttons are centred side by side.
-pub fn button_rect(b: SettingsButton, in_story: bool, n: usize) -> Rect {
+/// Where button `b` sits; the buttons are centred side by side in the panel.
+pub fn button_rect(b: SettingsButton, in_story: bool, n: usize, t: &Theme) -> Rect {
     let buttons = settings_buttons(in_story);
     let i = buttons.iter().position(|x| *x == b).unwrap_or(0);
-    let (w, gap) = (240.0, 40.0);
-    let total = buttons.len() as f32 * w + (buttons.len() - 1) as f32 * gap;
-    let y = row_y(n) + n as f32 * row_h(n) + 60.0;
-    Rect::new((VIRTUAL.w - total) / 2.0 + i as f32 * (w + gap), y, w, 80.0)
+    let (p, k, count) = (panel(t), factor(t), buttons.len() as f32);
+    let gap = 40.0 * k;
+    let w = (240.0 * k).min((p.w - gap * (count - 1.0)) / count); // a narrow panel makes them narrower
+    let total = count * w + (count - 1.0) * gap;
+    let y = row_y(n, t) + n as f32 * row_h(n, t) + 60.0 * k;
+    Rect::new(p.x + (p.w - total) / 2.0 + i as f32 * (w + gap), y, w, 80.0 * k)
 }
 
-pub fn settings_at(x: f32, y: f32, in_story: bool, rows: &[Row]) -> Option<SettingsHit> {
-    if let Some(i) = (0..rows.len()).find(|&i| control_rect(i, rows).contains(x, y)) {
+pub fn settings_at(x: f32, y: f32, in_story: bool, rows: &[Row], t: &Theme) -> Option<SettingsHit> {
+    if let Some(i) = (0..rows.len()).find(|&i| control_rect(i, rows, t).contains(x, y)) {
         return Some(SettingsHit::Control(i));
     }
     settings_buttons(in_story)
         .iter()
         .copied()
-        .find(|&b| button_rect(b, in_story, rows.len()).contains(x, y))
+        .find(|&b| button_rect(b, in_story, rows.len(), t).contains(x, y))
         .map(SettingsHit::Button)
 }
 
 /// Slider position (0..1) for a mouse x over row `i`'s track.
-pub fn slider_pos_at(x: f32) -> f32 {
-    let t = track_rect(0, 8);
+pub fn slider_pos_at(x: f32, t: &Theme) -> f32 {
+    let t = track_rect(0, 8, t);
     ((x - t.x) / t.w).clamp(0.0, 1.0)
 }
 
@@ -597,10 +619,27 @@ pub fn row_value(s: &Settings, row: Row, language: &str) -> String {
 }
 
 /// A slider row's value column, with a margin before the row's right edge.
-pub fn value_rect(i: usize, n: usize) -> Rect {
-    let row = row_rect(i, n);
-    let x = TRACK_X + TRACK_W + 20.0;
-    Rect::new(x, row.y + 6.0, row.x + row.w - 20.0 - x, 48.0)
+pub fn value_rect(i: usize, n: usize, t: &Theme) -> Rect {
+    let row = row_rect(i, n, t);
+    let x = track_x(t) + track_w(t) + 20.0;
+    Rect::new(x, row.y + 6.0 * factor(t), row.x + row.w - 20.0 - x, 48.0 * factor(t))
+}
+
+/// `src` stretched over `dest` as nine pieces: corners of `border` picture pixels keep their size, edges
+/// stretch one way and the middle both, so a frame's rounded corners stay round at any panel size.
+/// `size` is the picture's own size; a border that would eat the picture or the panel is cut back.
+pub fn nine_slice(out: &mut Vec<Draw>, src: &str, size: Size, dest: Rect, border: f32) {
+    let b = border.min(size.w / 2.0 - 0.5).min(size.h / 2.0 - 0.5).min(dest.w / 2.0).min(dest.h / 2.0).max(0.0);
+    let (ux, uy) = (b / size.w, b / size.h);
+    let xs = [(dest.x, b, 0.0, ux), (dest.x + b, dest.w - 2.0 * b, ux, 1.0 - 2.0 * ux), (dest.x + dest.w - b, b, 1.0 - ux, ux)];
+    let ys = [(dest.y, b, 0.0, uy), (dest.y + b, dest.h - 2.0 * b, uy, 1.0 - 2.0 * uy), (dest.y + dest.h - b, b, 1.0 - uy, uy)];
+    for (y, h, v, vh) in ys {
+        for (x, w, u, uw) in xs {
+            if w > 0.0 && h > 0.0 {
+                out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x, y, w, h), uv: Rect::new(u, v, uw, vh), alpha: 1.0 });
+            }
+        }
+    }
 }
 
 /// A value and the size to draw it at so that it fits one row `width` wide: stepped
@@ -613,6 +652,7 @@ fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
     (one_row(value, s, width), s)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_settings(
     out: &mut Vec<Draw>,
     theme: &Theme,
@@ -621,35 +661,50 @@ pub fn draw_settings(
     focus: usize,
     hover: Option<SettingsHit>,
     language: Option<&str>,
+    image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     let rows = rows(language.is_some());
     let language = language.unwrap_or("");
-    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
-    text(out, "Settings", Rect::new(0.0, 90.0, VIRTUAL.w, 80.0), 56.0, theme.text_color, Align::Center);
+    fn loaded<'a>(p: &'a Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) -> Option<(&'a str, Size)> {
+        p.as_deref().and_then(|src| image_size(src).map(|size| (src, size)))
+    }
+    match loaded(&theme.options_background, image_size) {
+        Some((src, size)) => {
+            let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
+        }
+        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
+    }
+    let (p, k) = (panel(theme), factor(theme));
+    if let Some((src, size)) = loaded(&theme.options_panel_image, image_size) {
+        nine_slice(out, src, size, p, theme.options_panel_border);
+    }
+    text(out, "Settings", Rect::new(p.x, p.y, p.w, 80.0 * k), 56.0 * k, theme.text_color, Align::Center);
 
     let n = rows.len();
     for (i, &row) in rows.iter().enumerate() {
-        let r = row_rect(i, n);
+        let r = row_rect(i, n, theme);
         if i == focus {
             out.push(Draw::Rect { rect: r, color: FOCUS });
         }
-        text(out, row_label(row), Rect::new(r.x + 30.0, r.y + 6.0, 440.0, 48.0), 36.0, theme.text_color, Align::Left);
+        let label_w = track_x(theme) - r.x - 30.0 * k - 10.0;
+        text(out, row_label(row), Rect::new(r.x + 30.0 * k, r.y + 6.0 * k, label_w, 48.0 * k), 36.0 * k, theme.text_color, Align::Left);
         match row_slider(s, row) {
             Some(pos) => {
-                let t = track_rect(i, n);
+                let t = track_rect(i, n, theme);
                 out.push(Draw::Rect { rect: t, color: TRACK });
                 let fill = [theme.button_hover_color[0], theme.button_hover_color[1], theme.button_hover_color[2], 1.0];
                 out.push(Draw::Rect { rect: Rect::new(t.x, t.y, t.w * pos, t.h), color: fill });
-                out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0, r.y + 10.0, 20.0, 40.0), color: theme.text_color });
-                let value = value_rect(i, n);
-                let (shown, size) = fit_value(&row_value(s, row, language), 32.0, value.w);
+                out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0 * k, r.y + 10.0 * k, 20.0 * k, 40.0 * k), color: theme.text_color });
+                let value = value_rect(i, n, theme);
+                let (shown, size) = fit_value(&row_value(s, row, language), 32.0 * k, value.w);
                 text(out, shown, value, size, theme.dim_color, Align::Left);
             }
             None => {
-                let c = control_rect(i, rows);
+                let c = control_rect(i, rows, theme);
                 let color = if hover == Some(SettingsHit::Control(i)) { theme.button_hover_color } else { theme.button_color };
                 out.push(Draw::Rect { rect: c, color });
-                text(out, row_value(s, row, language), c, 32.0, theme.text_color, Align::Center);
+                text(out, row_value(s, row, language), c, 32.0 * k, theme.text_color, Align::Center);
             }
         }
     }
@@ -660,13 +715,13 @@ pub fn draw_settings(
             SettingsButton::MainMenu => "Main menu",
             SettingsButton::Quit => "Quit",
         };
-        let r = button_rect(b, in_story, n);
+        let r = button_rect(b, in_story, n, theme);
         let color = if hover == Some(SettingsHit::Button(b)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, label, r, 36.0, theme.text_color, Align::Center);
+        text(out, label, r, 36.0 * k, theme.text_color, Align::Center);
     }
     let hint = "Esc to close  ·  Up/Down to pick  ·  Left/Right to adjust";
-    text(out, hint, Rect::new(0.0, 960.0, VIRTUAL.w, 40.0), 24.0, theme.dim_color, Align::Center);
+    text(out, hint, Rect::new(p.x, p.y + p.h - 40.0 * k, p.w, 40.0 * k), 24.0 * k, theme.dim_color, Align::Center);
 }
 
 // ---- backlog ----------------------------------------------------------------------------
@@ -1175,32 +1230,32 @@ mod tests {
         for language in [false, true] {
             let rows = rows(language);
             for i in 0..rows.len() {
-                let (x, y) = centre(control_rect(i, rows));
-                assert_eq!(settings_at(x, y, true, rows), Some(SettingsHit::Control(i)));
+                let (x, y) = centre(control_rect(i, rows, &Theme::default()));
+                assert_eq!(settings_at(x, y, true, rows, &Theme::default()), Some(SettingsHit::Control(i)));
             }
             for in_story in [true, false] {
                 for &b in settings_buttons(in_story) {
-                    let (x, y) = centre(button_rect(b, in_story, rows.len()));
-                    assert_eq!(settings_at(x, y, in_story, rows), Some(SettingsHit::Button(b)));
+                    let (x, y) = centre(button_rect(b, in_story, rows.len(), &Theme::default()));
+                    assert_eq!(settings_at(x, y, in_story, rows, &Theme::default()), Some(SettingsHit::Button(b)));
                 }
             }
-            let (x, y) = centre(button_rect(SettingsButton::MainMenu, true, rows.len()));
-            assert_eq!(settings_at(x, y, false, rows), None, "no Main menu button at the main menu");
+            let (x, y) = centre(button_rect(SettingsButton::MainMenu, true, rows.len(), &Theme::default()));
+            assert_eq!(settings_at(x, y, false, rows, &Theme::default()), None, "no Main menu button at the main menu");
             let n = rows.len();
-            assert!(button_rect(SettingsButton::Back, true, n).y > row_rect(n - 1, n).y);
-            assert!(button_rect(SettingsButton::Back, true, n).y + 80.0 < 960.0, "clear of the hint line");
-            assert!(row_rect(0, n).y >= 160.0, "clear of the title");
-            assert_eq!(settings_at(5.0, 5.0, true, rows), None);
+            assert!(button_rect(SettingsButton::Back, true, n, &Theme::default()).y > row_rect(n - 1, n, &Theme::default()).y);
+            assert!(button_rect(SettingsButton::Back, true, n, &Theme::default()).y + 80.0 < 960.0, "clear of the hint line");
+            assert!(row_rect(0, n, &Theme::default()).y >= 160.0, "clear of the title");
+            assert_eq!(settings_at(5.0, 5.0, true, rows, &Theme::default()), None);
         }
     }
 
     #[test]
     fn slider_positions_follow_the_track() {
-        let t = track_rect(2, 8);
-        assert_eq!(slider_pos_at(t.x), 0.0);
-        assert_eq!(slider_pos_at(t.x + t.w), 1.0);
-        assert!((slider_pos_at(t.x + t.w / 4.0) - 0.25).abs() < 1e-5);
-        assert_eq!(slider_pos_at(-100.0), 0.0);
+        let t = track_rect(2, 8, &Theme::default());
+        assert_eq!(slider_pos_at(t.x, &Theme::default()), 0.0);
+        assert_eq!(slider_pos_at(t.x + t.w, &Theme::default()), 1.0);
+        assert!((slider_pos_at(t.x + t.w / 4.0, &Theme::default()) - 0.25).abs() < 1e-5);
+        assert_eq!(slider_pos_at(-100.0, &Theme::default()), 0.0);
     }
 
     #[test]
@@ -1329,18 +1384,18 @@ mod tests {
     #[test]
     fn a_settings_value_stays_inside_its_row_with_a_margin_and_shrinks_to_fit() {
         for i in 0..ROWS.len() {
-            let (v, row) = (value_rect(i, 8), row_rect(i, 8));
+            let (v, row) = (value_rect(i, 8, &Theme::default()), row_rect(i, 8, &Theme::default()));
             assert!(v.x + v.w <= row.x + row.w - 20.0 + 1e-3, "row {i}: value column ends before the row does");
-            assert!(v.x >= TRACK_X + TRACK_W, "row {i}: and starts after the track");
+            assert!(v.x >= track_x(&Theme::default()) + track_w(&Theme::default()), "row {i}: and starts after the track");
         }
-        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, 8).w);
-        assert_eq!(estimate_lines(&text, size, value_rect(0, 8).w), 1);
+        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, 8, &Theme::default()).w);
+        assert_eq!(estimate_lines(&text, size, value_rect(0, 8, &Theme::default()).w), 1);
         assert!(size >= 32.0 * 0.6 && text == "60 chars/s");
-        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, 8).w);
-        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, 8).w) == 1);
+        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, 8, &Theme::default()).w);
+        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, 8, &Theme::default()).w) == 1);
         let mut out = Vec::new();
-        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None, None);
-        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, 8))), "drawn in its column");
+        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None, None, &|_| None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, 8, &Theme::default()))), "drawn in its column");
     }
 
     #[test]
@@ -1348,5 +1403,82 @@ mod tests {
         let mut out = Vec::new();
         draw_backlog(&mut out, &Theme::default(), &[], 0);
         assert!(texts(&out).contains(&"Nothing yet.".to_string()));
+    }
+
+    #[test]
+    fn without_options_keys_the_settings_layout_is_the_old_fixed_one() {
+        let t = Theme::default();
+        assert_eq!(row_rect(0, 8, &t), Rect::new(400.0, 190.0, 1120.0, 60.0));
+        assert_eq!(track_rect(0, 8, &t), Rect::new(880.0, 214.0, 440.0, 12.0));
+        assert_eq!(value_rect(0, 8, &t), Rect::new(1340.0, 196.0, 160.0, 48.0));
+        assert_eq!(control_rect(6, &ROWS, &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
+        assert_eq!(button_rect(SettingsButton::Back, true, 8, &t), Rect::new(560.0, 826.0, 240.0, 80.0));
+        assert_eq!(row_rect(0, 9, &t).y, 170.0, "nine rows are tighter");
+    }
+
+    #[test]
+    fn a_moved_and_smaller_settings_panel_is_where_hits_and_drawing_happen() {
+        let t = Theme::parse("options_rect = 80, 60, 800, 960\noptions_text_size = 28\n").0;
+        assert!(Theme::parse("options_rect = 80, 60, 800, 960\noptions_text_size = 28\n").1.is_empty());
+        for language in [false, true] {
+            let rows = rows(language);
+            for i in 0..rows.len() {
+                let c = control_rect(i, rows, &t);
+                assert!(c.x >= 80.0 && c.x + c.w <= 880.0 && c.y + c.h <= 1020.0, "row {i} inside the panel: {c:?}");
+                let (x, y) = centre(c);
+                assert_eq!(settings_at(x, y, true, rows, &t), Some(SettingsHit::Control(i)));
+                let (ox, oy) = centre(control_rect(i, rows, &Theme::default()));
+                assert_eq!(settings_at(ox, oy, true, rows, &t), None, "the old spot of row {i} is empty now");
+            }
+            for &b in settings_buttons(true) {
+                let r = button_rect(b, true, rows.len(), &t);
+                assert!(r.x >= 80.0 && r.x + r.w <= 880.0 && r.y + r.h <= 1020.0, "{b:?}: {r:?}");
+                let (x, y) = centre(r);
+                assert_eq!(settings_at(x, y, true, rows, &t), Some(SettingsHit::Button(b)));
+            }
+        }
+        let track = track_rect(2, 8, &t);
+        assert_eq!(slider_pos_at(track.x, &t), 0.0);
+        assert!((slider_pos_at(track.x + track.w / 2.0, &t) - 0.5).abs() < 1e-5);
+        let mut out = Vec::new();
+        draw_settings(&mut out, &t, &Settings::default(), true, 1, None, None, &|_| None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == row_rect(1, 8, &t) && *color == FOCUS)), "focus follows the row");
+        let size = |text: &str| out.iter().find_map(|d| match d { Draw::Text { text: s, size, .. } if s == text => Some(*size), _ => None });
+        assert_eq!(size("Back"), Some(28.0), "the buttons use the screen's text size");
+    }
+
+    #[test]
+    fn the_settings_pictures_replace_the_overlay_and_dress_the_panel() {
+        let t = Theme::parse("options_background = bg.png\noptions_panel_image = frame.png\noptions_panel_border = 20\n").0;
+        let sized = |s: &str| (s == "bg.png").then(|| Size::new(1920.0, 1080.0)).or((s == "frame.png").then(|| Size::new(100.0, 100.0)));
+        let draw = |t: &Theme, size: &dyn Fn(&str) -> Option<Size>| {
+            let mut out = Vec::new();
+            draw_settings(&mut out, t, &Settings::default(), true, 0, None, None, size);
+            out
+        };
+        let (with, without) = (draw(&t, &sized), draw(&t, &|_| None));
+        let images = |out: &[Draw]| out.iter().filter(|d| matches!(d, Draw::Image { .. })).count();
+        assert_eq!((images(&with), images(&without)), (1 + 9, 0));
+        assert!(!with.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "the picture is the background");
+        assert!(without.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "not loaded: today's look");
+    }
+
+    #[test]
+    fn a_nine_slice_keeps_its_corners_and_covers_the_panel() {
+        let mut out = Vec::new();
+        let dest = Rect::new(100.0, 50.0, 400.0, 300.0);
+        nine_slice(&mut out, "f.png", Size::new(80.0, 40.0), dest, 10.0);
+        assert_eq!(out.len(), 9);
+        let parts: Vec<(Rect, Rect)> = out.iter().map(|d| match d { Draw::Image { dest, uv, .. } => (*dest, *uv), _ => panic!() }).collect();
+        assert_eq!(parts[0].0, Rect::new(100.0, 50.0, 10.0, 10.0), "top-left corner at its own size");
+        assert_eq!(parts[0].1, Rect::new(0.0, 0.0, 10.0 / 80.0, 10.0 / 40.0));
+        assert_eq!(parts[8].0, Rect::new(490.0, 340.0, 10.0, 10.0));
+        assert_eq!(parts[4].0, Rect::new(110.0, 60.0, 380.0, 280.0), "the middle takes the rest");
+        let area: f32 = parts.iter().map(|(d, _)| d.w * d.h).sum();
+        assert!((area - dest.w * dest.h).abs() < 1e-2, "no gaps or overlaps");
+        // a border larger than the picture or the panel is cut back, never inside out
+        let mut out = Vec::new();
+        nine_slice(&mut out, "f.png", Size::new(80.0, 40.0), Rect::new(0.0, 0.0, 30.0, 30.0), 500.0);
+        assert!(out.iter().all(|d| matches!(d, Draw::Image { dest, uv, .. } if dest.w > 0.0 && dest.h > 0.0 && uv.w > 0.0 && uv.h > 0.0)));
     }
 }

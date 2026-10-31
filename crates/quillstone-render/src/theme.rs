@@ -51,6 +51,15 @@ pub const DEFAULT_TEXTBOX_PADDING: [f32; 4] = [40.0, 36.0, 40.0, 20.0];
 pub const MIN_TEXTBOX: [f32; 2] = [400.0, 120.0];
 pub const MIN_TEXT_AREA: [f32; 2] = [200.0, 60.0];
 
+/// The `::input` panel at 1920x1080 unless the theme moves it, and the least size that holds its parts.
+pub const DEFAULT_INPUT_RECT: [f32; 4] = [360.0, 310.0, 1200.0, 460.0];
+pub const MIN_INPUT_RECT: [f32; 2] = [600.0, 460.0];
+/// The settings panel at 1920x1080 unless the theme moves it, the least size of one, and the text size
+/// the screen's layout is made for (`options_text_size` scales rows, buttons and text from it).
+pub const DEFAULT_OPTIONS_RECT: [f32; 4] = [400.0, 90.0, 1120.0, 910.0];
+pub const MIN_OPTIONS_RECT: [f32; 2] = [640.0, 420.0];
+pub const DEFAULT_OPTIONS_TEXT_SIZE: f32 = 36.0;
+
 /// How a cell of the inventory and shop grid is filled: a colour or a picture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellStyle {
@@ -106,6 +115,9 @@ pub struct Theme {
     pub font_bold_italic: Option<String>,
     pub text_size: f32,
     pub name_size: f32,
+    /// A border round the dialogue and name text: `text_outline_size` px (0 = none) in this colour.
+    pub text_outline_color: [f32; 4],
+    pub text_outline_size: f32,
     pub text_color: [f32; 4],
     /// Name plates of speakers without their own `color=`.
     pub name_color: [f32; 4],
@@ -140,6 +152,18 @@ pub struct Theme {
     pub quick_listed: bool,
     pub menu_background: Option<String>,
     pub menu_music: Option<String>,
+    /// Drawn stretched over the `::input` panel instead of `panel_color`.
+    pub input_image: Option<String>,
+    /// `x, y, w, h` of the `::input` panel; `None`: centred ([`DEFAULT_INPUT_RECT`]).
+    pub input_rect: Option<[f32; 4]>,
+    /// Settings screen: where its panel sits, the text size it is laid out for, a picture behind the
+    /// whole screen (instead of `overlay_color`) and a picture for the panel, drawn as a 9-slice whose
+    /// corners are `options_panel_border` picture pixels (0: stretched whole).
+    pub options_rect: [f32; 4],
+    pub options_text_size: f32,
+    pub options_background: Option<String>,
+    pub options_panel_image: Option<String>,
+    pub options_panel_border: f32,
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -187,6 +211,8 @@ impl Default for Theme {
             font_bold_italic: None,
             text_size: 38.0,
             name_size: 36.0,
+            text_outline_color: [0.0, 0.0, 0.0, 1.0],
+            text_outline_size: 0.0,
             text_color: [1.0, 1.0, 1.0, 1.0],
             name_color: [1.0, 0.85, 0.55, 1.0],
             accent_color: [1.0, 0.85, 0.55, 1.0],
@@ -207,6 +233,13 @@ impl Default for Theme {
             quick_listed: false,
             menu_background: None,
             menu_music: None,
+            input_image: None,
+            input_rect: None,
+            options_rect: DEFAULT_OPTIONS_RECT,
+            options_text_size: DEFAULT_OPTIONS_TEXT_SIZE,
+            options_background: None,
+            options_panel_image: None,
+            options_panel_border: 0.0,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -262,6 +295,7 @@ impl Theme {
                 "button_color" => Some(&mut t.button_color),
                 "button_hover_color" => Some(&mut t.button_hover_color),
                 "overlay_color" => Some(&mut t.overlay_color),
+                "text_outline_color" => Some(&mut t.text_outline_color),
                 _ => None,
             };
             if let Some(slot) = color_slot {
@@ -333,6 +367,35 @@ impl Theme {
             }
             let number = |lo: f32, hi: f32| value.parse::<f32>().ok().filter(|n| (lo..=hi).contains(n));
             match key {
+                "text_outline_size" => match number(0.0, 8.0) {
+                    Some(n) => t.text_outline_size = n,
+                    None => bad("`text_outline_size` must be a number from 0 to 8".into()),
+                },
+                "input_image" => t.input_image = path(),
+                "input_rect" => match parse_rect(value) {
+                    Some(r) if r[2] >= MIN_INPUT_RECT[0] && r[3] >= MIN_INPUT_RECT[1] => t.input_rect = Some(r),
+                    _ => bad(format!(
+                        "`input_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, at least {}x{}",
+                        MIN_INPUT_RECT[0], MIN_INPUT_RECT[1]
+                    )),
+                },
+                "options_rect" => match parse_rect(value) {
+                    Some(r) if r[2] >= MIN_OPTIONS_RECT[0] && r[3] >= MIN_OPTIONS_RECT[1] => t.options_rect = r,
+                    _ => bad(format!(
+                        "`options_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, at least {}x{}",
+                        MIN_OPTIONS_RECT[0], MIN_OPTIONS_RECT[1]
+                    )),
+                },
+                "options_text_size" => match size(value) {
+                    Some(n) => t.options_text_size = n,
+                    None => bad("`options_text_size` must be a number from 8 to 200".into()),
+                },
+                "options_background" => t.options_background = path(),
+                "options_panel_image" => t.options_panel_image = path(),
+                "options_panel_border" => match number(0.0, 400.0) {
+                    Some(n) => t.options_panel_border = n,
+                    None => bad("`options_panel_border` must be a number from 0 to 400 (picture pixels)".into()),
+                },
                 "inventory_background" => t.inventory_background = path(),
                 "shop_background" => t.shop_background = path(),
                 "inventory_panel" => t.inventory_panel = path(),
@@ -464,7 +527,8 @@ impl Theme {
     /// Files the theme refers to (relative to the script's folder).
     pub fn assets(&self) -> Vec<&str> {
         let mut out = self.fonts();
-        out.extend([&self.textbox_image, &self.name_plate_image, &self.menu_background, &self.menu_music].into_iter().filter_map(|p| p.as_deref()));
+        out.extend(self.screen_images());
+        out.extend(self.menu_music.as_deref());
         out.extend(self.inventory_images());
         out.extend(self.quick_pictures());
         out
@@ -497,11 +561,25 @@ impl Theme {
 
     /// Images the theme draws (to load along with the script's own).
     pub fn images(&self) -> Vec<&str> {
-        let mut out: Vec<&str> =
-            [&self.textbox_image, &self.name_plate_image, &self.menu_background].into_iter().filter_map(|p| p.as_deref()).collect();
+        let mut out = self.screen_images();
         out.extend(self.inventory_images());
         out.extend(self.quick_pictures());
         out
+    }
+
+    /// The pictures of the textbox, name plate, menus, `::input` panel and settings screen.
+    fn screen_images(&self) -> Vec<&str> {
+        [
+            &self.textbox_image,
+            &self.name_plate_image,
+            &self.menu_background,
+            &self.input_image,
+            &self.options_background,
+            &self.options_panel_image,
+        ]
+        .into_iter()
+        .filter_map(|p| p.as_deref())
+        .collect()
     }
 }
 
@@ -785,5 +863,38 @@ mod tests {
         assert!(problems[0].starts_with("line 2:") && problems[0].contains("padding"), "{problems:?}");
         assert_eq!(t.textbox_padding, DEFAULT_TEXTBOX_PADDING);
         assert_eq!(t.textbox_rect, [100.0, 100.0, 500.0, 200.0]);
+    }
+
+    #[test]
+    fn outline_input_and_options_keys_are_read_with_defaults_that_change_nothing() {
+        let d = Theme::default();
+        assert_eq!((d.text_outline_size, d.input_rect, d.options_rect, d.options_text_size), (0.0, None, DEFAULT_OPTIONS_RECT, 36.0));
+        assert!(d.input_image.is_none() && d.options_background.is_none() && d.options_panel_image.is_none());
+        let (t, problems) = Theme::parse(
+            "text_outline_color = #102030\ntext_outline_size = 1.5\ninput_image = g/in.png\ninput_rect = 100, 100, 900, 500\n\
+             options_rect = 40, 50, 800, 900\noptions_text_size = 28\noptions_background = g/o.png\n\
+             options_panel_image = g/p.png\noptions_panel_border = 24\n",
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.text_outline_color, t.text_outline_size), (parse_color("#102030").unwrap(), 1.5));
+        assert_eq!((t.input_rect, t.options_rect, t.options_text_size), (Some([100.0, 100.0, 900.0, 500.0]), [40.0, 50.0, 800.0, 900.0], 28.0));
+        assert_eq!(t.options_panel_border, 24.0);
+        for pic in ["g/in.png", "g/o.png", "g/p.png"] {
+            assert!(t.assets().contains(&pic) && t.images().contains(&pic), "{pic}");
+        }
+    }
+
+    #[test]
+    fn bad_outline_input_and_options_values_are_reported_with_their_line() {
+        let text = "text_outline_size = 9\ntext_outline_size = -1\ntext_outline_color = black\ninput_rect = 0, 0, 500, 500\n\
+                    input_rect = 1000, 0, 1000, 500\noptions_rect = 0, 0, 600, 900\noptions_rect = 0, 0, 900, 400\n\
+                    options_text_size = 4\noptions_panel_border = 401\n";
+        let (t, problems) = Theme::parse(text);
+        assert_eq!(t, Theme::default());
+        assert_eq!(problems.len(), 9, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
+        }
+        assert!(Theme::parse("text_outline_size = 0\ntext_outline_size = 8").1.is_empty(), "0 and 8 are the ends");
     }
 }

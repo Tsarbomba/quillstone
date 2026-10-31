@@ -6,7 +6,7 @@
 //! just be another quad whose texture is updated every frame.
 
 use crate::layout::{letterbox, to_ndc, to_window, Rect, Size, VIRTUAL};
-use crate::view::{Align, Draw, TextRun};
+use crate::view::{Align, Draw, Outline, TextRun};
 
 /// What a quad samples from.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +46,8 @@ pub struct TextJob {
     pub scale: f32,
     pub color: [f32; 4],
     pub align: Align,
+    /// Border round the letters; `size` in window pixels.
+    pub outline: Option<Outline>,
 }
 
 impl TextJob {
@@ -53,7 +55,8 @@ impl TextJob {
     /// mean identical pixels.
     pub fn key(&self) -> String {
         let [r, g, b, a] = self.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-        format!("{}|{}|{r},{g},{b},{a}", self.layout_key(), self.visible_chars)
+        let outline = self.outline.map_or(String::new(), |o| format!("|{:.2}:{:?}", o.size, o.color));
+        format!("{}|{}|{r},{g},{b},{a}{outline}", self.layout_key(), self.visible_chars)
     }
 
     /// The size in window pixels of one of this job's runs: the text size, or the
@@ -107,7 +110,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: *color,
             }),
-            Draw::Text { text, runs, visible_chars, rect, size, color, align } => {
+            Draw::Text { text, runs, visible_chars, rect, size, color, align, outline } => {
                 let total = text.chars().count();
                 let visible = (*visible_chars).min(total);
                 // Nothing to show yet, or the window is so small the text would be
@@ -132,6 +135,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                     scale,
                     color: *color,
                     align: *align,
+                    outline: outline.map(|o| Outline { size: o.size * scale, ..o }),
                 });
             }
         }
@@ -160,6 +164,7 @@ mod tests {
             size: 38.0,
             color: [1.0, 0.5, 0.0, 1.0],
             align: Align::Left,
+            outline: None,
         }
     }
 
@@ -278,6 +283,7 @@ mod tests {
             size: 38.0,
             color: [1.0; 4],
             align: Align::Left,
+            outline: None,
         };
         let big = build_frame(&[draw(r.runs.clone())], Size::new(1920.0, 1080.0));
         let job = &big.texts[0];
@@ -296,6 +302,23 @@ mod tests {
         assert_ne!(job.layout_key(), b.texts[0].layout_key());
         let plain = build_frame(&[draw(Vec::new())], Size::new(1920.0, 1080.0));
         assert_ne!(job.layout_key(), plain.texts[0].layout_key());
+    }
+
+    #[test]
+    fn an_outline_is_scaled_to_the_window_and_is_part_of_the_cache_key() {
+        let draw = |outline| match text("hi", 2, screen()) {
+            Draw::Text { text, runs, visible_chars, rect, size, color, align, .. } => {
+                Draw::Text { text, runs, visible_chars, rect, size, color, align, outline }
+            }
+            other => other,
+        };
+        let black = Outline { size: 2.0, color: [0.0, 0.0, 0.0, 1.0] };
+        let at = |o| build_frame(&[draw(o)], Size::new(960.0, 540.0)).texts.remove(0);
+        let (none, thin, red) = (at(None), at(Some(black)), at(Some(Outline { color: [1.0, 0.0, 0.0, 1.0], ..black })));
+        assert_eq!(thin.outline.map(|o| o.size), Some(1.0), "half-size window, half-width outline");
+        assert_ne!(none.key(), thin.key());
+        assert_ne!(thin.key(), red.key());
+        assert_eq!(none.layout_key(), thin.layout_key(), "the outline moves no glyph");
     }
 
     #[test]

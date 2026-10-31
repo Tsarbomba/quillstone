@@ -16,3 +16,13 @@ menu_music = assets/calm.ogg
 # quick_menu = hover                      # visible (default), hover or hidden
 # choice_timer_color = #ffd98c            # the bar of a timed ::choice (default accent_color)
 # choice_timer_height = 8                 # its thickness (2 to 40)
+# Dialogue and name text get a thin dark border so they read on any picture:
+text_outline_size = 1
+text_outline_color = #000000b0
+# The ::input panel and the Settings screen can be moved and dressed with pictures too:
+# input_rect = 360, 310, 1200, 460
+# input_image = assets/gui/input.png
+# options_rect = 80, 60, 960, 960         # the Settings panel
+# options_text_size = 30
+# options_panel_image = assets/gui/frame.png
+# options_panel_border = 40               # 9-slice corner size, in the picture's pixels

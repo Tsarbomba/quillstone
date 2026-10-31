@@ -53,6 +53,14 @@ pub enum Align {
     Right,
 }
 
+/// A thin border round text's letters: `size` px wide (virtual px; window px in a [`crate::TextJob`]).
+/// The border's opacity follows the text's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Outline {
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
 /// One thing for a backend to draw. Coordinates are virtual (1920x1080);
 /// draw in list order, back to front.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +78,7 @@ pub enum Draw {
         size: f32,
         color: [f32; 4],
         align: Align,
+        outline: Option<Outline>,
     },
 }
 
@@ -1404,6 +1413,7 @@ impl View {
                     size: self.theme.text_size,
                     color: self.theme.text_color,
                     align: Align::Center,
+                    outline: None,
                 });
             }
         }
@@ -1466,6 +1476,7 @@ impl View {
                         size,
                         color: faded(color, box_alpha),
                         align: theme.name_align,
+                        outline: text_outline(theme),
                     });
                     true
                 }
@@ -1479,6 +1490,7 @@ impl View {
                 size: theme.text_size,
                 color: faded(theme.text_color, box_alpha),
                 align: theme.text_align,
+                outline: text_outline(theme),
             });
         }
 
@@ -1514,6 +1526,7 @@ impl View {
                 size: theme.text_size.min(rect.h * 0.5), // fits buttons squeezed by many options
                 color: theme.text_color,
                 align: Align::Center,
+                outline: None,
             });
         }
 
@@ -1541,6 +1554,7 @@ impl View {
                 size,
                 color: theme.text_color,
                 align: Align::Center,
+                outline: None,
             });
         }
 
@@ -1630,6 +1644,11 @@ pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, si
     let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
     let Rich { text, runs, .. } = rich(tagged);
     (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
+}
+
+/// The theme's outline for dialogue and name text, if it asks for one.
+fn text_outline(theme: &Theme) -> Option<Outline> {
+    (theme.text_outline_size > 0.0).then_some(Outline { size: theme.text_outline_size, color: theme.text_outline_color })
 }
 
 /// `color` with its opacity scaled by `alpha`.
@@ -2907,6 +2926,25 @@ mod tests {
         // narration has no plate; a plate picture that isn't loaded is skipped
         v.apply(&[say(None, "Wind.")]);
         assert!(!v.draw_list(&all_1080p, None).iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "plate.png")));
+    }
+
+    #[test]
+    fn the_theme_outline_goes_on_dialogue_and_name_text_only() {
+        let outlines = |t: Theme| {
+            let mut v = View::new().with_theme(t).with_speed(0.0);
+            v.apply(&[say(Some("Mika"), "Hello")]);
+            v.draw_list(&no_images, None)
+                .into_iter()
+                .filter_map(|d| match d {
+                    Draw::Text { text, outline, .. } => Some((text, outline)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(outlines(Theme::default()).iter().all(|(_, o)| o.is_none()), "no key: no outline");
+        let on = outlines(themed("text_outline_size = 2\ntext_outline_color = #102030\n"));
+        let want = Some(Outline { size: 2.0, color: crate::theme::parse_color("#102030").unwrap() });
+        assert!(on.contains(&("Mika".into(), want)) && on.contains(&("Hello".into(), want)));
     }
 
     #[test]

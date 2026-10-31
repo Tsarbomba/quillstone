@@ -97,14 +97,14 @@ impl Game<'_> {
         self.input.since_key = (self.input.since_key + dt) % input::BLINK_PERIOD;
     }
 
-    pub(super) fn draw_input_screen(&self, out: &mut Vec<Draw>) {
+    pub(super) fn draw_input_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
         let Some((prompt, default, max)) = self.asking() else { return };
         let shown = self.pending_shown();
         let prompt = match &shown {
             Some(Cmd::AskInput { prompt, .. }) => prompt.as_str(),
             _ => prompt,
         };
-        let hover_ok = self.pointer().is_some_and(|(x, y)| input::ok_at(x, y)) && self.can_confirm_input();
+        let hover_ok = self.pointer().is_some_and(|(x, y)| input::ok_at(self.view.theme(), x, y)) && self.can_confirm_input();
         let screen = InputScreen {
             prompt,
             text: &self.input.text,
@@ -114,7 +114,7 @@ impl Game<'_> {
             can_confirm: self.can_confirm_input(),
             hover_ok,
         };
-        input::draw_input(out, self.view.theme(), &screen);
+        input::draw_input(out, self.view.theme(), &screen, image_size);
     }
 
     pub(super) fn input_event(&mut self, event: Event) {
@@ -136,7 +136,7 @@ impl Game<'_> {
     }
 
     fn ok_under_cursor(&self) -> bool {
-        self.cursor.is_some_and(|(x, y)| input::ok_at(x, y))
+        self.cursor.is_some_and(|(x, y)| input::ok_at(self.view.theme(), x, y))
     }
 
     /// Add typed characters (control characters dropped, the limit kept).

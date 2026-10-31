@@ -438,7 +438,7 @@ fn clicking_and_dragging_a_volume_slider() {
     g.take_audio();
     key(&mut g, Key::Escape);
     let music = ROWS.iter().position(|r| *r == Row::Music).unwrap();
-    let t = track_rect(music, 8);
+    let t = track_rect(music, 8, &Theme::default());
     g.handle(Event::CursorMoved(Some((t.x + t.w * 0.25, t.y))));
     g.handle(Event::Press(Button::Left));
     assert_eq!(g.settings().music_volume, 0.25);
@@ -477,7 +477,7 @@ fn fullscreen_from_f11_or_the_toggle() {
     assert_eq!(g.take_requests(), vec![Request::Fullscreen(true), Request::SaveSettings]);
     key(&mut g, Key::Escape);
     let row = ROWS.iter().position(|r| *r == Row::Fullscreen).unwrap();
-    click_at(&mut g, centre(control_rect(row, &ROWS)));
+    click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert!(!g.settings().fullscreen);
     assert_eq!(g.take_requests(), vec![Request::Fullscreen(false)]);
     key(&mut g, Key::Escape);
@@ -485,19 +485,35 @@ fn fullscreen_from_f11_or_the_toggle() {
 }
 
 #[test]
+fn a_moved_settings_panel_takes_the_clicks_and_the_old_place_takes_none() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    let theme = Theme::parse("options_rect = 60, 40, 900, 980\noptions_text_size = 30\n").0;
+    g.set_theme(theme.clone());
+    key(&mut g, Key::Escape);
+    let row = ROWS.iter().position(|r| *r == Row::Fullscreen).unwrap();
+    click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
+    assert!(!g.settings().fullscreen, "nothing at the old place");
+    click_at(&mut g, centre(control_rect(row, &ROWS, &theme)));
+    assert!(g.settings().fullscreen, "the toggle where the panel put it");
+    click_at(&mut g, centre(button_rect(SettingsButton::Back, true, 8, &theme)));
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
 fn quit_and_back_buttons() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(button_rect(SettingsButton::Back, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Back, true, 8, &Theme::default())));
     assert_eq!(g.screen(), Screen::Story);
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     assert!(g.take_requests().is_empty(), "asks first");
     click_at(&mut g, centre(confirm_button_rect(false)));
     assert!(g.take_requests().is_empty(), "No: still playing");
     assert_eq!(g.screen(), Screen::Settings, "No goes back to Settings, not the story");
-    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     click_at(&mut g, centre(confirm_button_rect(true)));
     assert_eq!(g.take_requests(), vec![Request::Quit]);
 }
@@ -508,7 +524,7 @@ fn a_confirm_launched_from_settings_returns_to_settings_on_no_and_proceeds_on_ye
     for (button, yes_leaves) in [(SettingsButton::Quit, false), (SettingsButton::MainMenu, true)] {
         let mut g = new_game(&p, instant());
         key(&mut g, Key::Escape);
-        click_at(&mut g, centre(button_rect(button, true, 8)));
+        click_at(&mut g, centre(button_rect(button, true, 8, &Theme::default())));
         assert_eq!(g.screen(), Screen::Settings, "Settings stays open under the question");
         assert!(g.confirm.is_some());
         let list = g.draw_list(&|_| None);
@@ -518,11 +534,11 @@ fn a_confirm_launched_from_settings_returns_to_settings_on_no_and_proceeds_on_ye
         assert_eq!(g.screen(), Screen::Settings, "{button:?}: No returns to Settings");
         assert!(g.in_story());
         // Escape in the dialog is a No as well
-        click_at(&mut g, centre(button_rect(button, true, 8)));
+        click_at(&mut g, centre(button_rect(button, true, 8, &Theme::default())));
         key(&mut g, Key::Escape);
         assert_eq!(g.screen(), Screen::Settings);
         // Yes proceeds
-        click_at(&mut g, centre(button_rect(button, true, 8)));
+        click_at(&mut g, centre(button_rect(button, true, 8, &Theme::default())));
         click_at(&mut g, centre(confirm_button_rect(true)));
         if yes_leaves {
             assert_eq!(g.screen(), Screen::MainMenu);
@@ -758,7 +774,7 @@ fn reaching_a_choice_and_quitting_save_automatically() {
     key(&mut g, Key::Space);
     assert!(has_file(&g, "auto-1.save"), "arrived at a choice");
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     key(&mut g, Key::Char('y'));
     assert!(has_file(&g, "auto-2.save"), "saved on the way out");
     assert_eq!(g.take_requests(), vec![Request::Quit]);
@@ -954,7 +970,7 @@ fn skip_unread_is_a_settings_toggle() {
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Escape);
     let row = ROWS.iter().position(|r| *r == Row::SkipUnread).unwrap();
-    click_at(&mut g, centre(control_rect(row, &ROWS)));
+    click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert!(g.settings().skip_unread);
     key(&mut g, Key::Escape);
     assert_eq!(g.take_requests(), vec![Request::SaveSettings]);
@@ -1030,7 +1046,7 @@ fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     key(&mut g, Key::Space);
     key(&mut g, Key::F5); // quick save on "two"
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(button_rect(SettingsButton::MainMenu, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::MainMenu, true, 8, &Theme::default())));
     key(&mut g, Key::Char('y'));
     assert_eq!(g.screen(), Screen::MainMenu);
     let buttons = menu_buttons(g.newest_save.is_some(), false);
@@ -1070,8 +1086,8 @@ fn screens_opened_from_the_menu_return_to_it() {
     let settings = buttons.iter().position(|b| *b == MenuButton::Settings).unwrap();
     click_at(&mut g, centre(menu_button_rect(settings)));
     assert_eq!(g.screen(), Screen::Settings);
-    let (x, y) = centre(button_rect(SettingsButton::MainMenu, true, 8)).unwrap();
-    assert_eq!(settings_at(x, y, false, &ROWS), None, "no Main menu button here");
+    let (x, y) = centre(button_rect(SettingsButton::MainMenu, true, 8, &Theme::default())).unwrap();
+    assert_eq!(settings_at(x, y, false, &ROWS, &Theme::default()), None, "no Main menu button here");
     key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::MainMenu);
 
@@ -1082,7 +1098,7 @@ fn screens_opened_from_the_menu_return_to_it() {
     assert_eq!(g.screen(), Screen::MainMenu);
 
     click_at(&mut g, centre(menu_button_rect(settings)));
-    click_at(&mut g, centre(button_rect(SettingsButton::Quit, false, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, false, 8, &Theme::default())));
     assert_eq!(g.take_requests(), vec![Request::Quit], "quitting from the menu doesn't ask");
 }
 
@@ -2023,7 +2039,7 @@ fn escape_and_right_click_in_a_shop_open_settings_and_closing_them_returns_to_th
         if how < 2 {
             open(&mut g); // the same key closes Settings
         } else {
-            click_at(&mut g, centre(crate::screens::button_rect(crate::screens::SettingsButton::Back, true, 8)));
+            click_at(&mut g, centre(crate::screens::button_rect(crate::screens::SettingsButton::Back, true, 8, &Theme::default())));
         }
         assert_eq!(g.screen(), Screen::Shop, "how {how}: back at the shop");
         assert_eq!((g.bag.page, g.bag.focus), (page, focus));
@@ -2675,10 +2691,10 @@ fn the_settings_row_cycles_the_quick_menu_and_it_is_saved() {
     key(&mut g, Key::Escape);
     let row = ROWS.iter().position(|r| *r == Row::QuickMenu).unwrap();
     assert!(drawn(&g, "Quick menu") && drawn(&g, "Game default"));
-    click_at(&mut g, centre(control_rect(row, &ROWS)));
+    click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert_eq!(g.settings().quick_menu, QuickMenuSetting::Visible);
     assert!(drawn(&g, "Always"));
-    click_at(&mut g, centre(control_rect(row, &ROWS)));
+    click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert_eq!(g.settings().quick_menu, QuickMenuSetting::Hover);
     assert!(drawn(&g, "On hover"));
     // the keyboard: Down to the row, Left goes back, Right and Enter go on
@@ -2705,19 +2721,19 @@ fn the_settings_row_cycles_the_quick_menu_and_it_is_saved() {
 #[test]
 fn the_settings_screen_fits_every_row_and_the_buttons_at_the_screen_size() {
     for i in 0..ROWS.len() {
-        let r = row_rect(i, 8);
+        let r = row_rect(i, 8, &Theme::default());
         assert!(r.y >= 170.0, "row {i} is below the title");
         if i > 0 {
-            assert!(r.y >= row_rect(i - 1, 8).y + row_rect(i - 1, 8).h, "row {i} doesn't overlap the one above");
+            assert!(r.y >= row_rect(i - 1, 8, &Theme::default()).y + row_rect(i - 1, 8, &Theme::default()).h, "row {i} doesn't overlap the one above");
         }
-        let c = control_rect(i, &ROWS);
+        let c = control_rect(i, &ROWS, &Theme::default());
         assert!(c.y >= r.y && c.y + c.h <= r.y + r.h + 1e-3, "row {i}'s control is inside the row vertically");
         assert!(c.x + c.w <= r.x + r.w, "row {i}'s control is inside the row");
     }
-    let last = row_rect(ROWS.len() - 1, 8);
+    let last = row_rect(ROWS.len() - 1, 8, &Theme::default());
     for in_story in [true, false] {
         for &b in settings_buttons(in_story) {
-            let r = button_rect(b, in_story, 8);
+            let r = button_rect(b, in_story, 8, &Theme::default());
             assert!(r.y >= last.y + last.h && r.y + r.h < 960.0, "buttons under the rows and above the hint line");
         }
     }
@@ -2777,7 +2793,7 @@ fn hiding_the_interface_works_only_on_the_story_screen() {
     assert!(drawn(&g, "one") && drawn(&g, "Back") && !g.view().hide_ui(), "U in Settings did nothing");
     // over the quit question
     key(&mut g, Key::Escape);
-    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8)));
+    click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     key(&mut g, Key::Char('u'));
     assert!(!g.view().hide_ui());
     key(&mut g, Key::Char('n'));

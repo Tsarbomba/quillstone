@@ -1254,6 +1254,8 @@ font_bold = assets/fonts/MyFont-Bold.ttf          # for **bold** (same family)
 font_italic = assets/fonts/MyFont-Italic.ttf      # for *italic*
 font_bold_italic = assets/fonts/MyFont-BoldItalic.ttf
 text_size = 38                      # dialogue and buttons (8 to 200)
+text_outline_size = 2               # a border round dialogue and name text, 0 to 8 px (default 0: none)
+text_outline_color = #000000        # its colour (default black)
 name_size = 36                      # the speaker's name plate (48 px high: bigger names shrink to fit, down to 60%, so keep it under about 60)
 text_color = #ffffff
 name_color = #ffd98c                # name plates of characters without color=
@@ -1299,6 +1301,47 @@ name_align = center                     # the speaker's name: left (default) or 
 - `quillstone check` warns about lines too long for the real textbox and padding, and checks
   `name_plate_image` and `textbox_image` as pictures; `package` includes them.
 - The history screen is not affected.
+- `font` applies to the dialogue, the names and every other text of the game; `check` reports a
+  file that is missing or is not a font. Only that one family is used for the whole game.
+- `text_outline_size` draws a border of that many pixels (at 1920x1080, scaled with the window) in
+  `text_outline_color` under the letters of the dialogue and of the speaker's name; other text
+  (buttons, History, the screens) has none. It follows the textbox's fade. Thin values (1 to 3) look best.
+
+### The text input screen
+
+`::input` shows a centred 1200x460 panel. Two keys change it; without them it looks as it always has.
+
+```text
+input_image = assets/gui/input.png    # stretched over the panel instead of panel_color
+input_rect = 360, 310, 1200, 460      # x, y, width, height; inside the screen, at least 600x460
+```
+
+The prompt, field and OK button keep their sizes and sit inside the panel (a taller panel centres
+them; a wider one widens the prompt and the field). Clicking OK follows the panel. `check` reports a
+missing or unreadable picture; `package` includes it.
+
+### The settings screen
+
+The Settings screen (not the main menu, Save, Load or History) can be moved, made smaller and
+dressed with pictures. Without these keys it looks as it always has.
+
+```text
+options_rect = 80, 60, 960, 960       # x, y, width, height of the panel; at least 640x420 (default 400, 90, 1120, 910)
+options_text_size = 30                # the screen's text size: rows, buttons and hint scale with it (8 to 200, default 36)
+options_background = assets/gui/options.png   # full-screen picture instead of overlay_color
+options_panel_image = assets/gui/frame.png    # drawn over the panel as a 9-slice
+options_panel_border = 40             # the 9-slice corner size in the picture's pixels (0: stretch whole; default 0)
+```
+
+- The title, the rows, the buttons and the hint are laid out inside `options_rect`: the title at its top,
+  the hint at its bottom, the slider tracks across the middle, the buttons centred. Mouse and keyboard
+  follow the new layout. The panel must be tall enough for the rows: about 860 px at the default text
+  size (less for a smaller `options_text_size`), and wide enough for the values (about 800 px at the
+  default size).
+- A 9-slice keeps the four corners (`options_panel_border` pixels square, shown at that size in the
+  1920x1080 screen) and stretches the edges and the middle, so rounded corners come from the picture.
+  The border is cut back if it is more than half of the picture or of the panel.
+- `check` reports a missing or unreadable picture; `package` includes the pictures.
 
 **The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items
 in a game with an inventory) sits in a row directly below the textbox, aligned with its right

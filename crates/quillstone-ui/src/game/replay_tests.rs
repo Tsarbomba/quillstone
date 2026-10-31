@@ -71,7 +71,7 @@ fn open_extras(g: &mut Game) {
 /// Settings -> Main menu -> yes.
 fn to_menu(g: &mut Game) {
     key(g, Key::Escape);
-    click(g, button_rect(SettingsButton::MainMenu, true, 8));
+    click(g, button_rect(SettingsButton::MainMenu, true, 8, &Theme::default()));
     key(g, Key::Char('y'));
 }
 
@@ -396,11 +396,11 @@ fn settings_main_menu_leaves_a_replay_for_extras_and_quit_still_quits() {
     click(&mut g, track_rect(0));
     key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::Settings);
-    click(&mut g, button_rect(SettingsButton::MainMenu, true, 8));
+    click(&mut g, button_rect(SettingsButton::MainMenu, true, 8, &Theme::default()));
     assert!(g.confirm.as_ref().is_some_and(|c| c.message.contains("replay") && !c.message.contains("Unsaved")));
     key(&mut g, Key::Escape); // No: still in the replay, settings still open
     assert!(g.in_replay() && g.screen() == Screen::Settings);
-    click(&mut g, button_rect(SettingsButton::MainMenu, true, 8));
+    click(&mut g, button_rect(SettingsButton::MainMenu, true, 8, &Theme::default()));
     key(&mut g, Key::Enter);
     assert!(!g.in_replay());
     assert_eq!((g.screen(), g.extras.tab), (Screen::Extras, Tab::Scenes));
@@ -410,7 +410,7 @@ fn settings_main_menu_leaves_a_replay_for_extras_and_quit_still_quits() {
     to_scenes(&mut g);
     click(&mut g, track_rect(0));
     key(&mut g, Key::Escape);
-    click(&mut g, button_rect(SettingsButton::Quit, true, 8));
+    click(&mut g, button_rect(SettingsButton::Quit, true, 8, &Theme::default()));
     key(&mut g, Key::Enter);
     assert!(g.take_requests().contains(&Request::Quit));
 }

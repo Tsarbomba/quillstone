@@ -259,7 +259,7 @@ pub(crate) fn draw_text(
             }
         }
     };
-    out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align });
+    out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
 #[cfg(test)]

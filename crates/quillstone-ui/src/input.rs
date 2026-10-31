@@ -2,13 +2,15 @@
 //! field and an OK button. Layout, caret blink, what part of a long text fits the
 //! field, and drawing; what typing does is in `game/input.rs`.
 //!
-//! Everything is laid out in the virtual 1920x1080 screen from fixed sizes (the
-//! theme's colours, font and text size apply; there are no theme keys of its own).
+//! Everything is laid out in the virtual 1920x1080 screen from fixed sizes inside the panel (the
+//! theme's colours and font apply; `input_rect` moves and widens the panel, `input_image` dresses it).
 
-use quillstone_render::{estimate_lines, Align, Draw, Rect, Theme, VIRTUAL};
+use quillstone_render::theme::DEFAULT_INPUT_RECT;
+use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::markup::rich;
 
-const PANEL: Rect = Rect::new(360.0, 310.0, 1200.0, 460.0);
+/// The panel's default placement and the height its parts are stacked in (a taller panel centres them).
+const PANEL: Rect = Rect::new(DEFAULT_INPUT_RECT[0], DEFAULT_INPUT_RECT[1], DEFAULT_INPUT_RECT[2], DEFAULT_INPUT_RECT[3]);
 const PAD: f32 = 20.0;
 const PROMPT_SIZE: f32 = 44.0;
 const PROMPT_SMALL: f32 = 32.0;
@@ -16,37 +18,44 @@ const FIELD_SIZE: f32 = 44.0;
 /// Seconds for one blink of the caret (on for the first half).
 pub const BLINK_PERIOD: f32 = 1.0;
 
-pub fn panel_rect() -> Rect {
-    PANEL
+pub fn panel_rect(theme: &Theme) -> Rect {
+    theme.input_rect.map_or(PANEL, |[x, y, w, h]| Rect::new(x, y, w, h))
 }
 
-pub fn prompt_rect() -> Rect {
-    Rect::new(PANEL.x + 60.0, PANEL.y + 40.0, PANEL.w - 120.0, 150.0)
+/// A part of the panel: `dx`, `dy` from the stack's top left, `w` less than the panel's width by `narrower`.
+fn part(theme: &Theme, dx: f32, dy: f32, narrower: f32, h: f32) -> Rect {
+    let p = panel_rect(theme);
+    Rect::new(p.x + dx, p.y + (p.h - PANEL.h) / 2.0 + dy, p.w - narrower, h)
 }
 
-pub fn field_rect() -> Rect {
-    Rect::new(PANEL.x + 120.0, PANEL.y + 210.0, PANEL.w - 240.0, 80.0)
+pub fn prompt_rect(theme: &Theme) -> Rect {
+    part(theme, 60.0, 40.0, 120.0, 150.0)
+}
+
+pub fn field_rect(theme: &Theme) -> Rect {
+    part(theme, 120.0, 210.0, 240.0, 80.0)
 }
 
 /// Where the text starts: inside the field, with room on both sides.
-fn text_rect() -> Rect {
-    let f = field_rect();
+fn text_rect(theme: &Theme) -> Rect {
+    let f = field_rect(theme);
     // `Align::Left` starts at the top, so the text is moved down to the middle of the field.
     Rect::new(f.x + PAD, f.y + 12.0, f.w - 2.0 * PAD, f.h - 12.0)
 }
 
-fn count_rect() -> Rect {
-    let f = field_rect();
+fn count_rect(theme: &Theme) -> Rect {
+    let f = field_rect(theme);
     Rect::new(f.x, f.y + f.h + 6.0, f.w, 32.0)
 }
 
-pub fn ok_rect() -> Rect {
-    Rect::new(PANEL.x + (PANEL.w - 260.0) / 2.0, PANEL.y + 340.0, 260.0, 80.0)
+pub fn ok_rect(theme: &Theme) -> Rect {
+    let r = part(theme, 0.0, 340.0, 0.0, 80.0);
+    Rect::new(r.x + (r.w - 260.0) / 2.0, r.y, 260.0, r.h)
 }
 
 /// `true` over the OK button.
-pub fn ok_at(x: f32, y: f32) -> bool {
-    ok_rect().contains(x, y)
+pub fn ok_at(theme: &Theme, x: f32, y: f32) -> bool {
+    ok_rect(theme).contains(x, y)
 }
 
 /// Whether the caret is drawn `elapsed` seconds after the last keystroke (it is
@@ -112,15 +121,19 @@ fn outline(out: &mut Vec<Draw>, r: Rect, color: [f32; 4]) {
 }
 
 fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
-    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align });
+    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
-pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen) {
+pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), color: theme.overlay_color });
-    out.push(Draw::Rect { rect: PANEL, color: theme.panel_color });
+    let panel = panel_rect(theme);
+    match theme.input_image.as_deref().filter(|src| image_size(src).is_some()) {
+        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: panel, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
+        None => out.push(Draw::Rect { rect: panel, color: theme.panel_color }),
+    }
 
     let prompt = rich(s.prompt);
-    let pr = prompt_rect();
+    let pr = prompt_rect(theme);
     let size = if estimate_lines(&prompt.text, PROMPT_SIZE, pr.w) > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
     out.push(Draw::Text {
         text: prompt.text,
@@ -130,14 +143,15 @@ pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen) {
         size,
         color: theme.text_color,
         align: Align::Center,
+        outline: None,
     });
 
     // The field: a dark well with a thin accent outline.
-    let f = field_rect();
+    let f = field_rect(theme);
     line(out, f, [0.0, 0.0, 0.0, 0.45]);
     outline(out, f, theme.accent_color);
 
-    let tr = text_rect();
+    let tr = text_rect(theme);
     let caret = if s.caret { "|" } else { "" };
     if s.text.is_empty() {
         text(out, caret, tr, FIELD_SIZE, theme.text_color, Align::Left);
@@ -151,9 +165,9 @@ pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen) {
         let shown = visible_tail(s.text, FIELD_SIZE, tr.w - 24.0);
         text(out, format!("{shown}{caret}"), tr, FIELD_SIZE, theme.text_color, Align::Left);
     }
-    text(out, format!("{}/{}", s.text.chars().count(), s.max), count_rect(), 22.0, theme.dim_color, Align::Center);
+    text(out, format!("{}/{}", s.text.chars().count(), s.max), count_rect(theme), 22.0, theme.dim_color, Align::Center);
 
-    let ok = ok_rect();
+    let ok = ok_rect(theme);
     if s.can_confirm {
         line(out, ok, if s.hover_ok { theme.button_hover_color } else { theme.button_color });
         outline(out, ok, theme.dim_color); // a button colour close to the panel's would vanish
@@ -190,12 +204,13 @@ mod tests {
     #[test]
     fn the_parts_lie_inside_the_panel_and_the_screen() {
         let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
+        let t = &Theme::default();
         assert!(inside(PANEL, screen));
-        for r in [prompt_rect(), field_rect(), text_rect(), count_rect(), ok_rect()] {
+        for r in [prompt_rect(t), field_rect(t), text_rect(t), count_rect(t), ok_rect(t)] {
             assert!(inside(r, PANEL), "{r:?}");
         }
-        assert!(inside(text_rect(), field_rect()));
-        let (p, f, c, ok) = (prompt_rect(), field_rect(), count_rect(), ok_rect());
+        assert!(inside(text_rect(t), field_rect(t)));
+        let (p, f, c, ok) = (prompt_rect(t), field_rect(t), count_rect(t), ok_rect(t));
         assert!(p.y + p.h <= f.y && f.y + f.h <= c.y && c.y + c.h <= ok.y, "stacked without overlap");
     }
 
@@ -207,11 +222,12 @@ mod tests {
 
     #[test]
     fn only_the_ok_button_is_a_hit() {
-        let ok = ok_rect();
-        assert!(ok_at(ok.x + 1.0, ok.y + 1.0) && ok_at(ok.x + ok.w / 2.0, ok.y + ok.h / 2.0));
-        assert!(!ok_at(ok.x - 1.0, ok.y) && !ok_at(ok.x, ok.y + ok.h + 1.0));
-        let f = field_rect();
-        assert!(!ok_at(f.x + 5.0, f.y + 5.0));
+        let t = &Theme::default();
+        let ok = ok_rect(t);
+        assert!(ok_at(t, ok.x + 1.0, ok.y + 1.0) && ok_at(t, ok.x + ok.w / 2.0, ok.y + ok.h / 2.0));
+        assert!(!ok_at(t, ok.x - 1.0, ok.y) && !ok_at(t, ok.x, ok.y + ok.h + 1.0));
+        let f = field_rect(t);
+        assert!(!ok_at(t, f.x + 5.0, f.y + 5.0));
     }
 
     #[test]
@@ -223,7 +239,7 @@ mod tests {
 
     #[test]
     fn a_long_text_shows_its_last_characters_inside_the_field() {
-        let width = text_rect().w - 24.0;
+        let width = text_rect(&Theme::default()).w - 24.0;
         assert_eq!(visible_tail("Sam", FIELD_SIZE, width), "Sam");
         assert_eq!(visible_tail("", FIELD_SIZE, width), "");
         let long = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123";
@@ -258,7 +274,7 @@ mod tests {
                     can_confirm: can,
                     hover_ok: false,
                 };
-                draw_input(&mut out, &theme, &s);
+                draw_input(&mut out, &theme, &s, &|_| None);
                 for d in &out {
                     match d {
                         Draw::Rect { rect, .. } => assert!(inside(*rect, screen), "{rect:?}"),
@@ -286,19 +302,40 @@ mod tests {
             hover_ok: false,
         };
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, &mk("", true));
+        draw_input(&mut out, &theme, &mk("", true), &|_| None);
         assert!(texts(&out).contains(&"Alex".to_string()) && texts(&out).contains(&"0/16".to_string()));
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, &mk("Sam", true));
+        draw_input(&mut out, &theme, &mk("Sam", true), &|_| None);
         assert!(!texts(&out).contains(&"Alex".to_string()));
         assert!(texts(&out).contains(&"Sam|".to_string()), "the caret follows the text: {:?}", texts(&out));
         let ok_fill = |out: &[Draw]| out.iter().find_map(|d| match d {
-            Draw::Rect { rect, color } if *rect == ok_rect() => Some(*color),
+            Draw::Rect { rect, color } if *rect == ok_rect(&theme) => Some(*color),
             _ => None,
         });
         let (mut a, mut b) = (Vec::new(), Vec::new());
-        draw_input(&mut a, &theme, &mk("", true));
-        draw_input(&mut b, &theme, &mk("", false));
+        draw_input(&mut a, &theme, &mk("", true), &|_| None);
+        draw_input(&mut b, &theme, &mk("", false), &|_| None);
         assert!(ok_fill(&b).unwrap()[3] < ok_fill(&a).unwrap()[3], "dimmed");
+    }
+
+    #[test]
+    fn input_rect_and_input_image_move_and_dress_the_panel() {
+        let theme = Theme::parse("input_rect = 100, 200, 1000, 600\ninput_image = gui/in.png\n").0;
+        let panel = panel_rect(&theme);
+        assert_eq!(panel, Rect::new(100.0, 200.0, 1000.0, 600.0));
+        for r in [prompt_rect(&theme), field_rect(&theme), count_rect(&theme), ok_rect(&theme)] {
+            assert!(inside(r, panel), "{r:?}");
+        }
+        let ok = ok_rect(&theme);
+        assert!(ok_at(&theme, ok.x + 5.0, ok.y + 5.0), "the button is hit where it is drawn");
+        let old = ok_rect(&Theme::default());
+        assert!(!ok_at(&theme, old.x + 5.0, old.y + 5.0), "and no longer where it was");
+        let s = InputScreen { prompt: "Name?", text: "", placeholder: None, max: 8, caret: false, can_confirm: true, hover_ok: false };
+        let (mut with, mut without) = (Vec::new(), Vec::new());
+        draw_input(&mut with, &theme, &s, &|_| Some(Size::new(64.0, 64.0)));
+        draw_input(&mut without, &theme, &s, &|_| None);
+        assert!(with.iter().any(|d| matches!(d, Draw::Image { src, dest, .. } if src == "gui/in.png" && *dest == panel)));
+        assert!(!without.iter().any(|d| matches!(d, Draw::Image { .. })), "a picture that isn't loaded leaves the panel colour");
+        assert!(without.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == panel && *color == theme.panel_color)));
     }
 }
