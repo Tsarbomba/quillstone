@@ -193,7 +193,9 @@ impl QuickLayout {
 pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, size_of: &dyn Fn(&str) -> Option<Size>) -> QuickLayout {
     let specs = &theme.quick_icons;
     let dims: Vec<(f32, f32)> = specs.iter().map(|q| quick_button_size(q, size_of)).collect();
-    let flow: Vec<usize> = std::iter::once(9).chain(0..9).filter(|&k| specs[k].pos.is_none()).collect();
+    // `quick_buttons = listed` drops the built-in buttons that the theme doesn't give a picture or a place.
+    let listed = |k: usize| !theme.quick_listed || specs[k].icon.is_some() || specs[k].pos.is_some();
+    let flow: Vec<usize> = std::iter::once(9).chain(0..9).filter(|&k| specs[k].pos.is_none() && listed(k)).collect();
     let total = flow.iter().map(|&k| dims[k].0).sum::<f32>() + flow.len().saturating_sub(1) as f32 * QUICK_GAP;
     let row_h = flow.iter().map(|&k| dims[k].1).fold(0.0, f32::max);
     let (right, y) = (quick_right_for(tb, total), quick_y_for(tb, row_h));
@@ -216,7 +218,7 @@ pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, size_of: &dyn Fn(&
         let top = y.min(tb.y + tb.h);
         zone.push(Rect::new(right - total, top, total, y + row_h - top));
     }
-    let shown = |k: usize| k != 9 || inventory;
+    let shown = |k: usize| (k != 9 || inventory) && listed(k);
     zone.extend((0..10).filter(|&k| shown(k) && specs[k].pos.is_some()).filter_map(|k| rects[k]));
     let buttons = (0..10).filter(|&k| shown(k)).filter_map(|k| Some((QUICK_ALL[k], rects[k]?))).collect();
     QuickLayout { buttons, zone }
@@ -970,6 +972,24 @@ mod tests {
             "gone.png" => None,
             _ => Some(Size::new(48.0, 48.0)),
         }
+    }
+
+    #[test]
+    fn listed_mode_shows_only_buttons_with_a_picture_or_a_position() {
+        let tb = Rect::new(160.0, 700.0, 1600.0, 260.0);
+        let t = themed("quick_buttons = listed\nquick_back_icon = a.png\nquick_skip_pos = 10, 20\n");
+        let l = quick_layout(tb, &t, true, &sized);
+        let ids: Vec<QuickButton> = l.buttons.iter().map(|b| b.0).collect();
+        assert_eq!(ids, [QuickButton::Back, QuickButton::Skip]);
+        let back = l.rect(QuickButton::Back).unwrap();
+        assert_eq!(back.x + back.w, tb.x + tb.w, "the only flow button is right-aligned alone");
+        assert_eq!(l.rect(QuickButton::Skip).unwrap().x, 10.0);
+        assert!(!l.in_zone(tb, 1000.0, tb.y + tb.h + QUICK_MARGIN + 5.0), "no strip where hidden buttons were");
+        // without the key the same theme keeps every button
+        let t = themed("quick_back_icon = a.png\nquick_skip_pos = 10, 20\n");
+        assert_eq!(quick_layout(tb, &t, true, &sized).buttons.len(), 10);
+        // nothing listed: no buttons at all
+        assert!(quick_layout(tb, &themed("quick_buttons = listed\n"), true, &sized).buttons.is_empty());
     }
 
     #[test]

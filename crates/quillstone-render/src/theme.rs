@@ -136,6 +136,8 @@ pub struct Theme {
     pub quick_menu: QuickMenu,
     /// Picture buttons and positions for the quick menu, indexed like [`QUICK_IDS`].
     pub quick_icons: [QuickIcon; 10],
+    /// `quick_buttons = listed`: only buttons with a picture or a position of their own are shown.
+    pub quick_listed: bool,
     pub menu_background: Option<String>,
     pub menu_music: Option<String>,
     /// Full-screen picture behind the inventory (and the shop, unless
@@ -202,6 +204,7 @@ impl Default for Theme {
             name_align: Align::Left,
             quick_menu: QuickMenu::Visible,
             quick_icons: Default::default(),
+            quick_listed: false,
             menu_background: None,
             menu_music: None,
             inventory_background: None,
@@ -412,6 +415,11 @@ impl Theme {
                 "quick_menu" => match QuickMenu::from_name(value) {
                     Some(m) => t.quick_menu = m,
                     None => bad("`quick_menu` must be `visible`, `hover` or `hidden`".into()),
+                },
+                "quick_buttons" => match value {
+                    "all" => t.quick_listed = false,
+                    "listed" => t.quick_listed = true,
+                    _ => bad("`quick_buttons` must be `all` or `listed`".into()),
                 },
                 "font" => t.font = path(),
                 "font_bold" => t.font_bold = path(),
@@ -690,6 +698,15 @@ mod tests {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
         assert_eq!(t, Theme::default(), "nothing took effect");
+    }
+
+    #[test]
+    fn quick_buttons_is_all_or_listed() {
+        assert!(!Theme::default().quick_listed && !Theme::parse("quick_buttons = all\n").0.quick_listed);
+        let (t, problems) = Theme::parse("quick_buttons = listed\n");
+        assert!(t.quick_listed && problems.is_empty());
+        let (t, problems) = Theme::parse("quick_buttons = some\n");
+        assert!(!t.quick_listed && problems.len() == 1 && problems[0].contains("line 1"), "{problems:?}");
     }
 
     #[test]

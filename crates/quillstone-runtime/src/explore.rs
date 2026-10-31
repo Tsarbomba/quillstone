@@ -516,7 +516,7 @@ impl Explorer<'_> {
                         read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     }
                 }
-                Op::Input { prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
+                Op::Input { prompt, .. } | Op::Notify { text: prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 // A picture named from variables (`assets/{place}.png`).
                 Op::Bg { src, .. } | Op::Image { src, .. } => {
                     read.extend(quillstone_script::pattern_vars(src).into_iter().map(|n| (at, n, false)));
@@ -918,6 +918,13 @@ mod tests {
         assert!(w.iter().any(|m| m.contains("`orphan` is never reached")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("never shown: \"Never.\"")), "{w:?}");
         assert!(!w.iter().any(|m| m.contains("Alone")), "covered by the label: {w:?}");
+    }
+
+    #[test]
+    fn a_notice_text_is_checked_for_unknown_variables() {
+        let w = messages(&test("---\nvars: { trust: 0 }\n---\n::notify{text=\"{trust} {nmae}\"}\nEnd.\n").warnings);
+        assert!(w.iter().any(|m| m.contains("`{nmae}` isn't a variable")), "{w:?}");
+        assert!(!w.iter().any(|m| m.contains("trust")), "{w:?}");
     }
 
     #[test]

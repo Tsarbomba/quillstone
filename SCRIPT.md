@@ -331,6 +331,7 @@ rest were not tried.
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
 | `::shake{axis=x}` / `::shake{axis=y}` | Shake along one axis only: `x` sideways, `y` up and down, `both` (the default) both ways. A one-axis shake moves the stage by up to `strength` pixels along its axis and not at all along the other, and zooms in only as far as that axis needs. |
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
+| `::notify{text="Saved" time=3}` | A small message in the top right corner, on the theme's panel colour and text colour, for `time` seconds (0.5 to 30; default 3): it fades in, stays, and fades out. `text` can hold `{variable}` values and the same markup as a `::hud` text (`**bold**`, `{color=...}`) (filled in when the command runs). Doesn't wait and doesn't stop the story; a new `::notify` replaces one still showing. It is a passing message: not saved, not shown again by rollback, and it ends at once when the player skips. Not part of the translation files. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
 | `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites. Doesn't wait. See [Ambient particles](#ambient-particles). |
@@ -343,7 +344,7 @@ Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
 lower part. To put one sprite behind another, give it a lower `z`. The camera, sprite sizes,
 heights, stretch, mirroring, `z` and the colour cover are part of the scene, so rollback
 and saves restore them (a save made before `::fade` existed loads uncovered, one made
-before `flip` and the scales existed loads with unflipped, unstretched sprites); a shake or a flash is a moment and
+before `flip` and the scales existed loads with unflipped, unstretched sprites); a shake, a flash or a `::notify` is a moment and
 isn't replayed. A flash stands still while a menu is open and ends at once when the
 player skips.
 
@@ -1252,6 +1253,7 @@ button_hover_color = #40336be0
 overlay_color = #050510e0           # behind settings, history and save/load
 textbox_image = assets/gui/textbox.png   # stretched over the textbox (1600x260 unless textbox_rect says otherwise)
 quick_menu = visible                # visible (default), hover or hidden (see below)
+quick_buttons = all                 # all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
 menu_background = assets/gui/menu.png
 menu_music = assets/audio/menu.ogg
 choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (default accent_color)
@@ -1326,6 +1328,9 @@ quick_back_size = 56, 56                     # width, height (16 to 512 each)
   shows; without one the idle picture stays lit and gets a thin accent line along its bottom edge.
   A button that does nothing right now (Back on the first line, Q.Load before any quick save) is
   drawn at 40%.
+- `quick_buttons = listed` shows only the buttons that have an `_icon` or a `_pos` of their own and
+  hides the other built-in ones (their keyboard and gamepad shortcuts still work); the default
+  `quick_buttons = all` keeps every button.
 - Where placed buttons overlap, the one later in the list `back, history, skip, auto, save, load,
   qsave, qload, settings, items` is on top and gets the click.
 - Everything else is unchanged: `quick_menu` (`hover` mode fades pictures too, and the menu also

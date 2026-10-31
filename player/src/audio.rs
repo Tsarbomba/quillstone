@@ -38,6 +38,8 @@ mod stub {
             false
         }
 
+        pub fn set_paused(&mut self, _paused: bool) {}
+
         pub fn take_failed_loops(&mut self) -> Vec<String> {
             Vec::new()
         }
@@ -164,6 +166,16 @@ mod real {
                 self.music = None;
             }
             ended | std::mem::take(&mut self.music_failed)
+        }
+
+        /// Pause (or resume) everything that sounds, exactly where it is: the three tracks keep
+        /// their sounds' positions, and the clock that times a music intro stops with them.
+        pub fn set_paused(&mut self, paused: bool) {
+            let t = tween(DECLICK);
+            for track in [&mut self.music_track, &mut self.sfx_track, &mut self.voice_track] {
+                if paused { track.pause(t) } else { track.resume(t) }
+            }
+            if paused { self.clock.pause() } else { self.clock.start() }
         }
 
         /// Whether a voice clip is still playing (auto-forward waits for it).

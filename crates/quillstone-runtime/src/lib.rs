@@ -93,6 +93,8 @@ pub enum Cmd {
     /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
     /// Like a shake it is a moment: not part of [`State`], never replayed.
     Flash { time: f32, color: [f32; 3] },
+    /// A passing message in a corner of the screen for `time` seconds (`{var}` already filled in).
+    Notify { text: String, time: f32 },
     /// Fade the stage to `color` over `time` seconds and keep it covered (0: at
     /// once; a redraw sends it that way). Part of the scene: see [`State::cover`].
     /// The story then waits (a [`Cmd::Wait`] of `time` follows), so a click ends the fade.
@@ -1044,6 +1046,10 @@ pub(crate) fn step_traced(
                 if state.cover.take().is_some() {
                     out.push(Cmd::FadeIn { time: *time });
                 }
+                state.pc += 1;
+            }
+            Op::Notify { text, time } => {
+                out.push(Cmd::Notify { text: interpolate(text, &state.vars), time: *time });
                 state.pc += 1;
             }
             Op::Textbox { hidden, fade } => {
@@ -2475,6 +2481,19 @@ vars: { amount: 99 }
         game.input(Input::Advance);
         let (loaded, _) = Session::load(&params, &game.save()).unwrap();
         assert_eq!(loaded.state().pc, game.state().pc);
+    }
+
+    // ---- ::notify ------------------------------------------------------------
+
+    #[test]
+    fn a_notice_is_a_moment_with_its_values_filled_in() {
+        let p = parse("---\nvars: { n: 2 }\n---\n::notify{text=\"Got {n}\" time=1}\n**A:** one\n**A:** two\n").unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first[0], Cmd::Notify { text: "Got 2".into(), time: 1.0 });
+        assert!(!game.state().redraw().iter().any(|c| matches!(c, Cmd::Notify { .. })));
+        game.input(Input::Advance);
+        let back = game.rollback().unwrap();
+        assert!(!back.iter().any(|c| matches!(c, Cmd::Notify { .. })), "rollback doesn't show it again");
     }
 
     // ---- ::flash -------------------------------------------------------------

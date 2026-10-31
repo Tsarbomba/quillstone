@@ -131,7 +131,8 @@ whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
 Linux: `~/.local/share/quillstone/<game>/`). `<game>` is the script's `id:` front matter key; without one it is
 the title (so renaming the title moves the saves: set `id:` before you ship), or the script's file name.
-Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
+Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations and timed
+choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.
 
 **Troubleshooting**

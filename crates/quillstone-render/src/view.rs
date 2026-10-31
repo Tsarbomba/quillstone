@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
+use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, HudAnchor, Wipe};
 
 use crate::hud::HudLayer;
 use crate::particles::ParticleLayer;
@@ -596,6 +596,20 @@ impl Flash {
     }
 }
 
+/// A corner message in progress (`::notify`): fades in, stays, fades out, gone after `time`.
+#[derive(Debug, Clone, PartialEq)]
+struct Notice {
+    text: String,
+    time: f32,
+    elapsed: f32,
+}
+
+impl Notice {
+    fn alpha(&self) -> f32 {
+        (self.elapsed / 0.2).min((self.time - self.elapsed) / 0.5).clamp(0.0, 1.0)
+    }
+}
+
 /// The stage covered with a colour (`::fade{out}`), fading to full cover or away.
 #[derive(Debug, Clone, PartialEq)]
 struct Cover {
@@ -642,6 +656,7 @@ pub struct View {
     camera: CameraMove,
     shake: Option<Shake>,
     flash: Option<Flash>,
+    notice: Option<Notice>,
     cover: Option<Cover>,
     hud: HudLayer,
     particles: ParticleLayer,
@@ -685,6 +700,7 @@ impl View {
             camera: CameraMove { from: Camera::default(), to: Camera::default(), time: 0.0, elapsed: 0.0, ease: Ease::Linear },
             shake: None,
             flash: None,
+            notice: None,
             cover: None,
             hud: HudLayer::default(),
             particles: ParticleLayer::default(),
@@ -822,6 +838,7 @@ impl View {
                     self.set_camera(Camera::default(), 0.0, Ease::Linear);
                     self.shake = None;
                     self.flash = None;
+                    self.notice = None;
                     self.cover = None;
                     self.hud.clear_all();
                     self.particles.clear();
@@ -899,6 +916,9 @@ impl View {
                 Cmd::Tint { set, fade } => self.set_tint(set.map(|t| (t.color, t.alpha)), *fade),
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
+                }
+                Cmd::Notify { text, time } => {
+                    self.notice = Some(Notice { text: text.clone(), time: *time, elapsed: 0.0 });
                 }
                 Cmd::Camera { camera, time, ease } => self.set_camera(*camera, *time, *ease),
                 Cmd::ShowImage { src, alt } => {
@@ -997,9 +1017,10 @@ impl View {
         &self.hud
     }
 
-    /// End a flash that is running (skipping doesn't wait for one).
+    /// End a flash and a corner message that are running (skipping doesn't wait for them).
     pub fn end_flash(&mut self) {
         self.flash = None;
+        self.notice = None;
     }
 
     /// Finish the cover's fades at once (skipping doesn't wait for them): a fade out
@@ -1150,6 +1171,12 @@ impl View {
                 self.flash = None;
             }
         }
+        if let Some(n) = &mut self.notice {
+            n.elapsed += dt;
+            if n.elapsed >= n.time {
+                self.notice = None;
+            }
+        }
         if let Some(c) = &mut self.cover {
             c.alpha = if c.rate > 0.0 {
                 let step = c.rate * dt;
@@ -1195,6 +1222,7 @@ impl View {
     pub fn busy(&self) -> bool {
         self.wait.is_some()
             || self.flash.is_some()
+            || self.notice.is_some()
             || self.cover.as_ref().is_some_and(|c| c.alpha != c.target)
             || self.tint.as_ref().is_some_and(|t| t.progress < 1.0)
             || self.hud.fading()
@@ -1405,6 +1433,13 @@ impl View {
         // screen), under the textbox. Not with a full-screen overlay up, nor when the player hid the UI.
         if ui && !self.hide_ui {
             self.hud.draw(&self.theme, image_size, &mut out);
+            // A passing message in the top right corner, over the HUD.
+            if let Some(n) = &self.notice {
+                let alpha = n.alpha();
+                let (size, pad) = ((theme.text_size * 0.75).round(), 16.0);
+                let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
+                crate::hud::draw_text(&mut out, &n.text, (VIRTUAL.w - 40.0, 40.0), HudAnchor::Right, size, color, back, pad);
+            }
         }
 
         let box_alpha = self.box_alpha();
@@ -2241,6 +2276,45 @@ mod tests {
         v.apply(&[Cmd::Shake { time: 1.0, strength: 200.0, axis: Axis::Both }]);
         let (_, dest, _) = images(&v.draw_list(&all_1080p, None))[0];
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "no pop at the start");
+    }
+
+    // ---- notify -----------------------------------------------------------------
+
+    fn notice_draw(list: &[Draw]) -> Option<(&str, f32)> {
+        list.iter().find_map(|d| match d {
+            Draw::Text { text, color, .. } if text == "Saved" => Some((text.as_str(), color[3])),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_notice_fades_in_stays_fades_out_and_is_gone_after_its_time() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 2.0 }]);
+        assert!(v.busy(), "a running notice needs ticks");
+        assert_eq!(notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1, 0.0, "starts faded out");
+        v.tick(0.2);
+        assert_eq!(notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1, 1.0);
+        v.tick(1.0);
+        assert_eq!(notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1, 1.0);
+        v.tick(0.55); // 1.75 s: 0.25 s left of the 0.5 s fade
+        let a = notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1;
+        assert!((a - 0.5).abs() < 0.01, "{a}");
+        v.tick(0.5);
+        assert!(notice_draw(&v.draw_list(&all_1080p, None)).is_none() && !v.busy());
+    }
+
+    #[test]
+    fn a_notice_does_not_block_ends_when_skipping_and_a_new_one_replaces_it() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0 }]);
+        v.apply(&[Cmd::Notify { text: "Other".into(), time: 5.0 }]);
+        v.tick(0.3);
+        assert!(notice_draw(&v.draw_list(&all_1080p, None)).is_none(), "the first one was replaced");
+        v.end_flash();
+        assert!(!v.busy());
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0 }, Cmd::ClearScene]);
+        assert!(!v.busy(), "a new scene drops it");
     }
 
     // ---- flash ------------------------------------------------------------------

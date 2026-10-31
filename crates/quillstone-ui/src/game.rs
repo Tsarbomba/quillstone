@@ -212,6 +212,8 @@ pub struct Game<'p> {
     choice_elapsed: f32,
     /// Whether the window has the focus (the countdown waits while it hasn't).
     focused: bool,
+    /// The window is minimised (or hidden): the whole game stands still, see [`Game::set_minimized`].
+    minimized: bool,
 }
 
 impl<'p> Game<'p> {
@@ -274,6 +276,7 @@ impl<'p> Game<'p> {
             replay: None,
             choice_elapsed: 0.0,
             focused: true,
+            minimized: false,
         };
         for channel in [Channel::Music, Channel::Sfx, Channel::Voice] {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
@@ -515,6 +518,9 @@ impl<'p> Game<'p> {
     /// the settings or backlog screen is up. `voice_playing`: whether a voice clip
     /// is still audible (auto-forward waits for it).
     pub fn tick(&mut self, dt: f32, voice_playing: bool) {
+        if self.minimized {
+            return; // waits, typing, fades, timers, skip and auto all stand still
+        }
         if self.screen != Screen::Story && self.ui_hidden {
             self.set_ui_hidden(false); // hiding the interface is for the story screen only
         }
@@ -581,6 +587,13 @@ impl<'p> Game<'p> {
     /// The window gained or lost the keyboard focus.
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    /// The window was minimised or hidden (`true`) or is back (`false`). While it is, [`Game::tick`]
+    /// does nothing and [`Game::media_paused`] is true, so everything resumes exactly where it stopped.
+    /// (The frontend stops drawing and pauses the sound itself.)
+    pub fn set_minimized(&mut self, minimized: bool) {
+        self.minimized = minimized;
     }
 
     /// Whether the line waiting is one that ends in `{nw}`.
@@ -753,9 +766,9 @@ impl<'p> Game<'p> {
         out
     }
 
-    /// Whether video clocks should stand still (a menu or dialog is over the story).
+    /// Whether video clocks should stand still (a menu or dialog is over the story, or the window is minimised).
     pub fn media_paused(&self) -> bool {
-        self.in_story && (self.screen != Screen::Story || self.confirm.is_some())
+        self.minimized || self.in_story && (self.screen != Screen::Story || self.confirm.is_some())
     }
 
     /// The frontend reports on the cutscene each frame: whether it is really

@@ -976,6 +976,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::LoopSprite { id, x, y, scale, .. } => println!("[loop {id} between here and {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
+            Cmd::Notify { text, .. } => println!("[notice: {text}]"),
             Cmd::HudShow { elem, .. } => println!("[hud: {}]", elem.id),
             Cmd::HudHide { id, .. } => println!("[hud hidden: {id}]"),
             Cmd::HudClear { .. } => println!("[hud cleared]"),

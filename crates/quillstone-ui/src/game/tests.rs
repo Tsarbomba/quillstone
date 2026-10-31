@@ -1004,6 +1004,24 @@ fn menu_music_comes_from_the_theme_and_stops_when_the_story_starts() {
 }
 
 #[test]
+fn menu_music_resumes_when_the_story_returns_to_the_menu() {
+    let p = parse("::music{src=story.ogg}\n**A:** one\n").unwrap();
+    let mut g = at_menu(&p);
+    g.set_theme(Theme { menu_music: Some("menu.ogg".into()), ..Theme::default() });
+    assert!(g.take_audio().iter().any(|a| matches!(a, Action::PlayMusic { src, .. } if src == "menu.ogg")));
+    g.start_story();
+    let started = g.take_audio();
+    let at = |name: &str| started.iter().position(|a| matches!(a, Action::PlayMusic { src, .. } if src == name));
+    assert!(started.iter().any(|a| matches!(a, Action::StopMusic { .. })), "the menu music ends");
+    assert!(at("story.ogg").is_some() && at("menu.ogg").is_none(), "the story music takes over: {started:?}");
+    g.go_to_menu();
+    let back = g.take_audio();
+    let stop = back.iter().position(|a| matches!(a, Action::StopMusic { .. }));
+    let play = back.iter().position(|a| matches!(a, Action::PlayMusic { src, .. } if src == "menu.ogg"));
+    assert!(stop.is_some() && play > stop, "the story's music stops and the menu's starts again: {back:?}");
+}
+
+#[test]
 fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     let p = parse(THREE).unwrap();
     let mut g = at_menu(&p);

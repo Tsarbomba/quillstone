@@ -216,7 +216,7 @@ fn widest_line(text: &str, size: f32, runs: &[(usize, usize, f32)]) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_text(
+pub(crate) fn draw_text(
     out: &mut Vec<Draw>,
     shown: &str,
     (px, py): (f32, f32),

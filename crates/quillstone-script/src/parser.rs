@@ -98,7 +98,7 @@ const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -112,6 +112,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease", "loop"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
+        "notify" => &["text", "time"],
         "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "particles" => &["snow", "rain", "none", "off", "src", "amount", "speed", "wind", "fade", "layer"],
@@ -1191,6 +1192,35 @@ impl Parser {
                     },
                 };
                 Some((Op::Flash { time, color }, None))
+            }
+            "notify" => {
+                let text = a.value("text").unwrap_or_default();
+                if text.trim().is_empty() {
+                    self.err(line, "`::notify` needs `text=\"...\"` (the message)");
+                    return None;
+                }
+                match crate::markup::parse_markup(&text) {
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                    Ok(r) if r.no_wait || r.text.contains('\n') => {
+                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::notify` text");
+                        return None;
+                    }
+                    Ok(_) => {}
+                }
+                let time = match a.value("time") {
+                    None => 3.0,
+                    Some(v) => match v.parse::<f32>() {
+                        Ok(t) if t.is_finite() && (0.5..=30.0).contains(&t) => t,
+                        _ => {
+                            self.err(line, format!("`time={v}` must be a number of seconds from 0.5 to 30"));
+                            return None;
+                        }
+                    },
+                };
+                Some((Op::Notify { text, time }, None))
             }
             "fade" => {
                 let (out, into) = (a.flag("out"), a.flag("in"));
@@ -3533,7 +3563,7 @@ mod tests {
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
         assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, anim, fade, wipe, through)"));
-        assert!(has_err("::frobnicate\n", "shake, flash, fade, camera"));
+        assert!(has_err("::frobnicate\n", "shake, flash, notify, fade, camera"));
     }
 
     #[test]
@@ -4393,6 +4423,27 @@ mod tests {
         }
         assert_eq!(line_of("Hi.\n::flash{time=0}\n", "above 0"), 2);
         assert!(ok("::flash{time=10}\n").ops.contains(&Op::Flash { time: 10.0, color: [1.0; 3] }));
+    }
+
+    // ---- ::notify -------------------------------------------------------
+
+    #[test]
+    fn notify_has_a_default_time_and_validates() {
+        let p = ok("::notify{text=\"Saved {x}\"}\n::notify{text=Hi time=0.5}\n");
+        assert_eq!(p.ops[0], Op::Notify { text: "Saved {x}".into(), time: 3.0 });
+        assert_eq!(p.ops[1], Op::Notify { text: "Hi".into(), time: 0.5 });
+        for (src, needle) in [
+            ("::notify\n", "needs `text="),
+            ("::notify{text=\" \"}\n", "needs `text="),
+            ("::notify{text=x time=0.2}\n", "from 0.5 to 30"),
+            ("::notify{text=x time=31}\n", "from 0.5 to 30"),
+            ("::notify{text=x time=soon}\n", "time=soon"),
+            ("::notify{text=\"a{p}b\"}\n", "only work in dialogue"),
+            ("::notify{text=x at=1}\n", "unknown attribute `at`"),
+        ] {
+            assert!(has_err(src, needle), "{src}");
+        }
+        assert_eq!(line_of("Hi.\n::notify{time=1}\n", "needs `text="), 2);
     }
 
     // ---- looping and stopping ::sfx ---------------------------------------

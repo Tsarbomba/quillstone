@@ -1190,6 +1190,9 @@ pub enum Op {
     Textbox { hidden: bool, fade: f32 },
     /// A full-screen flash of `color` that fades out over `time` seconds. Doesn't wait.
     Flash { time: f32, color: [f32; 3] },
+    /// A small message in a corner of the screen for `time` seconds (`::notify`). Doesn't wait;
+    /// `{var}` values are filled in when it runs.
+    Notify { text: String, time: f32 },
     /// Fade the stage to `color` over `time` seconds and keep it covered. Waits
     /// until the fade is done (like a `::wait`).
     FadeOut { time: f32, color: [f32; 3] },

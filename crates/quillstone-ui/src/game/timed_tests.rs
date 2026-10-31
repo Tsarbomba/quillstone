@@ -243,3 +243,40 @@ fn untimed_choices_draw_no_bar_and_never_time_out() {
     g.tick(10_000.0, false);
     assert_eq!(g.view().choices.len(), 2);
 }
+
+#[test]
+fn a_minimised_window_stops_the_countdown_the_wait_and_the_typing_until_it_is_back() {
+    let p = parse(STORY).unwrap();
+    let mut g = at_choice(&p);
+    g.tick(1.0, false);
+    g.set_minimized(true);
+    assert!(g.media_paused(), "videos stand still too");
+    g.tick(100.0, false);
+    assert_eq!(fill(&g), Some(750.0), "no time passed, and the default was not picked");
+    g.set_minimized(false);
+    g.tick(1.0, false);
+    assert_eq!(fill(&g), Some(500.0), "it goes on from where it was");
+
+    let waits = parse("::wait{time=2}\nAfter.\n").unwrap();
+    let mut g = new_game(&waits, 0.0);
+    g.tick(0.5, false);
+    g.set_minimized(true);
+    g.tick(100.0, false);
+    assert_ne!(line(&g), "After.");
+    g.set_minimized(false);
+    g.tick(1.4, false);
+    assert_ne!(line(&g), "After.", "1.9 s of the 2 s wait have run");
+    g.tick(0.2, false);
+    assert_eq!(line(&g), "After.");
+
+    let typed = parse("Hello there, a long enough line.\n").unwrap();
+    let mut g = new_game(&typed, 20.0);
+    g.tick(0.25, false);
+    let shown = g.view().dialogue.as_ref().unwrap().visible_chars();
+    g.set_minimized(true);
+    g.tick(100.0, false);
+    assert_eq!(g.view().dialogue.as_ref().unwrap().visible_chars(), shown);
+    g.set_minimized(false);
+    g.tick(0.25, false);
+    assert!(g.view().dialogue.as_ref().unwrap().visible_chars() > shown);
+}

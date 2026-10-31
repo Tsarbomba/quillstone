@@ -69,6 +69,8 @@ struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     last_frame: Instant,
+    /// The window is minimised or hidden (see `set_minimized`).
+    minimized: bool,
     /// The last frame's draw list, and whether it settled: the same as the one
     /// before and nothing timed going on. A settled game isn't redrawn until an
     /// input arrives (or now and then, just in case), so a still screen costs
@@ -185,6 +187,7 @@ fn main() {
         window: None,
         gfx: None,
         last_frame: Instant::now(),
+        minimized: false,
         last_draws: Vec::new(),
         settled: false,
         dirty: true,
@@ -437,13 +440,31 @@ impl App {
         }
     }
 
+    /// The window was minimised or restored: the game and the sound stand still, and the clock
+    /// starts over on return so the first frame after it doesn't jump.
+    fn set_minimized(&mut self, minimized: bool) {
+        if self.minimized == minimized {
+            return;
+        }
+        self.minimized = minimized;
+        self.game.set_minimized(minimized);
+        if let Some(audio) = &mut self.audio {
+            audio.set_paused(minimized);
+        }
+        self.last_frame = Instant::now();
+        self.settled = minimized;
+    }
+
     fn redraw(&mut self) {
         // Nothing to draw into while minimized.
-        let minimized = self.window.as_ref().is_some_and(|w| {
+        let size_zero = self.window.as_ref().is_some_and(|w| {
             let s = w.inner_size();
             s.width == 0 || s.height == 0
         });
-        if minimized {
+        if size_zero {
+            self.set_minimized(true);
+        }
+        if self.minimized {
             self.last_frame = Instant::now(); // don't let the typewriter jump on restore
             self.settled = true; // nothing to show: look again now and then, don't spin
             return;
@@ -624,9 +645,12 @@ impl ApplicationHandler for App {
                 self.game.autosave();
                 event_loop.exit();
             }
+            // macOS and others tell when the window is hidden; Windows only reports a 0x0 size.
+            WindowEvent::Occluded(hidden) => self.set_minimized(hidden),
             WindowEvent::Resized(size) => {
-                // Minimizing reports 0x0; keep the old surface and just stop drawing
-                // (see `redraw`) until a real size comes back.
+                // Minimizing reports 0x0; keep the old surface, pause the game and sound and stop
+                // drawing (see `redraw`) until a real size comes back.
+                self.set_minimized(size.width == 0 || size.height == 0);
                 if size.width > 0 && size.height > 0 {
                     if let Some(gfx) = &mut self.gfx {
                         gfx.resize(size.width, size.height);
