@@ -207,12 +207,33 @@ fn check(path: &Path) -> Result<(), String> {
         );
     }
     missing += lang::check(path, &program);
+    unused_asset_lines(path, &program).iter().for_each(|l| eprintln!("{l}"));
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {
         return Err(format!("{missing} problem(s) (paths are relative to the script's folder)"));
     }
     println!("ok: {} ops, {} labels{voiced}", program.ops.len(), program.labels.len());
     Ok(())
+}
+
+/// Most unused files `check` lists; the rest are counted.
+const UNUSED_LISTED: usize = 20;
+
+/// The warning about picture, audio, video and font files in the game folder that `package` would leave out
+/// (a summary line, then the files, capped), or nothing. Advice only.
+fn unused_asset_lines(path: &Path, program: &Program) -> Vec<String> {
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    let unused = package::unused_assets(root, name, program).unwrap_or_default();
+    if unused.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("{}: warning: {} file(s) in the game folder are used by nothing, so `package` leaves them out:", path.display(), unused.len())];
+    lines.extend(unused.iter().take(UNUSED_LISTED).map(|f| format!("  {f}")));
+    if unused.len() > UNUSED_LISTED {
+        lines.push(format!("  and {} more", unused.len() - UNUSED_LISTED));
+    }
+    lines
 }
 
 /// Replays that no `::end_replay` follows: `(line, message)`. A static scan along every
@@ -1728,5 +1749,76 @@ mod tests {
         assert!(check(&path).is_ok());
         assert!(test(&path, 1000).is_ok());
         assert!(dump(&path).is_ok());
+    }
+
+    /// `check`'s unused-file warning for a script in a fresh folder with these files beside it (`s.quill.md` is the script).
+    fn unused_in(files: &[(&str, &[u8])]) -> Vec<String> {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("quillstone-unused-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (name, bytes) in files {
+            std::fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        let program = load(&dir.join("s.quill.md")).unwrap();
+        let lines = unused_asset_lines(&dir.join("s.quill.md"), &program);
+        let exit = check(&dir.join("s.quill.md"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(exit.is_ok(), "unused files are advice, not an error: {exit:?}");
+        lines
+    }
+
+    #[test]
+    fn check_lists_unused_assets_and_not_the_ones_the_game_uses() {
+        const PNG: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+        let script = "---\ntheme: t.txt\nvars: { place: \"a\" }\n---\n::include{chapters/c.quill.md}\n::bg{src=\"assets/p/{place}.png\"}\n::bg{src=assets/direct.png}\nHi.\n";
+        let files: &[(&str, &[u8])] = &[
+            ("s.quill.md", script.as_bytes()),
+            ("chapters/c.quill.md", b"::bg{src=assets/included.png}\nHi.\n"),
+            ("t.txt", b"textbox_image = assets/themed.png\n"),
+            ("assets/direct.png", PNG),
+            ("assets/included.png", PNG),
+            ("assets/themed.png", PNG),
+            ("assets/p/a.png", PNG),
+            ("assets/p/b.png", PNG),
+            ("assets/unused.png", PNG),
+            ("assets/DIRECT.PNG", PNG),
+            ("assets/old/song.ogg", b"x"),
+            ("assets/font.ttf", b"x"),
+            // not assets: scripts, saves, translations, dot-folders, mods, other file types
+            ("lang/fr.txt", b"x"),
+            ("lang/pic.png", b"x"),
+            ("mods/m.png", b"x"),
+            (".git/pic.png", b"x"),
+            (".hidden.png", b"x"),
+            ("saves/slot1.json", b"x"),
+            ("notes.txt", b"x"),
+            ("chapters/other.quill.md", b"x"),
+        ];
+        let lines = unused_in(files);
+        let listed: Vec<&str> = lines.iter().skip(1).map(|l| l.trim()).collect();
+        // `p/b.png` is matched by the pattern; `DIRECT.PNG` is used because the archive finds `direct.png` under any capitals.
+        assert_eq!(listed, ["assets/font.ttf", "assets/old/song.ogg", "assets/unused.png"], "{lines:?}");
+        assert!(lines[0].contains("3 file(s)") && lines[0].contains("warning"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn check_stays_quiet_when_every_asset_is_used_or_the_folder_is_shared() {
+        const PNG: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+        let used = "::bg{src=assets/a.png}\nHi.\n";
+        assert!(unused_in(&[("s.quill.md", used.as_bytes()), ("assets/a.png", PNG)]).is_empty(), "everything used");
+        // another script beside this one: a folder shared by several games, where most files are somebody else's
+        assert!(unused_in(&[("s.quill.md", used.as_bytes()), ("assets/a.png", PNG), ("other.quill.md", b"Hi.\n"), ("assets/x.png", PNG)]).is_empty());
+    }
+
+    #[test]
+    fn check_lists_at_most_twenty_unused_files_and_counts_the_rest() {
+        let many: Vec<(String, &[u8])> = (0..25).map(|i| (format!("assets/u{i:02}.png"), &b"x"[..])).collect();
+        let mut files: Vec<(&str, &[u8])> = many.iter().map(|(n, b)| (n.as_str(), *b)).collect();
+        files.push(("s.quill.md", b"Hi.\n"));
+        let lines = unused_in(&files);
+        assert_eq!(lines.len(), 1 + 20 + 1, "{lines:?}");
+        assert!(lines[0].contains("25 file(s)") && lines[21].trim() == "and 5 more", "{lines:?}");
     }
 }

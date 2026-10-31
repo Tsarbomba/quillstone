@@ -166,7 +166,7 @@ never avfilter or avdevice), `licenses/FFmpeg.txt` (the LGPL notice FFmpeg
 requires) and `game.qsa`: the script and only the files it and its theme use, packed
 into one file (stored as they are, not compressed or scrambled, so it is only a
 tidy way to ship them). Zip the folder; players unzip it and double-click the exe.
-The script is checked first, assets outside the script's folder are refused, and
+The script is checked first (it also warns about unused asset files, which `package` leaves out), assets outside the script's folder are refused, and
 an existing non-empty `--out` folder is never overwritten. Without `--libs`, the
 DLLs are taken from beside the player.
 

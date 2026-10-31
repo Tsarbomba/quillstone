@@ -19,7 +19,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use quillstone_script::{is_inside, Program};
+use quillstone_script::{is_inside, kind_from_path, AssetKind, Program};
 
 /// FFmpeg's libraries the player loads (avfilter and avdevice are never needed).
 const FFMPEG_LIBS: [&str; 5] = ["avcodec", "avformat", "avutil", "swscale", "swresample"];
@@ -61,15 +61,10 @@ fn require_new(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
-    let root = opts.script.parent().unwrap_or_else(|| Path::new("."));
-    if !opts.player.is_file() {
-        return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
-    }
-    require_new(opts.out)?;
-
+/// Every file the game uses, each once, in the order it first needs them: what `package` ships and
+/// what `check` measures unused files against.
+fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files, String> {
     // What the game reads: the script, its theme, and every file either names.
-    let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
     let mut files = Files::default();
     files.insert(script_name.to_string());
     // Included scripts keep their paths under game/, so the player reads them as it does from the project folder.
@@ -123,6 +118,60 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
             files.extend(found.into_iter().map(|name| format!("{folder}/{name}")));
         }
     }
+    Ok(files)
+}
+
+/// Folders that never hold game assets: translations, mods, and what builds leave behind.
+const NOT_ASSETS: [&str; 4] = ["lang", "mods", "target", "node_modules"];
+
+/// Pictures, audio, video and fonts: the files `package` can ship and a game can use.
+fn is_asset_file(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
+    crate::picture::PICTURE_EXTENSIONS.contains(&ext.as_str()) || matches!(ext.as_str(), "ttf" | "otf") || kind_from_path(name) != AssetKind::Image
+}
+
+/// Asset files under the game folder that `package` would leave out, sorted, as game-folder paths with `/`.
+/// Skips dot-files and dot-folders, symbolic links and [`NOT_ASSETS`]. Case is ignored in the
+/// comparison like the archive's fallback lookup, so a file used under other capitals counts as used.
+/// `None` when the game's files can't be listed (`check` and `package` report that themselves) or when other
+/// scripts sit beside this one (a folder shared by several games, like `examples/`: most files would be "unused").
+pub fn unused_assets(root: &Path, script_name: &str, program: &Program) -> Option<Vec<String>> {
+    let used: std::collections::HashSet<String> = used_files(root, script_name, program).ok()?.list.iter().map(|f| f.to_lowercase()).collect();
+    let beside = std::fs::read_dir(root).ok()?.filter_map(Result::ok).filter_map(|e| e.file_name().into_string().ok());
+    let others = beside.filter(|n| n.to_ascii_lowercase().ends_with(".quill.md") && !used.contains(&n.to_lowercase())).count();
+    if others > 0 {
+        return None;
+    }
+    let mut found = Vec::new();
+    let mut stack = vec![String::new()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(if dir.is_empty() { root.to_path_buf() } else { root.join(&dir) }) else { continue };
+        for entry in entries.filter_map(Result::ok) {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+            let Ok(kind) = entry.file_type() else { continue };
+            let path = if dir.is_empty() { name.clone() } else { format!("{dir}/{name}") };
+            if name.starts_with('.') {
+                continue;
+            } else if kind.is_dir() && !(dir.is_empty() && NOT_ASSETS.contains(&name.to_ascii_lowercase().as_str())) {
+                stack.push(path);
+            } else if kind.is_file() && is_asset_file(&name) && !used.contains(&path.to_lowercase()) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    Some(found)
+}
+
+pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
+    let root = opts.script.parent().unwrap_or_else(|| Path::new("."));
+    if !opts.player.is_file() {
+        return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
+    }
+    require_new(opts.out)?;
+
+    let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
+    let files = used_files(root, script_name, program)?;
     for f in &files.list {
         if f.contains('\\') {
             return Err(format!("can't package `{f}`: write `/` between folders, which works on every system"));

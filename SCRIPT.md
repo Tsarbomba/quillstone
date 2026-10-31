@@ -9,6 +9,9 @@ wait, a video, a choice). Everything else runs instantly in between.
 with no way out, unreachable parts, options never offered, misspelt variables);
 `quillstone run script.quill.md` plays it in the terminal; `quillstone dump` shows
 the compiled form. Errors name the file and line.
+`check` also warns (never an error) about pictures, audio, video and fonts in the game
+folder that nothing uses, the files `package` would leave out: it lists the first 20.
+It stays quiet when other scripts sit beside this one (one assets folder shared by several games).
 
 ## Layout of a file
 

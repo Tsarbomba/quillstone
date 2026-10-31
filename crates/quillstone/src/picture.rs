@@ -3,7 +3,7 @@
 use std::path::Path;
 
 /// Pictures the player loads (it never plays a video where a picture is drawn).
-const PICTURE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+pub const PICTURE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 /// Opens with one of these when the file is a font cosmic-text can read
 /// (TrueType, OpenType/CFF, Apple's `true`, a collection).
