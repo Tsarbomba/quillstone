@@ -21,6 +21,11 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 impl Watch {
+    /// Watch nothing (a game from an archive is not reloaded).
+    pub fn none() -> Watch {
+        Watch { files: Vec::new(), last: Instant::now() }
+    }
+
     /// Watch the script, the files it includes, the theme file it names and the translation files.
     pub fn new(script: &Path, program: &Program, root: &Path) -> Watch {
         let mut watch = Watch { files: Vec::new(), last: Instant::now() };

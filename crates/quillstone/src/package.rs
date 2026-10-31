@@ -5,13 +5,15 @@
 //!   MyGame.exe            the player, renamed
 //!   avcodec-62.dll ...    FFmpeg's libraries (video), found next to the player or in --libs
 //!   licenses/FFmpeg.txt   FFmpeg is LGPL: say so and where its source is
-//!   game/
+//!   game.qsa              the game's files in one archive (see quillstone_ui::archive), or with
+//!                         `--folder` a `game/` folder holding them loose:
 //!     story.quill.md      the script, under its own name (the only one, so the player finds it)
 //!     chapters/...        files the script `::include`s, at the same paths
 //!     theme.txt, assets/  only the files the script and theme use
 //! ```
 //!
-//! The player finds `game/` by itself when double-clicked.
+//! The player finds `game.qsa` (or `game/`) by itself when double-clicked. A `game/` folder beside
+//! `game.qsa` holds loose files that replace the archive's copies (patches and mods).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,35 @@ pub struct Options<'a> {
     pub out: &'a Path,
     pub name: Option<&'a str>,
     pub libs: Option<&'a Path>,
+    /// Write the game files loose under `game/` instead of one `game.qsa`.
+    pub folder: bool,
+}
+
+/// The files to ship, each once, in the order the game first needs them (so a playthrough reads forward).
+#[derive(Default)]
+struct Files {
+    list: Vec<String>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl Files {
+    fn insert(&mut self, file: String) {
+        if self.seen.insert(file.clone()) {
+            self.list.push(file);
+        }
+    }
+
+    fn extend(&mut self, files: impl IntoIterator<Item = String>) {
+        files.into_iter().for_each(|f| self.insert(f));
+    }
+}
+
+/// An output folder must not exist yet, or be empty: nothing is ever overwritten.
+fn require_new(out: &Path) -> Result<(), String> {
+    if out.exists() && std::fs::read_dir(out).map_or(true, |mut d| d.next().is_some()) {
+        return Err(format!("`{}` already exists and isn't empty; pick a new folder", out.display()));
+    }
+    Ok(())
 }
 
 pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
@@ -34,13 +65,11 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     if !opts.player.is_file() {
         return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
     }
-    if opts.out.exists() && std::fs::read_dir(opts.out).map_or(true, |mut d| d.next().is_some()) {
-        return Err(format!("`{}` already exists and isn't empty; pick a new folder", opts.out.display()));
-    }
+    require_new(opts.out)?;
 
     // What the game reads: the script, its theme, and every file either names.
     let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
-    let mut files: BTreeSet<String> = BTreeSet::new();
+    let mut files = Files::default();
     files.insert(script_name.to_string());
     // Included scripts keep their paths under game/, so the player reads them as it does from the project folder.
     files.extend(program.included_files().map(String::from));
@@ -51,6 +80,19 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
                 "can't package: `{beside}` is included from `{script_name}` but sits beside it, so the player couldn't tell which \
                  is the game's script. Name the main script `main.quill.md`, or move included files into a folder (`chapters/`)"
             ));
+        }
+    }
+    // The theme and its pictures and fonts are read at startup, so they come first.
+    if let Some(theme_file) = &program.theme {
+        files.insert(theme_file.clone());
+        let text = std::fs::read_to_string(root.join(theme_file)).map_err(|e| format!("cannot read the theme: {e}"))?;
+        files.extend(quillstone_render::Theme::parse(&text).0.assets().into_iter().map(String::from));
+    }
+    // Translations (a language without a file just shows the script's text, which `check` warns about).
+    for lang in program.languages.iter().skip(1) {
+        let file = quillstone_script::language_file(&lang.code);
+        if root.join(&file).is_file() {
+            files.insert(file);
         }
     }
     for (_, _, asset) in program.assets() {
@@ -67,31 +109,20 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     }
     files.extend(program.extra_assets().map(|(_, a)| a.to_string()));
     files.extend(program.item_icons().map(|(_, a)| a.to_string()));
-    if let Some(theme_file) = &program.theme {
-        files.insert(theme_file.clone());
-        let text = std::fs::read_to_string(root.join(theme_file)).map_err(|e| format!("cannot read the theme: {e}"))?;
-        files.extend(quillstone_render::Theme::parse(&text).0.assets().into_iter().map(String::from));
-    }
     // Auto-voice recordings that belong to a line (leftovers stay behind).
     if let Some(folder) = &program.voice_folder {
         let names: BTreeSet<String> =
             (0..program.ops.len()).filter_map(|pc| quillstone_runtime::voice_name(program, pc)).collect();
         if let Ok(entries) = std::fs::read_dir(root.join(folder)) {
-            for name in entries.filter_map(|e| e.ok()?.file_name().into_string().ok()) {
-                if name.rsplit_once('.').is_some_and(|(stem, _)| names.contains(stem)) {
-                    files.insert(format!("{folder}/{name}"));
-                }
-            }
+            let mut found: Vec<String> = entries
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.rsplit_once('.').is_some_and(|(stem, _)| names.contains(stem)))
+                .collect();
+            found.sort();
+            files.extend(found.into_iter().map(|name| format!("{folder}/{name}")));
         }
     }
-    // Translations (a language without a file just shows the script's text, which `check` warns about).
-    for lang in program.languages.iter().skip(1) {
-        let file = quillstone_script::language_file(&lang.code);
-        if root.join(&file).is_file() {
-            files.insert(file);
-        }
-    }
-    for f in &files {
+    for f in &files.list {
         if f.contains('\\') {
             return Err(format!("can't package `{f}`: write `/` between folders, which works on every system"));
         }
@@ -100,11 +131,20 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         }
     }
 
-    let game = opts.out.join("game");
     let mut bytes = 0;
-    for f in &files {
-        bytes += copy(&root.join(f), &game.join(f))?;
+    if opts.folder {
+        let game = opts.out.join("game");
+        for f in &files.list {
+            bytes += copy(&root.join(f), &game.join(f))?;
+        }
+    } else {
+        std::fs::create_dir_all(opts.out).map_err(|e| format!("cannot create {}: {e}", opts.out.display()))?;
+        let list: Vec<(String, PathBuf)> = files.list.iter().map(|f| (f.clone(), root.join(f))).collect();
+        let archive = opts.out.join("game.qsa");
+        quillstone_ui::archive::write(&archive, script_name, &list)?;
+        bytes += std::fs::metadata(&archive).map_or(0, |m| m.len());
     }
+    let files = files.list;
 
     let name = exe_name(opts.name.or(program.title.as_deref()));
     let ext = opts.player.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -126,13 +166,33 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     }
 
     println!(
-        "packaged {} game file(s), the player and {} FFmpeg librar{} into {} ({:.1} MB)",
+        "packaged {} game file(s) as {}, the player and {} FFmpeg librar{} into {} ({:.1} MB)",
         files.len(),
+        if opts.folder { "a game folder" } else { "game.qsa" },
         libs.len(),
         if libs.len() == 1 { "y" } else { "ies" },
         opts.out.display(),
         bytes as f64 / 1e6
     );
+    Ok(())
+}
+
+/// `quillstone unpack`: write every file of a game archive under `out` (a new or empty folder).
+pub fn unpack(archive: &Path, out: &Path) -> Result<(), String> {
+    let archive = quillstone_ui::archive::Archive::open(archive)?;
+    require_new(out)?;
+    let mut paths: Vec<&str> = archive.paths().collect();
+    paths.sort_unstable();
+    for path in &paths {
+        let to = out.join(path);
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        }
+        let mut from = archive.slice(path).expect("listed by the archive");
+        let mut file = std::fs::File::create(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+        std::io::copy(&mut from, &mut file).map_err(|e| format!("cannot write {}: {e}", to.display()))?;
+    }
+    println!("unpacked {} file(s) into {} (the script is {})", paths.len(), out.display(), archive.main());
     Ok(())
 }
 
@@ -238,7 +298,7 @@ mod tests {
         std::fs::write(src.join("anim.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("anim.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &src.join("anim.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         for f in ["o.png", "c.png", "rain1.png", "rain2.png"] {
             assert!(out.join("game/assets").join(f).is_file(), "{f}");
@@ -260,7 +320,7 @@ mod tests {
         std::fs::write(src.join("p.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/petal.png").is_file());
         assert!(!out.join("game/assets/unused.png").exists());
@@ -280,7 +340,7 @@ mod tests {
         std::fs::write(src.join("g.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/clip.webm").is_file());
         assert!(!out.join("game/assets/unused.webm").exists());
@@ -323,6 +383,7 @@ mod tests {
             out: &out,
             name: None,
             libs: Some(&libs),
+            folder: true,
         };
         package(&opts, &program).unwrap();
 
@@ -353,7 +414,7 @@ mod tests {
         std::fs::write(src.join("l.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         for f in ["body_casual", "body_formal", "eyes_open", "mouth_smile", "mouth_open", "open", "closed"] {
             assert!(out.join("game/a").join(format!("{f}.png")).is_file(), "{f} ships");
@@ -377,7 +438,7 @@ mod tests {
         std::fs::write(src.join("p.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         for f in ["places/rooftop.png", "places/night.png", "mika_happy.png", "mika_sad.png"] {
             assert!(out.join("game/assets").join(f).is_file(), "{f} ships");
@@ -388,7 +449,7 @@ mod tests {
         // A pattern that matches nothing can't be packaged.
         let lonely = "::bg{src=\"assets/nowhere/{p}.png\"}\nHi.\n";
         std::fs::write(src.join("l.quill.md"), lonely).unwrap();
-        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None };
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None, folder: true };
         let err = package(&opts, &quillstone_script::parse(lonely).unwrap()).unwrap_err();
         assert!(err.contains("matches no file"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
@@ -410,7 +471,7 @@ mod tests {
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let script = src.join("main.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
         for f in ["main.quill.md", "chapters/one.quill.md", "chapters/deep/two.quill.md", "assets/bg.png"] {
             assert!(out.join("game").join(f).is_file(), "{f}");
@@ -432,15 +493,62 @@ mod tests {
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let script = src.join("story.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         assert!(package(&opts, &program).unwrap_err().contains("main.quill.md"));
         assert!(!out.exists());
         // as main.quill.md it is fine
         std::fs::rename(&script, src.join("main.quill.md")).unwrap();
         let script = src.join("main.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         package(&opts, &program).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packs_an_archive_that_loads_through_assets_and_unpacks_to_the_same_files() {
+        use quillstone_ui::{source, Assets};
+        let base = std::env::temp_dir().join(format!("quillstone-package-qsa-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out, un) = (base.join("src"), base.join("out"), base.join("un"));
+        std::fs::create_dir_all(src.join("chapters")).unwrap();
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        std::fs::write(src.join("assets/bg.png"), "png").unwrap();
+        std::fs::write(src.join("assets/unused.png"), "nope").unwrap();
+        std::fs::write(src.join("theme.txt"), "textbox_image = assets/box.png\n").unwrap();
+        std::fs::write(src.join("assets/box.png"), "box").unwrap();
+        std::fs::write(src.join("chapters/one.quill.md"), "# one\nThere.\n").unwrap();
+        let main = "---\ntitle: Packed\ntheme: theme.txt\n---\n::bg{src=assets/bg.png}\n::include{chapters/one.quill.md}\n";
+        std::fs::write(src.join("main.quill.md"), main).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let script = src.join("main.quill.md");
+        let program = crate::load(&script).unwrap();
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: false };
+        package(&opts, &program).unwrap();
+        assert!(out.join("game.qsa").is_file() && out.join("Packed.exe").is_file() && !out.join("game").exists());
+
+        let archive = quillstone_ui::archive::Archive::open(&out.join("game.qsa")).unwrap();
+        assert_eq!(archive.main(), "main.quill.md");
+        let assets = Assets::archive(archive, Some(out.join("game")));
+        let packed = source::parse_script_in(&assets, "main.quill.md", &assets.read_to_string("main.quill.md").unwrap()).unwrap();
+        assert!(packed.labels.contains_key("one"), "the include is read from the archive");
+        assert_eq!(assets.read_to_string("theme.txt").unwrap(), "textbox_image = assets/box.png\n");
+        assert!(assets.exists("assets/box.png") && !assets.exists("assets/unused.png"));
+        // the theme comes before the pictures the script names
+        let first: Vec<String> = {
+            let a = quillstone_ui::archive::Archive::open(&out.join("game.qsa")).unwrap();
+            let mut v: Vec<_> = a.paths().map(|p| (a.range(p).unwrap().0, p.to_string())).collect();
+            v.sort();
+            v.into_iter().map(|(_, p)| p).collect()
+        };
+        assert_eq!(first, ["main.quill.md", "chapters/one.quill.md", "theme.txt", "assets/box.png", "assets/bg.png"]);
+
+        unpack(&out.join("game.qsa"), &un).unwrap();
+        for f in &first {
+            assert_eq!(std::fs::read(un.join(f)).unwrap(), std::fs::read(src.join(f)).unwrap(), "{f}");
+        }
+        assert!(unpack(&out.join("game.qsa"), &un).unwrap_err().contains("isn't empty"));
+        assert!(unpack(&base.join("player.exe"), &base.join("un2")).unwrap_err().contains("not a usable game archive"));
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

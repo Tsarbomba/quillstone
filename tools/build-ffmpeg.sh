@@ -72,7 +72,7 @@ cd "ffmpeg-$FFMPEG_VERSION"
     --disable-everything --disable-autodetect --disable-programs --disable-doc \
     --disable-avdevice --disable-avfilter --disable-network \
     --enable-swscale --enable-swresample \
-    --enable-protocol=file \
+    --enable-protocol=file,subfile \
     --enable-demuxer=matroska,ogg \
     --enable-decoder=vp8,vp9,vorbis,opus \
     --enable-parser=vp8,vp9,vorbis,opus \

@@ -5,17 +5,16 @@
 //! voice), [`load`] decodes a whole file up front (sound effects). Everything else
 //! still goes through kira. Needs the `video` feature, which brings FFmpeg.
 
-use std::path::Path;
-
 use kira::sound::FromFileError;
+use quillstone_ui::Assets;
 
 /// Whether a file needs FFmpeg rather than kira: Opus, by extension or content.
-pub fn wants_ffmpeg(path: &Path) -> bool {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("opus")) {
+pub fn wants_ffmpeg(assets: &Assets, src: &str) -> bool {
+    if src.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("opus")) {
         return true;
     }
     let mut head = [0u8; 512];
-    let n = std::fs::File::open(path).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+    let n = assets.open(src).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
     quillstone_video::probe::probe(&head[..n]).codecs.iter().any(|c| c == "Opus")
 }
 
@@ -31,11 +30,11 @@ mod imp {
 
     const NO_FFMPEG: &str = "Opus sound needs FFmpeg, and this player was built without the `video` feature";
 
-    pub fn open(_path: &Path) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    pub fn open(_assets: &Assets, _src: &str) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
         Err(error(NO_FFMPEG))
     }
 
-    pub fn load(_path: &Path) -> Result<StaticSoundData, FromFileError> {
+    pub fn load(_assets: &Assets, _src: &str) -> Result<StaticSoundData, FromFileError> {
         Err(error(NO_FFMPEG))
     }
 }
@@ -53,12 +52,12 @@ mod imp {
     use kira::sound::streaming::{Decoder, StreamingSoundData};
     use kira::Frame;
 
-    pub fn open(path: &Path) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
-        Ok(StreamingSoundData::from_decoder(FfmpegAudio::open(path)?))
+    pub fn open(assets: &Assets, src: &str) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+        Ok(StreamingSoundData::from_decoder(FfmpegAudio::open(&assets.ffmpeg_url(src))?))
     }
 
-    pub fn load(path: &Path) -> Result<StaticSoundData, FromFileError> {
-        let mut d = FfmpegAudio::open(path)?;
+    pub fn load(assets: &Assets, src: &str) -> Result<StaticSoundData, FromFileError> {
+        let mut d = FfmpegAudio::open(&assets.ffmpeg_url(src))?;
         let mut frames = Vec::with_capacity(d.length);
         while let Some(chunk) = d.next_chunk()? {
             frames.extend(chunk);
@@ -89,9 +88,10 @@ mod imp {
     }
 
     impl FfmpegAudio {
-        fn open(path: &Path) -> Result<FfmpegAudio, FromFileError> {
+        /// `url` is a path or an FFmpeg `subfile` URL (see `Assets::ffmpeg_url`).
+        fn open(url: &str) -> Result<FfmpegAudio, FromFileError> {
             crate::video::init_ffmpeg();
-            let input = ff::format::input(path).map_err(|e| error(format!("cannot open: {e}")))?;
+            let input = ff::format::input(url).map_err(|e| error(format!("cannot open: {e}")))?;
             let stream = input.streams().best(ff::media::Type::Audio).ok_or(FromFileError::NoDefaultTrack)?;
             let index = stream.index();
             let context = ff::codec::context::Context::from_parameters(stream.parameters())
@@ -221,13 +221,15 @@ mod imp {
         use super::*;
 
         /// The test clip's sound track is Opus; FFmpeg reads it straight from the WebM.
-        fn clip() -> std::path::PathBuf {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/bars-vp9.webm")
+        fn assets() -> Assets {
+            Assets::folder(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
         }
+
+        const CLIP: &str = "player/tests/data/bars-vp9.webm";
 
         #[test]
         fn opus_sound_decodes_whole() {
-            let data = load(&clip()).unwrap();
+            let data = load(&assets(), CLIP).unwrap();
             assert_eq!(data.sample_rate, 48_000, "Opus always decodes at 48 kHz");
             let seconds = data.frames.len() as f64 / 48_000.0;
             assert!((seconds - 1.2).abs() < 0.05, "about as long as the clip: {seconds} s");
@@ -236,7 +238,7 @@ mod imp {
 
         #[test]
         fn streaming_gives_the_stated_length_and_loops_back_exactly() {
-            let mut d = FfmpegAudio::open(&clip()).unwrap();
+            let mut d = FfmpegAudio::open(&assets().ffmpeg_url(CLIP)).unwrap();
             let length = d.num_frames();
             let mut first = Vec::new();
             while first.len() < length {
@@ -253,10 +255,9 @@ mod imp {
 
         #[test]
         fn opus_is_recognised_by_content_and_name() {
-            assert!(wants_ffmpeg(&clip()), "Opus inside WebM");
-            assert!(wants_ffmpeg(Path::new("voice/line1.opus")), "by name, even before it exists");
-            let calm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/assets/calm.ogg");
-            assert!(!wants_ffmpeg(&calm), "Vorbis stays with kira");
+            assert!(wants_ffmpeg(&assets(), CLIP), "Opus inside WebM");
+            assert!(wants_ffmpeg(&assets(), "voice/line1.opus"), "by name, even before it exists");
+            assert!(!wants_ffmpeg(&assets(), "examples/assets/calm.ogg"), "Vorbis stays with kira");
         }
     }
 }

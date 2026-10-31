@@ -6,22 +6,21 @@
 //! to RGBA for upload. Hardware decode and the clip's audio track come later.
 //! Without the feature, every video reports that no decoder is built in.
 
-use std::path::{Path, PathBuf};
-
+use quillstone_ui::Assets;
 use quillstone_video::{Decoder, OpenFn, TestPattern};
 
-/// How the player opens video files (paths are relative to the script's folder).
+/// How the player opens video files (paths are relative to the game's files).
 /// `QUILLSTONE_TEST_VIDEO=1` plays a 3-second test pattern for every video instead.
-pub fn opener(root: &Path) -> OpenFn {
+pub fn opener(assets: &Assets) -> OpenFn {
     if std::env::var_os("QUILLSTONE_TEST_VIDEO").is_some_and(|v| v == "1") {
         return Box::new(|_src: &str| Ok(Box::new(TestPattern::new(640, 360, 30, 90)) as Box<dyn Decoder>));
     }
-    let root: PathBuf = root.to_path_buf();
-    Box::new(move |src: &str| open(&root.join(src)))
+    let assets = assets.clone();
+    Box::new(move |src: &str| open(&assets.ffmpeg_url(src)))
 }
 
 #[cfg(not(feature = "video"))]
-fn open(_path: &Path) -> Result<Box<dyn Decoder>, String> {
+fn open(_url: &str) -> Result<Box<dyn Decoder>, String> {
     Err("this player was built without the `video` feature (no FFmpeg)".into())
 }
 
@@ -36,13 +35,12 @@ pub fn init_ffmpeg() {
 }
 
 #[cfg(feature = "video")]
-fn open(path: &Path) -> Result<Box<dyn Decoder>, String> {
-    Ok(Box::new(real::FfmpegDecoder::open(path)?))
+fn open(url: &str) -> Result<Box<dyn Decoder>, String> {
+    Ok(Box::new(real::FfmpegDecoder::open(url)?))
 }
 
 #[cfg(feature = "video")]
 mod real {
-    use std::path::Path;
     use std::time::Duration;
 
     use ffmpeg_next as ff;
@@ -79,9 +77,10 @@ mod real {
     }
 
     impl FfmpegDecoder {
-        pub fn open(path: &Path) -> Result<FfmpegDecoder, String> {
+        /// `url` is a path or an FFmpeg `subfile` URL (see `Assets::ffmpeg_url`).
+        pub fn open(url: &str) -> Result<FfmpegDecoder, String> {
             super::init_ffmpeg();
-            let input = ff::format::input(path).map_err(|e| err("cannot open", e))?;
+            let input = ff::format::input(url).map_err(|e| err("cannot open", e))?;
             let stream = input.streams().best(ff::media::Type::Video).ok_or("the file has no video stream")?;
             let index = stream.index();
             let tb = stream.time_base();
@@ -191,9 +190,10 @@ mod real {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::path::Path;
 
-        fn clip(name: &str) -> std::path::PathBuf {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
+        fn clip(name: &str) -> String {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name).to_string_lossy().into_owned()
         }
 
         fn all_frames(d: &mut FfmpegDecoder) -> Vec<TimedFrame<Picture>> {
@@ -227,13 +227,33 @@ mod real {
         #[test]
         fn missing_files_are_errors_not_panics() {
             assert!(FfmpegDecoder::open(&clip("nope.webm")).is_err());
-            assert!(FfmpegDecoder::open(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml").as_path()).is_err());
+            assert!(FfmpegDecoder::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml").to_string_lossy()).is_err());
+        }
+
+        /// A clip inside a game archive is read through FFmpeg's `subfile` protocol (see `Assets::ffmpeg_url`).
+        #[test]
+        fn a_clip_inside_an_archive_decodes_like_the_loose_file() {
+            let dir = std::env::temp_dir().join(format!("qs-video-subfile-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("main.quill.md"), "Hi.\n").unwrap();
+            let list = [
+                ("main.quill.md".to_string(), dir.join("main.quill.md")),
+                ("bars.webm".to_string(), clip("bars-vp9.webm").into()),
+            ];
+            quillstone_ui::archive::write(&dir.join("game.qsa"), "main.quill.md", &list).unwrap();
+            let archive = quillstone_ui::archive::Archive::open(&dir.join("game.qsa")).unwrap();
+            let assets = Assets::archive(archive, None);
+            let mut d = FfmpegDecoder::open(&assets.ffmpeg_url("bars.webm")).unwrap();
+            assert_eq!(all_frames(&mut d).len(), 12);
+            d.rewind().unwrap();
+            assert_eq!(all_frames(&mut d).len(), 12, "seeking works inside the range");
+            let _ = std::fs::remove_dir_all(dir);
         }
 
         #[test]
         fn the_demo_flashback_plays_through_the_pipeline() {
             let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/assets/flashback.webm");
-            let d = FfmpegDecoder::open(&path).unwrap();
+            let d = FfmpegDecoder::open(&path.to_string_lossy()).unwrap();
             let mut c = quillstone_video::Clip::start(Box::new(d), false);
             assert!(c.wait_buffered(3, Duration::from_secs(5)));
             assert!(c.advance(Duration::ZERO));

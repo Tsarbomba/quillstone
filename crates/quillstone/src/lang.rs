@@ -250,7 +250,7 @@ mod tests {
         let out = src.join("out");
         std::fs::write(src.join("player.exe"), "exe").unwrap();
         let program = crate::load(&src.join("main.quill.md")).unwrap();
-        let opts = crate::package::Options { script: &src.join("main.quill.md"), player: &src.join("player.exe"), out: &out, name: None, libs: None };
+        let opts = crate::package::Options { script: &src.join("main.quill.md"), player: &src.join("player.exe"), out: &out, name: None, libs: None, folder: true };
         crate::package::package(&opts, &program).unwrap();
         assert!(out.join("game/lang/sv.txt").is_file());
         assert!(!out.join("game/lang/fr.txt").exists(), "only languages the script lists");

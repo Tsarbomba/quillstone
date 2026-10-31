@@ -92,9 +92,9 @@ errors, a notice shows the first one (all of them go to the console) and the old
 version keeps running. New pictures are picked up too; a new theme font needs a
 restart.
 
-Run without a script argument, the player plays `main.quill.md` (or the only
-`.quill.md` file) from a `game` folder next to its executable, or else from the
-executable's own folder. That is how a shipped game starts: players just
+Run without a script argument, the player plays `game.qsa` if it sits next to its
+executable, else `main.quill.md` (or the only `.quill.md` file) from a `game`
+folder next to it, or else from the executable's own folder. That is how a shipped game starts: players just
 double-click the exe. If it can't start, the reason is also written to
 `error.txt` next to the exe.
 
@@ -157,11 +157,23 @@ cargo run --release -p quillstone -- package examples/demo.quill.md --player pla
 `MyGame/` then holds `Quillstone Demo.exe` (named after the title; `--name` picks
 another), FFmpeg's five DLLs (avcodec, avformat, avutil, swscale, swresample;
 never avfilter or avdevice), `licenses/FFmpeg.txt` (the LGPL notice FFmpeg
-requires) and `game/` with the script and only the files it and its theme use.
-Zip the folder; players unzip it and double-click the exe. The script is checked
-first, assets outside the script's folder are refused, and an existing non-empty
-`--out` folder is never overwritten. Without `--libs`, the DLLs are taken from
-beside the player.
+requires) and `game.qsa`: the script and only the files it and its theme use, packed
+into one file (stored as they are, not compressed or scrambled, so it is only a
+tidy way to ship them). Zip the folder; players unzip it and double-click the exe.
+The script is checked first, assets outside the script's folder are refused, and
+an existing non-empty `--out` folder is never overwritten. Without `--libs`, the
+DLLs are taken from beside the player.
+
+Add `--folder` to get a `game/` folder of loose files instead of `game.qsa`.
+`quillstone unpack MyGame/game.qsa --out look-inside` writes the files of an
+archive into a new folder, to see what is in it.
+
+**Patches and mods.** Put a file at the same path in a `game/` folder beside the
+exe and it replaces the shipped one: a new `assets/room.png`, a fixed
+`chapters/ch2.quill.md`, a `lang/fr.txt` translation. A file with a path the game
+doesn't have yet is simply added (a voice recording in the voice folder, say).
+`quillstone-player path/to/game.qsa` does the same with the `game/` folder beside
+that archive.
 
 **Slim FFmpeg for shipping.** The full FFmpeg download carries every codec FFmpeg
 has (~130 MB of DLLs). `tools/build-ffmpeg.sh` builds one with only what Quillstone

@@ -13,9 +13,8 @@
 //! intro's length, so the join is sample-accurate to within one kira buffer (about 3 ms). Without the `audio` feature, or without a sound device, the game
 //! simply runs silent.
 
-use std::path::Path;
-
 use quillstone_audio::Action;
+use quillstone_ui::Assets;
 
 #[cfg(feature = "audio")]
 pub use real::Audio;
@@ -29,7 +28,7 @@ mod stub {
     pub struct Audio;
 
     impl Audio {
-        pub fn new<'a>(_root: &Path, _sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
+        pub fn new<'a>(_assets: &Assets, _sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
             None
         }
 
@@ -54,7 +53,8 @@ mod real {
     use super::*;
     use std::collections::{HashMap, HashSet};
     use std::fmt::Display;
-    use std::path::PathBuf;
+    use std::io::{Read, Seek, SeekFrom};
+    use quillstone_ui::assets::AssetFile;
     use std::time::Duration;
 
     use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
@@ -75,7 +75,7 @@ mod real {
     const LEAD_TICKS: f64 = 60.0;
 
     pub struct Audio {
-        root: PathBuf,
+        assets: Assets,
         // Kept alive: dropping the manager stops all sound.
         _manager: AudioManager<DefaultBackend>,
         music_track: TrackHandle,
@@ -105,8 +105,8 @@ mod real {
 
     impl Audio {
         /// Open the default sound device and preload the given sound effects
-        /// (paths relative to `root`). `None` if there is no usable device.
-        pub fn new<'a>(root: &Path, sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
+        /// (paths relative to the game's files). `None` if there is no usable device.
+        pub fn new<'a>(assets: &Assets, sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
             let mut manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
                 Ok(m) => m,
                 Err(e) => {
@@ -120,7 +120,7 @@ mod real {
             clock.start();
 
             let mut audio = Audio {
-                root: root.to_path_buf(),
+                assets: assets.clone(),
                 _manager: manager,
                 music_track,
                 sfx_track,
@@ -138,7 +138,7 @@ mod real {
             };
             for src in sfx {
                 if !audio.sfx.contains_key(src) {
-                    match load(&audio.root.join(src)) {
+                    match load(&audio.assets, src) {
                         Ok(data) => {
                             audio.sfx.insert(src.to_string(), data);
                         }
@@ -331,7 +331,7 @@ mod real {
             if let Some(data) = self.sfx.get(src) {
                 return Some(data.clone()); // cheap: the samples are shared
             }
-            match load(&self.root.join(src)) {
+            match load(&self.assets, src) {
                 Ok(data) => {
                     self.sfx.insert(src.to_string(), data.clone());
                     Some(data)
@@ -357,9 +357,11 @@ mod real {
         }
 
         fn stream(&mut self, src: &str) -> Option<StreamingSoundData<FromFileError>> {
-            let path = self.root.join(src);
-            let data =
-                if crate::ffaudio::wants_ffmpeg(&path) { crate::ffaudio::open(&path) } else { StreamingSoundData::from_file(path) };
+            let data = if crate::ffaudio::wants_ffmpeg(&self.assets, src) {
+                crate::ffaudio::open(&self.assets, src)
+            } else {
+                self.assets.open(src).map_err(FromFileError::from).and_then(|f| StreamingSoundData::from_media_source(Source(f)))
+            };
             match data {
                 Ok(data) => Some(data),
                 Err(e) => {
@@ -377,11 +379,37 @@ mod real {
     }
 
     /// A whole sound file, decoded (for sound effects).
-    fn load(path: &Path) -> Result<StaticSoundData, FromFileError> {
-        if crate::ffaudio::wants_ffmpeg(path) {
-            crate::ffaudio::load(path)
+    fn load(assets: &Assets, src: &str) -> Result<StaticSoundData, FromFileError> {
+        if crate::ffaudio::wants_ffmpeg(assets, src) {
+            crate::ffaudio::load(assets, src)
         } else {
-            StaticSoundData::from_file(path)
+            StaticSoundData::from_media_source(Source(assets.open(src)?))
+        }
+    }
+
+    /// A game file as symphonia (kira's decoder) wants it: it reads and seeks the file or archive entry
+    /// directly, so music streams from the archive without being copied into memory.
+    pub struct Source(pub AssetFile);
+
+    impl Read for Source {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl Seek for Source {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(to)
+        }
+    }
+
+    impl symphonia::core::io::MediaSource for Source {
+        fn is_seekable(&self) -> bool {
+            true
+        }
+
+        fn byte_len(&self) -> Option<u64> {
+            self.0.len().ok()
         }
     }
 
@@ -390,5 +418,44 @@ mod real {
             return Tween::default(); // kira's default is a 10 ms ramp
         }
         Tween { duration: Duration::from_secs_f32(seconds), ..Default::default() }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A 16-bit mono WAV of `n` silent samples.
+        fn wav(n: u32) -> Vec<u8> {
+            let data = n * 2;
+            let mut w = Vec::new();
+            w.extend(b"RIFF");
+            w.extend((36 + data).to_le_bytes());
+            w.extend(b"WAVEfmt ");
+            w.extend(16u32.to_le_bytes());
+            w.extend([1, 0, 1, 0]); // PCM, mono
+            w.extend(8000u32.to_le_bytes());
+            w.extend(16000u32.to_le_bytes());
+            w.extend([2, 0, 16, 0]);
+            w.extend(b"data");
+            w.extend(data.to_le_bytes());
+            w.extend(vec![0u8; data as usize]);
+            w
+        }
+
+        #[test]
+        fn sounds_decode_from_an_archive_entry_through_a_media_source() {
+            let dir = std::env::temp_dir().join(format!("qs-audio-archive-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("main.quill.md"), "Hi.\n").unwrap();
+            std::fs::write(dir.join("a.wav"), wav(800)).unwrap();
+            let list = [("main.quill.md".to_string(), dir.join("main.quill.md")), ("snd/a.wav".to_string(), dir.join("a.wav"))];
+            quillstone_ui::archive::write(&dir.join("game.qsa"), "main.quill.md", &list).unwrap();
+            let assets = Assets::archive(quillstone_ui::archive::Archive::open(&dir.join("game.qsa")).unwrap(), None);
+            let data = load(&assets, "snd/a.wav").unwrap();
+            assert_eq!((data.sample_rate, data.frames.len()), (8000, 800));
+            assert!(StreamingSoundData::from_media_source(Source(assets.open("snd/a.wav").unwrap())).is_ok());
+            assert!(load(&assets, "snd/missing.wav").is_err());
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

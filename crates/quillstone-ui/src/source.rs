@@ -3,6 +3,8 @@
 use std::io::Read;
 use std::path::Path;
 
+use crate::assets::Assets;
+
 use std::collections::BTreeMap;
 
 use quillstone_script::{check_translation, language_file, parse_files, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES};
@@ -10,7 +12,12 @@ use quillstone_script::{check_translation, language_file, parse_files, Catalog, 
 /// The text of an included file: `rel` (a game-folder path the parser has already checked) under `root`.
 /// At most [`MAX_INCLUDE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
 pub fn read_include(root: &Path, rel: &str) -> Result<String, String> {
-    let file = std::fs::File::open(root.join(rel)).map_err(|e| e.to_string())?;
+    read_include_in(&Assets::folder(root), rel)
+}
+
+/// Like [`read_include`], from any [`Assets`] (a folder, or a game archive with loose files over it).
+pub fn read_include_in(assets: &Assets, rel: &str) -> Result<String, String> {
+    let file = assets.open(rel).map_err(|e| e.to_string())?;
     let mut text = String::new();
     file.take(MAX_INCLUDE_BYTES as u64 + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
     Ok(text)
@@ -22,6 +29,11 @@ pub fn parse_script(script: &Path, src: &str) -> Result<Program, Vec<ParseError>
     let root = script.parent().unwrap_or_else(|| Path::new("."));
     let main = script.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     parse_files(src, &main, &|rel| read_include(root, rel))
+}
+
+/// Compile `src`, the text of the script `main` (a game-folder path), reading its `::include`s from `assets`.
+pub fn parse_script_in(assets: &Assets, main: &str, src: &str) -> Result<Program, Vec<ParseError>> {
+    parse_files(src, main, &|rel| read_include_in(assets, rel))
 }
 
 /// One `path:line: error: message` per error, each with the path of the file it is in (an included
@@ -44,7 +56,12 @@ pub fn script_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf>
 /// The text of `lang/<code>.txt` under the game folder `root`: `Ok(None)` when there is no such
 /// file. At most [`MAX_FILE_BYTES`] + 1 are read, so a huge file can't fill memory (the parser then refuses it).
 pub fn read_translation(root: &Path, code: &str) -> Result<Option<String>, String> {
-    let file = match std::fs::File::open(root.join(language_file(code))) {
+    read_translation_in(&Assets::folder(root), code)
+}
+
+/// Like [`read_translation`], from any [`Assets`].
+pub fn read_translation_in(assets: &Assets, code: &str) -> Result<Option<String>, String> {
+    let file = match assets.open(&language_file(code)) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -58,11 +75,15 @@ pub fn read_translation(root: &Path, code: &str) -> Result<Option<String>, Strin
 /// one `lang/<code>.txt:line: message` per problem. A file that doesn't parse is left out, and a
 /// translation whose tags don't match its original is blanked: that text shows the script's own.
 pub fn load_translations(script: &Path, program: &Program) -> (BTreeMap<String, Catalog>, Vec<String>) {
-    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    load_translations_in(&Assets::folder(script.parent().unwrap_or_else(|| Path::new("."))), program)
+}
+
+/// Like [`load_translations`], from any [`Assets`].
+pub fn load_translations_in(assets: &Assets, program: &Program) -> (BTreeMap<String, Catalog>, Vec<String>) {
     let (mut found, mut problems) = (BTreeMap::new(), Vec::new());
     for lang in program.languages.iter().skip(1) {
         let file = language_file(&lang.code);
-        match read_translation(root, &lang.code) {
+        match read_translation_in(assets, &lang.code) {
             Ok(None) => {}
             Ok(Some(text)) => match Catalog::parse(&text) {
                 Ok(mut cat) => {

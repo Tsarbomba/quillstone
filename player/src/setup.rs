@@ -1,14 +1,13 @@
 //! Loading a game's theme and fonts, shared by the player.
 
-use std::path::Path;
-
 use quillstone_render::Theme;
 use quillstone_script::Program;
+use quillstone_ui::Assets;
 
 /// The theme the script names in its front matter, or the built-in look.
-pub fn load_theme(program: &Program, root: &Path) -> Theme {
+pub fn load_theme(program: &Program, assets: &Assets) -> Theme {
     let Some(file) = &program.theme else { return Theme::default() };
-    match std::fs::read_to_string(root.join(file)) {
+    match assets.read_to_string(file) {
         Ok(text) => {
             let (theme, problems) = Theme::parse(&text);
             for p in problems {
@@ -24,10 +23,10 @@ pub fn load_theme(program: &Program, root: &Path) -> Theme {
 }
 
 /// The theme's font files (regular first), as the text renderer wants them.
-pub fn load_fonts(theme: &Theme, root: &Path) -> Vec<Vec<u8>> {
+pub fn load_fonts(theme: &Theme, assets: &Assets) -> Vec<Vec<u8>> {
     theme
         .fonts()
         .into_iter()
-        .filter_map(|f| std::fs::read(root.join(f)).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
+        .filter_map(|f| assets.read(f).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
         .collect()
 }

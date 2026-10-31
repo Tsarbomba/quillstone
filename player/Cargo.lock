@@ -2003,6 +2003,7 @@ dependencies = [
  "quillstone-script",
  "quillstone-ui",
  "quillstone-video",
+ "symphonia",
  "wgpu",
  "winit",
 ]

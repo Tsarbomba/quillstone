@@ -4,12 +4,12 @@
 //! pictures starts at once and holds only the ones near where the player is.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 
 use quillstone_render::pixels::Level;
 use quillstone_render::Size;
+use quillstone_ui::Assets;
 
 use crate::gfx::{self, Gfx};
 
@@ -39,6 +39,18 @@ fn to_evict(loaded: &HashMap<String, (u64, u64)>, frame: u64, budget: u64) -> Ve
         drop.push(src.clone());
     }
     drop
+}
+
+/// Decode a picture; the format is guessed from its content, not its name.
+fn decode(file: impl std::io::Read + std::io::Seek) -> Result<(u32, u32, Vec<Level>), String> {
+    let img = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok((w, h, gfx::prepare_image(w, h, rgba.into_raw())))
 }
 
 /// What the decoder threads still have to do: what the screen shows first, then the look-ahead.
@@ -87,12 +99,12 @@ pub struct Images {
 }
 
 impl Images {
-    /// Paths are relative to `root` (the script's folder).
-    pub fn new(root: PathBuf) -> Images {
+    /// Paths are relative to the game's files.
+    pub fn new(assets: Assets) -> Images {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let (done, results) = channel();
         for _ in 0..WORKERS {
-            let (queue, done, root) = (queue.clone(), done.clone(), root.clone());
+            let (queue, done, assets) = (queue.clone(), done.clone(), assets.clone());
             let worker = move || loop {
                 let src = {
                     let (lock, wake) = &*queue;
@@ -108,14 +120,8 @@ impl Images {
                     }
                 };
                 // A decoder bug must not leave the image pending forever or kill the thread.
-                let decoded = std::panic::catch_unwind(|| {
-                    image::open(root.join(&src)).map_err(|e| e.to_string()).map(|img| {
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        (w, h, gfx::prepare_image(w, h, rgba.into_raw()))
-                    })
-                })
-                .unwrap_or_else(|_| Err("the decoder crashed on this file".into()));
+                let decoded = std::panic::catch_unwind(|| assets.open(&src).map_err(|e| e.to_string()).and_then(decode))
+                    .unwrap_or_else(|_| Err("the decoder crashed on this file".into()));
                 if done.send((src, decoded)).is_err() {
                     return; // the player is closing
                 }
@@ -203,7 +209,7 @@ impl Drop for Images {
 
 #[cfg(test)]
 mod tests {
-    use super::{to_evict, Queue};
+    use super::{decode, to_evict, Queue};
     use std::collections::HashMap;
 
     #[test]
@@ -241,5 +247,15 @@ mod tests {
         assert_eq!(to_evict(&loaded, 9, 25), ["old", "mid"]);
         assert_eq!(to_evict(&loaded, 9, 0), ["old", "mid", "new"]); // "now" is wanted: kept even over budget
         assert!(to_evict(&loaded, 9, 40).is_empty());
+    }
+
+    #[test]
+    fn a_picture_decodes_from_bytes_whatever_its_name() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let (w, h, levels) = decode(std::io::Cursor::new(png.into_inner())).unwrap();
+        assert_eq!((w, h), (3, 2));
+        assert!(!levels.is_empty());
+        assert!(decode(std::io::Cursor::new(b"not a picture".to_vec())).is_err());
     }
 }

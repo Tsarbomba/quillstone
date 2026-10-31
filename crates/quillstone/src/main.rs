@@ -34,10 +34,13 @@ USAGE:
                                 the script are flagged obsolete (translations are never deleted)
     quillstone dump  <script>   print the compiled ops and labels
     quillstone run   <script>   play the script in the terminal
-    quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>]
+    quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder]
                                 build a folder players can unzip and run: the player
                                 (renamed after the title, or --name), FFmpeg's libraries
-                                (from beside the player, or --libs) and the files the game uses
+                                (from beside the player, or --libs) and the files the game uses,
+                                packed into game.qsa (or, with --folder, loose in game/)
+    quillstone unpack <game.qsa> --out <folder>
+                                write the files inside a game archive into a new folder
 ";
 
 fn main() -> ExitCode {
@@ -60,6 +63,7 @@ fn main() -> ExitCode {
         ["lang", "export", file, code] => load(Path::new(file)).and_then(|p| lang::export(Path::new(file), &p, code)),
         ["run", file] => run(Path::new(file)),
         ["package", file, rest @ ..] => package_cmd(Path::new(file), rest),
+        ["unpack", file, "--out", out] => package::unpack(Path::new(file), Path::new(out)),
         _ => {
             eprint!("{USAGE}");
             return ExitCode::from(2);
@@ -817,9 +821,14 @@ fn test(path: &Path, limit: usize) -> Result<Explored, String> {
 
 fn package_cmd(script: &Path, flags: &[&str]) -> Result<(), String> {
     let (mut player, mut out, mut name, mut libs) = (None, None, None, None);
+    let mut folder = false;
     let mut it = flags.iter();
     while let Some(&flag) = it.next() {
         let slot = match flag {
+            "--folder" => {
+                folder = true;
+                continue;
+            }
             "--player" => &mut player,
             "--out" => &mut out,
             "--name" => &mut name,
@@ -838,6 +847,7 @@ fn package_cmd(script: &Path, flags: &[&str]) -> Result<(), String> {
         out: Path::new(out),
         name,
         libs: libs.map(Path::new),
+        folder,
     };
     package::package(&opts, &load(script)?)
 }

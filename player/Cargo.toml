@@ -17,7 +17,7 @@ default = ["text", "audio", "video", "gamepad"]
 # window, images and panels without text (useful if only that part fails to compile).
 text = ["dep:cosmic-text"]
 # Music, sound effects and voice with kira. Without it the game runs silent.
-audio = ["dep:kira"]
+audio = ["dep:kira", "dep:symphonia"]
 # Video playback with FFmpeg, which also plays Opus sound files. Needs FFmpeg
 # (8.x shared build) and libclang to build: see README.md. Without it, videos
 # show a placeholder and Opus files don't play.
@@ -44,6 +44,8 @@ bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 cosmic-text = { version = "0.19", optional = true }
 kira = { version = "0.12", optional = true, default-features = false, features = ["cpal", "ogg", "vorbis", "wav", "mp3", "flac"] }
+# Only for its `MediaSource` trait, which kira's decoders take (same version and features as kira's own).
+symphonia = { version = "0.6", optional = true, default-features = false }
 gilrs = { version = "0.11", optional = true }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 

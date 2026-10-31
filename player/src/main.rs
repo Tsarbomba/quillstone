@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
 use quillstone_script::{AssetKind, Op, Program};
-use quillstone_ui::{Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
+use quillstone_ui::{Assets, Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -46,7 +46,11 @@ struct App {
     title: String,
     game: Game<'static>,
     gamepads: gamepad::Gamepads,
-    /// The script file and its folder, for hot reload.
+    /// Where the game's files come from (a folder, or an archive with loose files over it).
+    assets: Assets,
+    /// The script as the game's files name it (`main.quill.md`), and where it is on disk when it is a
+    /// folder game (the folder is also what hot reload watches; an archive game is never reloaded).
+    script_name: String,
     script_path: PathBuf,
     root: PathBuf,
     watch: reload::Watch,
@@ -103,25 +107,31 @@ fn main() {
             let _ = std::fs::write(dir.join("error.txt"), format!("the game crashed: {info}\n"));
         }
     }));
-    let path = match std::env::args().nth(1) {
-        Some(p) => PathBuf::from(p),
+    let (assets, path) = match std::env::args().nth(1) {
+        Some(p) if p.ends_with(".qsa") => open_archive(Path::new(&p)),
+        Some(p) => open_folder(PathBuf::from(p)),
         None => find_game().unwrap_or_else(|| {
             fatal(
-                "usage: quillstone-player <script.quill.md>\n\
-                 (or put the script next to the player, or in a `game` folder beside it, as main.quill.md)"
+                "usage: quillstone-player <script.quill.md | game.qsa>\n\
+                 (or put game.qsa next to the player, or the script in a `game` folder beside it as main.quill.md)"
                     .into(),
             )
         }),
     };
-    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| fatal(format!("cannot read {}: {e}", path.display())));
-    let program = quillstone_ui::source::parse_script(&path, &source)
+    let script_name = match assets.main_script() {
+        Some(main) => main.to_string(),
+        None => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    let source = assets.read_to_string(&script_name).unwrap_or_else(|e| fatal(format!("cannot read {}: {e}", path.display())));
+    let program = quillstone_ui::source::parse_script_in(&assets, &script_name, &source)
         .unwrap_or_else(|errors| fatal(quillstone_ui::source::error_lines(&path, &errors).join("\n")));
     // The program lives as long as the app does; leaking it keeps the game simple.
     let program: &'static Program = Box::leak(Box::new(program));
     let root = path.parent().map(PathBuf::from).unwrap_or_default();
+    let reloadable = assets.main_script().is_none();
 
-    let theme = load_theme(program, &root);
-    let fonts = load_fonts(&theme, &root);
+    let theme = load_theme(program, &assets);
+    let fonts = load_fonts(&theme, &assets);
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("game").trim_end_matches(".quill");
     let dir = data_dir(&save_folder(program, stem));
@@ -141,12 +151,12 @@ fn main() {
         Op::Sfx { src, .. } => Some(src.as_str()),
         _ => None,
     });
-    let audio = Audio::new(&root, sfx);
+    let audio = Audio::new(&assets, sfx);
 
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
-    game.set_voice_files(voice_files(program, &root));
+    game.set_voice_files(voice_files(program, &assets));
     game.set_theme(theme);
-    let (translations, problems) = quillstone_ui::source::load_translations(&path, program);
+    let (translations, problems) = quillstone_ui::source::load_translations_in(&assets, program);
     for p in &problems {
         eprintln!("warning: {p}");
     }
@@ -160,15 +170,17 @@ fn main() {
         title: game.title(),
         game,
         gamepads: gamepad::Gamepads::new(),
-        watch: reload::Watch::new(&path, program, &root),
+        watch: if reloadable { reload::Watch::new(&path, program, &root) } else { reload::Watch::none() },
+        assets: assets.clone(),
+        script_name,
         script_path: path.clone(),
         root: root.clone(),
         settings_file,
         audio,
-        images: images::Images::new(root.clone()),
+        images: images::Images::new(assets.clone()),
         image_sizes: HashMap::new(),
         fonts,
-        videos: Videos::new(video::opener(&root)),
+        videos: Videos::new(video::opener(&assets)),
         uploaded: HashMap::new(),
         window: None,
         gfx: None,
@@ -189,17 +201,11 @@ fn main() {
 
 /// Auto-voice: the sound files in the script's `voice:` folder, by name without
 /// extension (which is the line's `voice_name`), as paths relative to the script.
-fn voice_files(program: &Program, root: &Path) -> HashMap<String, String> {
+fn voice_files(program: &Program, assets: &Assets) -> HashMap<String, String> {
     let Some(folder) = &program.voice_folder else { return HashMap::new() };
-    let entries = match std::fs::read_dir(root.join(folder)) {
-        Ok(entries) => entries,
-        Err(e) => {
-            eprintln!("warning: cannot read the voice folder {folder}: {e}");
-            return HashMap::new();
-        }
-    };
-    entries
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+    assets
+        .list(folder)
+        .into_iter()
         .filter(|name| quillstone_script::kind_from_path(name) == AssetKind::Audio)
         .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
         .collect()
@@ -232,21 +238,38 @@ fn exe_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
 }
 
-/// A shipped game, started by double-clicking: the script next to the executable
-/// or in a `game` folder beside it, `main.quill.md` or else the only `.quill.md` file.
-fn find_game() -> Option<PathBuf> {
+/// A game archive: its files come from it, except those that also sit loose in a `game` folder beside it.
+/// The script is the archive's main one (or the loose copy of it).
+fn open_archive(qsa: &Path) -> (Assets, PathBuf) {
+    let archive = quillstone_ui::archive::Archive::open(qsa).unwrap_or_else(|e| fatal(e));
+    let script = PathBuf::from(archive.main());
+    let overlay = qsa.parent().map(|d| d.join("game")).filter(|d| d.is_dir());
+    (Assets::archive(archive, overlay), script)
+}
+
+/// A game in a folder: the script's own folder holds its files.
+fn open_folder(script: PathBuf) -> (Assets, PathBuf) {
+    (Assets::folder(script.parent().unwrap_or_else(|| Path::new(""))), script)
+}
+
+/// A shipped game, started by double-clicking: `game.qsa` beside the executable, else the script next to
+/// the executable or in a `game` folder beside it, `main.quill.md` or else the only `.quill.md` file.
+fn find_game() -> Option<(Assets, PathBuf)> {
     let exe = exe_dir()?;
+    if exe.join("game.qsa").is_file() {
+        return Some(open_archive(&exe.join("game.qsa")));
+    }
     [exe.join("game"), exe].into_iter().find_map(|dir| {
         let main = dir.join("main.quill.md");
         if main.is_file() {
-            return Some(main);
+            return Some(open_folder(main));
         }
         let mut scripts = std::fs::read_dir(&dir)
             .ok()?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.is_file() && p.to_string_lossy().ends_with(".quill.md"));
         match (scripts.next(), scripts.next()) {
-            (Some(only), None) => Some(only),
+            (Some(only), None) => Some(open_folder(only)),
             _ => None,
         }
     })
@@ -331,8 +354,8 @@ fn fullscreen(on: bool) -> Option<Fullscreen> {
 impl App {
     /// The script or theme was saved: carry on with the new version (see `reload.rs`).
     fn reload(&mut self) {
-        let parsed = std::fs::read_to_string(&self.script_path).map_err(|e| e.to_string()).and_then(|source| {
-            quillstone_ui::source::parse_script(&self.script_path, &source).map_err(|errors| {
+        let parsed = self.assets.read_to_string(&self.script_name).map_err(|e| e.to_string()).and_then(|source| {
+            quillstone_ui::source::parse_script_in(&self.assets, &self.script_name, &source).map_err(|errors| {
                 for line in quillstone_ui::source::error_lines(&self.script_path, &errors) {
                     eprintln!("{line}");
                 }
@@ -347,8 +370,8 @@ impl App {
         };
         // Each version lives as long as the app (a few kilobytes per edit, while developing).
         let program: &'static Program = Box::leak(Box::new(program));
-        let theme = load_theme(program, &self.root);
-        let (translations, problems) = quillstone_ui::source::load_translations(&self.script_path, program);
+        let theme = load_theme(program, &self.assets);
+        let (translations, problems) = quillstone_ui::source::load_translations_in(&self.assets, program);
         for p in &problems {
             eprintln!("warning: {p}");
         }
@@ -356,7 +379,7 @@ impl App {
             Ok(()) => {
                 self.game.set_theme(theme);
                 self.game.set_translations(translations);
-                self.game.set_voice_files(voice_files(program, &self.root));
+                self.game.set_voice_files(voice_files(program, &self.assets));
                 match problems.first() {
                     Some(first) => self.game.show_notice(format!("Script reloaded; translation not loaded: {first}")),
                     None => self.game.show_notice("Script reloaded"),
