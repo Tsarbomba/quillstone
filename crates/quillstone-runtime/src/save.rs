@@ -538,7 +538,7 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             };
             w(format!("pending video {} {fit} {looped} {skippable}", q(src)));
         }
-        Some(Cmd::ShowChoices { options }) => {
+        Some(Cmd::ShowChoices { options, .. }) => {
             let opts: Vec<String> = options.iter().map(|o| q(o)).collect();
             w(format!("pending choices {}", opts.join(" ")));
         }
@@ -863,7 +863,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                         looped: b(4)?,
                         skippable: b(5)?,
                     },
-                    "choices" => Cmd::ShowChoices { options: t[2..].to_vec() },
+                    // Rebuilt from the script at `end` (so `locked` too), like the hotspots.
+                    "choices" => Cmd::ShowChoices { options: t[2..].to_vec(), locked: Vec::new() },
                     // Rebuilt from the script at `end`, once the variables are known.
                     "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
                     "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },

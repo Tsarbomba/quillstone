@@ -58,7 +58,7 @@ fn a_default_hidden_by_its_condition_falls_back_to_the_first_visible_option() {
     let p = parse(&SRC.replace("calm: 1", "calm: 0")).unwrap();
     let game = at_choice(&p);
     assert_eq!(timer(&game, &p), Some(ChoiceTimer { seconds: 8.0, default: 0 }));
-    let Some(Cmd::ShowChoices { options }) = &game.state().pending else { panic!() };
+    let Some(Cmd::ShowChoices { options, .. }) = &game.state().pending else { panic!() };
     assert_eq!(options, &["Speak", "Run"]);
     // the default is the middle option when all show: its index follows the visible list
     let p2 = parse(&SRC.replace("- [Speak](#spoke)\n", "- [Speak](#spoke){if 0}\n")).unwrap();
@@ -106,7 +106,7 @@ fn nothing_in_a_hostile_save_can_change_the_limit_or_the_default() {
     let text = save.replace("var \"calm\" int 1", "var \"calm\" int 0");
     let (loaded, _) = Session::load(&p, &text).unwrap();
     let t = timer(&loaded, &p).unwrap();
-    let Some(Cmd::ShowChoices { options }) = &loaded.state().pending else { panic!() };
+    let Some(Cmd::ShowChoices { options, .. }) = &loaded.state().pending else { panic!() };
     assert_eq!((t.seconds, t.default), (8.0, 0));
     assert!(t.default < options.len());
 }

@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{finish_input, offered_stock, step_traced, visible_options, Cmd, Input, State};
+use crate::{finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -87,14 +87,17 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         let inputs: Vec<(Input, Option<String>)> = match &state.pending {
             Some(pending @ (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) => {
                 if let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) {
-                    x.offered.extend(visible_options(all, &state.vars).into_iter().map(|i| (state.pc, i)));
+                    // A greyed option can't be picked, so it doesn't count as offered.
+                    let open = visible_options(all, &state.vars).into_iter().filter(|&i| pickable(&all[i], &state.vars));
+                    x.offered.extend(open.map(|i| (state.pc, i)));
                 }
-                let labels = match pending {
-                    Cmd::ShowChoices { options } => options.clone(),
-                    Cmd::ShowHotspots { spots } => spots.iter().map(|s| s.label.clone()).collect(),
-                    _ => Vec::new(),
+                let (labels, locked) = match pending {
+                    Cmd::ShowChoices { options, locked } => (options.clone(), locked.clone()),
+                    Cmd::ShowHotspots { spots } => (spots.iter().map(|s| s.label.clone()).collect(), Vec::new()),
+                    _ => (Vec::new(), Vec::new()),
                 };
-                labels.into_iter().enumerate().map(|(i, text)| (Input::Choose(i), Some(text))).collect()
+                let open = |i: &usize| !locked.get(*i).is_some_and(Option::is_some);
+                labels.into_iter().enumerate().filter(|(i, _)| open(i)).map(|(i, text)| (Input::Choose(i), Some(text))).collect()
             }
             Some(Cmd::ShowShop { items, .. }) => {
                 if let Some(Op::Shop { stock, .. }) = program.ops.get(state.pc) {

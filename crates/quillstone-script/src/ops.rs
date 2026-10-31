@@ -1101,8 +1101,19 @@ pub struct ChoiceOption {
     pub area: Option<Area>,
     /// Picked when a timed choice runs out (`{default}`); only in a `::choice{time=..}`.
     pub default: bool,
+    /// `{show}` / `{show="reason"}`: while `cond` is false the option is drawn greyed instead of hidden.
+    pub lock: Option<Lock>,
     /// Source line (1-based) of the option.
     pub line: usize,
+}
+
+/// How a locked option shows: `cond` of the option is what unlocks it, so it can't hide it too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lock {
+    /// Shown beside the option while it is locked; empty when the author gave none. Tagged text like the option's.
+    pub reason: String,
+    /// What still hides the option (a `{once}` option already picked); `None` = always shown.
+    pub shown_if: Option<Cond>,
 }
 
 /// A clickable region of the screen (`::hotspots`).

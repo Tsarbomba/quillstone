@@ -63,7 +63,7 @@ The charm is warm in your pocket. Tonight, nothing can go wrong.
 ::endif
 
 ::choice
-- [Climb the tower](#top){if pack has "key"}
+- [Climb the tower](#top){if pack has "key", show="You need a key"}
 - [Walk back to the market](#stalls)
 - [Go home](#home)
 ::

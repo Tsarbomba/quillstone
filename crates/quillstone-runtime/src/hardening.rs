@@ -27,7 +27,7 @@ fn labels(cmds: &[Cmd]) -> Vec<String> {
     for c in cmds {
         match c {
             Cmd::ShowHotspots { spots } => return spots.iter().map(|s| s.label.clone()).collect(),
-            Cmd::ShowChoices { options } => return options.clone(),
+            Cmd::ShowChoices { options, .. } => return options.clone(),
             _ => {}
         }
     }

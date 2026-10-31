@@ -62,17 +62,22 @@ impl Session<'_> {
                         None => Cmd::Say { speaker, color, text },
                     }
                 }
-                Cmd::ShowChoices { options } if i == last => match self.program.ops.get(self.state.pc) {
+                Cmd::ShowChoices { options, mut locked } if i == last => match self.program.ops.get(self.state.pc) {
                     Some(Op::Choice { options: src, .. }) => {
                         let visible = visible_options(src, vars);
                         if visible.len() == options.len() && src.iter().all(|o| o.area.is_none()) {
                             let texts = visible.iter().map(|&k| interpolate(cat.text(None, &src[k].text), vars));
-                            Cmd::ShowChoices { options: texts.collect() }
+                            for (slot, &k) in locked.iter_mut().zip(&visible) {
+                                if let (Some(reason), Some(l)) = (slot.as_mut(), &src[k].lock) {
+                                    *reason = interpolate(cat.text(None, &l.reason), vars);
+                                }
+                            }
+                            Cmd::ShowChoices { options: texts.collect(), locked }
                         } else {
-                            Cmd::ShowChoices { options }
+                            Cmd::ShowChoices { options, locked }
                         }
                     }
-                    _ => Cmd::ShowChoices { options },
+                    _ => Cmd::ShowChoices { options, locked },
                 },
                 Cmd::ShowHotspots { mut spots } if i == last => {
                     if let Some(Op::Choice { options: src, .. }) = self.program.ops.get(self.state.pc) {
@@ -137,7 +142,7 @@ impl Session<'_> {
                     None => line,
                 }));
             }
-            (Some(Cmd::ShowChoices { options }), Some(crate::Input::Choose(i))) => {
+            (Some(Cmd::ShowChoices { options, .. }), Some(crate::Input::Choose(i))) => {
                 let Some(shown) = options.get(*i) else { return };
                 let src = match self.program.ops.get(state.pc) {
                     Some(Op::Choice { options: src, .. }) => {

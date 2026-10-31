@@ -815,6 +815,27 @@ is really playing, so a file that can't be decoded never traps the player.
   scarf](#scarf){once}`. A menu that jumps back to itself then offers fewer and
   fewer questions, and when all of them are `once` and used up, the story carries
   on past it. Options with the same text and label count as the same option.
+- **Locked options.** An option with an `if` is hidden while the condition is false. Add `show`
+  to draw it greyed instead (it can't be picked, but it tells the player there is more to find),
+  and `show="reason"` to also print a reason in small dim text under it:
+
+  ````markdown
+  ::choice
+  - [Open the door](#door){if has_key, show}
+  - [Lift the gate](#gate){if str >= 5, show="Needs STR 5"}
+  - [Read the runes](#runes){if lore >= 3, show="???"}
+  ::
+  ````
+
+  A `show` needs an `if` (what unlocks the option), and the reason goes in double quotes. The
+  reason is optional on purpose: if you don't want to give the game away, use plain `show` (just
+  the greyed text) or write `show="???"` yourself. The reason can use `{variables}` and markup
+  like the option text, and is translated like it. A greyed option can't be clicked, chosen with
+  a number key or picked when a timed choice runs out, and the arrow keys and a gamepad skip it:
+  if the `default` option is locked then, the first pickable one is picked. A choice where every
+  option is locked counts as one with nothing on offer, so the story carries on past it. A
+  `{once}` option that was already picked stays hidden, not greyed. `show` isn't for
+  `::hotspots`. `quillstone test` never picks a locked option.
 - A **timed choice** runs out: `::choice{time=8}` (seconds, 0.5 to 600, a plain
   number) and exactly one option marked `default` in its braces. When the time is up
   that option is picked as if it had been clicked, so a silent answer is an answer too:
@@ -1231,7 +1252,7 @@ A file is plain lines that start with a marker. Nothing needs escaping: texts ar
 - `! obsolete` (above the `>`) marks a text the script no longer has.
 - Blank lines separate entries and are ignored otherwise. A line starting with anything else is an error.
 
-What can be translated: dialogue and narration, choice and hotspot texts, character names, item names
+What can be translated: dialogue and narration, choice and hotspot texts (with the reason of a locked option), character names, item names
 and descriptions, `::hud` texts, `::input` prompts, `::notify` texts, the title, `replays:` titles and the file names listed in `gallery:` and
 `music_room:`. A text with no translation shows in the script's language, without any message. The
 game's own buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.

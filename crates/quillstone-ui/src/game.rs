@@ -879,13 +879,16 @@ impl<'p> Game<'p> {
                     }
                 }
                 Key::Up | Key::Down if !self.view.choices.is_empty() => {
-                    let last = self.view.choices.len() - 1;
-                    self.choice_focus = Some(match (self.choice_focus, key) {
-                        (None, Key::Up) => last,
-                        (None, _) => 0,
-                        (Some(f), Key::Up) => f.saturating_sub(1),
-                        (Some(f), _) => (f + 1).min(last),
-                    });
+                    // Greyed options are skipped; at either end the focus stays.
+                    let open: Vec<usize> = (0..self.view.choices.len()).filter(|&i| !self.view.is_locked(i)).collect();
+                    let up = matches!(key, Key::Up);
+                    let next = match self.choice_focus {
+                        None if up => open.last(),
+                        None => open.first(),
+                        Some(f) if up => open.iter().rev().find(|&&i| i < f),
+                        Some(f) => open.iter().find(|&&i| i > f),
+                    };
+                    self.choice_focus = next.copied().or(self.choice_focus);
                 }
                 Key::Space | Key::Enter | Key::Right => {
                     if self.view.choices.is_empty() {
@@ -1136,8 +1139,11 @@ impl<'p> Game<'p> {
         }
     }
 
-    /// Pick the choice or hotspot at `index` of the visible list.
+    /// Pick the choice or hotspot at `index` of the visible list (not a greyed option).
     fn pick(&mut self, index: usize) {
+        if self.view.is_locked(index) {
+            return;
+        }
         if index < self.view.choices.len() || index < self.view.hotspots.len() {
             self.choice_focus = None;
             self.forward(Input::Choose(index));
@@ -1367,6 +1373,8 @@ mod tint_tests;
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod locked_tests;
 #[cfg(test)]
 mod lang_tests;
 #[cfg(test)]

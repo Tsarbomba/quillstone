@@ -30,6 +30,8 @@ mod particles_tests;
 mod tint_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod locked_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -136,8 +138,10 @@ pub enum Cmd {
     /// Play a clip; send [`Input::Advance`] when it ends or the player skips it.
     PlayVideo { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Show choices and wait for [`Input::Choose`]. Only the options currently
-    /// available are listed; the index refers to this list.
-    ShowChoices { options: Vec<String> },
+    /// available are listed, plus locked ones (`{show}`); the index refers to this list.
+    /// `locked` runs alongside `options`: `Some(reason)` is a greyed option that can't be
+    /// picked (the reason is empty when the author gave none), `None` a pickable one.
+    ShowChoices { options: Vec<String>, locked: Vec<Option<String>> },
     /// Show clickable regions over the background and wait for [`Input::Choose`]
     /// (from a `::hotspots` block). Like choices: only the regions currently
     /// available are listed, and the index refers to this list.
@@ -492,14 +496,24 @@ const MAX_SILENT_OPS: usize = 100_000;
 /// Safety valve: runaway recursion through `::call`.
 const MAX_CALL_DEPTH: usize = 256;
 
-/// Indices of the options currently on offer (their condition, if any, is true).
+/// Whether the option can be picked now (its condition, if any, is true).
+fn pickable(option: &ChoiceOption, vars: &Vars) -> bool {
+    option.cond.as_ref().is_none_or(|c| c.test(vars))
+}
+
+/// Indices of the options on screen: the pickable ones, and the greyed `{show}` ones.
 fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
-    options
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| o.cond.as_ref().is_none_or(|c| c.test(vars)))
-        .map(|(i, _)| i)
-        .collect()
+    let shown = |o: &ChoiceOption| match &o.lock {
+        Some(l) => l.shown_if.as_ref().is_none_or(|c| c.test(vars)),
+        None => pickable(o, vars),
+    };
+    options.iter().enumerate().filter(|(_, o)| shown(o)).map(|(i, _)| i).collect()
+}
+
+/// Whether anything in `shown` can be picked. A choice with only locked options is treated as
+/// one with no options at all (the story carries on past it), or nothing could move the game on.
+fn any_pickable(options: &[ChoiceOption], shown: &[usize], vars: &Vars) -> bool {
+    shown.iter().any(|&i| pickable(&options[i], vars))
 }
 
 /// The time limit of the timed `::choice` the state waits at. The runtime never counts the
@@ -507,24 +521,22 @@ fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChoiceTimer {
     pub seconds: f32,
-    /// Index into the visible options (the list of [`Cmd::ShowChoices`]).
+    /// Index into the visible options (the list of [`Cmd::ShowChoices`]); never a locked one.
     pub default: usize,
 }
 
 /// The timer of the choice the state waits at, if it is a timed one. It is worked out from
 /// the script and the variables each time, never stored, so rollback, saves (which are
 /// untrusted) and hot reload can't leave a wrong one behind. The default is the option marked
-/// `{default}`, or the first visible one when that is hidden by its condition.
+/// `{default}`, or the first pickable one when that is hidden or locked by its condition.
 pub fn choice_timer(state: &State, program: &Program) -> Option<ChoiceTimer> {
     if !matches!(state.pending, Some(Cmd::ShowChoices { .. })) {
         return None;
     }
     let Some(Op::Choice { options, time: Some(seconds) }) = program.ops.get(state.pc) else { return None };
     let visible = visible_options(options, &state.vars);
-    if visible.is_empty() {
-        return None;
-    }
-    let default = visible.iter().position(|&i| options[i].default).unwrap_or(0);
+    let open = |&i: &usize| pickable(&options[i], &state.vars);
+    let default = visible.iter().position(|i| options[*i].default && open(i)).or_else(|| visible.iter().position(open))?;
     Some(ChoiceTimer { seconds: *seconds, default })
 }
 
@@ -598,7 +610,9 @@ fn buy(state: &mut State, program: &Program, index: usize) -> bool {
 /// (so no input could ever move it on).
 pub(crate) fn waits_on_nothing(state: &State, program: &Program) -> bool {
     match (&state.pending, program.ops.get(state.pc)) {
-        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(Op::Choice { options, .. })) => visible_options(options, &state.vars).is_empty(),
+        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(Op::Choice { options, .. })) => {
+            !any_pickable(options, &visible_options(options, &state.vars), &state.vars)
+        }
         (Some(Cmd::ShowShop { .. }), Some(Op::Shop { stock, .. })) => offered_stock(stock, &state.vars).is_empty(),
         _ => false,
     }
@@ -658,7 +672,14 @@ fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
             .collect();
         Cmd::ShowHotspots { spots }
     } else {
-        Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&options[i].text, vars)).collect() }
+        let locked = visible
+            .iter()
+            .map(|&i| match &options[i].lock {
+                Some(l) if !pickable(&options[i], vars) => Some(interpolate(&l.reason, vars)),
+                _ => None,
+            })
+            .collect();
+        Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&options[i].text, vars)).collect(), locked }
     }
 }
 
@@ -838,7 +859,7 @@ pub(crate) fn step_traced(
                     return Vec::new();
                 };
                 let visible = visible_options(all, &state.vars);
-                let Some(&index) = visible.get(i) else { return Vec::new() };
+                let Some(&index) = visible.get(i).filter(|&&k| pickable(&all[k], &state.vars)) else { return Vec::new() };
                 let chosen = &all[index];
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
@@ -890,7 +911,7 @@ pub(crate) fn step_traced(
             }
             Op::Choice { options, .. } => {
                 let visible = visible_options(options, &state.vars);
-                if visible.is_empty() {
+                if !any_pickable(options, &visible, &state.vars) {
                     state.pc += 1; // nothing on offer: carry on past the block
                     continue;
                 }
@@ -1418,7 +1439,7 @@ vars: { trust: 0 }
                 Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None },
                 Cmd::StopMusic { fade: 0.0 },
                 say("A", "First."), // the line stays under the choices
-                Cmd::ShowChoices { options: vec!["Good".into(), "Bad".into()] },
+                Cmd::ShowChoices { options: vec!["Good".into(), "Bad".into()], locked: vec![None; 2] },
             ]
         );
         // and we can take the other branch from there
@@ -1608,7 +1629,7 @@ vars: { trust: 0 }
         let src = "---\nvars: { met: false }\n---\n::choice\n- [One](#x)\n- [Secret](#x){if met}\n- [Two](#x)\n::\n# x\n**A:** done\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert_eq!(first, vec![Cmd::ShowChoices { options: vec!["One".into(), "Two".into()] }]);
+        assert_eq!(first, vec![Cmd::ShowChoices { options: vec!["One".into(), "Two".into()], locked: vec![None; 2] }]);
         // index 1 means the second *visible* option ("Two"), and it works
         assert_eq!(game.input(Input::Choose(1)), vec![say_none("done")]);
 
@@ -1622,7 +1643,7 @@ vars: { trust: 0 }
         let src = "---\nvars: { met: true }\n---\n::choice\n- [One](#x)\n- [Secret](#x){if met, got+=1}\n::\n# x\n**A:** done\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert_eq!(first, vec![Cmd::ShowChoices { options: vec!["One".into(), "Secret".into()] }]);
+        assert_eq!(first, vec![Cmd::ShowChoices { options: vec!["One".into(), "Secret".into()], locked: vec![None; 2] }]);
         game.input(Input::Choose(1));
         assert_eq!(game.state().vars["got"], int(1));
     }
@@ -1960,7 +1981,7 @@ vars: { trust: 0 }
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
         let options = |cmds: &[Cmd]| cmds.iter().find_map(|c| match c {
-            Cmd::ShowChoices { options } => Some(options.clone()),
+            Cmd::ShowChoices { options, .. } => Some(options.clone()),
             _ => None,
         });
         assert_eq!(options(&first).unwrap(), ["Ask", "Leave"]);
@@ -2355,7 +2376,7 @@ After: [{inventory}]
         for _ in 0..20 {
             said.extend(lines(&cmds));
             if let Some(options) = cmds.iter().find_map(|c| match c {
-                Cmd::ShowChoices { options } => Some(options.clone()),
+                Cmd::ShowChoices { options, .. } => Some(options.clone()),
                 _ => None,
             }) {
                 return (said, options);

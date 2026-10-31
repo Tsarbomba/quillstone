@@ -101,7 +101,7 @@ fn choices_are_translated_and_the_line_under_them_keeps_its_own_values() {
     assert!(matches!(s.state().pending, Some(Cmd::ShowChoices { .. })));
     let cmds = s.relocalized(&sv());
     let n = cmds.len();
-    assert_eq!(cmds[n - 1], Cmd::ShowChoices { options: vec!["Gå vänster".into(), "Gå höger 6".into()] });
+    assert_eq!(cmds[n - 1], Cmd::ShowChoices { options: vec!["Gå vänster".into(), "Gå höger 6".into()], locked: vec![None; 2] });
     assert!(matches!(&cmds[n - 2], Cmd::Say { text, .. } if text == "Ja."));
 }
 
@@ -130,7 +130,7 @@ fn the_backlog_follows_the_language_and_rollback_and_saves_stay_in_the_script_la
     let (loaded, cmds) = Session::load(&p, &s.save()).unwrap();
     assert_eq!(loaded.backlog_with(&sv()).len(), s.backlog().len());
     let cmds = loaded.localize(cmds, &sv());
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { options } if options[0] == "Gå vänster")));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { options, .. } if options[0] == "Gå vänster")));
 }
 
 #[test]

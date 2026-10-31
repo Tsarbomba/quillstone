@@ -393,7 +393,11 @@ impl Program {
                 }
                 Op::Choice { options, .. } => {
                     for o in options {
-                        add(&o.text, format!("{label}:{}", self.locate(o.line).1), None);
+                        let place = format!("{label}:{}", self.locate(o.line).1);
+                        add(&o.text, place.clone(), None);
+                        if let Some(l) = &o.lock {
+                            add(&l.reason, place, None); // empty = no reason, skipped
+                        }
                     }
                 }
                 Op::Input { prompt, .. } | Op::Notify { text: prompt, .. } => add(prompt, place, None),

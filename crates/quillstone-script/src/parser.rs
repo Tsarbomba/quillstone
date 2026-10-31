@@ -2693,6 +2693,7 @@ impl Parser {
         let mut area = None;
         let mut hidden = false;
         let mut default = false;
+        let mut show: Option<String> = None;
         if hot && tail.is_empty() {
             return Err("a hotspot needs `{rect=x,y,w,h}` after its label".into());
         }
@@ -2730,6 +2731,19 @@ impl Parser {
                         return Err("`default` only belongs in a timed `::choice`, not a `::hotspots` block".into());
                     }
                     default = true;
+                } else if item == "show" || item.starts_with("show=") {
+                    if hot {
+                        return Err("`show` only belongs in a `::choice`, not a `::hotspots` block".into());
+                    }
+                    show = Some(match item.strip_prefix("show=") {
+                        None => String::new(),
+                        Some(q) => {
+                            let reason = q.strip_prefix('"').and_then(|r| r.strip_suffix('"')).filter(|r| !r.contains('"'));
+                            let reason = reason.ok_or("the reason of `show=` goes in double quotes, like `show=\"Needs STR 5\"`")?;
+                            crate::markup::check_option_markup(reason)?;
+                            reason.to_string()
+                        }
+                    });
                 } else if item == "hidden" {
                     if !hot {
                         return Err("`hidden` only belongs in a `::hotspots` block".into());
@@ -2745,11 +2759,16 @@ impl Parser {
         if let Some(a) = area.as_mut() {
             a.hidden = hidden;
         }
+        if show.is_some() && cond.is_none() {
+            return Err("`show` needs an `if`: it greys the option out while the condition is false".into());
+        }
         let target = slug(target);
+        let mut shown_if = None;
         if once {
             // Offered until picked: "not picked yet" joins the condition, and picking
             // it remembers that. Keyed by target and text, so it survives script edits.
             let not_picked = Expr::Not(Box::new(Expr::Var(format!("{ONCE}{target}:{text}"))));
+            shown_if = Some(not_picked.clone());
             cond = Some(match cond {
                 Some(c) => Expr::And(Box::new(c), Box::new(not_picked)),
                 None => not_picked,
@@ -2757,7 +2776,8 @@ impl Parser {
             let var = format!("{ONCE}{target}:{text}");
             effects.push(Effect { var, op: AssignOp::Set, value: Expr::Lit(Value::Bool(true)) });
         }
-        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area, default, line };
+        let lock = show.map(|reason| Lock { reason, shown_if });
+        let opt = ChoiceOption { text: text.to_string(), target: UNSET, effects, cond, area, default, lock, line };
         Ok((opt, target))
     }
 }
@@ -4078,6 +4098,33 @@ mod tests {
         }
         assert_eq!(vars[picked], Value::Bool(true));
         assert!(!options[0].cond.as_ref().unwrap().test(&vars), "gone once picked");
+    }
+
+    #[test]
+    fn show_greys_an_option_out_with_or_without_a_reason() {
+        let p = ok("---\nvars: { str: 1 }\n---\n# a\n::choice\n- [Plain](#a)\n- [Lift](#a){if str >= 5, show=\"Needs STR 5, you have {str}\"}\n- [Pick](#a){show, if str > 3}\n- [Gone](#a){if str > 9}\n::\n");
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
+        let reasons: Vec<Option<&str>> = options.iter().map(|o| o.lock.as_ref().map(|l| l.reason.as_str())).collect();
+        assert_eq!(reasons, [None, Some("Needs STR 5, you have {str}"), Some(""), None]);
+        assert!(options[1].cond.is_some(), "`if` is still what unlocks it");
+        assert!(options[1].lock.as_ref().unwrap().shown_if.is_none(), "nothing else hides it");
+        // `once` keeps hiding a picked option: it stays out of `shown_if`'s reach
+        let p = ok("# a\n::choice\n- [Ask](#a){once, if 1 > 2, show=\"Later\"}\n::\n");
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!() };
+        assert!(options[0].lock.as_ref().unwrap().shown_if.is_some());
+    }
+
+    #[test]
+    fn show_needs_an_if_a_quoted_reason_and_a_choice_block() {
+        let line = |src: &str, msg: &str| {
+            let errors = errs(src);
+            assert!(errors.iter().any(|e| e.line == 4 && e.message.contains(msg)), "{src}: {errors:?}");
+        };
+        line("# a\n::choice\n- [x](#a)\n- [y](#a){show}\n::\n", "`show` needs an `if`");
+        line("# a\n::choice\n- [x](#a)\n- [y](#a){if 1 > 2, show=Needs STR}\n::\n", "double quotes");
+        line("# a\n::choice\n- [x](#a)\n- [y](#a){if 1 > 2, show=\"a\"b\"}\n::\n", "double quotes");
+        line("# a\n::choice\n- [x](#a)\n- [y](#a){if 1 > 2, show=\"a{p}b\"}\n::\n", "not in a choice");
+        line("# a\n::hotspots\n- [x](#a){rect=0,0,0.1,0.1}\n- [y](#a){rect=0.5,0.5,0.1,0.1, if 1 > 2, show}\n::\n", "`show` only belongs");
     }
 
     #[test]

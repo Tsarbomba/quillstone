@@ -178,7 +178,7 @@ fn to_menu(s: &mut Session, mut cmds: Vec<Cmd>, said: &mut Vec<String>) -> Vec<S
             _ => None,
         }));
         if let Some(options) = cmds.iter().find_map(|c| match c {
-            Cmd::ShowChoices { options } => Some(options.clone()),
+            Cmd::ShowChoices { options, .. } => Some(options.clone()),
             _ => None,
         }) {
             return options;
@@ -263,7 +263,7 @@ fn a_roll_in_the_stats_demo_cannot_be_rerolled_by_going_back() {
     // back to the menu before the pick, and pick again: the same roll
     while s.rollback().is_some() && !matches!(s.state().pending, Some(Cmd::ShowChoices { .. })) {}
     let i = match &s.state().pending {
-        Some(Cmd::ShowChoices { options }) => options.iter().position(|o| o.starts_with("Pick the old")).unwrap(),
+        Some(Cmd::ShowChoices { options, .. }) => options.iter().position(|o| o.starts_with("Pick the old")).unwrap(),
         other => panic!("{other:?}"),
     };
     s.input(Input::Choose(i));

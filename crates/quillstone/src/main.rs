@@ -1031,10 +1031,14 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::PlayVoice { src } => println!("[voice: {src}]"),
             Cmd::Wait { seconds } => println!("[wait {seconds}s]"),
             Cmd::PlayVideo { src, .. } => println!("[video: {src}]"),
-            Cmd::ShowChoices { options } => {
+            Cmd::ShowChoices { options, locked } => {
                 println!();
                 for (i, text) in options.iter().enumerate() {
-                    println!("  {}. {}", i + 1, plain(text));
+                    match locked.get(i) {
+                        Some(Some(reason)) if !reason.is_empty() => println!("  {}. {}  [locked: {}]", i + 1, plain(text), plain(reason)),
+                        Some(Some(_)) => println!("  {}. {}  [locked]", i + 1, plain(text)),
+                        _ => println!("  {}. {}", i + 1, plain(text)),
+                    }
                 }
             }
             Cmd::ShowHotspots { spots } => {

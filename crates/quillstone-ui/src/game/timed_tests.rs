@@ -141,7 +141,7 @@ fn the_clock_does_not_run_while_the_line_over_the_options_is_still_typing() {
     g.view.set_speed(10.0);
     let say = Cmd::Say { speaker: None, color: None, text: "A line that takes a while to type".into() };
     let options = ["Speak", "Stay quiet", "Run"].map(String::from).to_vec();
-    g.view.apply(&[say, Cmd::ShowChoices { options }]);
+    g.view.apply(&[say, Cmd::ShowChoices { options, locked: Vec::new() }]);
     g.choice_elapsed = 0.0;
     assert_eq!(g.view().choices.len(), 3);
     assert!(!g.view().dialogue.as_ref().unwrap().is_complete(), "still typing");

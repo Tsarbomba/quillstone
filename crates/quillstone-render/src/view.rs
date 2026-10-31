@@ -658,6 +658,8 @@ pub struct View {
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
     pub choices: Vec<String>,
+    /// Alongside `choices`: `Some(reason)` for a greyed option that can't be picked (the reason may be empty).
+    pub locked: Vec<Option<String>>,
     /// Clickable regions over the background (`::hotspots`), in the order the runtime lists them.
     pub hotspots: Vec<Spot>,
     pub video: Option<VideoView>,
@@ -705,6 +707,7 @@ impl View {
             images: Vec::new(),
             dialogue: None,
             choices: Vec::new(),
+            locked: Vec::new(),
             hotspots: Vec::new(),
             video: None,
             finished: false,
@@ -829,6 +832,7 @@ impl View {
         // after rollback re-sends them, since the runtime tracks them.)
         self.images.clear();
         self.choices.clear();
+        self.locked.clear();
         self.hotspots.clear();
         self.video = None;
         self.wait = None;
@@ -955,7 +959,10 @@ impl View {
                         }
                     }
                 }
-                Cmd::ShowChoices { options } => self.choices = options.clone(),
+                Cmd::ShowChoices { options, locked } => {
+                    self.choices = options.clone();
+                    self.locked = locked.clone();
+                }
                 Cmd::ShowHotspots { spots } => self.hotspots = spots.clone(),
                 Cmd::Wait { seconds } => self.wait = Some(*seconds),
                 Cmd::PlayVideo { src, fit, looped, skippable } => {
@@ -1280,9 +1287,14 @@ impl View {
         true
     }
 
-    /// Which choice button (if any) contains this virtual-space point.
+    /// Whether choice button `i` is greyed out: it can't be hovered, focused or picked.
+    pub fn is_locked(&self, i: usize) -> bool {
+        self.locked.get(i).is_some_and(Option::is_some)
+    }
+
+    /// Which pickable choice button (if any) contains this virtual-space point.
     pub fn choice_at(&self, x: f32, y: f32) -> Option<usize> {
-        choice_rects(&self.theme, self.choices.len()).iter().position(|r| r.contains(x, y))
+        choice_rects(&self.theme, self.choices.len()).iter().position(|r| r.contains(x, y)).filter(|&i| !self.is_locked(i))
     }
 
     /// Which hotspot (if any) contains this virtual-space point. Later ones are
@@ -1524,19 +1536,43 @@ impl View {
 
         let choices = if ui { self.choices.as_slice() } else { &[] };
         for (i, (rect, label)) in choice_rects(theme, choices.len()).into_iter().zip(choices).enumerate() {
-            let color = if hover == Some(i) { theme.button_hover_color } else { theme.button_color };
+            // A locked option looks like the shop's unaffordable item: faint button, dim text.
+            let reason = self.locked.get(i).and_then(|r| r.as_deref()).filter(|r| !r.is_empty());
+            let locked = self.is_locked(i);
+            let [r, g, b, a] = theme.button_color;
+            let color = match (locked, hover == Some(i)) {
+                (true, _) => [r, g, b, a * 0.45],
+                (false, true) => theme.button_hover_color,
+                (false, false) => theme.button_color,
+            };
             out.push(Draw::Rect { rect, color });
+            let size = theme.text_size.min(rect.h * 0.5); // fits buttons squeezed by many options
+            // With a reason the label moves up and the reason sits under it, smaller.
+            let label_rect = if reason.is_some() { Rect::new(rect.x, rect.y, rect.w, rect.h * 0.62) } else { rect };
             let Rich { text, runs, .. } = rich(label);
             out.push(Draw::Text {
                 text,
                 runs,
                 visible_chars: usize::MAX,
-                rect,
-                size: theme.text_size.min(rect.h * 0.5), // fits buttons squeezed by many options
-                color: theme.text_color,
+                rect: label_rect,
+                size: if reason.is_some() { size * 0.8 } else { size },
+                color: if locked { theme.dim_color } else { theme.text_color },
                 align: Align::Center,
                 outline: None,
             });
+            if let Some(reason) = reason {
+                let Rich { text, runs, .. } = rich(reason);
+                out.push(Draw::Text {
+                    text,
+                    runs,
+                    visible_chars: usize::MAX,
+                    rect: Rect::new(rect.x, rect.y + rect.h * 0.55, rect.w, rect.h * 0.4),
+                    size: size * 0.55,
+                    color: theme.dim_color,
+                    align: Align::Center,
+                    outline: None,
+                });
+            }
         }
 
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
@@ -1834,7 +1870,7 @@ mod tests {
         let runs = runs.expect("the line is drawn");
         assert!(runs.iter().any(|r| r.style.bold && &d.text[r.start..r.end] == "bold"));
         assert!(runs.iter().any(|r| r.style.color == Some([1.0, 0.0, 0.0]) && &d.text[r.start..r.end] == "red"));
-        v.apply(&[Cmd::ShowChoices { options: vec!["*Softly*".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["*Softly*".into()], locked: Vec::new() }]);
         assert!(v.draw_list(&sizes, None).iter().any(|d| matches!(d, Draw::Text { text, runs, .. } if text == "Softly" && !runs.is_empty())));
     }
 
@@ -1935,14 +1971,14 @@ mod tests {
     #[test]
     fn advance_is_ignored_while_choices_are_showing() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()], locked: Vec::new() }]);
         assert!(!v.press_advance());
     }
 
     #[test]
     fn a_redraw_shows_its_line_at_once() {
         let mut v = View::new().with_speed(10.0);
-        v.apply(&[Cmd::ClearScene, say(None, "already read"), Cmd::ShowChoices { options: vec!["a".into()] }]);
+        v.apply(&[Cmd::ClearScene, say(None, "already read"), Cmd::ShowChoices { options: vec!["a".into()], locked: Vec::new() }]);
         assert!(v.dialogue.as_ref().unwrap().is_complete());
         // the next ordinary line types out again
         v.apply(&[say(None, "new")]);
@@ -2407,7 +2443,7 @@ mod tests {
             bg("bg.png", 0.0),
             Cmd::ShowImage { src: "pic.png".into(), alt: String::new() },
             say(Some("A"), "hi"),
-            Cmd::ShowChoices { options: vec!["Go".into()] },
+            Cmd::ShowChoices { options: vec!["Go".into()], locked: Vec::new() },
             Cmd::Flash { time: 1.0, color: [1.0; 3] },
         ]);
         let list = v.draw_list(&all_1080p, None);
@@ -2560,7 +2596,7 @@ mod tests {
         }
 
         let mut v = View::new();
-        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()], locked: Vec::new() }]);
         assert_eq!(v.choice_at(rects[0].x + 10.0, rects[0].y + 10.0), Some(0));
         assert_eq!(v.choice_at(rects[1].x + 10.0, rects[1].y + 10.0), Some(1));
         assert_eq!(v.choice_at(5.0, 5.0), None);
@@ -2571,7 +2607,7 @@ mod tests {
         let mut v = View::new();
         v.apply(&[say(Some("A"), "hi"), Cmd::ShowImage { src: "x.png".into(), alt: "".into() }]);
         assert_eq!(v.images.len(), 1);
-        v.apply(&[Cmd::ShowChoices { options: vec!["go".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["go".into()], locked: Vec::new() }]);
         assert!(v.images.is_empty());
         assert!(v.dialogue.is_some());
         v.apply(&[say(None, "next")]);
@@ -2775,7 +2811,7 @@ mod tests {
     #[test]
     fn hovered_choice_gets_the_highlight_colour() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into()], locked: Vec::new() }]);
         let list = v.draw_list(&no_images, Some(1));
         let colors: Vec<[f32; 4]> = list
             .iter()
@@ -2785,6 +2821,24 @@ mod tests {
             })
             .collect();
         assert_eq!(colors, vec![theme().button_color, theme().button_hover_color]);
+    }
+
+    #[test]
+    fn a_locked_choice_is_faint_dim_has_its_reason_beneath_and_cannot_be_hovered_or_hit() {
+        let mut v = View::new();
+        let locked = vec![None, Some("Needs STR 5".into()), Some(String::new())];
+        v.apply(&[Cmd::ShowChoices { options: vec!["a".into(), "b".into(), "c".into()], locked }]);
+        let rects = choice_rects(&theme(), 3);
+        assert_eq!(v.choice_at(rects[0].x + 5.0, rects[0].y + 5.0), Some(0));
+        assert_eq!(v.choice_at(rects[1].x + 5.0, rects[1].y + 5.0), None, "a greyed button isn't a target");
+        let list = v.draw_list(&no_images, Some(1)); // the pointer on it changes nothing
+        let fills: Vec<f32> = list.iter().filter_map(|d| if let Draw::Rect { color, .. } = d { Some(color[3]) } else { None }).collect();
+        let a = theme().button_color[3];
+        assert_eq!(fills, [a, a * 0.45, a * 0.45]);
+        let texts: Vec<(&str, [f32; 4])> =
+            list.iter().filter_map(|d| if let Draw::Text { text, color, .. } = d { Some((text.as_str(), *color)) } else { None }).collect();
+        let dim = theme().dim_color;
+        assert_eq!(texts, [("a", theme().text_color), ("b", dim), ("Needs STR 5", dim), ("c", dim)], "no reason, no second line");
     }
 
     #[test]
@@ -2937,7 +2991,7 @@ mod tests {
         let rects = choice_rects(&t, 3);
         assert!(rects.iter().all(|r| r.y + r.h <= 600.0 - CHOICE_MARGIN + 0.01));
         let mut v = View::new().with_theme(t.clone()).with_speed(0.0);
-        v.apply(&[say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into(), "B".into()] }]);
+        v.apply(&[say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into(), "B".into()], locked: Vec::new() }]);
         let r = choice_rects(&t, 2)[1];
         assert_eq!(v.choice_at(r.x + 4.0, r.y + 4.0), Some(1));
         let list = v.draw_list(&no_images, None);
@@ -3017,7 +3071,7 @@ mod tests {
     #[test]
     fn hide_ui_hides_the_box_but_keeps_choices_and_the_stage() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[bg("bg.png", 0.0), say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into()] }]);
+        v.apply(&[bg("bg.png", 0.0), say(Some("Mika"), "Hello"), Cmd::ShowChoices { options: vec!["A".into()], locked: Vec::new() }]);
         let n = v.draw_list(&all_1080p, None).len();
         v.set_hide_ui(true);
         let list = v.draw_list(&all_1080p, None);
@@ -3290,7 +3344,7 @@ mod tests {
         assert!(cover < flash, "the flash is above the cover");
         assert!(flash < textbox && flash < first_text, "the textbox and its text are not covered");
         // choices are not covered either
-        v.apply(&[Cmd::ShowChoices { options: vec!["Yes".into()] }]);
+        v.apply(&[Cmd::ShowChoices { options: vec!["Yes".into()], locked: Vec::new() }]);
         let list = v.draw_list(&all_1080p, None);
         let cover = cover_rect(&list).map(|(i, _)| i).unwrap();
         assert!(list.iter().skip(cover + 1).any(|d| matches!(d, Draw::Text { text, .. } if text == "Yes")));
