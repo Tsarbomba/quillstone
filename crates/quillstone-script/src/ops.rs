@@ -537,6 +537,9 @@ pub struct Program {
     pub items: BTreeMap<String, Item>,
     /// The list variable the inventory screen shows (front matter `inventory:`).
     pub inventory: Option<String>,
+    /// Front matter `sprite_size: pixels`: sprites are drawn at their picture's pixel size times this
+    /// (`art_scale:`, default 1). `None`: every sprite is the same fixed height.
+    pub art_scale: Option<f32>,
     pub ops: Vec<Op>,
     /// Source line (1-based) of each op; parallel to `ops`. Used for error messages.
     pub lines: Vec<usize>,

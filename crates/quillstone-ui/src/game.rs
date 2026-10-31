@@ -229,7 +229,7 @@ impl<'p> Game<'p> {
             program,
             storage,
             session,
-            view: View::new().with_speed(settings.text_speed).with_anims(&program.anims),
+            view: View::new().with_speed(settings.text_speed).with_anims(&program.anims).with_art_scale(program.art_scale),
             mixer: Mixer::new(),
             settings_before: settings.clone(),
             settings,
@@ -338,7 +338,7 @@ impl<'p> Game<'p> {
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
         self.ui_hidden = false;
-        self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme).with_anims(&self.program.anims);
+        self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme).with_anims(&self.program.anims).with_art_scale(self.program.art_scale);
     }
 
     /// Where closing a screen goes back to.

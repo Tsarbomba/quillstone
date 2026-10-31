@@ -681,6 +681,8 @@ pub struct View {
     wait: Option<f32>,
     chars_per_sec: f32,
     theme: Theme,
+    /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
+    art_scale: Option<f32>,
     /// The script's frame animations (a picture `anim:<id>` plays one).
     anims: BTreeMap<String, Anim>,
     /// Seconds since the background / the outgoing background started being shown.
@@ -721,10 +723,17 @@ impl View {
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
+            art_scale: None,
             anims: BTreeMap::new(),
             bg_clock: 0.0,
             previous_bg_clock: 0.0,
         }
+    }
+
+    /// Draw sprites at their picture's pixel size times `art_scale` (`Program::art_scale`); `None` is the fixed height.
+    pub fn with_art_scale(mut self, art_scale: Option<f32>) -> View {
+        self.art_scale = art_scale;
+        self
     }
 
     /// Know the script's frame animations (`anim:<id>` pictures play them). Clocks
@@ -1350,22 +1359,22 @@ impl View {
         for s in order {
             let (x, y, look) = (s.current_x(), s.current_y(), s.look());
             if let Some(prev) = &s.previous_src {
-                push_sprite(&mut stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, image_size);
+                push_sprite(&mut stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, self.art_scale, image_size);
             }
             // The layers of a layered sprite: the same place and size for each, back to front, and
             // each one crossfades on its own when its picture changes.
             for (src, t) in &s.previous_layers {
-                push_sprite(&mut stage, self.picture(src, *t), (x, y), look, 1.0, image_size);
+                push_sprite(&mut stage, self.picture(src, *t), (x, y), look, 1.0, self.art_scale, image_size);
             }
-            push_sprite(&mut stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), image_size);
+            push_sprite(&mut stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), self.art_scale, image_size);
             for l in &s.layers {
                 let (sprite_alpha, layer_alpha) = (s.alpha(), l.alpha());
                 if let Some(prev) = &l.previous_src {
                     // Under a layer that fades in; when the layer fades out to nothing, it fades with it.
                     let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
-                    push_sprite(&mut stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, image_size);
+                    push_sprite(&mut stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
                 }
-                push_sprite(&mut stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, image_size);
+                push_sprite(&mut stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
             }
         }
         // Particles are screen space: `layer=back` ones go between the background and the sprites, the
@@ -1716,6 +1725,7 @@ fn push_sprite(
     (x, y): (f32, f32),
     look: Look,
     alpha: f32,
+    art_scale: Option<f32>,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     if src.is_empty() {
@@ -1725,8 +1735,13 @@ fn push_sprite(
     if size.w <= 0.0 || size.h <= 0.0 {
         return;
     }
-    let h = SPRITE_HEIGHT * look.scale * look.yscale;
-    let w = size.w / size.h * SPRITE_HEIGHT * look.scale * look.xscale;
+    // Fixed: every picture is SPRITE_HEIGHT tall. Pixels: the picture's own size, times the game's art scale.
+    let (base_w, base_h) = match art_scale {
+        Some(k) => (size.w * k, size.h * k),
+        None => (size.w / size.h * SPRITE_HEIGHT, SPRITE_HEIGHT),
+    };
+    let h = base_h * look.scale * look.yscale;
+    let w = base_w * look.scale * look.xscale;
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
@@ -3312,6 +3327,22 @@ mod tests {
         // the batch turns the corners into [u0, v0, u1, v1] with u0 > u1: a mirrored quad
         let frame = crate::build_frame(&list, Size::new(1920.0, 1080.0));
         assert_eq!(frame.quads[0].uv, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn pixel_sized_sprites_use_the_pictures_own_size_times_the_art_scale() {
+        let size = |_: &str| Some(Size::new(1280.0, 720.0));
+        let mut v = View::new().with_art_scale(Some(1.5));
+        v.apply(&[sprite("m", 0.5, 1.0, 0)]);
+        let dest = images(&v.draw_list(&size, None))[0].1;
+        assert!(close(dest.w, VIRTUAL.w) && close(dest.h, VIRTUAL.h) && close(dest.x, 0.0) && close(dest.y, 0.0), "fills the stage: {dest:?}");
+        // scale and yscale multiply on top; the fixed height ignores the picture's size
+        v.apply(&[look_show("m", false, 1.0, 0.5, 0.5)]);
+        let dest = images(&v.draw_list(&size, None))[0].1;
+        assert!(close(dest.w, VIRTUAL.w) && close(dest.h, VIRTUAL.h / 2.0), "{dest:?}");
+        let mut fixed = View::new();
+        fixed.apply(&[sprite("m", 0.5, 1.0, 0)]);
+        assert!(close(images(&fixed.draw_list(&size, None))[0].1.h, SPRITE_HEIGHT));
     }
 
     #[test]

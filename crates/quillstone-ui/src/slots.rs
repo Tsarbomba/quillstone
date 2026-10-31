@@ -209,7 +209,7 @@ pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option
         return Some(SlotInfo { seq: 0, time: String::new(), preview: "Unreadable save".into(), scene: None });
     };
     let scene = Session::load(program, &file.session).ok().map(|(_, cmds)| {
-        let mut view = View::new().with_speed(0.0).with_anims(&program.anims);
+        let mut view = View::new().with_speed(0.0).with_anims(&program.anims).with_art_scale(program.art_scale);
         view.apply(&cmds);
         view
     });

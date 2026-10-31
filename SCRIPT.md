@@ -36,7 +36,8 @@ She looks away.
   title, or the script file), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
   `inventory:` (see [Inventory](#inventory)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
-  and [Scene replays](#scene-replays)).
+  and [Scene replays](#scene-replays)). `sprite_size:` and `art_scale:` set how big sprites are drawn (see
+  [Sprites at their picture's size](#sprites-at-their-pictures-size)).
 - **Headings** (`#` to `######`) are *labels*: places to jump to. `# The Roof` is
   the label `the-roof` (lowercase, words joined by dashes). A heading like
   `# heal(amount, who)` is a label with parameters, see
@@ -359,7 +360,7 @@ One model places sprites (`::show`, `::move`), HUD elements (`::hud`) and the ca
   does nothing to it until you give it a smaller `scale`.
 
 Sprites are about 940 px tall at `scale=1` (on a 1920x1080 screen) and stand on the bottom edge unless `y` says otherwise; the text box draws over their
-lower part. To put one sprite behind another, give it a lower `z`. The camera, sprite sizes,
+lower part (to size them by their pictures instead, see the next section). To put one sprite behind another, give it a lower `z`. The camera, sprite sizes,
 heights, stretch, mirroring, `z` and the colour cover are part of the scene, so rollback
 and saves restore them (a save made before `::fade` existed loads uncovered, one made
 before `flip` and the scales existed loads with unflipped, unstretched sprites); a shake, a flash or a `::notify` is a moment and
@@ -371,6 +372,23 @@ The cover is drawn over the stage, inline images, video and hotspot pictures, un
 past the wait of a `::fade{out}` (like a `::wait`), so going back never stops halfway
 through a fade, and roll forward does the same. The last line stays on screen while the
 screen fades out; hide the box first (`::textbox{hide}`) for a clean fade.
+
+### Sprites at their picture's size
+
+By default every sprite is 940 px tall whatever its picture's size. For art drawn for one screen size, say so in
+the front matter:
+
+```
+sprite_size: pixels
+art_scale: 1.5
+```
+
+- `sprite_size:` is `fixed` (the default, the 940 px above) or `pixels`: a sprite is as big as its picture, so
+  `scale`, `xscale` and `yscale` multiply the picture's own width and height.
+- `art_scale:` (0.25 to 8, default 1) scales every picture first, for art drawn for a screen other than 1920x1080:
+  a 1280x720 picture with `art_scale: 1.5` shown at the default `x=center y=bottom` exactly fills the screen.
+  It needs `sprite_size: pixels` (alone it is an error), and it applies to layered sprites and `::anim` frames too.
+  Backgrounds, inline images and the HUD are not affected.
 
 ## Ambient particles
 

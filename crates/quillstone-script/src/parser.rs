@@ -490,6 +490,7 @@ impl Parser {
 
     fn front_matter(&mut self, lines: &[&str]) {
         let mut inventory: Option<(usize, String)> = None;
+        let (mut pixels, mut art): (Option<usize>, Option<(usize, f32)>) = (None, None);
         for (idx, raw) in lines.iter().enumerate() {
             let line = idx + 2; // line 1 is the opening `---`
             let t = raw.trim();
@@ -525,8 +526,22 @@ impl Parser {
                     "" => self.err(line, "`voice` needs a folder, like `voice: voice`"),
                     folder => self.program.voice_folder = Some(folder.to_string()),
                 },
+                "sprite_size" => match unquote(val) {
+                    "pixels" => pixels = Some(line),
+                    "fixed" => pixels = None,
+                    _ => self.err(line, "`sprite_size` is `fixed` (the default) or `pixels`"),
+                },
+                "art_scale" => match unquote(val).parse::<f32>() {
+                    Ok(k) if (0.25..=8.0).contains(&k) => art = Some((line, k)),
+                    _ => self.err(line, format!("`art_scale: {val}` must be a number from 0.25 to 8")),
+                },
                 other => self.err(line, format!("unknown front matter key `{other}`")),
             }
+        }
+        match (pixels, art) {
+            (Some(_), art) => self.program.art_scale = Some(art.map_or(1.0, |a| a.1)),
+            (None, Some((line, _))) => self.err(line, "`art_scale` only works with `sprite_size: pixels`"),
+            (None, None) => {}
         }
         // `vars:` may come after it, so the list is checked once everything is read.
         if let Some((line, name)) = inventory {
@@ -4024,6 +4039,19 @@ mod tests {
         assert!(e.iter().any(|e| e.message.contains("must be a number")));
         assert!(e.iter().any(|e| e.message.contains("unknown front matter key")));
         assert!(e.iter().any(|e| e.message.contains("duplicate label")));
+    }
+
+    #[test]
+    fn sprite_size_front_matter() {
+        let art = |front: &str| parse(&format!("---\n{front}\n---\nHi.\n")).map(|p| p.art_scale);
+        assert_eq!(art("title: T").unwrap(), None);
+        assert_eq!(art("sprite_size: fixed").unwrap(), None);
+        assert_eq!(art("sprite_size: pixels").unwrap(), Some(1.0));
+        assert_eq!(art("art_scale: 1.5\nsprite_size: pixels").unwrap(), Some(1.5));
+        for (bad, line) in [("sprite_size: big", 2), ("sprite_size: pixels\nart_scale: 9", 3), ("art_scale: 2", 2)] {
+            let e = art(bad).unwrap_err();
+            assert_eq!(e[0].line, line, "{bad}: {e:?}");
+        }
     }
 
     #[test]
