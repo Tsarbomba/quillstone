@@ -194,6 +194,13 @@ fn check(path: &Path) -> Result<(), String> {
     for (line, msg) in replay_warnings(&program) {
         eprintln!("{}: warning: {msg}", at(&program, path, line));
     }
+    if program.id.is_none() && program.title.is_none() {
+        eprintln!(
+            "{}: warning: neither `id:` nor `title:` is set, so saves go in a folder named after the script file, \
+             shared with any other game of that name; add `id: my-game` to the front matter",
+            path.display()
+        );
+    }
     missing += lang::check(path, &program);
     let voiced = check_voices(&program, path, root, &mut missing);
     if missing > 0 {

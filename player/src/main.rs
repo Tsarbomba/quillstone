@@ -124,7 +124,7 @@ fn main() {
     let fonts = load_fonts(&theme, &root);
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("game").trim_end_matches(".quill");
-    let dir = data_dir(&game_id(program.title.as_deref().unwrap_or(stem)));
+    let dir = data_dir(&save_folder(program, stem));
     if dir.is_none() {
         eprintln!("warning: no per-user folder found; settings and saves won't be kept");
     }
@@ -203,6 +203,11 @@ fn voice_files(program: &Program, root: &Path) -> HashMap<String, String> {
         .filter(|name| quillstone_script::kind_from_path(name) == AssetKind::Audio)
         .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
         .collect()
+}
+
+/// The per-user folder name: the script's `id:`, else the title, else the script's file name.
+fn save_folder(program: &Program, stem: &str) -> String {
+    program.id.clone().unwrap_or_else(|| game_id(program.title.as_deref().unwrap_or(stem)))
 }
 
 /// A folder-safe name for this game's per-user data.
@@ -699,5 +704,19 @@ impl ApplicationHandler for App {
             let wake = if self.gamepads.any_connected() { next_anyway.min(Instant::now() + GAMEPAD_POLL) } else { next_anyway };
             event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_save_folder_follows_the_id_and_falls_back_to_the_title_then_the_file_name() {
+        let parse = |front: &str| quillstone_script::parse(&format!("---\n{front}\n---\n# a\nHi.\n")).unwrap();
+        assert_eq!(save_folder(&parse("title: Night Shift\nid: night-shift"), "main"), "night-shift");
+        assert_eq!(save_folder(&parse("title: Night Shift!\nid: night-shift"), "main"), "night-shift");
+        assert_eq!(save_folder(&parse("title: Night Shift!"), "main"), "night-shift");
+        assert_eq!(save_folder(&parse("vars: { a: 1 }"), "main"), "main");
     }
 }

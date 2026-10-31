@@ -17,13 +17,16 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-use quillstone_script::{is_ident, Expr, Op, Program, Value, Vars, ONCE, SEEN};
+use quillstone_script::{is_ident, Cmp, Expr, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{offered_stock, step_traced, visible_options, Cmd, Input, State};
+use crate::{finish_input, offered_stock, step_traced, visible_options, Cmd, Input, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
 pub const MAX_ROLL_VALUES: i64 = 12;
+
+/// The most answers the tester tries for one `::input` (the default and the texts the script compares it to).
+const MAX_ANSWERS: usize = 16;
 
 /// Something the tester found, at a script line.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +72,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         caps: seen_caps(program),
         reruns: 0,
     };
+    let compared = compared_texts(program);
     for (origin, kept) in playthroughs(program) {
         let mut state = State::new(program);
         state.vars.extend(kept);
@@ -107,10 +111,23 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 inputs.push((Input::Advance, Some("leave the shop".to_string())));
                 inputs
             }
-            // One answer is enough: the default, or "Player". What is typed doesn't change the route.
+            // The default (or "Player"), plus every text the script compares the answer to, cleaned up as
+            // typed text is: a branch like `::if{name == "Bob"}` can then be played.
             Some(Cmd::AskInput { default, max, .. }) => {
-                let answer = default.clone().unwrap_or_else(|| "Player".chars().take(*max).collect());
-                vec![(Input::Text(answer), None)]
+                let mut answers = vec![default.clone().unwrap_or_else(|| "Player".chars().take(*max).collect())];
+                if let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) {
+                    for text in compared.get(var.as_str()).into_iter().flatten() {
+                        let typed = finish_input(text, default.as_deref(), *max);
+                        if let Some(t) = typed.filter(|t| !answers.contains(t)) {
+                            answers.push(t);
+                        }
+                    }
+                }
+                if answers.len() > MAX_ANSWERS {
+                    x.report.partial = true;
+                    answers.truncate(MAX_ANSWERS);
+                }
+                answers.into_iter().map(|a| (Input::Text(a), None)).collect()
             }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
@@ -124,6 +141,24 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         }
     }
     x.finish()
+}
+
+/// For each variable, the text literals the script compares it to with `==` or `!=`, in script order.
+fn compared_texts(program: &Program) -> HashMap<&str, Vec<&str>> {
+    fn walk<'a>(out: &mut HashMap<&'a str, Vec<&'a str>>, e: &'a Expr) {
+        if let Expr::Cmp(a, Cmp::Eq | Cmp::Ne, b) = e {
+            if let (Expr::Var(v), Expr::Lit(Value::Str(t))) | (Expr::Lit(Value::Str(t)), Expr::Var(v)) = (&**a, &**b) {
+                let texts = out.entry(v.as_str()).or_default();
+                if !texts.contains(&t.as_str()) {
+                    texts.push(t);
+                }
+            }
+        }
+        e.children().into_iter().for_each(|c| walk(out, c));
+    }
+    let mut out = HashMap::new();
+    program.ops.iter().flat_map(Op::exprs).for_each(|e| walk(&mut out, e));
+    out
 }
 
 /// The money a shop at the state's position asks for.
@@ -819,6 +854,15 @@ mod tests {
         let r = test(include_str!("../../../examples/stats.quill.md"));
         assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:#?}", (r.errors, r.warnings));
         assert!(!r.partial && r.situations > 100 && r.endings.len() == 1);
+    }
+
+    #[test]
+    fn a_branch_on_typed_text_is_played() {
+        let src = "---\nvars: { name: \"\" }\n---\n::input{var=name prompt=\"Name?\" default=\"Alex\"}\n\
+                   ::if{name == \"Bob\"}\n::jump{to=secret}\n::endif\nNormal.\n::end\n# secret\nSecret ending.\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+        assert_eq!(r.endings.len(), 2);
     }
 
     #[test]

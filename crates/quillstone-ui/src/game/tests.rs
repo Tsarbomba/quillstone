@@ -1615,9 +1615,26 @@ fn the_wheel_and_backspace_roll_back_over_hotspots_without_picking() {
     assert_eq!(line(&g), "Books.");
     g.handle(Event::Wheel(1.0)); // back to the map
     assert_eq!(g.view().hotspots.len(), 3);
-    assert!(g.view().dialogue.is_some());
+    assert!(g.view().dialogue.is_none(), "the map came before any line");
     g.handle(Event::Wheel(-1.0));
     assert_eq!(line(&g), "Books.");
+}
+
+#[test]
+fn rolling_back_to_a_choice_before_any_line_shows_no_textbox() {
+    let p = parse("::choice
+- [Go](#a)
+::
+# a
+**A:** Later.
+").unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(g.view().dialogue.is_none());
+    key(&mut g, Key::Char('1'));
+    assert_eq!(line(&g), "Later.");
+    key(&mut g, Key::Backspace);
+    assert!(g.view().dialogue.is_none(), "the line from after the choice is gone");
+    assert_eq!(g.view().choices.len(), 1);
 }
 
 #[test]

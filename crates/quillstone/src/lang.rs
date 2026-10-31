@@ -34,13 +34,27 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
     let text = merged.render(name, &places);
     let path = root.join(&file);
     std::fs::create_dir_all(path.parent().expect("lang/ has a parent")).map_err(|e| format!("cannot create lang/: {e}"))?;
-    std::fs::write(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    write_file(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let have: BTreeSet<&str> = old.entries.iter().map(|e| e.source.as_str()).collect();
     let fresh = strings.iter().filter(|s| !have.contains(s.text.as_str())).count();
     let obsolete = merged.entries.iter().filter(|e| e.obsolete).count();
     let todo = merged.entries.iter().filter(|e| !e.obsolete && e.context.is_none() && e.target.is_empty()).count();
     println!("{}: {} text(s), {fresh} new, {obsolete} obsolete, {todo} not translated yet", path.display(), strings.len());
     Ok(())
+}
+
+/// Write `text` to a temp file next to `path`, then rename it over, so a full disk or a kill midway
+/// leaves the translator's file as it was.
+fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?; // on disk before the rename, so a power cut can't leave an empty file in place
+    drop(file);
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// What `check` finds in the translation files: errors count as problems (printed here), the
@@ -144,6 +158,17 @@ mod tests {
         let again = export_to(&dir, SCRIPT).unwrap();
         assert!(again.contains("# keep it short\n#: a:9\n> Bye.\n= Hejdå."), "{again}");
         assert_eq!(export_to(&dir, SCRIPT).unwrap(), again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_export_leaves_the_translators_file_as_it_was() {
+        let dir = game("atomic", &[]);
+        let old = export_to(&dir, SCRIPT).unwrap();
+        // a directory where the temp file goes makes the write fail
+        std::fs::create_dir(dir.join("lang/sv.tmp")).unwrap();
+        assert!(export_to(&dir, &SCRIPT.replace("Bye.", "Farewell.")).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("lang/sv.txt")).unwrap(), old);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

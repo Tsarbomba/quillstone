@@ -5,7 +5,7 @@ use std::path::Path;
 
 use std::collections::BTreeMap;
 
-use quillstone_script::{language_file, parse_files, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES};
+use quillstone_script::{check_translation, language_file, parse_files, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES};
 
 /// The text of an included file: `rel` (a game-folder path the parser has already checked) under `root`.
 /// At most [`MAX_INCLUDE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
@@ -55,8 +55,8 @@ pub fn read_translation(root: &Path, code: &str) -> Result<Option<String>, Strin
 }
 
 /// Every translation the game has (its `languages:` after the first, from the script's folder), and
-/// one `lang/<code>.txt:line: message` per problem. A file with problems is left out: that language
-/// shows the script's own text.
+/// one `lang/<code>.txt:line: message` per problem. A file that doesn't parse is left out, and a
+/// translation whose tags don't match its original is blanked: that text shows the script's own.
 pub fn load_translations(script: &Path, program: &Program) -> (BTreeMap<String, Catalog>, Vec<String>) {
     let root = script.parent().unwrap_or_else(|| Path::new("."));
     let (mut found, mut problems) = (BTreeMap::new(), Vec::new());
@@ -65,7 +65,16 @@ pub fn load_translations(script: &Path, program: &Program) -> (BTreeMap<String, 
         match read_translation(root, &lang.code) {
             Ok(None) => {}
             Ok(Some(text)) => match Catalog::parse(&text) {
-                Ok(cat) => {
+                Ok(mut cat) => {
+                    // A translation whose tags differ from the original would change how the line plays
+                    // (a `{nw}` added makes it advance by itself): that entry shows the script's text.
+                    // Obsolete entries are never shown, so they don't bother the player (`quillstone check` lists them).
+                    for e in cat.entries.iter_mut().filter(|e| !e.obsolete) {
+                        if let Err(m) = check_translation(&e.source, &e.target) {
+                            problems.push(format!("{file}:{}: {m}", e.line));
+                            e.target.clear();
+                        }
+                    }
                     found.insert(lang.code.clone(), cat);
                 }
                 Err(errors) => problems.extend(errors.iter().map(|e| match e.line {
@@ -156,6 +165,22 @@ mod tests {
         std::fs::write(dir.join("lang/sv.txt"), vec![b'#'; MAX_FILE_BYTES + 50]).unwrap();
         assert_eq!(read_translation(&dir, "sv").unwrap().unwrap().len(), MAX_FILE_BYTES + 1);
         assert!(load_translations(&script, &p).1.iter().any(|m| m.contains("larger than")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_translation_with_other_tags_than_its_original_is_blanked_and_reported() {
+        let head = "---\nlanguages: en=English, sv=Svenska\n---\nHi.{nw}\n\nBye.\n\nSee {n}.\n";
+        let lang = "> Hi.{nw}\n= Hej.\n\n> Bye.\n= Hejdå.{nw}\n\n> See {n}.\n= Se {n}.\n";
+        let dir = game(&[("main.quill.md", head), ("lang/sv.txt", lang)]);
+        let script = dir.join("main.quill.md");
+        let p = parse_script(&script, head).unwrap();
+        let (found, problems) = load_translations(&script, &p);
+        assert_eq!(found["sv"].get(None, "Hi.{nw}"), None, "dropping {{nw}} would make the line wait");
+        assert_eq!(found["sv"].get(None, "Bye."), None, "adding {{nw}} would make the line skip itself");
+        assert_eq!(found["sv"].get(None, "See {n}."), Some("Se {n}."));
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("lang/sv.txt:1: ") && problems[1].starts_with("lang/sv.txt:4: "), "{problems:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

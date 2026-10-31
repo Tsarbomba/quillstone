@@ -22,11 +22,7 @@ const MAX_LOOP_LEG: f32 = 3600.0;
 /// How many rollback steps a save keeps (so rollback and the backlog work after loading).
 pub const SAVE_HISTORY: usize = 100;
 
-/// Most items a list variable may hold when read from a save or the persistent
-/// file. A list past it makes the record unreadable (a save is refused, a persistent
-/// entry is skipped): real games hold dozens, and the limit keeps a hostile file
-/// from costing memory or time.
-pub const MAX_LIST_ITEMS: usize = 10_000;
+pub use quillstone_script::MAX_LIST_ITEMS;
 
 /// Most states (history plus the present) a save may hold; [`SAVE_HISTORY`] is what
 /// one writes. A save with more is refused.
@@ -75,21 +71,34 @@ fn sane(value: f32, lo: f32, hi: f32, default: f32) -> f32 {
 }
 
 impl Session<'_> {
-    /// The session as save-file text.
+    /// The session as save-file text. The oldest history goes first when the text would pass
+    /// [`MAX_SAVE_BYTES`] (the reader refuses more); the present state is always written.
     pub fn save(&self) -> String {
-        let mut out = format!("{MAGIC}\n");
         let start = self.history.len().saturating_sub(SAVE_HISTORY);
-        for (state, input) in &self.history[start..] {
-            write_state(&mut out, state, self.program);
-            match input {
-                Input::Advance => out.push_str("input advance\n"),
-                Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
-                Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
-                Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
-            }
+        let mut parts: Vec<String> = self.history[start..]
+            .iter()
+            .map(|(state, input)| {
+                let mut out = String::new();
+                write_state(&mut out, state, self.program);
+                match input {
+                    Input::Advance => out.push_str("input advance\n"),
+                    Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
+                    Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
+                    Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
+                }
+                out
+            })
+            .collect();
+        let mut now = String::new();
+        write_state(&mut now, &self.state, self.program);
+        let mut total = MAGIC.len() + 1 + now.len() + parts.iter().map(String::len).sum::<usize>();
+        let mut drop = 0;
+        while total > MAX_SAVE_BYTES && drop < parts.len() {
+            total -= parts[drop].len();
+            drop += 1;
         }
-        write_state(&mut out, &self.state, self.program);
-        out
+        parts.drain(..drop);
+        format!("{MAGIC}\n{}{now}", parts.concat())
     }
 }
 

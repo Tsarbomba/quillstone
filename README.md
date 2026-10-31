@@ -129,7 +129,8 @@ Q.Save, Q.Load, Settings, and Items in a game with an inventory) does the same w
 only while the mouse is over the textbox, or not at all, and Settings lets you choose; a theme can draw the buttons as pictures at places of its own. The game saves automatically
 whenever a choice comes up and when you quit. Settings and saves are kept per
 user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
-Linux: `~/.local/share/quillstone/<game>/`).
+Linux: `~/.local/share/quillstone/<game>/`). `<game>` is the script's `id:` front matter key; without one it is
+the title (so renaming the title moves the saves: set `id:` before you ship), or the script's file name.
 Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.
 

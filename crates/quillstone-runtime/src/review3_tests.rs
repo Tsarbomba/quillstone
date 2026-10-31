@@ -1,9 +1,9 @@
 //! Tests for the third review's runtime findings: hostile expressions in saves
 //! (stack depth) and the size of a save.
 
-use quillstone_script::{parse, HudExpr, Program};
+use quillstone_script::{parse, HudExpr, Program, Value};
 
-use crate::{Session, MAX_SAVE_BYTES};
+use crate::{Input, Session, MAX_LIST_ITEMS, MAX_SAVE_BYTES};
 
 fn program() -> Program {
     parse("---\nvars: { gold: 2 }\n---\n# start\nHello.\n::hud{id=g text=\"Gold {gold}\"}\nBye.\n").unwrap()
@@ -93,4 +93,34 @@ fn hud_text_in_one_state_is_capped_in_total() {
     // a normal handful is fine
     let few = &many[..10];
     assert!(Session::load(&p, &with_hud_records(&save, few)).is_ok());
+}
+
+/// A story whose list holds `items` entries from the start, then says `lines` lines.
+fn list_story(items: usize, lines: usize, body: &str) -> String {
+    let bag: Vec<String> = (0..items).map(|i| format!("\"item-{i}\"")).collect();
+    let says: String = (0..lines).map(|i| format!("Line {i}.\n\n")).collect();
+    format!("---\nvars: {{ bag: [{}] }}\n---\n# a\n{body}{says}", bag.join(", "))
+}
+
+#[test]
+fn a_big_list_and_many_lines_still_save_under_the_limit_and_load() {
+    let p = parse(&list_story(9_000, 130, "")).unwrap();
+    let (mut game, _) = Session::start(&p);
+    for _ in 0..120 {
+        game.input(Input::Advance);
+    }
+    let save = game.save();
+    assert!(save.len() <= MAX_SAVE_BYTES, "{} bytes", save.len());
+    let (loaded, _) = Session::load(&p, &save).unwrap();
+    assert_eq!(loaded.state().pc, game.state().pc, "the present state is the one that was saved");
+    assert!(game.history.len() > 100 && loaded.history.len() < 100, "oldest history dropped: {}", loaded.history.len());
+}
+
+#[test]
+fn a_list_stops_growing_at_the_limit_and_its_save_loads() {
+    let p = parse(&list_story(MAX_LIST_ITEMS - 1, 1, "::set{bag += \"x\"}\n::set{bag += \"y\"}\n")).unwrap();
+    let (game, _) = Session::start(&p);
+    assert!(matches!(&game.state().vars["bag"], Value::List(l) if l.len() == MAX_LIST_ITEMS));
+    let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+    assert_eq!(loaded.state().vars["bag"], game.state().vars["bag"]);
 }

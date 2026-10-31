@@ -31,7 +31,9 @@ She looks away.
 ````
 
 - **Front matter** (optional, between `---` lines): `title:` (also shown on the
-  main menu), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
+  main menu), `id:` (the name of the folder the player keeps saves in, e.g. `id: my-story`: 1 to 64 lowercase
+  letters, digits and `-`; set it once and the saves survive a new title; without it the folder is named after the
+  title, or the script file), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
   `inventory:` (see [Inventory](#inventory)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
   and [Scene replays](#scene-replays)).

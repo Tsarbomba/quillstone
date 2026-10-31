@@ -45,6 +45,13 @@ fn button_event(button: Pad, pressed: bool) -> Option<Event> {
     Some(Event::Key(key))
 }
 
+/// What an unplugged pad leaves behind: gilrs sends no button releases then, so a held RT would keep
+/// skip on. Returns the release to send, and lets go of the stick.
+fn pad_gone(stick: &mut (i8, i8)) -> Event {
+    *stick = (0, 0);
+    Event::KeyReleased(Key::Ctrl)
+}
+
 /// How far the stick must lean to count as a press, and back under which it
 /// counts as let go (the gap keeps a wobbly stick from sending a stream of presses).
 const STICK_ON: f32 = 0.6;
@@ -114,6 +121,7 @@ impl Gamepads {
                     }
                     self.stick.1 = now;
                 }
+                EventType::Disconnected => out.push(pad_gone(&mut self.stick)),
                 _ => {}
             }
         }
@@ -160,5 +168,12 @@ mod tests {
             at = now;
         }
         assert_eq!(presses, 2, "0.5 isn't back to rest, 0.3 is");
+    }
+
+    #[test]
+    fn unplugging_a_pad_lets_go_of_skip_and_the_stick() {
+        let mut stick = (1, -1);
+        assert_eq!(pad_gone(&mut stick), Event::KeyReleased(Key::Ctrl));
+        assert_eq!(stick, (0, 0));
     }
 }

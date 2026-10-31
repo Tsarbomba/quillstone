@@ -216,10 +216,10 @@ fn the_story_tester_answers_with_the_default_or_player_and_reports_nothing() {
     let bare = "---\nvars: { n: \"-\" }\n---\n::input{var=n prompt=\"Name?\" max=3}\n::if{n == \"Pla\"}\n**A:** cut to the limit\n::endif\n**A:** end\n";
     let r = explore(&parse(bare).unwrap(), 1000);
     assert!(r.errors.is_empty() && r.warnings.is_empty() && !r.partial && r.endings.len() == 1, "{r:#?}");
-    // It tries one answer only, so a line that only another answer reaches is reported as never shown.
+    // It also tries the texts the script compares the answer to, so a line only another answer reaches is played.
     let other = "---\nvars: { n: \"-\" }\n---\n::input{var=n prompt=\"Name?\" default=\"Alex\"}\n::if{n == \"Zed\"}\nZed only.\n::endif\nEnd.\n";
     let r = explore(&parse(other).unwrap(), 1000);
-    assert!(r.warnings.iter().any(|w| w.message.contains("Zed only")), "{r:#?}");
+    assert!(r.warnings.is_empty() && r.errors.is_empty(), "{r:#?}");
     // a line the answer decides is still reached
     let r = explore(&parse("---\nvars: { n: \"-\" }\n---\n::input{var=n prompt=\"Name?\" default=\"Zed\"}\n::if{n == \"Zed\"}\nSeen.\n::endif\n").unwrap(), 1000);
     assert!(r.warnings.is_empty(), "{r:#?}");

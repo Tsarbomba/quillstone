@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
+use crate::dynpath::is_device_name;
 use crate::expr::{is_ident, is_keyword, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value, split_top_level};
 use crate::ops::*;
 
@@ -503,6 +504,10 @@ impl Parser {
             let (key, val) = (key.trim(), val.trim());
             match key {
                 "title" => self.program.title = Some(unquote(val).to_string()),
+                "id" => match check_game_id(unquote(val)) {
+                    Ok(()) => self.program.id = Some(unquote(val).to_string()),
+                    Err(m) => self.err(line, m),
+                },
                 "theme" if !unquote(val).is_empty() => match check_inside("theme", unquote(val)) {
                     Ok(()) => self.program.theme = Some(unquote(val).to_string()),
                     Err(m) => self.err(line, m),
@@ -2973,6 +2978,18 @@ pub(crate) fn slug(s: &str) -> String {
 const MAX_REPLAY_TITLE: usize = 60;
 
 /// `\"` and `\\` inside a quoted title are the character itself; any other backslash stays.
+/// The `id:` front matter key becomes a folder name on every system, so it is plain and short.
+fn check_game_id(id: &str) -> Result<(), String> {
+    let plain = id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'));
+    if !plain || id.is_empty() || id.len() > 64 || is_device_name(id) {
+        return Err(format!(
+            "`id` is the name of the save folder: 1 to 64 lowercase letters, digits and `-`, and not a name Windows keeps \
+             for devices (like `id: my-game`); got `{id}`"
+        ));
+    }
+    Ok(())
+}
+
 fn unescape_title(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -5022,6 +5039,17 @@ mod tests {
     // ---- scene replays ----
 
     const REPLAYABLE: &str = "# Start\nHi.\n# The rooftop\nUp here.\n::end_replay\n# Night walk\nOut.\n";
+
+    #[test]
+    fn the_id_names_the_save_folder_and_is_checked() {
+        let p = parse("---\ntitle: T\nid: my-game2\n---\n# a\nHi.\n").unwrap();
+        assert_eq!(p.id.as_deref(), Some("my-game2"));
+        assert_eq!(parse("---\ntitle: T\n---\n# a\nHi.\n").unwrap().id, None);
+        for bad in ["", "My-Game", "a b", "a_b", "é", "../x", "con", "com1", &"a".repeat(65)] {
+            let e = parse(&format!("---\ntitle: T\nid: {bad}\n---\n# a\nHi.\n")).unwrap_err();
+            assert!(e[0].line == 3 && e[0].message.contains("save folder"), "{bad}: {e:?}");
+        }
+    }
 
     #[test]
     fn replays_name_labels_with_titles_in_declaration_order() {

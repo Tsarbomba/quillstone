@@ -1135,6 +1135,7 @@ impl<'p> Game<'p> {
     fn rollback(&mut self) {
         self.stop_skip();
         if let Some(cmds) = self.session.rollback() {
+            self.view.dialogue = None; // redraw sends a line only when the screen has one
             self.show(&cmds);
             self.auto = false; // the player went back to re-read: don't hurry them on
         }
@@ -1148,6 +1149,7 @@ impl<'p> Game<'p> {
         self.stop_skip();
         self.mark_current_read();
         if let Some(cmds) = self.session.roll_forward() {
+            self.view.dialogue = None;
             self.show(&cmds);
         }
     }

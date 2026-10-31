@@ -134,7 +134,7 @@ pub fn unsafe_reason(value: &str) -> Option<&'static str> {
 
 /// Whether Windows treats `part` (one file or folder name) as a device: the stem (up
 /// to the first dot, trailing spaces ignored) is `con`, `prn`, `aux`, `nul`, `com1-9` or `lpt1-9`.
-fn is_device_name(part: &str) -> bool {
+pub(crate) fn is_device_name(part: &str) -> bool {
     let stem = part.split('.').next().unwrap_or("").trim_end();
     if !(stem.len() == 3 || stem.len() == 4) {
         return false;

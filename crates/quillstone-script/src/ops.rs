@@ -59,6 +59,10 @@ pub const SEEN: &str = "seen:";
 pub const INPUT_MAX_DEFAULT: usize = 24;
 pub const INPUT_MAX_LIMIT: usize = 64;
 
+/// Most items a list variable holds: `+=` stops adding there, and a save with a longer list is refused
+/// (real games hold dozens; the limit keeps a damaged or hostile file from costing memory or time).
+pub const MAX_LIST_ITEMS: usize = 10_000;
+
 /// Hidden variables `once:<label>:<text>` remember that a `{once}` option was picked.
 pub const ONCE: &str = "once:";
 
@@ -332,7 +336,9 @@ impl Effect {
         // A list changes only by `+=` / `-=` of text; anything else leaves it alone.
         if let Some(Value::List(items)) = vars.get_mut(&self.var) {
             match (self.op, rhs) {
-                (AssignOp::Add, Value::Str(s)) if !s.is_empty() && !items.contains(&s) => items.push(s),
+                (AssignOp::Add, Value::Str(s)) if !s.is_empty() && items.len() < MAX_LIST_ITEMS && !items.contains(&s) => {
+                    items.push(s);
+                }
                 (AssignOp::Sub, Value::Str(s)) => items.retain(|i| *i != s),
                 _ => {}
             }
@@ -516,6 +522,8 @@ pub const MAX_REPLAYS: usize = 64;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
     pub title: Option<String>,
+    /// The `id:` front matter key: the name of the player's save folder (see `title`, the fallback).
+    pub id: Option<String>,
     /// The theme file named in the front matter (`theme: theme.txt`), relative to the script.
     pub theme: Option<String>,
     /// Initial variable values from the front matter.
@@ -1428,6 +1436,17 @@ mod tests {
 
     fn change(v: &mut Vars, var: &str, op: AssignOp, value: Expr) {
         Effect { var: var.into(), op, value }.apply(v);
+    }
+
+    #[test]
+    fn adding_to_a_list_stops_at_the_item_limit() {
+        let mut v = Vars::new();
+        v.insert("bag".into(), Value::List((0..MAX_LIST_ITEMS).map(|i| i.to_string()).collect()));
+        effect("bag", AssignOp::Add, Value::Str("one more".into())).apply(&mut v);
+        assert_eq!(v["bag"], Value::List((0..MAX_LIST_ITEMS).map(|i| i.to_string()).collect()));
+        effect("bag", AssignOp::Sub, Value::Str("0".into())).apply(&mut v);
+        effect("bag", AssignOp::Add, Value::Str("one more".into())).apply(&mut v);
+        assert!(matches!(&v["bag"], Value::List(l) if l.len() == MAX_LIST_ITEMS && l.last().unwrap() == "one more"));
     }
 
     #[test]
