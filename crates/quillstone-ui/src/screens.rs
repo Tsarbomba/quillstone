@@ -485,8 +485,11 @@ fn panel(t: &Theme) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Also shrunk to fit the panel (the rows and buttons need about 860 x factor px of height, 800 of width),
+/// so a small `options_rect` never pushes the buttons off it; the default panel is not shrunk.
 fn factor(t: &Theme) -> f32 {
-    t.options_text_size / DEFAULT_OPTIONS_TEXT_SIZE
+    let [_, _, w, h] = t.options_rect;
+    (t.options_text_size / DEFAULT_OPTIONS_TEXT_SIZE).min(h / 860.0).min(w / 800.0)
 }
 
 /// Top and height of a row: tighter with nine rows so the buttons still clear the hint line.
@@ -1414,6 +1417,20 @@ mod tests {
         assert_eq!(control_rect(6, &ROWS, &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
         assert_eq!(button_rect(SettingsButton::Back, true, 8, &t), Rect::new(560.0, 826.0, 240.0, 80.0));
         assert_eq!(row_rect(0, 9, &t).y, 170.0, "nine rows are tighter");
+    }
+
+    #[test]
+    fn a_short_settings_panel_shrinks_its_rows_so_the_buttons_stay_inside_it() {
+        for rect in ["400, 660, 1120, 420", "0, 0, 640, 420", "100, 100, 700, 600"] {
+            let t = Theme::parse(&format!("options_rect = {rect}\n")).0;
+            let [x, y, w, h] = t.options_rect;
+            for language in [false, true] {
+                for &b in settings_buttons(true) {
+                    let r = button_rect(b, true, rows(language).len(), &t);
+                    assert!(r.x >= x && r.x + r.w <= x + w && r.y + r.h <= y + h, "{rect}: {b:?} {r:?}");
+                }
+            }
+        }
     }
 
     #[test]

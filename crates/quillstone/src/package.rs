@@ -12,8 +12,9 @@
 //!     theme.txt, assets/  only the files the script and theme use
 //! ```
 //!
-//! The player finds `game.qsa` (or `game/`) by itself when double-clicked. A `game/` folder beside
-//! `game.qsa` holds loose files that replace the archive's copies (patches and mods).
+//! The player finds `game.qsa` (or `game/`) by itself when double-clicked. A `mods/` folder beside
+//! `game.qsa` holds loose files that replace the archive's copies (patches and mods). It is not
+//! `game/`, so a folder release unzipped over an archive one (or the reverse) cannot override it.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

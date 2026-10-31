@@ -123,7 +123,8 @@ fn main() {
         None => find_game().unwrap_or_else(|| {
             fatal(
                 "usage: quillstone-player <script.quill.md | game.qsa>\n\
-                 (or put game.qsa next to the player, or the script in a `game` folder beside it as main.quill.md)"
+                 (or put game.qsa next to the player, or the script in a `game` folder beside it as main.quill.md;\n\
+                 loose files in a `mods` folder beside game.qsa replace the ones inside it)"
                     .into(),
             )
         }),
@@ -253,12 +254,13 @@ fn exe_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
 }
 
-/// A game archive: its files come from it, except those that also sit loose in a `game` folder beside it.
+/// A game archive: its files come from it, except those that also sit loose in a `mods` folder beside it
+/// (not `game`: that is what a folder release ships, and an old one left beside a new archive would win).
 /// The script is the archive's main one (or the loose copy of it).
 fn open_archive(qsa: &Path) -> (Assets, PathBuf) {
     let archive = quillstone_ui::archive::Archive::open(qsa).unwrap_or_else(|e| fatal(e));
     let script = PathBuf::from(archive.main());
-    let overlay = qsa.parent().map(|d| d.join("game")).filter(|d| d.is_dir());
+    let overlay = qsa.parent().map(|d| d.join("mods")).filter(|d| d.is_dir());
     (Assets::archive(archive, overlay), script)
 }
 
@@ -337,8 +339,8 @@ struct FileStorage {
 
 impl Storage for FileStorage {
     fn load(&self, name: &str) -> Result<Option<String>, String> {
-        // At most one byte past the limit is read: a huge file is not loaded into memory,
-        // and `SaveFile::parse` refuses what is over the limit ("Unreadable save").
+        // At most one byte past the limit is read: a huge file is not loaded into memory, and it is an
+        // error, not a cut-short text (the caller would then write that text back over the file).
         use std::io::Read;
         let Some(dir) = self.dir.as_ref() else { return Ok(None) };
         let file = match std::fs::File::open(dir.join(name)) {
@@ -348,6 +350,9 @@ impl Storage for FileStorage {
         };
         let mut bytes = Vec::new();
         file.take(MAX_SAVE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_SAVE_BYTES {
+            return Err(format!("{name} is larger than {} MB", MAX_SAVE_BYTES / (1024 * 1024)));
+        }
         String::from_utf8(bytes).map(Some).map_err(|e| e.to_string())
     }
 
@@ -360,6 +365,12 @@ impl Storage for FileStorage {
         let now = chrono::Local::now();
         Timestamp { millis: now.timestamp_millis().max(0) as u64, text: now.format("%Y-%m-%d %H:%M").to_string() }
     }
+}
+
+/// Whether a pad event reaches the game. While `blocked` (the window is minimised or a mouse drag is held)
+/// only releases do, so a held skip still ends.
+fn pad_event_passes(blocked: bool, event: &Event) -> bool {
+    !blocked || matches!(event, Event::Release(_) | Event::KeyReleased(_))
 }
 
 fn fullscreen(on: bool) -> Option<Fullscreen> {
@@ -778,7 +789,7 @@ impl ApplicationHandler for App {
         if !pad.is_empty() {
             self.dirty = true;
             for event in pad {
-                if !self.holding || matches!(event, Event::Release(_) | Event::KeyReleased(_)) {
+                if pad_event_passes(self.holding || self.minimized, &event) {
                     self.game.handle(event);
                 }
             }
@@ -811,5 +822,45 @@ mod tests {
         assert_eq!(save_folder(&parse("title: Night Shift!\nid: night-shift"), "main"), "night-shift");
         assert_eq!(save_folder(&parse("title: Night Shift!"), "main"), "night-shift");
         assert_eq!(save_folder(&parse("vars: { a: 1 }"), "main"), "main");
+    }
+
+    #[test]
+    fn a_file_over_the_save_limit_is_an_error_not_a_cut_short_text() {
+        let dir = std::env::temp_dir().join(format!("qs-storage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ok.txt"), "small").unwrap();
+        std::fs::write(dir.join("big.txt"), vec![b'x'; MAX_SAVE_BYTES + 1]).unwrap();
+        let storage = FileStorage { dir: Some(dir.clone()) };
+        assert_eq!(storage.load("ok.txt"), Ok(Some("small".to_string())));
+        assert!(storage.load("big.txt").is_err());
+        assert_eq!(storage.load("none.txt"), Ok(None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_mods_folder_overrides_an_archive_not_an_old_game_folder() {
+        let dir = std::env::temp_dir().join(format!("qs-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (folder, text) in [("src", "packed"), ("game", "old release"), ("mods", "patched")] {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+            std::fs::write(dir.join(folder).join("a.txt"), text).unwrap();
+        }
+        std::fs::write(dir.join("src/m.quill.md"), "# a\nHi.\n").unwrap();
+        let files = [("m.quill.md".to_string(), dir.join("src/m.quill.md")), ("a.txt".to_string(), dir.join("src/a.txt"))];
+        quillstone_ui::archive::write(&dir.join("game.qsa"), "m.quill.md", &files).unwrap();
+        let (assets, _) = open_archive(&dir.join("game.qsa"));
+        assert_eq!(assets.read_to_string("a.txt").unwrap(), "patched");
+        std::fs::remove_dir_all(dir.join("mods")).unwrap();
+        let (assets, _) = open_archive(&dir.join("game.qsa"));
+        assert_eq!(assets.read_to_string("a.txt").unwrap(), "packed", "a game/ folder no longer overrides");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_pad_does_nothing_while_the_window_is_minimised_except_let_go() {
+        use quillstone_ui::Key;
+        assert!(pad_event_passes(false, &Event::Key(Key::Enter)));
+        assert!(!pad_event_passes(true, &Event::Key(Key::Enter)));
+        assert!(pad_event_passes(true, &Event::KeyReleased(Key::Ctrl)));
     }
 }

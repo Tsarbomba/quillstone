@@ -9,6 +9,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use quillstone_script::MAX_FILE_BYTES;
+
 use quillstone_script::is_inside;
 
 use crate::archive::{Archive, Slice};
@@ -116,17 +118,23 @@ impl Assets {
         }
     }
 
-    /// A whole game file.
-    pub fn read(&self, path: &str) -> io::Result<Vec<u8>> {
-        let mut file = self.open(path)?;
-        let mut bytes = Vec::with_capacity(file.len().unwrap_or(0).min(1 << 28) as usize);
-        file.read_to_end(&mut bytes)?;
+    /// A whole game file of at most `max` bytes: a bigger one is an error, and no more than one byte past
+    /// the limit is read (a huge file must not fill memory).
+    pub fn read_limited(&self, path: &str, max: u64) -> io::Result<Vec<u8>> {
+        let file = self.open(path)?;
+        let mut bytes = Vec::with_capacity(file.len().unwrap_or(0).min(max).min(1 << 28) as usize);
+        file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > max {
+            let message = format!("`{path}` is larger than {} MB", max >> 20);
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+        }
         Ok(bytes)
     }
 
-    /// A whole game file as UTF-8 text.
+    /// A whole game file as UTF-8 text, at most [`MAX_FILE_BYTES`] (scripts, themes and the like).
     pub fn read_to_string(&self, path: &str) -> io::Result<String> {
-        String::from_utf8(self.read(path)?).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the file is not UTF-8 text"))
+        let bytes = self.read_limited(path, MAX_FILE_BYTES as u64)?;
+        String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the file is not UTF-8 text"))
     }
 
     pub fn exists(&self, path: &str) -> bool {
@@ -219,9 +227,22 @@ mod tests {
         let list: Vec<_> = files.iter().map(|(p, t)| (p.to_string(), put(&d.join("src"), p, t))).collect();
         crate::archive::write(&d.join("game.qsa"), files[0].0, &list).unwrap();
         for (p, t) in loose {
-            put(&d.join("game"), p, t);
+            put(&d.join("mods"), p, t);
         }
-        (Assets::archive(Archive::open(&d.join("game.qsa")).unwrap(), Some(d.join("game"))), d)
+        (Assets::archive(Archive::open(&d.join("game.qsa")).unwrap(), Some(d.join("mods"))), d)
+    }
+
+    #[test]
+    fn a_file_over_the_limit_is_an_error_not_read_whole() {
+        let d = dir("limit");
+        put(&d, "big.txt", &"x".repeat(101));
+        put(&d, "ok.txt", &"x".repeat(100));
+        let a = Assets::folder(&d);
+        assert_eq!(a.read_limited("ok.txt", 100).unwrap().len(), 100);
+        let err = a.read_limited("big.txt", 100).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        put(&d, "huge.txt", &"x".repeat(MAX_FILE_BYTES + 1));
+        assert!(a.read_to_string("huge.txt").is_err());
     }
 
     #[test]
@@ -232,8 +253,8 @@ mod tests {
         let a = Assets::folder(&d);
         assert_eq!(a.read_to_string("a/b.txt").unwrap(), "hi");
         assert!(a.exists("a/b.txt") && !a.exists("a/x.txt") && !a.exists("../x"));
-        assert_eq!(a.read("a/x.txt").unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(a.read("../x").unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(a.read_limited("a/x.txt", 100).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(a.read_limited("../x", 100).unwrap_err().kind(), io::ErrorKind::InvalidInput);
         let mut names = a.list("a");
         names.sort();
         assert_eq!(names, ["b.txt", "c.txt"]);
@@ -264,7 +285,7 @@ mod tests {
         assert!(a.list("voice/sub") == ["c.ogg"] && a.list("nope").is_empty());
         assert_eq!(a.list("").len(), 3, "root: main, t.txt, new.txt, and nothing from subfolders");
         for bad in ["../x", "/etc/passwd", "a\\b", "C:x"] {
-            assert_eq!(a.read(bad).unwrap_err().kind(), io::ErrorKind::InvalidInput, "{bad}");
+            assert_eq!(a.read_limited(bad, 100).unwrap_err().kind(), io::ErrorKind::InvalidInput, "{bad}");
         }
         let _ = std::fs::remove_dir_all(d);
     }
@@ -297,7 +318,7 @@ mod tests {
         let (start, len) = (8192, 5); // the script takes the first 4096-byte page
         let archive = d.join("game.qsa").to_string_lossy().into_owned();
         assert_eq!(a.ffmpeg_url("v.webm").unwrap(), format!("subfile,,start,{start},end,{},,:{archive}", start + len));
-        assert_eq!(a.ffmpeg_url("loose.webm").unwrap(), d.join("game/loose.webm").to_string_lossy(), "a loose file is plain");
+        assert_eq!(a.ffmpeg_url("loose.webm").unwrap(), d.join("mods/loose.webm").to_string_lossy(), "a loose file is plain");
         for bad in ["http://example.com/v.webm", "../v.webm", "missing.webm"] {
             assert!(a.ffmpeg_url(bad).is_err(), "{bad} must never reach FFmpeg");
         }

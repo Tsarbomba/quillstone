@@ -174,12 +174,13 @@ Add `--folder` to get a `game/` folder of loose files instead of `game.qsa`.
 `quillstone unpack MyGame/game.qsa --out look-inside` writes the files of an
 archive into a new folder, to see what is in it.
 
-**Patches and mods.** Put a file at the same path in a `game/` folder beside the
+**Patches and mods.** Put a file at the same path in a `mods/` folder beside the
 exe and it replaces the shipped one: a new `assets/room.png`, a fixed
 `chapters/ch2.quill.md`, a `lang/fr.txt` translation. A file with a path the game
 doesn't have yet is simply added (a voice recording in the voice folder, say).
-`quillstone-player path/to/game.qsa` does the same with the `game/` folder beside
-that archive.
+`quillstone-player path/to/game.qsa` does the same with the `mods/` folder beside
+that archive. (It is `mods`, not `game`, on purpose: a `game/` folder is what `--folder`
+releases ship, and one left over from an older release must not win over a newer archive.)
 
 **Slim FFmpeg for shipping.** The full FFmpeg download carries every codec FFmpeg
 has (~130 MB of DLLs). `tools/build-ffmpeg.sh` builds one with only what Quillstone

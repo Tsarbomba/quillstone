@@ -331,7 +331,7 @@ rest were not tried.
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
 | `::shake{axis=x}` / `::shake{axis=y}` | Shake along one axis only: `x` sideways, `y` up and down, `both` (the default) both ways. A one-axis shake moves the stage by up to `strength` pixels along its axis and not at all along the other, and zooms in only as far as that axis needs. |
 | `::flash{time=0.4 color=#ffffff}` | A flash over the whole screen: the colour jumps to full strength and fades out over `time` seconds (more than 0, up to 10; default 0.4). `color` is `#rrggbb` or `#rgb` (default white). Doesn't wait. It is drawn over the stage and inline images but under the textbox and menus. |
-| `::notify{text="Saved" time=3}` | A small message in the top right corner, on the theme's panel colour and text colour, for `time` seconds (0.5 to 30; default 3): it fades in, stays, and fades out. `text` can hold `{variable}` values and the same markup as a `::hud` text (`**bold**`, `{color=...}`) (filled in when the command runs). Doesn't wait and doesn't stop the story; a new `::notify` replaces one still showing. It is a passing message: not saved, not shown again by rollback, and it ends at once when the player skips. Not part of the translation files. |
+| `::notify{text="Saved" time=3}` | A small message in the top right corner, on the theme's panel colour and text colour, for `time` seconds (0.5 to 30; default 3): it fades in, stays, and fades out. `text` can hold `{variable}` values and the same markup as a `::hud` text (`**bold**`, `{color=...}`) (filled in when the command runs). Doesn't wait and doesn't stop the story; a new `::notify` replaces one still showing. It is a passing message: not saved, not shown again by rollback, and it ends at once when the player skips. Its `text` is translated like a dialogue line (looked up before the `{variable}` values go in). |
 | `::unlock{src=assets/cg1.png}` | Unlocks a `gallery:` or `music_room:` entry for the Extras screen without showing or playing it; see [Kept across playthroughs](#kept-across-playthroughs). Doesn't wait or show anything. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
@@ -350,8 +350,9 @@ One model places sprites (`::show`, `::move`), HUD elements (`::hud`) and the ca
 - The point `N%` of the way **across the object** is put `N%` of the way across the **screen**. So `x=0` is flush
   with the left edge, `x=right` flush with the right edge, `x=25%` a quarter of the way along the free room.
   Between 0% and 100% the object stays wholly on screen whatever its size (the HUD and the camera are held to
-  that range). Outside it, a sprite goes partly or wholly off the screen, which is how you slide one in or
-  out: `x=-100%` is well off to the left for a sprite as wide as a person (sprites may go from -200% to 300%).
+  that range). Outside it, a sprite moves by whole screens: `x=-100%` puts its left edge one screen width left of the
+  screen's, so a sprite no wider than the screen is wholly off to the left (and `x=200%` wholly off to the right),
+  which is how you slide one in or out (sprites may go from -200% to 300%; `y` works the same way).
 - A new sprite is placed `x=center y=bottom`. A sprite you show or move again keeps what you do not give.
 - There is no anchor: this model cannot say "the centre of this sprite exactly at that spot", because where
   the centre ends up depends on the picture's size. A sprite as tall as the screen has no free room, so `y`
@@ -1204,7 +1205,7 @@ A file is plain lines that start with a marker. Nothing needs escaping: texts ar
 - Blank lines separate entries and are ignored otherwise. A line starting with anything else is an error.
 
 What can be translated: dialogue and narration, choice and hotspot texts, character names, item names
-and descriptions, `::hud` texts, `::input` prompts, the title, `replays:` titles and the file names listed in `gallery:` and
+and descriptions, `::hud` texts, `::input` prompts, `::notify` texts, the title, `replays:` titles and the file names listed in `gallery:` and
 `music_room:`. A text with no translation shows in the script's language, without any message. The
 game's own buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.
 

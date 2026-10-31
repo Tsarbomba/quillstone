@@ -110,7 +110,7 @@ fn a_big_list_and_many_lines_still_save_under_the_limit_and_load() {
         game.input(Input::Advance);
     }
     let save = game.save();
-    assert!(save.len() <= MAX_SAVE_BYTES, "{} bytes", save.len());
+    assert!(save.len() <= MAX_SAVE_BYTES - 64 * 1024, "room for a slot header: {} bytes", save.len());
     let (loaded, _) = Session::load(&p, &save).unwrap();
     assert_eq!(loaded.state().pc, game.state().pc, "the present state is the one that was saved");
     assert!(game.history.len() > 100 && loaded.history.len() < 100, "oldest history dropped: {}", loaded.history.len());
@@ -123,4 +123,18 @@ fn a_list_stops_growing_at_the_limit_and_its_save_loads() {
     assert!(matches!(&game.state().vars["bag"], Value::List(l) if l.len() == MAX_LIST_ITEMS));
     let (loaded, _) = Session::load(&p, &game.save()).unwrap();
     assert_eq!(loaded.state().vars["bag"], game.state().vars["bag"]);
+}
+
+#[test]
+fn a_story_that_makes_over_a_thousand_variables_saves_and_loads() {
+    let flags: String = (0..1_100).map(|i| format!("::set{{flag{i}=true}}\n")).collect();
+    let options: String = (0..1_100).map(|i| format!("- [Option {i}](#a){{once}}\n")).collect();
+    let p = parse(&format!("# a\n{flags}::choice\n{options}- [Leave](#end)\n::\n# end\nDone.\n")).unwrap();
+    let (mut game, _) = Session::start(&p);
+    for _ in 0..1_100 {
+        game.input(Input::Choose(0));
+    }
+    assert!(game.state().vars.len() >= 2_200, "{} variables", game.state().vars.len());
+    let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+    assert_eq!(loaded.state().vars, game.state().vars);
 }

@@ -95,6 +95,11 @@ impl Session<'_> {
                     }
                     _ => Cmd::AskInput { prompt, default, max },
                 },
+                // The script's text is looked up before the values go in (like a line with `{var}`).
+                Cmd::Notify { text, time, source } => {
+                    let text = if source.is_empty() { text } else { interpolate(cat.text(None, &source), vars) };
+                    Cmd::Notify { text, time, source }
+                }
                 Cmd::HudShow { mut elem, fade } => {
                     if let HudKind::Text { text, .. } = &mut elem.kind {
                         *text = cat.text(None, text).to_string();

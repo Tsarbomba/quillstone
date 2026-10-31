@@ -722,6 +722,23 @@ impl Program {
         })
     }
 
+    /// The most variable names the story can make beyond the declared ones: every `::set` and choice
+    /// effect target (`{once}` flags included), `::input` variable, `::call` parameter and counted
+    /// `seen:` label. A save may not hold more (plus slack) before the reader refuses it.
+    pub fn creatable_vars(&self) -> usize {
+        let from_ops: usize = self
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::Set(_) | Op::Input { .. } => 1,
+                Op::Choice { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
+                Op::Call { args, .. } => args.len(),
+                _ => 0,
+            })
+            .sum();
+        from_ops + self.counted.values().map(Vec::len).sum::<usize>()
+    }
+
     /// Literal item texts that name no `::item`, where the inventory list is
     /// changed with `+=` or tested with `has`: `(op index, text)`. Empty when the
     /// game has no inventory or declares no items.
@@ -966,8 +983,9 @@ pub fn bg_color(src: &str) -> Option<[f32; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// How far outside the screen `x=` / `y=` of a sprite may go (a fraction of the screen, so -200% to 300%): enough to
-/// slide a sprite fully off either side, not enough to lose it for good.
+/// How far outside the screen `x=` / `y=` of a sprite may go (a fraction of the screen, so -200% to 300%). Past
+/// 0..1 the sprite moves by whole screens, so `x=-100%` and `x=200%` are fully off the screen for any sprite no
+/// bigger than it; not enough to lose a sprite for good.
 pub const POSITION: std::ops::RangeInclusive<f32> = -2.0..=3.0;
 
 /// An expression kept with the text it was written as (saves store the text).
@@ -1101,7 +1119,7 @@ pub enum Op {
     Bg { src: String, fade: f32, wipe: Option<Wipe> },
     /// Show (or change the pose of) a sprite. `x` and `y` place it (see [`POSITION`]): the point that
     /// fraction across (down) the sprite is that fraction across (down) the screen, so 0..1 keeps it on
-    /// screen. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
+    /// screen; beyond that it slides off by whole screens. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
     /// `z` orders sprites (-100 to 100, default 0; higher is in front). All three keep the current value when `None`.
     /// `flip` mirrors the picture left to right; `xscale` and `yscale` (0.05 to 10)
     /// stretch it along one axis, on top of `scale`. All three keep the sprite's

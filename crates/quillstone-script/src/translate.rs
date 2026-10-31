@@ -396,7 +396,7 @@ impl Program {
                         add(&o.text, format!("{label}:{}", self.locate(o.line).1), None);
                     }
                 }
-                Op::Input { prompt, .. } => add(prompt, place, None),
+                Op::Input { prompt, .. } | Op::Notify { text: prompt, .. } => add(prompt, place, None),
                 Op::Hud { elem, .. } => {
                     if let HudKind::Text { text, .. } = &elem.kind {
                         add(text, place, None);

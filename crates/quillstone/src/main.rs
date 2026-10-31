@@ -38,7 +38,8 @@ USAGE:
                                 build a folder players can unzip and run: the player
                                 (renamed after the title, or --name), FFmpeg's libraries
                                 (from beside the player, or --libs) and the files the game uses,
-                                packed into game.qsa (or, with --folder, loose in game/)
+                                packed into game.qsa (or, with --folder, loose in game/). Loose files in a
+                                `mods` folder beside game.qsa replace the ones inside it
     quillstone unpack <game.qsa> --out <folder>
                                 write the files inside a game archive into a new folder
 ";

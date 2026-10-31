@@ -926,7 +926,7 @@ impl View {
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
-                Cmd::Notify { text, time } => {
+                Cmd::Notify { text, time, .. } => {
                     self.notice = Some(Notice { text: text.clone(), time: *time, elapsed: 0.0 });
                 }
                 Cmd::Camera { camera, time, ease } => self.set_camera(*camera, *time, *ease),
@@ -1701,6 +1701,14 @@ fn push_image(
     }
 }
 
+/// Where an object of `size` starts on a screen of `screen` when placed at `v`: inside 0..1 the point
+/// that far across it is that far across the screen; beyond that it keeps sliding by whole screen widths,
+/// whatever its size (a bigger-than-screen object would otherwise move the wrong way).
+fn place_axis(v: f32, screen: f32, size: f32) -> f32 {
+    let c = v.clamp(0.0, 1.0);
+    c * (screen - size) + (v - c) * screen
+}
+
 /// A sprite placed by `x`, `y`: the point that far across (down) it is that far across (down) the screen.
 fn push_sprite(
     out: &mut Vec<Draw>,
@@ -1722,7 +1730,7 @@ fn push_sprite(
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
-    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x * (VIRTUAL.w - w), y * (VIRTUAL.h - h), w, h), uv, alpha });
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha });
 }
 
 #[cfg(test)]
@@ -2090,18 +2098,27 @@ mod tests {
     }
 
     #[test]
+    fn a_sprite_taller_than_the_screen_still_moves_the_way_y_says() {
+        // a 1880 px tall sprite has -800 px of free room: the old rule `y * room` sent y=1.5 upwards
+        assert!(close(place_axis(1.0, 1080.0, 1880.0), -800.0));
+        assert!(close(place_axis(1.5, 1080.0, 1880.0), -260.0), "down from y=1, by half a screen");
+        assert!(close(place_axis(-0.5, 1080.0, 1880.0), -540.0), "up from y=0, by half a screen");
+        assert!(close(place_axis(0.5, 1080.0, 940.0), 70.0) && close(place_axis(-1.0, 1920.0, 470.0), -1920.0));
+    }
+
+    #[test]
     fn sprites_below_or_above_the_screen_are_clipped() {
         let mut v = View::new();
         v.apply(&[sprite("low", 0.5, 1.2, 0), sprite("high", 0.5, -0.1, 0)]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let shown = images(&list);
-        // y = 1.2: the sprite starts 168 px down, so its last 28 px hang below the screen
+        // y = 1.2: the free room (140 px) plus 20% of a screen (216 px): it starts 356 px down, so its last 216 px hang below
         let (_, dest, uv) = shown[0];
         assert!(close(dest.y + dest.h, VIRTUAL.h));
-        assert!(close(uv.y, 0.0) && close(uv.h, (940.0 - 28.0) / 940.0), "cut at the bottom edge: {uv:?}");
-        // y = -0.1: it starts 14 px above the screen, so the top 14 px are cut off
+        assert!(close(uv.y, 0.0) && close(uv.h, (940.0 - 216.0) / 940.0), "cut at the bottom edge: {uv:?}");
+        // y = -0.1: it starts 108 px (a tenth of a screen) above the screen, so its top 108 px are cut off
         let (_, dest, uv) = shown[1];
-        assert!(close(dest.y, 0.0) && close(uv.y, 14.0 / 940.0), "cut at the top edge: {uv:?}");
+        assert!(close(dest.y, 0.0) && close(uv.y, 108.0 / 940.0), "cut at the top edge: {uv:?}");
         // far enough sideways, nothing of it shows
         v.apply(&[Cmd::ClearScene, sprite("gone", -1.0, 1.0, 0)]);
         assert!(images(&v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None)).is_empty(), "a sprite wholly off-screen is dropped");
@@ -2192,7 +2209,7 @@ mod tests {
     #[test]
     fn sprites_hanging_off_the_screen_are_cut_at_its_edge() {
         let mut v = View::new();
-        v.apply(&[show("m", "m.png", -235.0 / 1450.0, 0.0)]); // left edge 235 px (half the sprite) off the screen
+        v.apply(&[show("m", "m.png", -235.0 / 1920.0, 0.0)]); // left edge 235 px (half the sprite) off the screen
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let (_, dest, uv) = images(&list)[0];
         assert_eq!(dest.x, 0.0);
@@ -2315,7 +2332,7 @@ mod tests {
     #[test]
     fn a_notice_fades_in_stays_fades_out_and_is_gone_after_its_time() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 2.0 }]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 2.0, source: String::new() }]);
         assert!(v.busy(), "a running notice needs ticks");
         assert_eq!(notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1, 0.0, "starts faded out");
         v.tick(0.2);
@@ -2332,13 +2349,13 @@ mod tests {
     #[test]
     fn a_notice_does_not_block_ends_when_skipping_and_a_new_one_replaces_it() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0 }]);
-        v.apply(&[Cmd::Notify { text: "Other".into(), time: 5.0 }]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new() }]);
+        v.apply(&[Cmd::Notify { text: "Other".into(), time: 5.0, source: String::new() }]);
         v.tick(0.3);
         assert!(notice_draw(&v.draw_list(&all_1080p, None)).is_none(), "the first one was replaced");
         v.end_flash();
         assert!(!v.busy());
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0 }, Cmd::ClearScene]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new() }, Cmd::ClearScene]);
         assert!(!v.busy(), "a new scene drops it");
     }
 
@@ -3341,7 +3358,7 @@ mod tests {
         for flip in [false, true] {
             // placed so the left half (235 px) hangs off the screen
             let mut v = View::new();
-            v.apply(&[look_show("m", flip, 1.0, 1.0, -235.0 / 1450.0)]);
+            v.apply(&[look_show("m", flip, 1.0, 1.0, -235.0 / 1920.0)]);
             let list = v.draw_list(&size, None);
             let (_, dest, uv) = images(&list)[0];
             assert!(close(dest.x, 0.0) && close(dest.w, 235.0), "{dest:?}");

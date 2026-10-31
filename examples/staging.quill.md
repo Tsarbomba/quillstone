@@ -20,7 +20,7 @@ title: Staging
 ::move{mika y=0.4 time=0.5 ease=out}
 **Mika:** Now I'm hovering. `y` is how far down the free room above and below me I am: `y=0` is the top of the screen, `y=1` the bottom.
 
-::move{mika y=1.4 time=0.5 ease=inout}
+::move{mika y=1.15 time=0.5 ease=inout}
 **Mika:** And now I'm sinking below the floor. The screen cuts me off.
 
 ::move{mika y=1 time=0.4 ease=out}

@@ -19,8 +19,10 @@ use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, Music
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
 
-/// How many rollback steps a save keeps (so rollback and the backlog work after loading).
-pub const SAVE_HISTORY: usize = 100;
+/// How many rollback steps a save keeps (so rollback and the backlog work after loading): the last 128.
+/// The session itself keeps more ([`crate::MAX_HISTORY`]); each saved step is a full copy of the state,
+/// so this is what keeps a save small.
+pub const SAVE_HISTORY: usize = 128;
 
 pub use quillstone_script::MAX_LIST_ITEMS;
 
@@ -41,7 +43,8 @@ const MAX_HUD_TEXT: usize = 2_000;
 const MAX_HUD_TOTAL: usize = 64 * 1024;
 
 /// Most sprites, inline pictures and looping sound effects one state may hold, and how many variables
-/// beyond the script's own (undeclared ones are legal: `::set` makes them). A save with more is refused:
+/// beyond the script's own plus [`Program::creatable_vars`] (undeclared ones are legal: `::set` makes
+/// them; this is the slack). A save with more is refused:
 /// the history repeats every state, so a hostile file would cost memory many times over. Real games
 /// stay far below these (a sprite needs its own id in the script, a loop its own file).
 const MAX_SPRITES: usize = 256;
@@ -53,6 +56,10 @@ const MAX_EXTRA_VARS: usize = 1_024;
 /// damaged file costs several times its size in memory while it is parsed. A real
 /// save is tens of kilobytes. Bigger is refused ("unreadable" on the Load screen).
 pub const MAX_SAVE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Room left under [`MAX_SAVE_BYTES`] for what a slot file adds in front of the session text (its header),
+/// so a trimmed save plus that header is still one the reader accepts.
+const HEADER_ROOM: usize = 64 * 1024;
 
 const MAGIC: &str = "quillstone-session 2"; // 2: sprite and HUD positions are `x=` / `y=` now
 
@@ -72,7 +79,7 @@ fn sane(value: f32, lo: f32, hi: f32, default: f32) -> f32 {
 
 impl Session<'_> {
     /// The session as save-file text. The oldest history goes first when the text would pass
-    /// [`MAX_SAVE_BYTES`] (the reader refuses more); the present state is always written.
+    /// [`MAX_SAVE_BYTES`] less [`HEADER_ROOM`] (the reader refuses more); the present state is always written.
     pub fn save(&self) -> String {
         let start = self.history.len().saturating_sub(SAVE_HISTORY);
         let mut parts: Vec<String> = self.history[start..]
@@ -93,7 +100,7 @@ impl Session<'_> {
         write_state(&mut now, &self.state, self.program);
         let mut total = MAGIC.len() + 1 + now.len() + parts.iter().map(String::len).sum::<usize>();
         let mut drop = 0;
-        while total > MAX_SAVE_BYTES && drop < parts.len() {
+        while total > MAX_SAVE_BYTES - HEADER_ROOM && drop < parts.len() {
             total -= parts[drop].len();
             drop += 1;
         }
@@ -687,8 +694,9 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 if program.vars.get(&name).is_none_or(|d| is_list(d) == is_list(&value)) {
                     s.vars.insert(name, value);
                 }
-                if s.vars.len() > program.vars.len() + MAX_EXTRA_VARS {
-                    return Err(format!("line {n}: more than {MAX_EXTRA_VARS} undeclared variables in a state"));
+                let extra = program.creatable_vars() + MAX_EXTRA_VARS;
+                if s.vars.len() > program.vars.len() + extra {
+                    return Err(format!("line {n}: more than {extra} undeclared variables in a state"));
                 }
             }
             "rng" => s.rng = num(arg(1)?, n)?,
@@ -951,6 +959,23 @@ Narration with \"quotes\" and a \\\\ backslash.
         loaded.rollback();
         assert!(loaded.state().inline.len() == 1, "rolled back into the saved history");
         assert_eq!(loaded.backlog().len(), 2);
+    }
+
+    #[test]
+    fn a_save_holds_the_last_128_moments_and_rollback_reaches_back_through_them() {
+        let src: String = (0..300).map(|i| format!("**A:** line {i}\n")).collect();
+        let p = parse(&src).unwrap();
+        let game = play(&p, &vec![Input::Advance; 250]);
+        assert!(game.history.len() > 128);
+        let save = game.save();
+        assert_eq!(save.matches("\nstate\n").count(), 128 + 1, "128 moments and the present");
+        let (mut loaded, _) = Session::load(&p, &save).unwrap();
+        assert_eq!(loaded.history.len(), 128);
+        let mut back = 0;
+        while loaded.rollback().is_some() {
+            back += 1;
+        }
+        assert_eq!(back, 128);
     }
 
     #[test]

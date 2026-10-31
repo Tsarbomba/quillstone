@@ -225,11 +225,19 @@ pub(crate) fn draw_text(
     let run_size = |run: &quillstone_script::markup::TextRun| run.style.size.map_or(size, |s| s.resolve(size));
     let tallest = r.runs.iter().map(run_size).fold(size, f32::max);
     let scales: Vec<(usize, usize, f32)> = r.runs.iter().map(|run| (run.start, run.end, run_size(run) / size.max(1.0))).collect();
-    let lines = r.text.split('\n').count().max(1) as f32;
+    let newlines = r.text.split('\n').count().max(1);
+    // The box is as wide as the text is estimated to be, but never wider than the screen less the insets
+    // (a long notice would run off the edge); then the text wraps in it and the height follows the estimate.
+    // The text is aligned to the side the point leans to, so at the left, centre and right it is placed
+    // exactly, whatever the font.
+    let (wanted, room) = (widest_line(&r.text, size, &scales) + 2.0 * pad, VIRTUAL.w - 2.0 * inset);
+    let width = wanted.min(room);
+    let lines = if wanted > room {
+        crate::layout::estimate_lines_styled(&r.text, &r.runs, size, (width - 2.0 * pad).max(1.0)).max(newlines)
+    } else {
+        newlines
+    } as f32;
     let height = lines * tallest * LINE + 2.0 * pad;
-    // The box is as wide as the text is estimated to be. The text is aligned to the side the point leans to, so
-    // at the left, centre and right it is placed exactly, whatever the font.
-    let width = widest_line(&r.text, size, &scales) + 2.0 * pad;
     let (left, top) = (inset + placed(fx, width, VIRTUAL.w - 2.0 * inset), inset + placed(fy, height, VIRTUAL.h - 2.0 * inset));
     let align = if fx < 1.0 / 3.0 {
         Align::Left
@@ -394,6 +402,16 @@ mod tests {
         let (p1, _) = find("::hud{id=t text=Hello size=40 back=#000}\n");
         let (p2, _) = find("::hud{id=t text=\"{size=100}Hello{/size}\" size=40 back=#000}\n");
         assert!(p2.unwrap().w > p1.unwrap().w * 2.0);
+    }
+
+    #[test]
+    fn a_long_notice_at_the_right_wraps_inside_the_screen_instead_of_running_off_the_left_edge() {
+        let text = "A very long notice that goes on and on about nothing in particular. ".repeat(2);
+        let mut out = Vec::new();
+        draw_text(&mut out, &text, (1.0, 0.0), 40.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 16.0);
+        let Draw::Rect { rect, .. } = &out[0] else { panic!("a panel first") };
+        assert!(rect.x >= 40.0 && rect.x + rect.w <= VIRTUAL.w - 40.0 + 0.01, "{rect:?}");
+        assert!(rect.h > 30.0 * LINE + 32.0 + 1.0, "taller for the wrapped lines: {rect:?}");
     }
 
     #[test]

@@ -149,3 +149,13 @@ fn items_inputs_and_hud_text_are_translated() {
     crate::localize_item(&mut info, &cat);
     assert_eq!((info.name.as_str(), info.text.as_str()), ("Lampa", "En liten lampa."));
 }
+
+#[test]
+fn a_notice_is_looked_up_before_the_values_go_in_and_is_in_the_export() {
+    let p = parse("---\nvars: { n: 2 }\n---\n::notify{text=\"Got {n}\" time=1}\n**A:** one\n").unwrap();
+    assert!(p.translatable().iter().any(|s| s.text == "Got {n}"), "lang export lists it");
+    let cat = Catalog::parse("> Got {n}\n= Fick {n}\n").unwrap();
+    let (s, cmds) = Session::start(&p);
+    assert!(matches!(&cmds[0], Cmd::Notify { text, .. } if text == "Got 2"));
+    assert!(matches!(&s.localize(cmds, &cat)[0], Cmd::Notify { text, .. } if text == "Fick 2"));
+}

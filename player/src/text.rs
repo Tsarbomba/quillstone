@@ -64,17 +64,23 @@ mod real {
         starts
     }
 
-    /// Put `outline` under the letters already in `acc` (premultiplied): every lit pixel stamps its
-    /// coverage on the pixels within the outline's radius, the strongest stamp wins, and the letters
-    /// are laid over the result. Costs one disc per lit pixel, so it is cheap for a thin outline.
-    fn add_outline(acc: &mut [[f32; 4]], w: usize, h: usize, outline: &quillstone_render::Outline) {
-        let r = outline.size.round().max(1.0) as i32;
+    /// The strongest stamp of every lit pixel's disc of radius `r` on each pixel; `edges_only` skips
+    /// pixels that cannot change the result (see [`add_outline`]).
+    pub(super) fn outline_ring(acc: &[[f32; 4]], w: usize, h: usize, r: i32, edges_only: bool) -> Vec<f32> {
         let disc: Vec<(i32, i32)> = (-r..=r)
             .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
             .filter(|(dx, dy)| dx * dx + dy * dy <= r * r + r) // a little over r, so small discs are round
             .collect();
         let mut ring = vec![0.0f32; w * h];
+        let inside = |i: usize| {
+            let (x, y, a) = (i % w, i / w, acc[i][3]);
+            x > 0 && y > 0 && x + 1 < w && y + 1 < h && [i - 1, i + 1, i - w, i + w].iter().all(|&n| acc[n][3] >= a)
+        };
         for (i, px) in acc.iter().enumerate().filter(|(_, px)| px[3] > 0.0) {
+            if edges_only && inside(i) {
+                ring[i] = ring[i].max(px[3]); // still its own cover, which it would have stamped on itself
+                continue;
+            }
             let (x, y) = ((i % w) as i32, (i / w) as i32);
             for (dx, dy) in &disc {
                 let (nx, ny) = (x + dx, y + dy);
@@ -84,6 +90,17 @@ mod real {
                 }
             }
         }
+        ring
+    }
+
+    /// Put `outline` under the letters already in `acc` (premultiplied): every lit pixel stamps its
+    /// coverage on the pixels within the outline's radius, the strongest stamp wins, and the letters
+    /// are laid over the result. A pixel whose four neighbours are all at least as strong is skipped:
+    /// it only keeps its own coverage; the discs it would stamp lie inside its neighbours' discs, which are at
+    /// least as strong, so the result is the same, and a letter's inside is most of its pixels. The radius is capped at 8 window px (a huge outline at 4K cost 100 ms a frame).
+    fn add_outline(acc: &mut [[f32; 4]], w: usize, h: usize, outline: &quillstone_render::Outline) {
+        let r = outline.size.round().clamp(1.0, 8.0) as i32;
+        let ring = outline_ring(acc, w, h, r, true);
         let [r, g, b, a] = outline.color;
         for (px, cover) in acc.iter_mut().zip(ring) {
             let under = cover * a * (1.0 - px[3]); // what the letters leave uncovered
@@ -288,6 +305,7 @@ mod real {
 
 #[cfg(all(test, feature = "text"))]
 mod tests {
+    use super::real::outline_ring;
     use super::*;
     use quillstone_render::{build_frame, Align, Draw, Rect, Size};
     use quillstone_script::markup::rich;
@@ -406,6 +424,23 @@ mod tests {
         let blank = renderer.rasterize(&job("{size=+30}A{p}{p}B{/size}")).unwrap();
         let filled = renderer.rasterize(&job("{size=+30}A{p}x{p}B{/size}")).unwrap();
         assert_eq!(bottom(&blank), bottom(&filled), "the empty line has the sized height");
+    }
+
+    #[test]
+    fn the_outline_skips_interior_pixels_without_changing_the_ring() {
+        // a soft blob with a solid core and an irregular edge
+        let (w, h) = (24, 20);
+        let acc: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as f32 - 11.0, (i / w) as f32 - 9.0);
+                let d = (x * x + y * y).sqrt();
+                let a: f32 = if d < 6.0 { 1.0 } else if d < 8.0 { 0.35 + 0.1 * ((i % 5) as f32) } else { 0.0 };
+                [a, a, a, a]
+            })
+            .collect();
+        for r in [1, 2, 5] {
+            assert_eq!(outline_ring(&acc, w, h, r, true), outline_ring(&acc, w, h, r, false), "radius {r}");
+        }
     }
 
     #[test]

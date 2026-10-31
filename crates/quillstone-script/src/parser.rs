@@ -92,7 +92,6 @@ struct Files<'a> {
     next_base: usize,
 }
 
-/// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
@@ -579,8 +578,14 @@ impl Parser {
             return;
         };
         for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
-            let (entry, thumb) = match item.split_once('|') {
-                Some((e, t)) if key == "gallery" => (unquote(e.trim()), Some(unquote(t.trim()))),
+            // `|` inside quotes is part of a name
+            let parts = split_top_level(item, '|');
+            if parts.len() > 1 && key != "gallery" {
+                self.err(line, format!("`{key}` entries have no thumbnail (`|` is only for `gallery`): `{}`", item.trim()));
+                continue;
+            }
+            let (entry, thumb) = match parts[..] {
+                [e, t] => (unquote(e.trim()), Some(unquote(t.trim()))),
                 _ => (unquote(item), None),
             };
             if entry.is_empty() {
@@ -591,7 +596,9 @@ impl Parser {
                 continue;
             }
             if let Some(t) = thumb {
-                if let Err(m) = check_inside("thumbnail", t) {
+                if t.is_empty() {
+                    self.err(line, format!("`{entry}` has a `|` but no thumbnail after it"));
+                } else if let Err(m) = check_inside("thumbnail", t) {
                     self.err(line, m);
                 } else if kind_from_path(t) != AssetKind::Image {
                     self.err(line, format!("the thumbnail `{t}` of `{entry}` must be a picture (PNG, JPEG or WebP)"));
@@ -2451,7 +2458,7 @@ impl Parser {
             Some(f) => Some(Some(f)),
             None => {
                 let (lo, hi) = (range.start() * 100.0, range.end() * 100.0);
-                self.err(line, format!("bad `{key}={v}` (use {}, {} or {}, a number or a percentage from {lo}% to {hi}%){})", words[0].0, words[1].0, words[2].0, if v.starts_with("far-") { "; `far-left` and `far-right` are gone: try `x=12%` or `x=88%`" } else { "" }));
+                self.err(line, format!("bad `{key}={v}` (use {}, {} or {}, a number or a percentage from {lo}% to {hi}%){}", words[0].0, words[1].0, words[2].0, if v.starts_with("far-") { format!("; `far-left` and `far-right` are gone: try `{key}=12%` or `{key}=88%`") } else { String::new() }));
                 None
             }
         }
@@ -4071,6 +4078,10 @@ mod tests {
         assert!(has_err("---\ngallery: [a.webm | ../b.png]\n---\nHi.\n", "inside the game folder"));
         assert!(has_err("---\ngallery: [../a.webm | b.png]\n---\nHi.\n", "inside the game folder"));
         assert!(ok("---\nmusic_room: [a.ogg]\n---\nHi.\n").gallery_thumbs.is_empty());
+        // a `|` inside quotes belongs to the name; an empty thumbnail and a music room thumbnail say what is wrong
+        assert_eq!(ok("---\ngallery: [\"a|b.png\"]\n---\nHi.\n").gallery, ["a|b.png"]);
+        assert!(has_err("---\ngallery: [a.webm |]\n---\nHi.\n", "no thumbnail after it"));
+        assert!(has_err("---\nmusic_room: [a.ogg | t.png]\n---\nHi.\n", "`music_room` entries have no thumbnail"));
     }
 
     #[test]
@@ -4134,6 +4145,9 @@ mod tests {
         assert!(has_err("::show{src=a.png x=400%}\n", "bad `x=400%`"));
         assert!(has_err("::show{src=a.png x=top}\n", "bad `x=top`"));
         assert!(has_err("::show{src=a.png y=left}\n", "bad `y=left`"));
+        let msg = |src: &str| parse(src).unwrap_err()[0].message.clone();
+        assert!(msg("::show{src=a.png y=far-left}\n").contains("try `y=12%`"), "the hint names the key it is about");
+        assert!(!msg("::show{src=a.png x=sideways}\n").ends_with("))") && msg("::show{src=a.png x=sideways}\n").ends_with("%)"), "no stray bracket");
         // the camera never leaves the stage
         assert!(has_err("::camera{x=150%}\n", "bad `x=150%`") && matches!(ok("::camera{zoom=2 x=right y=top}\n").ops[0], Op::Camera { x: Some(x), y: Some(y), .. } if x == 1.0 && y == 0.0));
     }

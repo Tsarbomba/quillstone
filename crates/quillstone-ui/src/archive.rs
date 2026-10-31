@@ -14,7 +14,7 @@
 //! checks every number and path before anything is read. A [`Slice`] then reads one entry with positioned
 //! reads, so any number of threads and streams can read the same archive with no shared cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,8 @@ pub struct Archive {
     file: Arc<File>,
     main: String,
     entries: Entries,
+    /// Lower-cased path -> the entry's own path, for the names that are unique that way (see [`Archive::range`]).
+    folded: HashMap<String, String>,
 }
 
 impl Archive {
@@ -131,7 +133,16 @@ impl Archive {
             .and_then(|_| file.read_exact(&mut index))
             .map_err(|e| format!("cannot read {name}: {e}"))?;
         let (main, entries) = parse_index(&index, index_at).map_err(|m| bad(&m))?;
-        Ok(Archive { path: path.to_path_buf(), file: Arc::new(file), main, entries })
+        let mut folded: HashMap<String, String> = HashMap::new();
+        let mut twice = HashSet::new();
+        for path in entries.keys() {
+            let key = path.to_lowercase();
+            if folded.insert(key.clone(), path.clone()).is_some() {
+                twice.insert(key);
+            }
+        }
+        folded.retain(|key, _| !twice.contains(key));
+        Ok(Archive { path: path.to_path_buf(), file: Arc::new(file), main, entries, folded })
     }
 
     /// Where the archive file is on disk.
@@ -145,7 +156,7 @@ impl Archive {
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        self.entries.contains_key(path)
+        self.range(path).is_some()
     }
 
     /// The paths of every file inside (in no particular order).
@@ -153,9 +164,12 @@ impl Archive {
         self.entries.keys().map(String::as_str)
     }
 
-    /// `(offset, length)` of an entry within the archive file.
+    /// `(offset, length)` of an entry within the archive file. A path that differs only in letter case
+    /// finds the entry when that is unambiguous: the game folder on Windows ignores case, so a script
+    /// (`{pose}.png` with `pose="happy"`) that works from the folder must work from the archive too.
     pub fn range(&self, path: &str) -> Option<(u64, u64)> {
-        self.entries.get(path).copied()
+        let exact = self.entries.get(path);
+        exact.or_else(|| self.entries.get(self.folded.get(&path.to_lowercase())?)).copied()
     }
 
     /// A reader of one entry's bytes.
@@ -172,7 +186,8 @@ fn parse_index(index: &[u8], data_end: u64) -> Result<(String, Entries), String>
     if count > MAX_ENTRIES {
         return Err(format!("it claims {count} files, more than the {MAX_ENTRIES} allowed"));
     }
-    let mut entries = HashMap::with_capacity(count);
+    // An entry takes at least 20 bytes of index: a tiny file claiming a million must not reserve for them.
+    let mut entries = HashMap::with_capacity(count.min((index.len() - r.at) / 20));
     for _ in 0..count {
         let path = r.string()?;
         let (offset, len) = (r.u64()?, r.u64()?);
@@ -287,7 +302,16 @@ impl Seek for Slice {
 mod tests {
     use super::*;
 
-    fn dir(name: &str) -> PathBuf {
+    #[test]
+    fn an_index_claiming_a_million_files_with_none_is_cut_short_without_reserving_for_them() {
+        let mut index = 1u32.to_le_bytes().to_vec(); // main: one byte
+        index.push(b'm');
+        index.extend((MAX_ENTRIES as u32).to_le_bytes());
+        let err = parse_index(&index, 1000).unwrap_err();
+        assert!(err.contains("cut short"), "{err}");
+    }
+
+        fn dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("qs-archive-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -328,6 +352,16 @@ mod tests {
         for p in a.paths() {
             assert_eq!(a.range(p).unwrap().0 % ALIGN, 0, "{p}");
         }
+    }
+
+    #[test]
+    fn a_path_in_the_wrong_case_finds_its_entry_unless_two_entries_differ_only_in_case() {
+        let path = make("case", &[("main.quill.md", b"Hi.\n"), ("assets/Happy.png", b"h"), ("a/X.png", b"1"), ("a/x.png", b"2")]);
+        let a = Archive::open(&path).unwrap();
+        assert_eq!(read_all(a.slice("assets/happy.png").unwrap()), b"h");
+        assert!(a.contains("ASSETS/HAPPY.PNG"));
+        assert_eq!(read_all(a.slice("a/x.png").unwrap()), b"2", "an exact name always wins");
+        assert!(a.slice("a/X.PNG").is_none(), "ambiguous: no guess");
     }
 
     /// Open a copy of `path` after `edit` changed its bytes.

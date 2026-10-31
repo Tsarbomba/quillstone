@@ -22,11 +22,14 @@ pub fn load_theme(program: &Program, assets: &Assets) -> Theme {
     }
 }
 
+/// The largest font file read (the biggest CJK fonts are a few tens of MB).
+const MAX_FONT_BYTES: u64 = 64 << 20;
+
 /// The theme's font files (regular first), as the text renderer wants them.
 pub fn load_fonts(theme: &Theme, assets: &Assets) -> Vec<Vec<u8>> {
     theme
         .fonts()
         .into_iter()
-        .filter_map(|f| assets.read(f).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
+        .filter_map(|f| assets.read_limited(f, MAX_FONT_BYTES).map_err(|e| eprintln!("warning: cannot read the font {f}: {e}")).ok())
         .collect()
 }
