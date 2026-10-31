@@ -47,6 +47,10 @@ mod stub {
         pub fn voice_playing(&self) -> bool {
             false
         }
+
+        pub fn take_voice_ended(&mut self) -> bool {
+            false
+        }
     }
 }
 
@@ -99,6 +103,8 @@ mod real {
         /// device error, the loop after a started intro): `update` reports it like a
         /// track that ended, so the mixer forgets the music and a later `::music` restarts it.
         music_failed: bool,
+        /// The voice clip ended by itself (or could not start), not yet told to the mixer.
+        voice_ended: bool,
         /// One-shot sound effects that may still be playing, so `stop=` can cut them.
         sfx_shots: Vec<(String, StaticSoundHandle)>,
         /// Files we already complained about, so a missing file warns once.
@@ -135,6 +141,7 @@ mod real {
                 sfx_loops: HashMap::new(),
                 failed_loops: Vec::new(),
                 music_failed: false,
+                voice_ended: false,
                 sfx_shots: Vec::new(),
                 warned: HashSet::new(),
             };
@@ -157,6 +164,7 @@ mod real {
             self.forget_finished_sfx();
             if self.voice.as_ref().is_some_and(|v| v.state() == PlaybackState::Stopped) {
                 self.voice = None;
+                self.voice_ended = true;
             }
             if self.music_intro.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped) {
                 self.music_intro = None;
@@ -176,6 +184,11 @@ mod real {
                 if paused { track.pause(t) } else { track.resume(t) }
             }
             if paused { self.clock.pause() } else { self.clock.start() }
+        }
+
+        /// `true` once when the voice clip ended by itself or could not start (the music comes back up).
+        pub fn take_voice_ended(&mut self) -> bool {
+            std::mem::take(&mut self.voice_ended)
         }
 
         /// Whether a voice clip is still playing (auto-forward waits for it).
@@ -232,10 +245,13 @@ mod real {
                     }
                 }
                 Action::PlayVoice { src } => {
-                    let Some(data) = self.stream(&src) else { return };
+                    let Some(data) = self.stream(&src) else { return self.voice_ended = true };
                     match self.voice_track.play(data) {
                         Ok(handle) => self.voice = Some(handle),
-                        Err(e) => self.warn(&src, e),
+                        Err(e) => {
+                            self.warn(&src, e);
+                            self.voice_ended = true;
+                        }
                     }
                 }
                 Action::StopVoice => {

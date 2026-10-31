@@ -762,6 +762,12 @@ How sound behaves:
   start-up time. If a loop can't start (a missing or damaged file) it is tried again
   at the next `::sfx{loop}` of it, or when the scene is redrawn (rollback, load).
   There are no other channels: one-shots, loops and `stop` all use the sound channel.
+- Voice ducking: with `voice_duck` in the theme (for example `0.5`), music and looping
+  sounds sink to that fraction of their volume (0.3 s) while a voice clip plays and come
+  back (0.6 s) when it ends. One-shot sounds and the voice itself are never ducked; a line
+  whose voice follows another stays ducked; skipping, which plays no voices, never ducks.
+  The volume sliders and each `::music`/`::sfx` `volume` still apply on top. Without the
+  key (or `1`) nothing changes.
 
 Image formats: **PNG**, **JPEG** or **WebP**, at most 8192 pixels on a side;
 `quillstone check` refuses anything else.
@@ -1307,6 +1313,7 @@ quick_menu = visible                # visible (default), hover or hidden (see be
 quick_buttons = all                 # all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
 menu_background = assets/gui/menu.png
 menu_music = assets/audio/menu.ogg
+voice_duck = 0.5                    # music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
 choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (default accent_color)
 choice_timer_height = 8             # its thickness, 2 to 40
 ```

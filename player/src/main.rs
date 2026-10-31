@@ -535,6 +535,9 @@ impl App {
             for src in audio.take_failed_loops() {
                 self.game.loop_failed(&src);
             }
+            if audio.take_voice_ended() {
+                self.game.voice_ended();
+            }
         }
         self.update_videos(dt);
         let voice = self.audio.as_ref().is_some_and(|a| a.voice_playing());

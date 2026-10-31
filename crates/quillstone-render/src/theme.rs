@@ -152,6 +152,8 @@ pub struct Theme {
     pub quick_listed: bool,
     pub menu_background: Option<String>,
     pub menu_music: Option<String>,
+    /// Music and sound loops play at this fraction of their volume while a voice clip does (1 = off).
+    pub voice_duck: f32,
     /// Drawn stretched over the `::input` panel instead of `panel_color`.
     pub input_image: Option<String>,
     /// `x, y, w, h` of the `::input` panel; `None`: centred ([`DEFAULT_INPUT_RECT`]).
@@ -233,6 +235,7 @@ impl Default for Theme {
             quick_listed: false,
             menu_background: None,
             menu_music: None,
+            voice_duck: 1.0,
             input_image: None,
             input_rect: None,
             options_rect: DEFAULT_OPTIONS_RECT,
@@ -425,6 +428,10 @@ impl Theme {
                 "inventory_icon_size" => match number(16.0, 400.0) {
                     Some(n) => t.inventory_icon_size = n,
                     None => bad("`inventory_icon_size` must be a number from 16 to 400".into()),
+                },
+                "voice_duck" => match number(0.0, 1.0) {
+                    Some(n) => t.voice_duck = n,
+                    None => bad("`voice_duck` must be a number from 0 to 1 (1 = no ducking)".into()),
                 },
                 "choice_timer_height" => match number(2.0, 40.0) {
                     Some(n) => t.choice_timer_height = n,
@@ -853,6 +860,16 @@ mod tests {
         assert_eq!(t.choice_timer_height, 14.0);
         let (t, problems) = Theme::parse("choice_timer_color = red\nchoice_timer_height = 1\nchoice_timer_height = 41\n");
         assert_eq!(problems.len(), 3, "{problems:?}");
+        assert_eq!(t, Theme::default());
+    }
+
+    #[test]
+    fn voice_duck_defaults_to_off_is_read_and_is_checked() {
+        assert_eq!(Theme::default().voice_duck, 1.0);
+        let (t, problems) = Theme::parse("voice_duck = 0.4\n");
+        assert!(problems.is_empty() && t.voice_duck == 0.4, "{problems:?}");
+        let (t, problems) = Theme::parse("voice_duck = 1.5\nvoice_duck = quiet\n");
+        assert_eq!(problems.len(), 2, "{problems:?}");
         assert_eq!(t, Theme::default());
     }
 

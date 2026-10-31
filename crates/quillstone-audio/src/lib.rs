@@ -20,6 +20,12 @@
 //!   mutes one-shots but not loops, so what plays always agrees with the story.
 //!   A loop the backend failed to start (or lost) is reported with [`Mixer::loop_failed`].
 //!
+//! - Voice ducking: while a voice clip plays, music and loops sound at the theme's
+//!   `voice_duck` fraction of their own volume (one-shots and the voice itself are never
+//!   ducked). The clip ends when the player acts ([`Action::StopVoice`]) or the backend
+//!   reports it ([`Mixer::voice_ended`]). A voice that replaces another within one batch
+//!   keeps the music ducked: the volume is settled once, at the end of the batch.
+//!
 //! Every sound plays on one of three [`Channel`]s, each with its own volume, so
 //! the player can offer music / sound / voice sliders.
 
@@ -80,17 +86,45 @@ struct SfxLoop {
     volume: f32,
 }
 
+/// Seconds to duck down when a voice starts, and to come back after it.
+const DUCK_DOWN: f32 = 0.3;
+const DUCK_UP: f32 = 0.6;
+
 /// What is playing, as far as the story is concerned.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Mixer {
     music: Option<Track>,
     loops: Vec<SfxLoop>,
     voice: bool,
+    /// Multiplier on music and loops while a voice plays (1 = no ducking).
+    duck: f32,
+    /// The multiplier the backend has been told about (1 when not ducked).
+    applied: f32,
+}
+
+impl Default for Mixer {
+    fn default() -> Mixer {
+        Mixer { music: None, loops: Vec::new(), voice: false, duck: 1.0, applied: 1.0 }
+    }
 }
 
 impl Mixer {
     pub fn new() -> Mixer {
         Mixer::default()
+    }
+
+    /// How far music and loops drop while a voice plays (0..1, 1 = off). Takes effect
+    /// with the next batch or [`Mixer::voice_ended`].
+    pub fn set_voice_duck(&mut self, amount: f32) {
+        self.duck = amount.clamp(0.0, 1.0);
+    }
+
+    /// The backend reports that the voice clip played to its end (or could not start).
+    pub fn voice_ended(&mut self) -> Vec<Action> {
+        let mut out = Vec::new();
+        self.voice = false;
+        self.settle_duck(&mut out);
+        out
     }
 
     /// The music track that is playing, if any.
@@ -155,6 +189,7 @@ impl Mixer {
                 out.push(Action::StopSfxLoop { src, fade: 0.0 });
             }
         }
+        self.settle_duck(&mut out);
         out
     }
 
@@ -177,7 +212,7 @@ impl Mixer {
             if track.src == src && track.looped == looped && track.intro.as_deref() == intro {
                 if track.volume != volume {
                     track.volume = volume;
-                    out.push(Action::SetMusicVolume { volume, fade });
+                    out.push(Action::SetMusicVolume { volume: volume * self.gain(), fade });
                 }
                 return;
             }
@@ -185,7 +220,7 @@ impl Mixer {
         }
         let intro = intro.map(str::to_string);
         self.music = Some(Track { src: src.to_string(), intro: intro.clone(), looped, volume });
-        out.push(Action::PlayMusic { src: src.to_string(), intro, fade, looped, volume });
+        out.push(Action::PlayMusic { src: src.to_string(), intro, fade, looped, volume: volume * self.gain() });
     }
 
     fn play_loop(&mut self, out: &mut Vec<Action>, src: &str, fade: f32, volume: f32) {
@@ -193,13 +228,34 @@ impl Mixer {
             Some(l) => {
                 if l.volume != volume {
                     l.volume = volume;
-                    out.push(Action::SetSfxLoopVolume { src: src.to_string(), volume, fade });
+                    out.push(Action::SetSfxLoopVolume { src: src.to_string(), volume: volume * self.gain(), fade });
                 }
             }
             None => {
                 self.loops.push(SfxLoop { src: src.to_string(), volume });
-                out.push(Action::PlaySfxLoop { src: src.to_string(), fade, volume });
+                out.push(Action::PlaySfxLoop { src: src.to_string(), fade, volume: volume * self.gain() });
             }
+        }
+    }
+
+    /// The multiplier for music and loops right now.
+    fn gain(&self) -> f32 {
+        if self.voice { self.duck } else { 1.0 }
+    }
+
+    /// Tell the backend the music and loop volumes that go with whether a voice plays now.
+    fn settle_duck(&mut self, out: &mut Vec<Action>) {
+        let want = self.gain();
+        if want == self.applied {
+            return;
+        }
+        let fade = if want < self.applied { DUCK_DOWN } else { DUCK_UP };
+        self.applied = want;
+        if let Some(t) = &self.music {
+            out.push(Action::SetMusicVolume { volume: t.volume * want, fade });
+        }
+        for l in &self.loops {
+            out.push(Action::SetSfxLoopVolume { src: l.src.clone(), volume: l.volume * want, fade });
         }
     }
 
@@ -576,5 +632,138 @@ mod tests {
         assert!(p.assets().any(|(_, _, f)| f == "intro.ogg"), "the intro is still a game file");
         let (_, cmds) = Session::start(&p);
         assert!(cmds.iter().any(|c| matches!(c, Cmd::PlayMusic { src, .. } if src == "loop.ogg")));
+    }
+
+    fn ducking_mixer(amount: f32) -> Mixer {
+        let mut mixer = Mixer::new();
+        mixer.set_voice_duck(amount);
+        mixer
+    }
+
+    fn voice(src: &str) -> Cmd {
+        Cmd::PlayVoice { src: src.into() }
+    }
+
+    fn music_volume(volume: f32, fade: f32) -> Action {
+        Action::SetMusicVolume { volume, fade }
+    }
+
+    fn rain_volume(volume: f32, fade: f32) -> Action {
+        Action::SetSfxLoopVolume { src: "rain.ogg".into(), volume, fade }
+    }
+
+    fn start_bed(mixer: &mut Mixer) {
+        mixer.apply(&[Cmd::PlayMusic { src: "a.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 0.8 }]);
+        mixer.apply(&[Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 0.5 }]);
+    }
+
+    #[test]
+    fn a_voice_ducks_music_and_loops_and_the_end_of_the_clip_brings_them_back() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        assert_eq!(
+            mixer.apply(&[voice("v.ogg")]),
+            vec![Action::PlayVoice { src: "v.ogg".into() }, music_volume(0.4, 0.3), rain_volume(0.25, 0.3)]
+        );
+        assert_eq!(mixer.voice_ended(), vec![music_volume(0.8, 0.6), rain_volume(0.5, 0.6)]);
+        assert!(mixer.voice_ended().is_empty(), "already back");
+    }
+
+    #[test]
+    fn the_player_acting_ends_the_ducking_with_the_voice() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        mixer.apply(&[voice("v.ogg")]);
+        let next = mixer.apply(&[Cmd::StopSfx { src: Some("other.ogg".into()), fade: 0.0 }]);
+        assert_eq!(
+            next,
+            vec![Action::StopVoice, Action::StopSfx { src: Some("other.ogg".into()), fade: 0.0 }, music_volume(0.8, 0.6), rain_volume(0.5, 0.6)]
+        );
+    }
+
+    #[test]
+    fn a_voice_that_replaces_another_stays_ducked_without_a_dip() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        mixer.apply(&[voice("v1.ogg")]);
+        assert_eq!(
+            mixer.apply(&[voice("v2.ogg")]),
+            vec![Action::StopVoice, Action::PlayVoice { src: "v2.ogg".into() }]
+        );
+    }
+
+    #[test]
+    fn a_new_batch_after_the_clip_ended_does_not_send_stop_voice_or_volumes_twice() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        mixer.apply(&[voice("v.ogg")]);
+        mixer.voice_ended();
+        assert_eq!(mixer.apply(&[Cmd::StopSfx { src: Some("x.ogg".into()), fade: 0.0 }]).len(), 1);
+    }
+
+    #[test]
+    fn music_and_loops_started_while_a_voice_plays_start_ducked() {
+        let mut mixer = ducking_mixer(0.5);
+        mixer.apply(&[voice("v.ogg")]);
+        let play_a = Cmd::PlayMusic { src: "a.ogg".into(), intro: None, fade: 1.0, looped: true, volume: 0.8 };
+        // the player acted and the new batch has no voice: starts at full volume
+        assert_eq!(mixer.apply(&[play_a]), vec![Action::StopVoice, music("a.ogg", 1.0, 0.8), music_volume(0.8, 0.6)]);
+        mixer.apply(&[voice("v.ogg")]);
+        let play = Cmd::PlayMusic { src: "b.ogg".into(), intro: None, fade: 1.0, looped: true, volume: 0.8 };
+        let acts = mixer.apply(&[voice("w.ogg"), play, Cmd::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 0.5 }]);
+        assert!(acts.contains(&music("b.ogg", 1.0, 0.4)) && acts.contains(&Action::PlaySfxLoop { src: "rain.ogg".into(), fade: 0.0, volume: 0.25 }));
+        assert_eq!(mixer.voice_ended(), vec![music_volume(0.8, 0.6), rain_volume(0.5, 0.6)]);
+    }
+
+    #[test]
+    fn a_music_volume_change_or_fade_while_ducked_keeps_the_duck() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        mixer.apply(&[voice("v.ogg")]);
+        let set = Cmd::PlayMusic { src: "a.ogg".into(), intro: None, fade: 2.0, looped: true, volume: 0.4 };
+        // the redraw/line that keeps the voice going (same batch) re-sends the voice
+        let acts = mixer.apply(&[voice("v.ogg"), set]);
+        assert!(acts.contains(&music_volume(0.2, 2.0)), "{acts:?}");
+        assert_eq!(mixer.voice_ended(), vec![music_volume(0.4, 0.6), rain_volume(0.5, 0.6)]);
+    }
+
+    #[test]
+    fn amount_one_changes_nothing() {
+        let mut mixer = Mixer::new();
+        start_bed(&mut mixer);
+        assert_eq!(mixer.apply(&[voice("v.ogg")]), vec![Action::PlayVoice { src: "v.ogg".into() }]);
+        assert!(mixer.voice_ended().is_empty());
+        let mut mixer = ducking_mixer(7.0); // clamped to 1
+        start_bed(&mut mixer);
+        assert_eq!(mixer.apply(&[voice("v.ogg")]).len(), 1);
+    }
+
+    #[test]
+    fn rollback_to_a_voiced_line_stays_ducked_and_to_a_silent_one_comes_back() {
+        let p = parse("::music{src=a.ogg}\n::voice{src=v1.ogg}\n**A:** one\n**A:** two\n").unwrap();
+        let (mut game, first) = Session::start(&p);
+        let mut mixer = ducking_mixer(0.5);
+        mixer.apply(&first);
+        assert!(mixer.apply(&game.input(Input::Advance)).contains(&Action::StopVoice));
+        // line two has no voice: the music is back; rolling back to line one ducks it again
+        let back = mixer.apply(&game.rollback().unwrap());
+        assert!(back.contains(&Action::PlayVoice { src: "v1.ogg".into() }) && back.contains(&music_volume(0.5, 0.3)), "{back:?}");
+        assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![Action::StopVoice, music_volume(1.0, 0.6)]);
+    }
+
+    #[test]
+    fn a_changed_amount_applies_with_the_next_batch_and_music_without_voice_is_untouched() {
+        let mut mixer = ducking_mixer(0.5);
+        start_bed(&mut mixer);
+        mixer.apply(&[voice("v.ogg")]);
+        mixer.set_voice_duck(0.25);
+        assert_eq!(
+            mixer.apply(&[voice("w.ogg")]),
+            vec![Action::StopVoice, Action::PlayVoice { src: "w.ogg".into() }, music_volume(0.2, 0.3), rain_volume(0.125, 0.3)]
+        );
+        let mut mixer = ducking_mixer(0.0);
+        assert!(mixer.voice_ended().is_empty(), "no music, no loops, no voice: nothing to say");
+        mixer.apply(&[voice("v.ogg")]);
+        assert_eq!(mixer.voice_ended(), vec![]);
     }
 }

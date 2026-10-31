@@ -952,6 +952,27 @@ fn skipping_mutes_sound_effects_and_voice_but_not_music() {
 }
 
 #[test]
+fn voice_ducking_follows_the_theme_the_clip_and_never_happens_while_skipping() {
+    let src = "::music{src=m.ogg volume=0.8}\n::voice{src=v.ogg}\n**A:** one\n**A:** two\n::voice{src=w.ogg}\n**A:** three\n";
+    let p = parse(src).unwrap();
+    let set = |volume, fade| Action::SetMusicVolume { volume, fade };
+    let mut g = new_game(&p, Settings { skip_unread: true, ..instant() });
+    g.set_theme(Theme { voice_duck: 0.5, ..Theme::default() });
+    g.take_audio();
+    // the clip ends by itself: the music comes back
+    g.start_story();
+    let audio = g.take_audio();
+    assert!(audio.contains(&Action::PlayVoice { src: "v.ogg".into() }) && audio.contains(&set(0.4, 0.3)), "{audio:?}");
+    g.voice_ended();
+    assert_eq!(g.take_audio(), vec![set(0.8, 0.6)]);
+    // skipping plays no voice, so it ducks nothing
+    key(&mut g, Key::Tab);
+    run(&mut g, 5);
+    let audio = g.take_audio();
+    assert!(!audio.iter().any(|a| matches!(a, Action::PlayVoice { .. })) && !audio.contains(&set(0.4, 0.3)), "{audio:?}");
+}
+
+#[test]
 fn going_back_or_opening_a_screen_stops_skipping() {
     let p = parse(LONG).unwrap();
     for stop in [Key::Backspace, Key::Escape, Key::Char('h'), Key::Char('s'), Key::F9] {

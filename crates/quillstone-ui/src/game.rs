@@ -419,6 +419,7 @@ impl<'p> Game<'p> {
     /// main menu this also starts the theme's menu music.
     pub fn set_theme(&mut self, theme: Theme) {
         let music = theme.menu_music.clone();
+        self.mixer.set_voice_duck(theme.voice_duck);
         self.view.set_theme(theme);
         if !self.in_story {
             let cmd = match music {
@@ -449,6 +450,12 @@ impl<'p> Game<'p> {
     /// The backend reports that a one-shot music track has ended.
     pub fn music_ended(&mut self) {
         self.mixer.music_ended();
+    }
+
+    /// The backend reports that the voice clip has ended (or could not start): music comes back up.
+    pub fn voice_ended(&mut self) {
+        let actions = self.mixer.voice_ended();
+        self.audio.extend(actions);
     }
 
     /// The backend could not start the looping sound effect `src`, or lost it:
@@ -1089,14 +1096,20 @@ impl<'p> Game<'p> {
         }
         self.bag_arrived(cmds);
         self.input_arrived(cmds);
-        let mut actions = self.mixer.apply(cmds);
+        // Skipping plays no voices, so the mixer must not duck for one.
+        let mut actions = if self.skip.is_some() {
+            let kept: Vec<Cmd> = cmds.iter().filter(|c| !matches!(c, Cmd::PlayVoice { .. })).cloned().collect();
+            self.mixer.apply(&kept)
+        } else {
+            self.mixer.apply(cmds)
+        };
         if self.skip.is_some() {
             // Skipping through dozens of lines a second: no flashes, and don't play
             // one-shot sounds or voices. Looping sounds belong to the scene and are
             // never muted, so what plays still agrees with the story afterwards.
             self.view.end_flash();
             self.view.end_cover_fade();
-            actions.retain(|a| !matches!(a, Action::PlaySfx { .. } | Action::PlayVoice { .. }));
+            actions.retain(|a| !matches!(a, Action::PlaySfx { .. }));
         }
         self.audio.extend(actions);
         self.auto_elapsed = 0.0;
