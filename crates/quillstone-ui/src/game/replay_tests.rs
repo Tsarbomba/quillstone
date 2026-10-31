@@ -17,8 +17,8 @@ struct Shared {
 }
 
 impl Storage for Shared {
-    fn read(&self, name: &str) -> Option<String> {
-        self.mem.borrow().read(name)
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
+        self.mem.borrow().load(name)
     }
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {
         if self.fail.get() {

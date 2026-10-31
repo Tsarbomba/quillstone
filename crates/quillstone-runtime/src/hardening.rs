@@ -228,6 +228,24 @@ fn a_save_with_too_many_states_or_stack_records_is_refused() {
 }
 
 #[test]
+fn a_save_with_too_many_repeated_records_in_a_state_is_refused() {
+    let p = parse(INV).unwrap();
+    // (what the error names, the limit, one record with number i)
+    let cases = [
+        ("sprite", 256, "sprite \"s{i}\" \"a.png\" 0.5 1"),
+        ("inline", 256, "inline \"a.png\" \"alt\""),
+        ("sfxloop", 64, "sfxloop \"a{i}.ogg\" 1"),
+        ("undeclared variables", 1_024, "var \"v{i}\" int 1"),
+    ];
+    for (what, limit, record) in cases {
+        let records = |n: usize| (0..n).map(|i| record.replace("{i}", &i.to_string())).collect::<Vec<_>>().join("\n");
+        assert!(Session::load(&p, &save_with_var(&p, &records(limit))).is_ok(), "{what} at the limit loads");
+        let err = Session::load(&p, &save_with_var(&p, &records(limit + 1))).err().expect(what);
+        assert!(err.contains(&format!("more than {limit}")) && err.contains(what), "{err}");
+    }
+}
+
+#[test]
 fn a_huge_position_offset_does_not_overflow() {
     let p = parse("# a\n**A:** one\n# b\n**A:** two\n").unwrap();
     let text = format!("quillstone-session 1\nstate\nat \"b\" {}\nend\n", usize::MAX);

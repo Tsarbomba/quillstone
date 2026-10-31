@@ -165,6 +165,9 @@ pub struct Game<'p> {
     read_dirty: bool,
     /// What is kept across playthroughs changed and isn't written yet.
     persistent_dirty: bool,
+    /// `read.txt` / `persistent.txt` exists but couldn't be read: not written this session, so it isn't lost.
+    read_locked: bool,
+    persistent_locked: bool,
     /// Whether a story is running (false at the main menu; overlays return here).
     in_story: bool,
     /// The main-menu button the keyboard is on.
@@ -215,8 +218,9 @@ impl<'p> Game<'p> {
     /// Open the game at its main menu. Saves are read from and written to `storage`.
     pub fn new(program: &'p Program, settings: Settings, storage: Box<dyn Storage>) -> Game<'p> {
         let (mut session, _) = Session::start(program); // replaced by Start, Continue or Load
-        session.set_persistent(extras::load_persistent(&*storage));
-        let read = skip::load_read(&*storage);
+        let (persistent, persistent_locked) = extras::load_persistent(&*storage);
+        session.set_persistent(persistent);
+        let (read, read_locked) = skip::load_read(&*storage);
         let mut game = Game {
             program,
             storage,
@@ -249,6 +253,8 @@ impl<'p> Game<'p> {
             read,
             read_dirty: false,
             persistent_dirty: false,
+            read_locked,
+            persistent_locked,
             in_story: false,
             menu_focus: None,
             newest_save: None,
@@ -273,6 +279,10 @@ impl<'p> Game<'p> {
             game.audio.push(Action::SetChannelVolume { channel, volume: game.channel_volume(channel) });
         }
         game.go_to_menu();
+        if persistent_locked || read_locked {
+            let file = if persistent_locked { "persistent.txt" } else { "read.txt" };
+            game.notify(format!("Could not read {file}: it is left alone, and changes to it won't be saved"));
+        }
         game
     }
 
@@ -732,11 +742,14 @@ impl<'p> Game<'p> {
             out.extend(self.theme().menu_background.as_deref().filter(|s| is_video(s)).map(looping));
             return out;
         }
+        // The cutscene takes over its own file: `Videos` keys clips by file, so a looping background of
+        // the same file would be kept and stand in for it, and the cutscene would never end.
+        let cutscene = self.view.video.as_ref().map(|v| v.src.as_str());
         if let Some(v) = &self.view.video {
             out.push(Wanted { src: v.src.clone(), looped: v.looped, generation: self.video_generation });
         }
-        out.extend(self.view.background.as_ref().map(|b| b.src.as_str()).filter(|s| is_video(s)).map(looping));
-        out.extend(self.view.previous_background.as_deref().filter(|s| is_video(s)).map(looping));
+        let backgrounds = [self.view.background.as_ref().map(|b| b.src.as_str()), self.view.previous_background.as_deref()];
+        out.extend(backgrounds.into_iter().flatten().filter(|s| is_video(s) && Some(*s) != cutscene).map(looping));
         out
     }
 

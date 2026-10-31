@@ -109,10 +109,7 @@ impl<'p> Game<'p> {
         let cat = self.catalog().unwrap_or(&empty);
         let mut cmds = self.session.relocalized(cat);
         cmds.retain(|c| matches!(c, Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::HudShow { .. }));
-        self.view.apply(&cmds);
-        if let Some(d) = &mut self.view.dialogue {
-            d.reveal_all();
-        }
+        self.view.apply_each(&cmds, true); // not `apply`: that would end the line's wait, video and images
         if !self.view.hud().is_empty() {
             self.view.set_vars(&self.session.state().vars);
         }

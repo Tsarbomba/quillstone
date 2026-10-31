@@ -31,23 +31,34 @@ pub struct Timestamp {
 
 /// Where save files are kept.
 pub trait Storage {
-    /// A file's contents, if it exists.
-    fn read(&self, name: &str) -> Option<String>;
+    /// A file's contents: `Ok(None)` if it doesn't exist, `Err` if it does but can't be read
+    /// (locked, an IO error, over the size limit, not UTF-8).
+    fn load(&self, name: &str) -> Result<Option<String>, String>;
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String>;
     fn now(&self) -> Timestamp;
+
+    /// A file's contents if it exists and can be read (missing and unreadable look the same).
+    fn read(&self, name: &str) -> Option<String> {
+        self.load(name).ok().flatten()
+    }
 }
 
 /// Keeps files in memory. For tests, and for running without a disk.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryStorage {
     pub files: HashMap<String, String>,
+    /// Files that exist but can't be read (for tests): `load` fails for them.
+    pub unreadable: std::collections::HashSet<String>,
     /// What [`Storage::now`] returns; each call moves it on by a second.
     pub clock: std::cell::Cell<u64>,
 }
 
 impl Storage for MemoryStorage {
-    fn read(&self, name: &str) -> Option<String> {
-        self.files.get(name).cloned()
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
+        if self.unreadable.contains(name) {
+            return Err("unreadable".to_string());
+        }
+        Ok(self.files.get(name).cloned())
     }
 
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {

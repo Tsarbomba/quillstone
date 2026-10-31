@@ -1115,6 +1115,30 @@ fn the_game_says_which_videos_should_play() {
 }
 
 #[test]
+fn a_cutscene_of_the_background_video_file_replaces_it_and_ends() {
+    let p = parse("::bg{src=a.webm}\n**A:** before\n::video{src=a.webm}\n**A:** after\n").unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(wanted(&g), vec![("a.webm".to_string(), true)]);
+    key(&mut g, Key::Space);
+    assert_eq!(wanted(&g), vec![("a.webm".to_string(), false)], "the looping background must not stand in for it");
+    // `Videos` keys clips by file name: with both wanted, the loop was kept and never finished
+    let mut videos = quillstone_video::Videos::new(Box::new(|_: &str| {
+        Ok(Box::new(quillstone_video::TestPattern::new(16, 9, 10, 3)) as Box<dyn quillstone_video::Decoder>)
+    }));
+    videos.sync(&g.wanted_videos());
+    let mut finished = false;
+    for _ in 0..100 {
+        videos.advance(std::time::Duration::from_millis(100));
+        finished = videos.finished("a.webm");
+        if finished {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(finished, "the cutscene finishes");
+}
+
+#[test]
 fn the_end_of_a_cutscene_moves_the_story_on() {
     let p = parse(MOVIE).unwrap();
     let mut g = new_game(&p, instant());
@@ -1376,8 +1400,8 @@ struct Shared {
 }
 
 impl Storage for Shared {
-    fn read(&self, name: &str) -> Option<String> {
-        self.mem.borrow().read(name)
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
+        self.mem.borrow().load(name)
     }
 
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {
@@ -1406,6 +1430,39 @@ fn an_unlock_that_could_not_be_written_is_written_later() {
     g.autosave(); // the player closes the window right away
     let kept = storage.read("persistent.txt").expect("written once the disk works again");
     assert!(kept.contains("unlocked:cg.png"), "{kept}");
+}
+
+#[test]
+fn an_unreadable_persistent_or_read_file_is_not_overwritten() {
+    let p = parse("---\ngallery: [cg.png]\n---\n**A:** one\n::bg{src=cg.png}\n**A:** two\n**A:** three\n").unwrap();
+    for (file, kept) in [("persistent.txt", None), ("persistent.txt", Some("bad magic\n")), ("read.txt", Some("junk\n"))] {
+        let storage = Shared::default();
+        match kept {
+            Some(text) => drop(storage.mem.borrow_mut().files.insert(file.to_string(), text.to_string())),
+            None => drop(storage.mem.borrow_mut().unreadable.insert(file.to_string())),
+        }
+        let mut g = Game::new(&p, instant(), Box::new(storage.clone()));
+        assert!(notice(&g).is_some_and(|n| n.contains(file)), "{file}: {:?}", notice(&g));
+        g.start_story();
+        key(&mut g, Key::Space); // unlocks cg.png and reads a line
+        key(&mut g, Key::Space);
+        g.autosave();
+        assert_eq!(storage.mem.borrow().files.get(file).map(String::as_str), kept, "{file} was left alone");
+        let other = if file == "read.txt" { "persistent.txt" } else { "read.txt" };
+        assert!(storage.read(other).is_some(), "the other file is still written");
+    }
+    // An empty file has nothing to lose: no notice, and it is written again.
+    for file in ["persistent.txt", "read.txt"] {
+        let storage = Shared::default();
+        storage.mem.borrow_mut().files.insert(file.to_string(), String::new());
+        let mut g = Game::new(&p, instant(), Box::new(storage.clone()));
+        assert!(notice(&g).is_none(), "{file}: {:?}", notice(&g));
+        g.start_story();
+        key(&mut g, Key::Space);
+        key(&mut g, Key::Space);
+        g.autosave();
+        assert!(storage.read(file).is_some_and(|t| !t.is_empty()), "{file} is written again");
+    }
 }
 
 #[test]

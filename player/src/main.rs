@@ -273,13 +273,17 @@ fn data_dir(id: &str) -> Option<PathBuf> {
 }
 
 /// Write a file so that a crash or power cut midway can't leave it half
-/// written: write a temporary file next to it, then rename it into place.
+/// written: write a temporary file next to it (flushed to disk), then rename it into place.
 fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text)?;
+    use std::io::Write;
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?; // on disk before the rename, so a power cut can't leave an empty file in place
+    drop(file);
     std::fs::rename(&tmp, path)
 }
 
@@ -289,14 +293,19 @@ struct FileStorage {
 }
 
 impl Storage for FileStorage {
-    fn read(&self, name: &str) -> Option<String> {
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
         // At most one byte past the limit is read: a huge file is not loaded into memory,
         // and `SaveFile::parse` refuses what is over the limit ("Unreadable save").
         use std::io::Read;
-        let file = std::fs::File::open(self.dir.as_ref()?.join(name)).ok()?;
+        let Some(dir) = self.dir.as_ref() else { return Ok(None) };
+        let file = match std::fs::File::open(dir.join(name)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
         let mut bytes = Vec::new();
-        file.take(MAX_SAVE_BYTES as u64 + 1).read_to_end(&mut bytes).ok()?;
-        String::from_utf8(bytes).ok()
+        file.take(MAX_SAVE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        String::from_utf8(bytes).map(Some).map_err(|e| e.to_string())
     }
 
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {

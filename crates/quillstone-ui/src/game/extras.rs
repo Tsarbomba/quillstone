@@ -2,7 +2,7 @@
 //! gallery and the music room, turning pages, opening a picture, playing a track.
 //! Also the persistent data file that remembers what is unlocked.
 
-use quillstone_runtime::{read_persistent, write_persistent};
+use quillstone_runtime::{is_persistent_file, read_persistent, write_persistent};
 use quillstone_script::Vars;
 
 use super::*;
@@ -11,8 +11,15 @@ use crate::extras::{self as ex, Hit, Tab};
 /// What is kept across playthroughs (persistent variables, unlocked extras).
 pub(super) const PERSISTENT_FILE: &str = "persistent.txt";
 
-pub(super) fn load_persistent(storage: &dyn Storage) -> Vars {
-    storage.read(PERSISTENT_FILE).map(|text| read_persistent(&text)).unwrap_or_default()
+/// The saved data, and whether the file exists but is unreadable or damaged (then it is never overwritten).
+pub(super) fn load_persistent(storage: &dyn Storage) -> (Vars, bool) {
+    match storage.load(PERSISTENT_FILE) {
+        // an empty file holds nothing to lose (one cut short by a crash): start over and write it again
+        Ok(None) => (Vars::new(), false),
+        Ok(Some(text)) if text.trim().is_empty() => (Vars::new(), false),
+        Ok(Some(text)) => (read_persistent(&text), !is_persistent_file(&text)),
+        Err(_) => (Vars::new(), true),
+    }
 }
 
 /// Where the extras screen is.
@@ -49,6 +56,9 @@ impl Game<'_> {
     /// Write the persistent data if the story changed it.
     pub(super) fn save_persistent(&mut self) {
         let changed = self.session.take_persistent_changed();
+        if self.persistent_locked {
+            return;
+        }
         if let Some(run) = &self.replay {
             // A replay changes nothing that lasts: what it did is dropped, and only a
             // write that failed before it began is still retried (with the real data).

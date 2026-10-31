@@ -31,13 +31,19 @@ pub enum SkipMode {
     Held,
 }
 
-pub(super) fn load_read(storage: &dyn Storage) -> HashSet<u64> {
-    let Some(text) = storage.read(READ_FILE) else { return HashSet::new() };
+/// The lines read, and whether the file exists but is unreadable or damaged (then it is never overwritten).
+pub(super) fn load_read(storage: &dyn Storage) -> (HashSet<u64>, bool) {
+    let text = match storage.load(READ_FILE) {
+        Ok(None) => return (HashSet::new(), false),
+        Ok(Some(text)) if text.trim().is_empty() => return (HashSet::new(), false), // nothing to lose
+        Ok(Some(text)) => text,
+        Err(_) => return (HashSet::new(), true),
+    };
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some(READ_MAGIC) {
-        return HashSet::new();
+        return (HashSet::new(), true);
     }
-    lines.filter_map(|l| u64::from_str_radix(l.trim(), 16).ok()).collect()
+    (lines.filter_map(|l| u64::from_str_radix(l.trim(), 16).ok()).collect(), false)
 }
 
 impl Game<'_> {
@@ -66,7 +72,7 @@ impl Game<'_> {
 
     /// Write the read-lines record if it changed.
     pub(super) fn save_read(&mut self) {
-        if !self.read_dirty {
+        if !self.read_dirty || self.read_locked {
             return;
         }
         let mut ids: Vec<u64> = self.read.iter().copied().collect();

@@ -806,7 +806,13 @@ impl View {
         // A redraw (rollback, later: loading a save) returns to a line the player
         // has already read, so it is shown whole instead of typed out again.
         let redraw = cmds.first() == Some(&Cmd::ClearScene);
+        self.apply_each(cmds, redraw);
+    }
 
+    /// Apply commands one by one without starting a new batch: the images, video, wait and
+    /// `finished` of the current line stay. `redraw` shows a line whole instead of typing it
+    /// out. For showing some of what is on screen again (a language change).
+    pub fn apply_each(&mut self, cmds: &[Cmd], redraw: bool) {
         for cmd in cmds {
             match cmd {
                 Cmd::ClearScene => {

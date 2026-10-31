@@ -234,3 +234,35 @@ fn the_input_prompt_and_the_inventory_are_drawn_in_the_language_in_use() {
     assert_eq!(g.screen(), Screen::Inventory);
     assert!(texts(&g).contains(&"Mässingslampa".to_string()), "{:?}", texts(&g));
 }
+
+/// A story (in the language-test frame) and a game at its first line, with Svenska available.
+fn plain_game(body: &str) -> (Program, Settings) {
+    (parse(&format!("{HEAD}{body}")).unwrap(), instant())
+}
+
+#[test]
+fn switching_language_during_a_wait_doesnt_stop_it_ending() {
+    let (p, s) = plain_game("**Mika:** one\n::wait{time=1}\n**Mika:** two\n");
+    let mut g = game(&p, s);
+    key(&mut g, Key::Space); // into the wait
+    switch(&mut g, Key::Right);
+    g.tick(2.0, false);
+    assert_eq!(line(&g), "two", "the wait still ended by itself");
+}
+
+#[test]
+fn switching_language_keeps_the_cutscene_the_inline_image_and_the_end() {
+    let (p, s) = plain_game("**Mika:** one\n::video{src=clip.webm}\n![a scarf](scarf.png)\n**Mika:** two\n::end\n");
+    let mut g = game(&p, s);
+    key(&mut g, Key::Space); // the cutscene
+    switch(&mut g, Key::Right);
+    assert!(g.view().video.is_some(), "the video is still wanted");
+    g.video_update(true, true); // it ends
+    assert_eq!(g.view().images.len(), 1);
+    switch(&mut g, Key::Right);
+    assert_eq!(g.view().images.len(), 1, "the inline image is still there");
+    key(&mut g, Key::Space);
+    assert!(g.view().finished);
+    switch(&mut g, Key::Right);
+    assert!(g.view().finished, "the end screen is still the end");
+}

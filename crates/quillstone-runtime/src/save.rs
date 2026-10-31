@@ -44,6 +44,15 @@ const MAX_HUD_TEXT: usize = 2_000;
 /// repeats the same HUD in every state.
 const MAX_HUD_TOTAL: usize = 64 * 1024;
 
+/// Most sprites, inline pictures and looping sound effects one state may hold, and how many variables
+/// beyond the script's own (undeclared ones are legal: `::set` makes them). A save with more is refused:
+/// the history repeats every state, so a hostile file would cost memory many times over. Real games
+/// stay far below these (a sprite needs its own id in the script, a loop its own file).
+const MAX_SPRITES: usize = 256;
+const MAX_INLINE: usize = 256;
+const MAX_SFX_LOOPS: usize = 64;
+const MAX_EXTRA_VARS: usize = 1_024;
+
 /// The largest save the game reads (the whole file, header included): a hostile or
 /// damaged file costs several times its size in memory while it is parsed. A real
 /// save is tens of kilobytes. Bigger is refused ("unreadable" on the Load screen).
@@ -671,6 +680,9 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 if program.vars.get(&name).is_none_or(|d| is_list(d) == is_list(&value)) {
                     s.vars.insert(name, value);
                 }
+                if s.vars.len() > program.vars.len() + MAX_EXTRA_VARS {
+                    return Err(format!("line {n}: more than {MAX_EXTRA_VARS} undeclared variables in a state"));
+                }
             }
             "rng" => s.rng = num(arg(1)?, n)?,
             // A solid colour is `color:#rrggbb`; anything else is a file and must be inside the game folder.
@@ -688,6 +700,9 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.set_hud(elem);
             }
             // An empty picture is a layered sprite (its `layer` records follow).
+            "sprite" if s.sprites.len() >= MAX_SPRITES => {
+                return Err(format!("line {n}: more than {MAX_SPRITES} `sprite` records in a state"));
+            }
             "sprite" => s.sprites.push(SpriteState {
                 id: arg(1)?.to_string(),
                 src: layer_pic(2)?,
@@ -786,12 +801,18 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{}`", arg(1)?)) };
                 s.cover = Some([sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)]);
             }
+            "sfxloop" if s.sfx_loops.len() >= MAX_SFX_LOOPS => {
+                return Err(format!("line {n}: more than {MAX_SFX_LOOPS} `sfxloop` records in a state"));
+            }
             "sfxloop" => {
                 let volume = f(2)?;
                 let src = path(1)?;
                 if !s.sfx_loops.iter().any(|l| l.src == src) {
                     s.sfx_loops.push(SfxLoopState { src, volume: sane(volume, 0.0, 1.0, 1.0) });
                 }
+            }
+            "inline" if s.inline.len() >= MAX_INLINE => {
+                return Err(format!("line {n}: more than {MAX_INLINE} `inline` records in a state"));
             }
             "inline" => s.inline.push((path(1)?, arg(2)?.to_string())),
             "voice" => s.voice = Some(path(1)?),

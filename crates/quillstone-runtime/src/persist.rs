@@ -206,14 +206,18 @@ pub fn write_persistent(vars: &Vars) -> String {
     out
 }
 
+/// Whether `text` starts like a [`write_persistent`] file (a damaged one is better left alone than overwritten).
+pub fn is_persistent_file(text: &str) -> bool {
+    text.lines().next().map(str::trim) == Some(MAGIC)
+}
+
 /// Read [`write_persistent`] text. Unreadable lines are skipped, so a damaged
 /// file loses only what it lost, never everything.
 pub fn read_persistent(text: &str) -> Vars {
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) != Some(MAGIC) {
+    if !is_persistent_file(text) {
         return Vars::new();
     }
-    lines.filter_map(|l| tokens(l).ok()).filter_map(|t| read_var(&t).ok()).collect()
+    text.lines().skip(1).filter_map(|l| tokens(l).ok()).filter_map(|t| read_var(&t).ok()).collect()
 }
 
 #[cfg(test)]
