@@ -5,7 +5,7 @@
 
 use quillstone_runtime::{interpolate, Cmd};
 use quillstone_script::markup::rich;
-use quillstone_script::{HudAnchor, HudElem, HudKind, Vars};
+use quillstone_script::{HudElem, HudKind, Vars};
 
 use crate::layout::{is_wide, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
@@ -124,20 +124,18 @@ impl HudLayer {
             if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
                 continue;
             }
-            let (px, py) = (e.at[0] * VIRTUAL.w, e.at[1] * VIRTUAL.h);
             match &e.kind {
                 HudKind::Text { text, size, color, back, pad } => {
                     let shown = interpolate(text, &self.vars);
                     let size = size.unwrap_or(theme.text_size);
                     let color = faded(color.unwrap_or(theme.text_color), item.alpha);
-                    draw_text(out, &shown, (px, py), e.anchor, size, color, back.map(|b| faded(b, item.alpha)), *pad);
+                    draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back.map(|b| faded(b, item.alpha)), *pad);
                 }
                 HudKind::Bar { value, max, size: [w, h], color, back, border } => {
                     let int = |x: &quillstone_script::HudExpr| x.expr.eval(&self.vars).as_int().unwrap_or(0);
                     let (v, m) = (int(value), int(max));
                     let frac = if m <= 0 { 0.0 } else { (v as f64 / m as f64).clamp(0.0, 1.0) as f32 };
-                    let x = anchored(px, *w, e.anchor);
-                    let r = Rect::new(x, py, *w, *h);
+                    let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
                     if let Some((c, t)) = border {
                         let c = faded(*c, item.alpha);
                         for bar in [
@@ -158,7 +156,7 @@ impl HudLayer {
                 HudKind::Image { src, scale } => {
                     let Some(s) = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0) else { continue };
                     let (w, h) = (s.w * scale, s.h * scale);
-                    let dest = Rect::new(anchored(px, w, e.anchor), py, w, h);
+                    let dest = Rect::new(placed(e.x, w, VIRTUAL.w), placed(e.y, h, VIRTUAL.h), w, h);
                     out.push(Draw::Image { src: src.clone(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: item.alpha });
                 }
             }
@@ -166,13 +164,9 @@ impl HudLayer {
     }
 }
 
-/// The left edge of something `w` wide whose anchor point is at `x`.
-fn anchored(x: f32, w: f32, anchor: HudAnchor) -> f32 {
-    match anchor {
-        HudAnchor::Left => x,
-        HudAnchor::Center => x - w / 2.0,
-        HudAnchor::Right => x - w,
-    }
+/// The start of something `size` long when the point `f` (0..1) of it is `f` of the way across `room`.
+fn placed(f: f32, size: f32, room: f32) -> f32 {
+    f * (room - size)
 }
 
 /// Line height the player's text engine uses (see `quillstone-render` `TextJob`s: 1.35 x size).
@@ -219,8 +213,8 @@ fn widest_line(text: &str, size: f32, runs: &[(usize, usize, f32)]) -> f32 {
 pub(crate) fn draw_text(
     out: &mut Vec<Draw>,
     shown: &str,
-    (px, py): (f32, f32),
-    anchor: HudAnchor,
+    (fx, fy): (f32, f32),
+    inset: f32,
     size: f32,
     color: [f32; 4],
     back: Option<[f32; 4]>,
@@ -233,32 +227,21 @@ pub(crate) fn draw_text(
     let scales: Vec<(usize, usize, f32)> = r.runs.iter().map(|run| (run.start, run.end, run_size(run) / size.max(1.0))).collect();
     let lines = r.text.split('\n').count().max(1) as f32;
     let height = lines * tallest * LINE + 2.0 * pad;
-    let align = match anchor {
-        HudAnchor::Left => Align::Left,
-        HudAnchor::Center => Align::CenterX,
-        HudAnchor::Right => Align::Right,
+    // The box is as wide as the text is estimated to be. The text is aligned to the side the point leans to, so
+    // at the left, centre and right it is placed exactly, whatever the font.
+    let width = widest_line(&r.text, size, &scales) + 2.0 * pad;
+    let (left, top) = (inset + placed(fx, width, VIRTUAL.w - 2.0 * inset), inset + placed(fy, height, VIRTUAL.h - 2.0 * inset));
+    let align = if fx < 1.0 / 3.0 {
+        Align::Left
+    } else if fx <= 2.0 / 3.0 {
+        Align::CenterX
+    } else {
+        Align::Right
     };
-    let rect = match back {
-        // A panel is as wide as the text is estimated to be, so it can be drawn behind it.
-        Some(back) => {
-            let widest = widest_line(&r.text, size, &scales);
-            let panel = Rect::new(anchored(px, widest + 2.0 * pad, anchor), py, widest + 2.0 * pad, height);
-            out.push(Draw::Rect { rect: panel, color: back });
-            Rect::new(panel.x + pad, panel.y + pad, panel.w - 2.0 * pad, panel.h - 2.0 * pad)
-        }
-        // No panel: the text gets all the room on its side of the anchor point and is aligned
-        // against it, so it is placed exactly whatever the font.
-        None => {
-            match anchor {
-                HudAnchor::Left => Rect::new(px + pad, py + pad, (VIRTUAL.w - px - pad).max(1.0), height - 2.0 * pad),
-                HudAnchor::Right => Rect::new(0.0, py + pad, (px - pad).max(1.0), height - 2.0 * pad),
-                HudAnchor::Center => {
-                    let half = px.min(VIRTUAL.w - px).max(0.5);
-                    Rect::new(px - half, py + pad, 2.0 * half, height - 2.0 * pad)
-                }
-            }
-        }
-    };
+    if let Some(back) = back {
+        out.push(Draw::Rect { rect: Rect::new(left, top, width, height), color: back });
+    }
+    let rect = Rect::new(left + pad, top + pad, width - 2.0 * pad, height - 2.0 * pad);
     out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
@@ -295,7 +278,7 @@ mod tests {
         list.iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.as_str()) } else { None }).collect()
     }
 
-    const BAR: &str = "---\nvars: { hp: 5, max: 10 }\n---\n::hud{id=b bar=hp max=max at=0.1,0.2 size=200,20 color=#ff0000 back=#000000}\nHi.\n";
+    const BAR: &str = "---\nvars: { hp: 5, max: 10 }\n---\n::hud{id=b bar=hp max=max x=0.1 y=0.2 size=200,20 color=#ff0000 back=#000000}\nHi.\n";
 
     fn fill_width(v: &View) -> Option<f32> {
         let list = v.draw_list(&no_images, None);
@@ -347,9 +330,9 @@ mod tests {
     fn a_bar_is_a_back_rect_then_the_fill_from_the_left_edge() {
         let v = view(BAR);
         let r = rects(&v.draw_list(&no_images, None));
-        assert_eq!(r[0].0, Rect::new(192.0, 216.0, 200.0, 20.0));
-        assert_eq!(r[1].0, Rect::new(192.0, 216.0, 100.0, 20.0));
-        let v = view("---\nvars: { hp: 5 }\n---\n::hud{id=b bar=hp max=10 size=200,20 border=#ffffff border_size=3 at=0,0}\nHi.\n");
+        assert_eq!(r[0].0, Rect::new(172.0, 212.0, 200.0, 20.0));
+        assert_eq!(r[1].0, Rect::new(172.0, 212.0, 100.0, 20.0));
+        let v = view("---\nvars: { hp: 5 }\n---\n::hud{id=b bar=hp max=10 size=200,20 border=#ffffff border_size=3 x=0 y=0}\nHi.\n");
         let r = rects(&v.draw_list(&no_images, None));
         assert_eq!(r.len(), 6, "four border edges, the back, the fill");
         assert_eq!(r[0].0, Rect::new(-3.0, -3.0, 206.0, 3.0));
@@ -357,30 +340,32 @@ mod tests {
     }
 
     #[test]
-    fn the_anchor_decides_which_side_of_the_point_the_element_is_on() {
-        let bar = |anchor: &str| {
-            let v = view(&format!("::hud{{id=b bar=1 max=2 at=0.5,0 size=200,20 anchor={anchor}}}\nHi.\n"));
+    fn x_and_y_put_the_point_that_far_across_the_element_that_far_across_the_screen() {
+        let bar = |x: &str, y: &str| {
+            let v = view(&format!("::hud{{id=b bar=1 max=2 x={x} y={y} size=200,20}}\nHi.\n"));
             rects(&v.draw_list(&no_images, None))[0].0
         };
-        assert_eq!(bar("left").x, 960.0);
-        assert_eq!(bar("center").x, 860.0);
-        assert_eq!(bar("right").x, 760.0);
-        let text = |anchor: &str, at: f32| {
-            let v = view(&format!("::hud{{id=t text=Hello at={at},0.1 anchor={anchor}}}\nHi.\n"));
+        assert_eq!((bar("left", "top").x, bar("left", "top").y), (0.0, 0.0));
+        assert_eq!(bar("center", "top").x, 860.0);
+        assert_eq!(bar("right", "bottom").x, 1720.0);
+        assert_eq!(bar("right", "bottom").y, 1060.0);
+        assert_eq!(bar("25%", "center").x, 430.0, "a quarter of the way: a quarter of the free room");
+        let text = |x: &str| {
+            let v = view(&format!("::hud{{id=t text=Hello x={x} y=0.1}}\nHi.\n"));
             v.draw_list(&no_images, None).into_iter().find_map(|d| match d { Draw::Text { text, rect, align, .. } if text == "Hello" => Some((rect, align)), _ => None }).unwrap()
         };
-        let (r, a) = text("left", 0.25);
-        assert_eq!((r.x, r.x + r.w, a), (480.0, 1920.0, Align::Left));
-        let (r, a) = text("right", 0.75);
-        assert_eq!((r.x, r.x + r.w, a), (0.0, 1440.0, Align::Right));
-        let (r, a) = text("center", 0.25);
-        assert_eq!((r.x, r.x + r.w, a), (0.0, 960.0, Align::CenterX), "centred on the point, as far as the screen allows");
-        assert_eq!(r.y, 108.0);
+        let (r, a) = text("left");
+        assert_eq!((r.x, a), (0.0, Align::Left));
+        let (r, a) = text("right");
+        assert_eq!((r.x + r.w, a), (1920.0, Align::Right), "flush with the right edge whatever the font");
+        let (r, a) = text("center");
+        assert_eq!((r.x + r.w / 2.0, a), (960.0, Align::CenterX));
+        assert!((r.y - 0.1 * (1080.0 - (r.h))).abs() < 0.01);
     }
 
     #[test]
     fn a_panel_sits_behind_the_text_with_the_padding_around_it() {
-        let v = view("::hud{id=t text=Hello at=0.5,0.1 anchor=center size=40 back=#00000099 pad=12}\nHi.\n");
+        let v = view("::hud{id=t text=Hello x=0.5 y=0.1 size=40 back=#00000099 pad=12}\nHi.\n");
         let list = v.draw_list(&no_images, None);
         let panel = rects(&list)[0].0;
         let Some(Draw::Text { rect, .. }) = list.iter().find(|d| matches!(d, Draw::Text { text, .. } if text == "Hello")) else { panic!() };
@@ -389,9 +374,9 @@ mod tests {
         assert!((panel.x + panel.w / 2.0 - 960.0).abs() < 0.01, "centred on the point");
         assert!((panel.w - rect.w - 24.0).abs() < 0.01 && (panel.h - rect.h - 24.0).abs() < 0.01);
         assert!(panel.w > 40.0 * 2.0, "wide enough for five letters");
-        let right = view("::hud{id=t text=Hello at=0.5,0.1 anchor=right size=40 back=#000 pad=12}\nHi.\n");
+        let right = view("::hud{id=t text=Hello x=right y=0.1 size=40 back=#000 pad=12}\nHi.\n");
         let p = rects(&right.draw_list(&no_images, None))[0].0;
-        assert!((p.x + p.w - 960.0).abs() < 0.01);
+        assert!((p.x + p.w - 1920.0).abs() < 0.01, "flush right");
     }
 
     #[test]
@@ -428,7 +413,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..256 {
             out.clear();
-            draw_text(&mut out, &text, (10.0, 10.0), HudAnchor::Left, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0);
+            draw_text(&mut out, &text, (0.0, 0.0), 0.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0);
         }
         assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
         assert_eq!(out.len(), 2, "a panel and the text");
@@ -445,12 +430,12 @@ mod tests {
     }
 
     #[test]
-    fn an_image_is_drawn_at_its_own_size_times_scale_by_its_anchor() {
-        let v = view("::hud{id=h image=a.png at=0.5,0.5 anchor=center scale=0.5}\nHi.\n");
+    fn an_image_is_drawn_at_its_own_size_times_scale_placed_by_x_and_y() {
+        let v = view("::hud{id=h image=a.png x=0.5 y=0.5 scale=0.5}\nHi.\n");
         let size = |_: &str| Some(Size { w: 100.0, h: 60.0 });
         let list = v.draw_list(&size, None);
         let Some(Draw::Image { dest, alpha, uv, .. }) = list.first() else { panic!("{list:?}") };
-        assert_eq!((*dest, *alpha, *uv), (Rect::new(935.0, 540.0, 50.0, 30.0), 1.0, Rect::new(0.0, 0.0, 1.0, 1.0)));
+        assert_eq!((*dest, *alpha, *uv), (Rect::new(935.0, 525.0, 50.0, 30.0), 1.0, Rect::new(0.0, 0.0, 1.0, 1.0)));
         assert!(v.draw_list(&no_images, None).is_empty(), "a picture that isn't loaded draws nothing");
     }
 

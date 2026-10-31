@@ -207,7 +207,7 @@ is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
 
 # rooftop
 ::bg{src=assets/rooftop.png fade=0.5}
-::show{mika neutral at=right fade=0.4}
+::show{mika neutral x=80% fade=0.4}
 
 **Mika:** You came after all, {name}.
 

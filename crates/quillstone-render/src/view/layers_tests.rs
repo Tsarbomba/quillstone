@@ -213,7 +213,7 @@ fn a_layer_that_is_not_loaded_yet_is_left_out_and_a_new_scene_clears_the_layers(
 #[test]
 fn a_whole_game_with_layers_replays_through_the_view() {
     let p = parse(
-        "::character{id=mika layers=body,eyes layer_sprites=a/{layer}_{value}.png}\n::show{mika body=x eyes=y at=left}\nOne.\n\
+        "::character{id=mika layers=body,eyes layer_sprites=a/{layer}_{value}.png}\n::show{mika body=x eyes=y x=left}\nOne.\n\
          ::show{mika eyes=z}\nTwo.\n",
     )
     .unwrap();

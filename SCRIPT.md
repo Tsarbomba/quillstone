@@ -24,7 +24,7 @@ vars: { trust: 0, met: false, name: "Alex" }
 # rooftop
 
 ::bg{src=assets/rooftop.png fade=0.5}
-::show{mika neutral at=right fade=0.4}
+::show{mika neutral x=80% fade=0.4}
 
 **Mika:** Hello, {name}.
 She looks away.
@@ -314,19 +314,19 @@ rest were not tried.
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
 | `::character{id=hero name="{hero.name}" color=#9cc8ff}` | The name may hold `{variable}`s of declared variables (an unknown one is an error). The name plate, History and the text-mode output show the variable's value at that line, so a character the player named (see `::input`) is shown by the typed name, and earlier lines keep the name they had after a rollback or a variable change. What the player typed never becomes formatting. Write `**hero:**` or the name text exactly as declared, `**{hero.name}:**`, before a line. In a translation file the `@ Speaker` context for such a character is the name as written in the script (`@ {hero.name}`), and the name's own entry is `> {hero.name}`. Auto-voice file names do not depend on the variable. |
 | `::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}` | A character drawn from **layers** (see "Layered sprites" below): `layers` lists the layer ids back to front (at most 8), `layer_sprites` is where each layer's pictures are (`{layer}` is the layer id, `{value}` what is shown on it). A character may have `sprites=` poses, layers, or both. |
-| `::show{mika body=casual eyes=open mouth=smile at=left}` | Show or change a **layered** sprite: each layer id is an attribute whose value says what that layer shows (`eyes=none` hides it, `eyes=anim:blink` uses an animation). See "Layered sprites" below. |
-| `::show{mika happy at=left fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `at`: `far-left` `left` `center` `right` `far-right`, a number 0 to 1, or `30%`. Without `at` it keeps its position, or centres if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
-| `::show{mika happy y=0.9 z=2}` | `y`: where the sprite's **bottom edge** is, as a fraction of the screen height (a number or `N%`, from -0.5 to 1.5; default 1, the bottom of the screen). Less than 1 lifts the sprite, more than 1 sinks it below the screen edge; the screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
-| `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps standing on its `y` line and stays centred on `at`. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
-| `::show{src=assets/ghost.png id=ghost at=center}` | A sprite that isn't a character. |
-| `::show{mika anim=blink at=left}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`at`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
+| `::show{mika body=casual eyes=open mouth=smile x=20%}` | Show or change a **layered** sprite: each layer id is an attribute whose value says what that layer shows (`eyes=none` hides it, `eyes=anim:blink` uses an animation). See "Layered sprites" below. |
+| `::show{mika happy x=20% fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `x`: `left` `center` `right`, a number or `30%` (see "Placing things: `x` and `y`" below). Without `x` it keeps its position, or is centred if new; without `scale (0.05 to 10) it keeps its size, or is 1 if new. |
+| `::show{mika happy y=0.5 z=2}` | `y`: `top` `center` `bottom`, a number or `N%`, placed like `x` (a new sprite stands on the bottom, `y=bottom`). The screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
+| `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps its `x` and `y` placement, worked out again for its new size. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
+| `::show{src=assets/ghost.png id=ghost x=center}` | A sprite that isn't a character. |
+| `::show{mika anim=blink x=20%}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`x`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
-| `::move{mika at=right time=0.8}` | Slide a sprite. |
-| `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `at` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
+| `::move{mika x=80% time=0.8}` | Slide a sprite (it animates `x` and `y`). |
+| `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `x` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
-| `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `at`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
-| `::move{mika y=0.97 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
-| `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` (0 to 1, or `30%`) is the point to centre on, kept so the view never leaves the stage. Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
+| `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `x`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
+| `::move{mika y=0.85 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
+| `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` place the view over the stage the same way as a sprite (`left` `center` `right`, `top` `center` `bottom`, a number or `N%`, but only 0 to 100%: the view never leaves the stage). Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
 | `::shake{time=0.4 strength=20}` | Shake the stage, dying away over `time` seconds (`strength` in pixels at 1920x1080, up to 200). Doesn't wait. While it lasts the stage is zoomed in slightly about the centre (by just enough to hide the edges), easing in and out with the shake. |
 | `::shake{axis=x}` / `::shake{axis=y}` | Shake along one axis only: `x` sideways, `y` up and down, `both` (the default) both ways. A one-axis shake moves the stage by up to `strength` pixels along its axis and not at all along the other, and zooms in only as far as that axis needs. |
@@ -340,8 +340,24 @@ rest were not tried.
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
 
-Sprites stand on the bottom edge of the screen unless `y` says otherwise, about
-940 px tall at `scale=1` (on a 1920x1080 screen), and the text box draws over their
+### Placing things: `x` and `y`
+
+One model places sprites (`::show`, `::move`), HUD elements (`::hud`) and the camera (`::camera`). `x` and
+`y` each take a **keyword**, a **number** or a **percentage**:
+
+- `x`: `left` (0%), `center` (50%) or `right` (100%). `y`: `top` (0%), `center` (50%) or `bottom` (100%).
+- A plain number is a fraction, not pixels: `0.25` is the same as `25%`, as everywhere else in the language.
+- The point `N%` of the way **across the object** is put `N%` of the way across the **screen**. So `x=0` is flush
+  with the left edge, `x=right` flush with the right edge, `x=25%` a quarter of the way along the free room.
+  Between 0% and 100% the object stays wholly on screen whatever its size (the HUD and the camera are held to
+  that range). Outside it, a sprite goes partly or wholly off the screen, which is how you slide one in or
+  out: `x=-100%` is well off to the left for a sprite as wide as a person (sprites may go from -200% to 300%).
+- A new sprite is placed `x=center y=bottom`. A sprite you show or move again keeps what you do not give.
+- There is no anchor: this model cannot say "the centre of this sprite exactly at that spot", because where
+  the centre ends up depends on the picture's size. A sprite as tall as the screen has no free room, so `y`
+  does nothing to it until you give it a smaller `scale`.
+
+Sprites are about 940 px tall at `scale=1` (on a 1920x1080 screen) and stand on the bottom edge unless `y` says otherwise; the text box draws over their
 lower part. To put one sprite behind another, give it a lower `z`. The camera, sprite sizes,
 heights, stretch, mirroring, `z` and the colour cover are part of the scene, so rollback
 and saves restore them (a save made before `::fade` existed loads uncovered, one made
@@ -475,7 +491,7 @@ used, then use it wherever a picture goes:
 ::anim{id=arrive frames="door_shut.png 0.6, door_open.png 0.1"}
 
 ::bg{anim=rain fade=1}
-::show{mika anim=blink at=left}
+::show{mika anim=blink x=20%}
 ```
 
 - `id` is letters, digits and `_`; declaring an id twice is an error. Animations are
@@ -523,21 +539,21 @@ every combination. Declare the layers on the character, back to front:
 ::anim{id=blink frames="assets/mika/eyes_open.png 3, assets/mika/eyes_closed.png 0.12" loop}
 ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}
 
-::show{mika body=casual eyes=open mouth=smile at=left fade=0.4}
+::show{mika body=casual eyes=open mouth=smile x=20% fade=0.4}
 ::show{mika mouth=open}
 ::show{mika eyes=anim:blink body=formal}
 ::show{mika eyes=none}
 ```
 
 - `layers` is a comma-separated list of layer ids (letters, digits and `_`, at most 8, no
-  repeats; not `none`, and not the name of a `::show` attribute such as `at` or `scale`).
+  repeats; not `none`, and not the name of a `::show` attribute such as `x` or `scale`).
   `layer_sprites` must contain both `{layer}` and `{value}` and end in a picture type
   (`.png`, `.jpg`, `.jpeg` or `.webp`). With `layer_sprites=assets/mika/{layer}_{value}.png`,
   `eyes=open` shows `assets/mika/eyes_open.png`.
 - A `::show` names the layers it changes. **A layer you leave out keeps what it showed**, and so
   do the sprite's position, size and everything else. The first `::show` of a character with
   layers must give a value for every layer (the script is refused otherwise, and the error lists
-  the missing ones; use `none` for a layer that starts empty). A bare `::show{mika at=right}` on a
+  the missing ones; use `none` for a layer that starts empty). A bare `::show{mika x=80%}` on a
   character that has only layers just moves the sprite.
 - `eyes=none` hides that layer. `eyes=anim:blink` shows the frame animation `blink` (declared
   above, see "Frame animations") on that layer, so blinking is just an animated eyes layer; its
@@ -548,7 +564,7 @@ every combination. Declare the layers on the character, back to front:
 - All the layers of a character should be the **same size** (the same canvas): they are drawn
   stacked, each at the same place, size and mirroring, so one layer is not placed on its own.
   `quillstone check` warns about a layer picture whose size differs from the first.
-- Everything that works on a sprite works on the whole stack: `at`, `y`, `z`, `scale`, `flip`,
+- Everything that works on a sprite works on the whole stack: `x`, `y`, `z`, `scale`, `flip`,
   `xscale`, `yscale`, `fade`, `::move`, `::move{... loop}`, `::hide`, the camera and shake.
 - **Changing a layer crossfades that layer only**, over the `fade` of the `::show` (none by
   default); the other layers do not flicker. A sprite's own `fade` fades the whole stack in or out.
@@ -575,7 +591,7 @@ every combination. Declare the layers on the character, back to front:
 Add `loop` to a `::move` and the sprite keeps going back and forth:
 
 ```
-::move{mika y=0.97 time=1.2 ease=inout loop}
+::move{mika y=0.85 time=1.2 ease=inout loop}
 ::move{mika scale=1.04 time=2 loop=pingpong}
 ```
 
@@ -583,11 +599,11 @@ Add `loop` to a `::move` and the sprite keeps going back and forth:
   then to the target again, for ever. `time` is the time of **one leg** (it must be above
   0), and `ease` applies to each leg.
 - `loop` alone and `loop=pingpong` mean the same; there is no other kind of loop.
-- It animates any mix of `at`, `y`, `scale`, `xscale` and `yscale`; a move that changes
+- It animates any mix of `x`, `y`, `scale`, `xscale` and `yscale`; a move that changes
   none of them (only `flip`, say) can't loop. `flip` may be added: it switches at the start.
 - "Where it started" is the sprite's resting values: what it had when the move was given.
   The loop doesn't change them, so a pose change (`::show{mika happy}`) keeps the loop going.
-- The loop ends when the sprite gets another `::move`, a `::show` that **sets** `at`, `y`,
+- The loop ends when the sprite gets another `::move`, a `::show` that **sets** `x`, `y`,
   `scale`, `xscale` or `yscale` (whether or not the value differs), or `::hide`. A plain
   `::move` (without `loop`) glides from wherever the sprite is at that moment to its new
   values; anything it doesn't name goes back to the resting value. A second `::move{... loop}`
@@ -616,15 +632,14 @@ Attributes for every kind:
 
 | Attribute | |
 | --- | --- |
-| `at=0.92,0.04` | Where the element's anchor point is: two numbers from 0 to 1 or percentages (`at=92%,4%`) of the screen. Default `0,0`. |
-| `anchor=left` / `center` / `right` | Which side of the point the element is on (default `left`). The top of the element is always at the point's height. |
+| `x=right` `y=4%` | Where the element is, placed as a sprite is (see "Placing things: `x` and `y`"): `x` is `left` `center` `right` or a number or percentage from 0 to 100%, `y` is `top` `center` `bottom` or the same; the point that far across the element is that far across the screen, so the element is always wholly on screen. Default `left` and `top`. A text element's width is estimated, so in between the three keywords it can be a few pixels off. |
 | `if="hero.hp <= 3"` | Draw the element only while the condition is true; it is checked every time the screen is drawn. `random` isn't allowed, as in any condition. |
 | `fade=0.3` | Fade in over that many seconds (more than 0, up to 10) when the element is created. |
 
 Attributes of a **text** element: `size` (8 to 300; default the theme's text size), `color`
 (default the theme's text colour), `back` (a panel behind the text, e.g. `back=#00000099`; colours
 here may have an alpha part, `#rrggbbaa` or `#rgba`) and `pad` (the padding around the text in pixels, 0
-to 200; default 0). Without `back` the text is placed exactly by its anchor. With `back` the panel is as
+to 200; default 0). Without `back` the text is aligned to the side its `x` leans to (left, centre or right) inside that estimated box, so at `left`, `center` and `right` it is placed exactly. With `back` the panel is as
 wide as the text is *expected* to be, a little generously, so it may be a few pixels wider than the text.
 
 Attributes of a **bar**: `color` (the fill; default the theme's accent colour), `back` (the empty
@@ -632,10 +647,10 @@ part; default `#333333`), `border` (an outline colour; drawn outside the bar's s
 (1 to 3 pixels, default 2).
 
 ```
-::hud{id=hp bar=hero.hp max=hero.max_hp at=0.02,0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff}
-::hud{id=clock text="Day {day}, {hero.gold} gold" at=0.98,0.04 anchor=right size=32 back=#00000099 pad=12 fade=0.3}
-::hud{id=low text="LOW HP" at=0.02,0.11 color=#ff5555 if="hero.hp <= 3"}
-::hud{id=heart image=assets/heart.png at=0.02,0.9 scale=0.5}
+::hud{id=hp bar=hero.hp max=hero.max_hp x=0.02 y=0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff}
+::hud{id=clock text="Day {day}, {hero.gold} gold" x=0.98 y=0.04 size=32 back=#00000099 pad=12 fade=0.3}
+::hud{id=low text="LOW HP" x=0.02 y=0.11 color=#ff5555 if="hero.hp <= 3"}
+::hud{id=heart image=assets/heart.png x=0.02 y=0.9 scale=0.5}
 ```
 
 `::hud{hide=clock fade=0.3}` removes one element (with an optional fade out); hiding an id that
@@ -648,7 +663,7 @@ is why a title card can sit on a black screen:
 
 ```
 ::bg{color=#000000}
-::hud{id=card text="{size=96}Chapter 1{/size}" at=0.5,0.4 anchor=center fade=1}
+::hud{id=card text="{size=96}Chapter 1{/size}" x=center y=0.4 fade=1}
 ::wait{time=3}
 ::hud{hide=card fade=1}
 ```

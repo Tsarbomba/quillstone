@@ -16,7 +16,7 @@ music_room: [assets/calm.ogg]
 
 ::bg{src=assets/rooftop.png fade=0.5}
 ::music{src=assets/calm.ogg fade=1 volume=0.8}
-::show{mika neutral at=right fade=0.5}
+::show{mika neutral x=80% fade=0.5}
 <!-- A slow push-in while she talks; it doesn't wait. -->
 ::camera{zoom=1.15 x=0.6 y=0.4 time=6}
 
@@ -69,7 +69,7 @@ The city hums below, a thousand windows still awake.
 
 # everything
 ::show{mika happy}
-::move{mika at=center scale=1.1 time=0.8 ease=out}
+::move{mika x=center scale=1.1 time=0.8 ease=out}
 **Mika:** You remembered all of it?
 ::jump{to=ending}
 

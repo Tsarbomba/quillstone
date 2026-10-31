@@ -11,7 +11,7 @@ const SRC: &str = "\
 ::character{id=mika sprites=m_{pose}.png}
 # start
 ::bg{anim=rain fade=0.5}
-::show{mika anim=blink at=left scale=0.8}
+::show{mika anim=blink x=left scale=0.8}
 One.
 ::show{mika happy}
 Two.
@@ -20,11 +20,11 @@ Two.
 Three.
 ::show{mika neutral}
 Four.
-::show{mika neutral at=right}
+::show{mika neutral x=right}
 Five.
 ::move{mika y=0.9 time=1 loop}
 Six.
-::move{mika at=left y=1 time=0.5}
+::move{mika x=left y=1 time=0.5}
 Seven.
 ::move{mika scale=1.2 xscale=1.1 yscale=0.9 time=2 loop=pingpong}
 Eight.
@@ -57,7 +57,7 @@ fn a_sprite_and_a_background_can_be_animations() {
     assert_eq!(game.state().background.as_deref(), Some("anim:rain"));
     assert!(first.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.5, wipe: None }));
     assert_eq!(sprite(&game).src, "anim:blink");
-    assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, src, x, scale, .. } if id == "mika" && src == "anim:blink" && *x == 0.28 && *scale == 0.8)));
+    assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, src, x, scale, .. } if id == "mika" && src == "anim:blink" && *x == 0.0 && *scale == 0.8)));
     // The scene is rebuilt from state alone.
     let redraw = game.state().redraw();
     assert!(redraw.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.0, wipe: None }));
@@ -69,9 +69,9 @@ fn a_sprite_keeps_everything_else_when_its_picture_changes_between_animation_and
     let p = program();
     let (mut game, _) = Session::start(&p);
     let cmds = next(&mut game);
-    assert!(matches!(&cmds[0], Cmd::ShowSprite { src, x, scale, .. } if src == "m_happy.png" && *x == 0.28 && *scale == 0.8));
+    assert!(matches!(&cmds[0], Cmd::ShowSprite { src, x, scale, .. } if src == "m_happy.png" && *x == 0.0 && *scale == 0.8));
     let cmds = next(&mut game);
-    assert!(matches!(&cmds[0], Cmd::ShowSprite { src, x, scale, .. } if src == "anim:blink" && *x == 0.28 && *scale == 0.8));
+    assert!(matches!(&cmds[0], Cmd::ShowSprite { src, x, scale, .. } if src == "anim:blink" && *x == 0.0 && *scale == 0.8));
 }
 
 #[test]
@@ -170,13 +170,13 @@ fn a_looping_move_is_sprite_state_and_a_command() {
     let cmds = next(&mut game); // Three: ::show anim, ::move loop
     assert_eq!(
         cmds.iter().find(|c| matches!(c, Cmd::LoopSprite { .. })).unwrap(),
-        &Cmd::LoopSprite { id: "mika".into(), x: 0.28, y: 0.9, scale: 0.8, flip: false, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }
+        &Cmd::LoopSprite { id: "mika".into(), x: 0.0, y: 0.9, scale: 0.8, flip: false, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { .. })), "the view glides to the far values by itself");
     // The sprite's own values are where it starts (what each leg back ends at).
     let s = sprite(&game);
-    assert_eq!((s.x, s.y, s.scale), (0.28, 1.0, 0.8));
-    assert_eq!(loop_of(&game), Some(SpriteLoop { x: 0.28, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }));
+    assert_eq!((s.x, s.y, s.scale), (0.0, 1.0, 0.8));
+    assert_eq!(loop_of(&game), Some(SpriteLoop { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }));
 }
 
 #[test]
@@ -202,9 +202,9 @@ fn a_new_pose_keeps_the_loop_but_new_position_or_size_values_end_it() {
     assert!(loop_of(&game).is_some(), "a pose change alone leaves the loop");
     assert!(matches!(&cmds[0], Cmd::ShowSprite { src, y, .. } if src == "m_neutral.png" && *y == 1.0));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { .. } | Cmd::LoopSprite { .. })));
-    let cmds = next(&mut game); // Five: ::show{mika neutral at=right}
+    let cmds = next(&mut game); // Five: ::show{mika neutral x=right}
     assert!(loop_of(&game).is_none());
-    assert!(matches!(&cmds[0], Cmd::ShowSprite { x, .. } if *x == 0.72));
+    assert!(matches!(&cmds[0], Cmd::ShowSprite { x, .. } if *x == 1.0));
     assert!(
         matches!(&cmds[1], Cmd::MoveSprite { time, y, .. } if *time == 0.0 && *y == 1.0),
         "an instant move tells the view to end its loop: {cmds:?}"
@@ -213,7 +213,7 @@ fn a_new_pose_keeps_the_loop_but_new_position_or_size_values_end_it() {
 
 #[test]
 fn showing_the_values_it_already_has_still_ends_the_loop() {
-    let p = parse("::show{a src=a.png at=0.4}\n::move{a y=0.9 loop}\nOne.\n::show{a src=b.png at=0.4}\nTwo.\n").unwrap();
+    let p = parse("::show{a src=a.png x=0.4}\n::move{a y=0.9 loop}\nOne.\n::show{a src=b.png x=0.4}\nTwo.\n").unwrap();
     let (mut game, _) = Session::start(&p);
     assert!(loop_of(&game).is_some());
     let cmds = next(&mut game);
@@ -232,7 +232,7 @@ fn a_plain_move_cancels_the_loop_and_a_new_loop_replaces_it() {
     assert!(loop_of(&game).is_some(), "Six comes with `::move{{mika y=0.9 time=1 loop}}`");
     let cmds = next(&mut game); // Seven: plain move
     assert!(loop_of(&game).is_none());
-    assert!(matches!(&cmds[0], Cmd::MoveSprite { x, y, time, .. } if *x == 0.28 && *y == 1.0 && *time == 0.5));
+    assert!(matches!(&cmds[0], Cmd::MoveSprite { x, y, time, .. } if *x == 0.0 && *y == 1.0 && *time == 0.5));
     let cmds = next(&mut game); // Eight: a loop on size only
     let l = loop_of(&game).unwrap();
     assert_eq!((l.scale, l.xscale, l.yscale, l.y, l.time), (1.2, 1.1, 0.9, 1.0, 2.0));
@@ -270,7 +270,7 @@ fn saves_restore_the_loop_and_old_saves_have_none() {
         next(&mut game);
     }
     let text = game.save();
-    assert!(text.contains("loop \"mika\" 0.28 0.9 0.8 1 1 1.2 out"), "{text}");
+    assert!(text.contains("loop \"mika\" 0 0.9 0.8 1 1 1.2 out"), "{text}");
     let (loaded, cmds) = Session::load(&p, &text).unwrap();
     assert_eq!(loaded.state().sprites, game.state().sprites);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::LoopSprite { y, time, .. } if *y == 0.9 && *time == 1.2)));
@@ -291,10 +291,10 @@ fn hostile_loop_records_are_clamped_or_refused() {
         next(&mut game);
     }
     let text = game.save();
-    let with = |rec: &str| text.replace("loop \"mika\" 0.28 0.9 0.8 1 1 1.2 out", rec);
+    let with = |rec: &str| text.replace("loop \"mika\" 0 0.9 0.8 1 1 1.2 out", rec);
     let (l, _) = Session::load(&p, &with("loop \"mika\" 9 -9 99 0 0 0 sideways")).unwrap();
     let r = loop_of(&l).unwrap();
-    assert_eq!((r.x, r.y, r.scale, r.xscale, r.yscale), (1.0, -0.5, 10.0, 0.05, 0.05));
+    assert_eq!((r.x, r.y, r.scale, r.xscale, r.yscale), (3.0, -2.0, 10.0, 0.05, 0.05));
     assert_eq!(r.time, 0.02, "a zero leg would spin: clamped up");
     assert_eq!(r.ease, Ease::InOut, "an unknown ease is the default");
     let (l, _) = Session::load(&p, &with("loop \"mika\" nan inf 1 1 1 1e30 linear")).unwrap();

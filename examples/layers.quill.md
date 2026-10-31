@@ -15,7 +15,7 @@ vars: { look: "casual", feeling: "smile" }
 # start
 
 ::bg{src=assets/rooftop.png fade=0.5}
-::show{mika body=casual eyes=open mouth=smile at=0.3 scale=0.9 fade=0.4}
+::show{mika body=casual eyes=open mouth=smile x=0.3 scale=0.9 fade=0.4}
 **Mika:** I am drawn from three layers: a body, eyes and a mouth. The first time I appear, I need a value for every one.
 
 ::show{mika mouth=open}
@@ -30,7 +30,7 @@ vars: { look: "casual", feeling: "smile" }
 ::show{mika body=formal}
 **Mika:** A new outfit does not touch my eyes, so I keep blinking.
 
-::move{mika at=0.7 time=0.8 ease=inout}
+::move{mika x=0.7 time=0.8 ease=inout}
 **Mika:** Moves, scale, flips and fades work on the whole of me, all the layers at once.
 
 ::show{mika eyes=none mouth=none}

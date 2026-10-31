@@ -14,11 +14,11 @@ inventory: bag
 ::item{id=lamp name="Brass lamp" text="Burns for hours."}
 
 ::bg{src=assets/rooftop.png}
-::hud{id=gold text="Gold: {gold}" at=0.02,0.03 size=34 back=#00000099}
+::hud{id=gold text="Gold: {gold}" x=0.02 y=0.03 size=34 back=#00000099}
 
 # start
 
-::show{mika neutral at=center}
+::show{mika neutral x=center}
 
 **Mika:** Hello, {name}! You carry {gold} gold and a lamp. {w=0.5}Look: **it still glows**.
 
@@ -37,7 +37,7 @@ Yes.
 
 # door
 
-::show{mika happy at=center}
+::show{mika happy x=center}
 
 **Mika:** The door opens onto the stairs. Here, take {gold} gold with you.
 

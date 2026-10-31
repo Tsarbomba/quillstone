@@ -12,7 +12,7 @@ vars: { place: \"rooftop\", mood: \"happy\", hero.name: \"Alex\", count: 3 }
 ::character{id=mika sprites=art/mika_{pose}.png}
 # start
 ::bg{src=\"bg/{place}.png\"}
-::show{mika {mood} at=left}
+::show{mika {mood} x=left}
 ![](items/{hero.name}.png)
 One.
 ::set{place=\"night\", mood=\"sad\"}
@@ -50,7 +50,7 @@ fn the_state_and_the_commands_carry_the_resolved_path() {
     next(&mut game);
     assert_eq!(game.state().background.as_deref(), Some("bg/night.png"));
     assert_eq!(game.state().sprites[0].src, "art/mika_sad.png");
-    assert_eq!(game.state().sprites[0].x, 0.28, "the sprite kept its place");
+    assert_eq!(game.state().sprites[0].x, 0.0, "the sprite kept its place");
     // A redraw is built from what the state holds, never from the pattern.
     assert!(game.state().redraw().contains(&Cmd::SetBackground { src: "bg/night.png".into(), fade: 0.0, wipe: None }));
 }

@@ -93,8 +93,6 @@ struct Files<'a> {
 }
 
 /// Allowed `y=` of a sprite's bottom edge, as a fraction of the screen height.
-const SPRITE_Y: RangeInclusive<f32> = -0.5..=1.5;
-
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
@@ -106,10 +104,10 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through"],
-        "hud" => &["id", "text", "bar", "max", "image", "at", "anchor", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear"],
-        "show" => &["src", "anim", "id", "at", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
+        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear"],
+        "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["at", "y", "scale", "flip", "xscale", "yscale", "time", "ease", "loop"],
+        "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "time", "ease", "loop"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "notify" => &["text", "time"],
@@ -968,7 +966,15 @@ impl Parser {
         let known = known_attrs(name);
         if let Some(extra) = attrs.leftover(if built.is_some() { &[] } else { known }) {
             let hint = if known.is_empty() { String::new() } else { format!(" (it takes: {})", known.join(", ")) };
-            self.err(line, format!("unknown attribute `{extra}` for `::{name}`{hint}"));
+            let gone = match (extra, known.contains(&"x")) {
+                ("at", true) => Some("use `x=` (left, center, right or a %) and `y=` (top, center, bottom or a %)"),
+                ("anchor", true) => Some("`x=` and `y=` place the object by its own size (`x=right` puts its right edge at the screen's right edge)"),
+                _ => None,
+            };
+            match gone {
+                Some(g) => self.err(line, format!("`{extra}=` is gone: {g}")),
+                None => self.err(line, format!("unknown attribute `{extra}` for `::{name}`{hint}")),
+            }
         }
         if let Some((op, label)) = built {
             if let Some(label) = label {
@@ -1137,25 +1143,16 @@ impl Parser {
                 };
                 self.extra_words(line, "move", &bare, 1)?;
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
-                    self.err(line, "`::move` needs a sprite, like `::move{mika at=left time=0.5}`");
+                    self.err(line, "`::move` needs a sprite, like `::move{mika x=left time=0.5}`");
                     return None;
                 };
-                let at = match a.value("at") {
-                    Some(v) => match parse_position(&v) {
-                        Ok(x) => Some(x),
-                        Err(m) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                    },
-                    None => None,
-                };
-                let y = self.number(line, a, "y", SPRITE_Y)?;
+                let x = self.place(line, a, "x", POSITION)?;
+                let y = self.place(line, a, "y", POSITION)?;
                 let scale = self.number(line, a, "scale", SPRITE_SCALE)?;
                 let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
                 let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
-                if at.is_none() && y.is_none() && scale.is_none() && flip.is_none() && xscale.is_none() && yscale.is_none() {
-                    self.err(line, "`::move` needs `at=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`");
+                if x.is_none() && y.is_none() && scale.is_none() && flip.is_none() && xscale.is_none() && yscale.is_none() {
+                    self.err(line, "`::move` needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`");
                     return None;
                 }
                 let time = self.seconds(line, a, "time", 0.5)?;
@@ -1166,12 +1163,12 @@ impl Parser {
                         self.err(line, "a `loop` move needs `time=` above 0 (the seconds one leg takes)");
                         return None;
                     }
-                    if at.is_none() && y.is_none() && scale.is_none() && xscale.is_none() && yscale.is_none() {
-                        self.err(line, "a `loop` move needs something to animate: `at=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)");
+                    if x.is_none() && y.is_none() && scale.is_none() && xscale.is_none() && yscale.is_none() {
+                        self.err(line, "a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)");
                         return None;
                     }
                 }
-                Some((Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped }, None))
+                Some((Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped }, None))
             }
             "shake" => {
                 let time = self.seconds(line, a, "time", 0.4)?;
@@ -1295,8 +1292,8 @@ impl Parser {
             "camera" => {
                 let reset = a.flag("reset");
                 let zoom = self.number(line, a, "zoom", 1.0..=4.0)?;
-                let x = self.number(line, a, "x", 0.0..=1.0)?;
-                let y = self.number(line, a, "y", 0.0..=1.0)?;
+                let x = self.place(line, a, "x", 0.0..=1.0)?;
+                let y = self.place(line, a, "y", 0.0..=1.0)?;
                 let time = self.seconds(line, a, "time", 0.0)?;
                 let ease = self.ease(line, a)?;
                 let op = if reset {
@@ -1631,17 +1628,8 @@ impl Parser {
 
     /// The position, size and fade attributes of a `::show`, shared by pose and layered sprites.
     fn show_rest(&mut self, line: usize, a: &mut Attrs, id: String, src: String, layers: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
-        let at = match a.value("at") {
-            None => None,
-            Some(v) => match parse_position(&v) {
-                Ok(x) => Some(x),
-                Err(m) => {
-                    self.err(line, m);
-                    return None;
-                }
-            },
-        };
-        let y = self.number(line, a, "y", SPRITE_Y)?;
+        let x = self.place(line, a, "x", POSITION)?;
+        let y = self.place(line, a, "y", POSITION)?;
         let z = match a.value("z") {
             None => None,
             Some(v) => match v.trim().parse::<i32>() {
@@ -1656,10 +1644,10 @@ impl Parser {
         let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
         let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
         let fade = self.fade(line, a)?;
-        Some((Op::Show { id, src, layers, at, y, z, scale, flip, xscale, yscale, fade }, None))
+        Some((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade }, None))
     }
 
-    /// `::show{mika body=casual eyes=anim:blink mouth=none at=left}`: set layers of a layered sprite.
+    /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
     fn show_layers(&mut self, line: usize, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
         let mut layers = Vec::new();
         for (layer, value) in &given {
@@ -2134,7 +2122,7 @@ impl Parser {
             "bar" => &["bar", "max", "size", "color", "back", "border", "border_size"],
             _ => &["image", "scale"],
         };
-        let common = ["id", "at", "anchor", "if"];
+        let common = ["id", "x", "y", "if"];
         let stray = a.0.iter().map(|(k, _)| k.as_str()).find(|k| !allowed.contains(k) && !common.contains(k)).map(str::to_string);
         if let Some(k) = stray {
             let known = known_attrs("hud");
@@ -2144,35 +2132,8 @@ impl Parser {
             }
             return None; // unknown: reported by the caller as an unknown attribute
         }
-        let at = match a.value("at") {
-            None => [0.0, 0.0],
-            Some(v) => {
-                let parts: Vec<&str> = v.split(',').collect();
-                match parts.as_slice() {
-                    [x, y] => match (parse_fraction(x), parse_fraction(y)) {
-                        (Some(x), Some(y)) => [x, y],
-                        _ => {
-                            self.err(line, format!("bad `at={v}` (two numbers from 0 to 1 or percentages: `at=0.92,0.04` or `at=92%,4%`)"));
-                            return None;
-                        }
-                    },
-                    _ => {
-                        self.err(line, format!("bad `at={v}` (two numbers from 0 to 1 or percentages: `at=0.92,0.04` or `at=92%,4%`)"));
-                        return None;
-                    }
-                }
-            }
-        };
-        let anchor = match a.value("anchor") {
-            None => HudAnchor::Left,
-            Some(v) => match HudAnchor::parse(&v) {
-                Some(x) => x,
-                None => {
-                    self.err(line, format!("`anchor={v}` must be `left`, `center` or `right`"));
-                    return None;
-                }
-            },
-        };
+        let x = self.place(line, a, "x", 0.0..=1.0)?.unwrap_or(0.0);
+        let y = self.place(line, a, "y", 0.0..=1.0)?.unwrap_or(0.0);
         let cond = match a.value("if") {
             None => None,
             Some(c) => match HudExpr::parse(&c).and_then(|e| self.check_expr(&e.expr).map(|()| e)) {
@@ -2280,7 +2241,7 @@ impl Parser {
                 HudKind::Image { src, scale }
             }
         };
-        Some((Op::Hud { elem: Box::new(HudElem { id, at, anchor, cond, kind }), fade }, None))
+        Some((Op::Hud { elem: Box::new(HudElem { id, x, y, cond, kind }), fade }, None))
     }
 
     /// A picture name: a plain path inside the game folder, or a pattern whose
@@ -2471,6 +2432,26 @@ impl Parser {
             Ok(f) if f.is_finite() && range.contains(&f) => Some(Some(f)),
             _ => {
                 self.err(line, format!("`{key}={v}` must be a number from {} to {}", range.start(), range.end()));
+                None
+            }
+        }
+    }
+
+    /// `x=` / `y=`: `left` `center` `right` (`top` `center` `bottom`), a number (1 is 100%) or `N%`. The point that
+    /// fraction across the object is that fraction across the screen (CSS `background-position`).
+    fn place(&mut self, line: usize, a: &mut Attrs, key: &str, range: RangeInclusive<f32>) -> Option<Option<f32>> {
+        let Some(v) = a.value(key) else { return Some(None) };
+        let words = if key == "x" { [("left", 0.0), ("center", 0.5), ("right", 1.0)] } else { [("top", 0.0), ("center", 0.5), ("bottom", 1.0)] };
+        let named = words.iter().find(|w| w.0 == v || (v == "centre" && w.0 == "center")).map(|w| w.1);
+        let number = || match v.strip_suffix('%') {
+            Some(pct) => pct.parse::<f32>().ok().map(|p| p / 100.0),
+            None => v.parse::<f32>().ok(),
+        };
+        match named.or_else(number).filter(|f| f.is_finite() && range.contains(f)) {
+            Some(f) => Some(Some(f)),
+            None => {
+                let (lo, hi) = (range.start() * 100.0, range.end() * 100.0);
+                self.err(line, format!("bad `{key}={v}` (use {}, {} or {}, a number or a percentage from {lo}% to {hi}%){})", words[0].0, words[1].0, words[2].0, if v.starts_with("far-") { "; `far-left` and `far-right` are gone: try `x=12%` or `x=88%`" } else { "" }));
                 None
             }
         }
@@ -3071,31 +3052,6 @@ fn unquote(s: &str) -> &str {
     s
 }
 
-/// Screen position as a name or a number: `left`, `0.3`, `30%`. Result is 0..1 across the screen.
-fn parse_position(s: &str) -> Result<f32, String> {
-    let named = match s {
-        "far-left" => Some(0.12),
-        "left" => Some(0.28),
-        "center" | "centre" => Some(0.5),
-        "right" => Some(0.72),
-        "far-right" => Some(0.88),
-        _ => None,
-    };
-    if let Some(x) = named {
-        return Ok(x);
-    }
-    let (num, scale) = match s.strip_suffix('%') {
-        Some(n) => (n, 100.0),
-        None => (s, 1.0),
-    };
-    match num.parse::<f32>() {
-        Ok(v) if (0.0..=1.0).contains(&(v / scale)) => Ok(v / scale),
-        _ => Err(format!(
-            "bad position `{s}` (use far-left, left, center, right, far-right, a number 0 to 1, or a percentage)"
-        )),
-    }
-}
-
 /// `#rrggbb` or `#rgb` -> 0..1 RGB.
 pub(crate) fn parse_color(s: &str) -> Result<[f32; 3], String> {
     let bad = || format!("bad colour `{s}` (use #rrggbb or #rgb)");
@@ -3255,7 +3211,7 @@ mod tests {
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), at: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out, looped: false });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), x: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out, looped: false });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
         assert_eq!(
@@ -3298,7 +3254,7 @@ mod tests {
             ("::bg{src=b.png wipe=sideways fade=1}\n", "wipe=sideways"),
             ("::bg{src=b.png wipe=left}\n", "needs a duration"),
             ("::move{mika}\n", "`xscale=`, `yscale=` and/or `flip`"),
-            ("::move{mika at=left ease=bouncy}\n", "ease=bouncy"),
+            ("::move{mika x=left ease=bouncy}\n", "ease=bouncy"),
             ("::move{mika scale=0}\n", "scale=0"),
             ("::camera{time=1}\n", "needs `zoom=`"),
             ("::camera{zoom=0.5}\n", "zoom=0.5"),
@@ -3449,32 +3405,32 @@ mod tests {
 
     #[test]
     fn show_with_character_pose_and_position() {
-        let p = ok(&format!("{MIKA}::show{{mika happy at=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
+        let p = ok(&format!("{MIKA}::show{{mika happy x=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], at: Some(0.28), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], x: Some(0.0), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
     }
 
     #[test]
     fn show_with_an_explicit_file_and_numeric_positions() {
-        let p = ok("::show{src=art/ghost.png id=ghost at=0.3}\n::show{src=art/x.png at=25%}\n");
+        let p = ok("::show{src=art/ghost.png id=ghost x=0.3}\n::show{src=art/x.png x=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], at: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], x: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
         );
-        assert!(matches!(&p.ops[1], Op::Show { id, at: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
+        assert!(matches!(&p.ops[1], Op::Show { id, x: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
 
     #[test]
     fn sprite_y_and_z() {
         let p = ok(&format!(
-            "{MIKA}::show{{mika happy y=0.8 z=3}}\n::show{{mika y=90%  z=-100}}\n::show{{mika y=-0.5 z=100}}\n::show{{mika y=150%}}\n::move{{mika y=0.9 time=0.3 ease=out}}\n::move{{mika at=left y=1.5}}\n"
+            "{MIKA}::show{{mika happy y=0.8 z=3}}\n::show{{mika y=90%  z=-100}}\n::show{{mika y=-0.5 z=100}}\n::show{{mika y=150%}}\n::move{{mika y=0.9 time=0.3 ease=out}}\n::move{{mika x=left y=1.5}}\n"
         ));
         let show = |i: usize| match &p.ops[i] {
             Op::Show { y, z, .. } => (*y, *z),
@@ -3484,8 +3440,8 @@ mod tests {
         assert_eq!(show(1), (Some(0.9), Some(-100)));
         assert_eq!(show(2), (Some(-0.5), Some(100)));
         assert_eq!(show(3), (Some(1.5), None));
-        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), at: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out, looped: false });
-        assert!(matches!(&p.ops[5], Op::Move { at: Some(_), y: Some(y), .. } if *y == 1.5));
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), x: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out, looped: false });
+        assert!(matches!(&p.ops[5], Op::Move { x: Some(_), y: Some(y), .. } if *y == 1.5));
         // not given: `None`, so the sprite keeps its own
         let q = ok(&format!("{MIKA}::show{{mika}}\n"));
         assert!(matches!(&q.ops[0], Op::Show { y: None, z: None, .. }));
@@ -3494,14 +3450,14 @@ mod tests {
     #[test]
     fn sprite_y_and_z_errors_name_the_line() {
         for (src, needle) in [
-            ("::show{src=a.png y=2}\n", "y=2"),
-            ("::show{src=a.png y=-0.6}\n", "y=-0.6"),
+            ("::show{src=a.png y=4}\n", "y=4"),
+            ("::show{src=a.png y=-2.1}\n", "y=-2.1"),
             ("::show{src=a.png y=low}\n", "y=low"),
             ("::show{src=a.png z=101}\n", "`z=101` must be a whole number from -100 to 100"),
             ("::show{src=a.png z=-101}\n", "z=-101"),
             ("::show{src=a.png z=1.5}\n", "z=1.5"),
             ("::show{src=a.png z=front}\n", "z=front"),
-            ("::move{mika y=1.6}\n", "y=1.6"),
+            ("::move{mika y=3.1}\n", "y=3.1"),
             ("::move{mika y=1 z=1}\n", "`z`"),
         ] {
             let e = errs(&format!("\n{src}"));
@@ -3512,11 +3468,11 @@ mod tests {
 
     #[test]
     fn hide_and_move() {
-        let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika at=right time=1}}\n::move{{mika at=0.1}}\n"));
+        let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika x=right time=1}}\n::move{{mika x=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), at: Some(0.72), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut, looped: false });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), at: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut, looped: false });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), x: Some(1.0), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut, looped: false });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), x: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut, looped: false });
     }
 
     #[test]
@@ -3524,11 +3480,11 @@ mod tests {
         assert!(has_err("::show{nobody}\n", "unknown character `nobody`"));
         assert!(has_err("::character{id=a}\n::show{a}\n", "no `sprites="));
         assert!(has_err("::show\n", "needs a character"));
-        assert!(has_err("::show{src=a.png at=sideways}\n", "bad position"));
+        assert!(has_err("::show{src=a.png x=sideways}\n", "bad `x=sideways`"));
         assert!(has_err("::show{src=a.png scale=0}\n", "from 0.05 to 10"));
         assert!(has_err("::show{src=a.png scale=100000}\n", "from 0.05 to 10"));
         assert!(has_err("::hide\n", "needs a sprite"));
-        assert!(has_err("::move{a}\n", "needs `at="));
+        assert!(has_err("::move{a}\n", "needs `x="));
         assert!(has_err("::character{name=x}\n", "needs `id="));
         assert!(has_err("::character{id=a color=red}\n", "bad colour"));
         assert!(has_err("::character{id=a}\n::character{id=A}\n", "declared twice"));
@@ -3579,7 +3535,7 @@ mod tests {
         assert!(has_err("::show{a b src=x.png}\n", "unexpected `b`"));
         assert!(has_err("::hide{a b}\n", "unexpected `b`"));
         assert!(has_err("::hide{all a}\n", "no sprite name with `all`"));
-        assert!(has_err("::move{a b at=left}\n", "unexpected `b`"));
+        assert!(has_err("::move{a b x=left}\n", "unexpected `b`"));
         ok(&format!("{chars}::show{{mika happy}}\n::show{{a src=x.png}}\n::hide{{mika}}\n"));
     }
 
@@ -4164,9 +4120,32 @@ mod tests {
         assert_eq!(parse_color("#fff").unwrap(), [1.0, 1.0, 1.0]);
         assert_eq!(parse_color("#000000").unwrap(), [0.0, 0.0, 0.0]);
         assert!(parse_color("fff").is_err() && parse_color("#ffff").is_err() && parse_color("#ggg").is_err());
-        assert_eq!(parse_position("center").unwrap(), 0.5);
-        assert_eq!(parse_position("50%").unwrap(), 0.5);
-        assert!(parse_position("150%").is_err() && parse_position("-1").is_err());
+    }
+
+    #[test]
+    fn x_and_y_take_keywords_numbers_and_percentages() {
+        let p = ok("::show{src=a.png id=a x=left y=top}\n::show{src=a.png id=b x=center y=center}\n::show{src=a.png id=c x=right y=bottom}\n::show{src=a.png id=d x=25% y=0.5}\n::show{src=a.png id=e x=-50% y=150%}\n");
+        let xy = |i: usize| match &p.ops[i] {
+            Op::Show { x, y, .. } => (x.unwrap(), y.unwrap()),
+            _ => panic!(),
+        };
+        assert_eq!([xy(0), xy(1), xy(2), xy(3), xy(4)], [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.25, 0.5), (-0.5, 1.5)]);
+        // a sprite may leave the screen, but not for good; a keyword belongs to its own axis
+        assert!(has_err("::show{src=a.png x=400%}\n", "bad `x=400%`"));
+        assert!(has_err("::show{src=a.png x=top}\n", "bad `x=top`"));
+        assert!(has_err("::show{src=a.png y=left}\n", "bad `y=left`"));
+        // the camera never leaves the stage
+        assert!(has_err("::camera{x=150%}\n", "bad `x=150%`") && matches!(ok("::camera{zoom=2 x=right y=top}\n").ops[0], Op::Camera { x: Some(x), y: Some(y), .. } if x == 1.0 && y == 0.0));
+    }
+
+    #[test]
+    fn the_old_position_forms_are_errors_that_name_the_new_one() {
+        assert!(has_err("::show{src=a.png at=left}\n", "`at=` is gone: use `x=`"));
+        assert!(has_err("::move{a at=left}\n", "`at=` is gone"));
+        assert!(has_err("::hud{id=a text=x at=0.1,0.2}\n", "`at=` is gone: use `x=` (left, center, right or a %) and `y=`"));
+        assert!(has_err("::hud{id=a text=x x=0.1 anchor=right}\n", "`anchor=` is gone"));
+        assert!(has_err("::show{src=a.png x=far-left}\n", "`far-left` and `far-right` are gone: try `x=12%`"));
+        assert!(has_err("::notify{text=x at=1}\n", "unknown attribute `at`"), "only where x= exists");
     }
 
     // ---- list variables ----
@@ -4663,10 +4642,10 @@ mod tests {
 
     #[test]
     fn move_takes_flip_xscale_and_yscale() {
-        let p = ok(&format!("{MIKA}::move{{mika flip}}\n::move{{mika xscale=2 yscale=0.5 time=1}}\n::move{{mika flip=false at=left}}\n"));
-        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), at: None, xscale: None, yscale: None, .. }));
+        let p = ok(&format!("{MIKA}::move{{mika flip}}\n::move{{mika xscale=2 yscale=0.5 time=1}}\n::move{{mika flip=false x=left}}\n"));
+        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), x: None, xscale: None, yscale: None, .. }));
         assert!(matches!(&p.ops[1], Op::Move { flip: None, xscale: Some(x), yscale: Some(y), time, .. } if *x == 2.0 && *y == 0.5 && *time == 1.0));
-        assert!(matches!(&p.ops[2], Op::Move { flip: Some(false), at: Some(_), .. }));
+        assert!(matches!(&p.ops[2], Op::Move { flip: Some(false), x: Some(_), .. }));
     }
 
     #[test]
@@ -4695,9 +4674,9 @@ mod tests {
 
     #[test]
     fn a_hud_text_takes_every_attribute() {
-        let (e, fade) = hud_of("::hud{id=clock text=\"Day {day}, {hero.gold} gold\" at=0.92,0.04 size=32 color=#ffffff anchor=right back=#00000099 pad=12 fade=0.3 if=\"day > 1\"}\n");
+        let (e, fade) = hud_of("::hud{id=clock text=\"Day {day}, {hero.gold} gold\" x=0.92 y=0.04 size=32 color=#ffffff back=#00000099 pad=12 fade=0.3 if=\"day > 1\"}\n");
         assert_eq!(fade, 0.3);
-        assert_eq!((e.id.as_str(), e.at, e.anchor), ("clock", [0.92, 0.04], HudAnchor::Right));
+        assert_eq!((e.id.as_str(), e.x, e.y), ("clock", 0.92, 0.04));
         assert_eq!(e.cond.as_ref().unwrap().src, "day > 1");
         let HudKind::Text { text, size, color, back, pad } = e.kind else { panic!() };
         assert_eq!(text, "Day {day}, {hero.gold} gold");
@@ -4708,18 +4687,18 @@ mod tests {
 
     #[test]
     fn hud_defaults_and_percentages() {
-        let (e, fade) = hud_of("::hud{id=a text=Hi at=50%,10%}\n");
-        assert_eq!((fade, e.at, e.anchor, e.cond.is_none()), (0.0, [0.5, 0.1], HudAnchor::Left, true));
+        let (e, fade) = hud_of("::hud{id=a text=Hi x=50% y=10%}\n");
+        assert_eq!((fade, e.x, e.y, e.cond.is_none()), (0.0, 0.5, 0.1, true));
         assert_eq!(e.kind, HudKind::Text { text: "Hi".into(), size: None, color: None, back: None, pad: 0.0 });
-        assert_eq!(hud_of("::hud{id=a text=Hi}\n").0.at, [0.0, 0.0]);
-        for (name, anchor) in [("left", HudAnchor::Left), ("center", HudAnchor::Center), ("right", HudAnchor::Right)] {
-            assert_eq!(hud_of(&format!("::hud{{id=a text=Hi anchor={name}}}\n")).0.anchor, anchor);
-        }
+        let (d, _) = hud_of("::hud{id=a text=Hi}\n");
+        assert_eq!((d.x, d.y), (0.0, 0.0));
+        let (k, _) = hud_of("::hud{id=a text=Hi x=right y=bottom}\n");
+        assert_eq!((k.x, k.y), (1.0, 1.0));
     }
 
     #[test]
     fn a_hud_bar_takes_expressions_a_size_and_a_border() {
-        let src = "::hud{id=hp bar=hero.hp max=hero.max_hp+2 at=0.02,0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff border_size=3}\n";
+        let src = "::hud{id=hp bar=hero.hp max=hero.max_hp+2 x=0.02 y=0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff border_size=3}\n";
         let (e, _) = hud_of(&format!("---\nvars: {{ hero.hp: 3, hero.max_hp: 5 }}\n---\n{src}"));
         let HudKind::Bar { value, max, size, color, back, border } = e.kind else { panic!() };
         assert_eq!((value.src.as_str(), max.src.as_str(), size), ("hero.hp", "hero.max_hp+2", [320.0, 26.0]));
@@ -4733,7 +4712,7 @@ mod tests {
 
     #[test]
     fn a_hud_image_is_checked_like_a_hotspot_image() {
-        let p = ok("::hud{id=heart image=assets/heart.png at=0.02,0.9 scale=0.5}\n");
+        let p = ok("::hud{id=heart image=assets/heart.png x=0.02 y=0.9 scale=0.5}\n");
         assert!(matches!(&p.ops[0], Op::Hud { elem, .. } if elem.image() == Some("assets/heart.png")));
         assert_eq!(p.assets().map(|(_, _, a)| a).collect::<Vec<_>>(), ["assets/heart.png"]);
         assert!(has_err("::hud{id=h image=../x.png}\n", "inside the game folder"));
@@ -4769,10 +4748,8 @@ mod tests {
         assert_eq!(e[0].line, 3);
         for (src, needle) in [
             ("::hud{id=a text=x fade=11}", "fade=11"),
-            ("::hud{id=a text=x at=2,0}", "bad `at=2,0`"),
-            ("::hud{id=a text=x at=0.5}", "bad `at=0.5`"),
-            ("::hud{id=a text=x at=0.1,0.2,0.3}", "bad `at="),
-            ("::hud{id=a text=x anchor=top}", "`anchor=top` must be"),
+            ("::hud{id=a text=x x=2}", "bad `x=2`"),
+            ("::hud{id=a text=x y=left}", "bad `y=left`"),
             ("::hud{id=a text=x size=7}", "size=7"),
             ("::hud{id=a text=x size=301}", "size=301"),
             ("::hud{id=a text=x color=red}", "bad colour"),
@@ -4902,9 +4879,9 @@ mod tests {
     #[test]
     fn a_picture_that_is_an_animation_is_shown_with_anim() {
         let chars = "::character{id=mika sprites=m_{pose}.png}\n";
-        let p = ok(&format!("{ANIMS}{chars}::show{{mika anim=blink at=left y=0.9 z=2 scale=0.8 flip fade=0.5}}\n::show{{ghost anim=blink}}\n::show{{Mika anim=blink}}\n::bg{{anim=blink fade=1 wipe=left}}\n::bg{{anim=blink fade=1 through=#000}}\n"));
-        let shows: Vec<_> = p.ops.iter().filter_map(|o| if let Op::Show { id, src, at, y, z, scale, flip, fade, .. } = o { Some((id.as_str(), src.as_str(), *at, *y, *z, *scale, *flip, *fade)) } else { None }).collect();
-        assert_eq!(shows[0], ("mika", "anim:blink", Some(0.28), Some(0.9), Some(2), Some(0.8), Some(true), 0.5));
+        let p = ok(&format!("{ANIMS}{chars}::show{{mika anim=blink x=left y=0.9 z=2 scale=0.8 flip fade=0.5}}\n::show{{ghost anim=blink}}\n::show{{Mika anim=blink}}\n::bg{{anim=blink fade=1 wipe=left}}\n::bg{{anim=blink fade=1 through=#000}}\n"));
+        let shows: Vec<_> = p.ops.iter().filter_map(|o| if let Op::Show { id, src, x: at, y, z, scale, flip, fade, .. } = o { Some((id.as_str(), src.as_str(), *at, *y, *z, *scale, *flip, *fade)) } else { None }).collect();
+        assert_eq!(shows[0], ("mika", "anim:blink", Some(0.0), Some(0.9), Some(2), Some(0.8), Some(true), 0.5));
         assert_eq!((shows[1].0, shows[1].1), ("ghost", "anim:blink"), "any name makes a sprite");
         assert_eq!(shows[2].0, "mika", "a character's name finds the character's sprite");
         assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left) }));
@@ -4929,7 +4906,7 @@ mod tests {
             ("::show{anim=blink}\n", "needs a sprite name"),
             ("::bg{src=a.png anim=blink}\n", "one of `src=`, `color=` or `anim=`"),
             ("::bg{color=#fff anim=blink}\n", "one of `src=`, `color=` or `anim=`"),
-            ("::move{mika anim=blink at=left}\n", "unknown attribute `anim`"),
+            ("::move{mika anim=blink x=left}\n", "unknown attribute `anim`"),
             ("::hide{mika anim=blink}\n", "unknown attribute `anim`"),
             ("::camera{anim=blink zoom=2}\n", "unknown attribute `anim`"),
             ("::show{mika src=anim:blink}\n", "inside the game folder"),
@@ -4974,13 +4951,13 @@ mod tests {
 
     #[test]
     fn a_move_may_loop_forever() {
-        let p = ok("::character{id=mika sprites=m_{pose}.png}\n::move{mika y=0.97 time=1.2 ease=inout loop}\n::move{mika scale=1.1 loop=pingpong}\n::move{mika at=left y=0.9 loop time=2}\n::move{loop mika at=right flip}\n::move{mika y=0.9}\n");
-        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), at: None, y: Some(0.97), scale: None, flip: None, xscale: None, yscale: None, time: 1.2, ease: Ease::InOut, looped: true });
+        let p = ok("::character{id=mika sprites=m_{pose}.png}\n::move{mika y=0.97 time=1.2 ease=inout loop}\n::move{mika scale=1.1 loop=pingpong}\n::move{mika x=left y=0.9 loop time=2}\n::move{loop mika x=right flip}\n::move{mika y=0.9}\n");
+        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), x: None, y: Some(0.97), scale: None, flip: None, xscale: None, yscale: None, time: 1.2, ease: Ease::InOut, looped: true });
         assert!(matches!(&p.ops[1], Op::Move { scale: Some(s), looped: true, time, .. } if *s == 1.1 && *time == 0.5));
-        assert!(matches!(&p.ops[2], Op::Move { at: Some(_), y: Some(_), looped: true, time, .. } if *time == 2.0));
-        assert!(matches!(&p.ops[3], Op::Move { id, at: Some(_), flip: Some(true), looped: true, .. } if id == "mika"), "a flip may come along");
+        assert!(matches!(&p.ops[2], Op::Move { x: Some(_), y: Some(_), looped: true, time, .. } if *time == 2.0));
+        assert!(matches!(&p.ops[3], Op::Move { id, x: Some(_), flip: Some(true), looped: true, .. } if id == "mika"), "a flip may come along");
         assert!(matches!(&p.ops[4], Op::Move { looped: false, .. }));
-        let all = ok("::move{a at=left y=0.9 scale=1.2 xscale=1.1 yscale=0.9 loop}\n");
+        let all = ok("::move{a x=left y=0.9 scale=1.2 xscale=1.1 yscale=0.9 loop}\n");
         assert!(matches!(&all.ops[0], Op::Move { looped: true, xscale: Some(_), yscale: Some(_), .. }));
     }
 
@@ -4990,9 +4967,9 @@ mod tests {
             ("::move{a y=0.9 loop=forever}\n", "`loop=forever` must be `pingpong`"),
             ("::move{a y=0.9 loop=repeat}\n", "must be `pingpong`"),
             ("::move{a y=0.9 loop time=0}\n", "needs `time=` above 0"),
-            ("::move{a loop at=left}\n::move{a y=0.9 loop time=0}\n", "needs `time=` above 0"),
+            ("::move{a loop x=left}\n::move{a y=0.9 loop time=0}\n", "needs `time=` above 0"),
             ("::move{a flip loop}\n", "needs something to animate"),
-            ("::move{a loop}\n", "needs `at=`, `y=`"),
+            ("::move{a loop}\n", "needs `x=`, `y=`"),
             ("::show{a src=x.png loop=pingpong}\n", "unknown attribute `loop`"),
             ("::hide{a loop}\n", "unexpected `loop`"),
         ] {

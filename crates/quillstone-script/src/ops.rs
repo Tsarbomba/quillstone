@@ -966,33 +966,9 @@ pub fn bg_color(src: &str) -> Option<[f32; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// Where a HUD element sits relative to its `at` point (the vertical side is always the top).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HudAnchor {
-    #[default]
-    Left,
-    Center,
-    Right,
-}
-
-impl HudAnchor {
-    pub fn parse(s: &str) -> Option<HudAnchor> {
-        match s {
-            "left" => Some(HudAnchor::Left),
-            "center" | "centre" => Some(HudAnchor::Center),
-            "right" => Some(HudAnchor::Right),
-            _ => None,
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            HudAnchor::Left => "left",
-            HudAnchor::Center => "center",
-            HudAnchor::Right => "right",
-        }
-    }
-}
+/// How far outside the screen `x=` / `y=` of a sprite may go (a fraction of the screen, so -200% to 300%): enough to
+/// slide a sprite fully off either side, not enough to lose it for good.
+pub const POSITION: std::ops::RangeInclusive<f32> = -2.0..=3.0;
 
 /// An expression kept with the text it was written as (saves store the text).
 #[derive(Debug, Clone, PartialEq)]
@@ -1022,12 +998,13 @@ pub enum HudKind {
 }
 
 /// One always-on overlay element (`::hud`). `id` is its key: a new element with the
-/// same id replaces it in place. `at` is where the anchor point is, as fractions of the screen.
+/// same id replaces it in place. `x` and `y` place it as `::show` does (0..1: the point that far across the element
+/// is that far across the screen).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HudElem {
     pub id: String,
-    pub at: [f32; 2],
-    pub anchor: HudAnchor,
+    pub x: f32,
+    pub y: f32,
     /// Drawn only while this is true (checked every time it is drawn).
     pub cond: Option<HudExpr>,
     pub kind: HudKind,
@@ -1122,11 +1099,10 @@ pub enum Op {
     /// Background. `src` may be a video (the backend plays it looped). With a
     /// `wipe`, the new picture is revealed from one side over `fade` seconds.
     Bg { src: String, fade: f32, wipe: Option<Wipe> },
-    /// Show (or change the pose of) a sprite. `at` is 0..1 across the screen;
-    /// `None` keeps the current position, or centres a new sprite. `y` is where
-    /// the sprite's bottom edge is, as a fraction of the screen height (-0.5 to
-    /// 1.5; new sprites stand on the bottom edge, 1.0). `z` orders sprites (-100
-    /// to 100, default 0; higher is in front). Both keep the current value when `None`.
+    /// Show (or change the pose of) a sprite. `x` and `y` place it (see [`POSITION`]): the point that
+    /// fraction across (down) the sprite is that fraction across (down) the screen, so 0..1 keeps it on
+    /// screen. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
+    /// `z` orders sprites (-100 to 100, default 0; higher is in front). All three keep the current value when `None`.
     /// `flip` mirrors the picture left to right; `xscale` and `yscale` (0.05 to 10)
     /// stretch it along one axis, on top of `scale`. All three keep the sprite's
     /// current value when `None` (and are off / 1 for a new sprite).
@@ -1138,7 +1114,7 @@ pub enum Op {
         id: String,
         src: String,
         layers: Vec<(String, String)>,
-        at: Option<f32>,
+        x: Option<f32>,
         y: Option<f32>,
         z: Option<i32>,
         scale: Option<f32>,
@@ -1153,7 +1129,7 @@ pub enum Op {
     /// switches at the start of the move; the rest animate.
     Move {
         id: String,
-        at: Option<f32>,
+        x: Option<f32>,
         y: Option<f32>,
         scale: Option<f32>,
         flip: Option<bool>,
@@ -1168,8 +1144,8 @@ pub enum Op {
     /// Shake the stage (background and sprites) for `time` seconds, by up to
     /// `strength` pixels (at 1920x1080) along `axis`. Doesn't wait.
     Shake { time: f32, strength: f32, axis: Axis },
-    /// Pan and zoom the stage: `zoom` (1 = whole stage) centred on the point
-    /// `x`, `y` (0..1 across and down the stage). `None` keeps the current value.
+    /// Pan and zoom the stage: `zoom` (1 = whole stage), the view placed by `x`, `y` (0..1) like a sprite's
+    /// `x=` / `y=` (0 = left/top edge of the stage in view). `None` keeps the current value.
     Camera { zoom: Option<f32>, x: Option<f32>, y: Option<f32>, time: f32, ease: Ease },
     /// Start, change (`Some`) or stop (`None`) the ambient particles, easing over `fade`
     /// seconds. Doesn't wait.
@@ -1426,7 +1402,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], at: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

@@ -13,7 +13,7 @@ vars: { place: "rooftop", mood: "neutral" }
 # start
 
 ::bg{src="assets/places/{place}.png"}
-::show{mika {mood} at=right}
+::show{mika {mood} x=80%}
 **Mika:** The picture behind me is chosen by the variable `place`, and my pose by `mood`.
 **Mika:** Right now `place` is "{place}" and `mood` is "{mood}".
 

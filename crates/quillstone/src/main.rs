@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn check_validates_hud_images_as_pictures_and_accepts_the_hud_demo() {
         const KEY: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
-        let script = "::hud{id=k image=assets/key.png at=0.1,0.1}\nHi.\n";
+        let script = "::hud{id=k image=assets/key.png x=0.1 y=0.1}\nHi.\n";
         assert!(checked(script, &[("assets/key.png", KEY)]).is_ok());
         let err = checked(script, &[]).unwrap_err();
         assert!(err.contains("1 problem"), "missing: {err}");
@@ -1580,8 +1580,8 @@ mod tests {
         assert!(w[0].1.contains("a/closed.png") && w[0].1.contains("40x80") && w[0].1.contains("a/body_casual.png"), "{}", w[0].1);
         assert!(w.iter().any(|(_, m)| m.contains("a/mouth_open.png")), "{w:?}");
         // other characters' pictures are not compared with these
-        let p = parse("::character{id=a layers=x layer_sprites=q/{layer}_{value}.png}\n::character{id=b layers=x layer_sprites=r/{layer}_{value}.png}\n::show{a x=1}\n::show{b x=1}\n").unwrap();
-        let files: &[(&str, &[u8])] = &[("q/x_1.png", &small), ("r/x_1.png", &big)];
+        let p = parse("::character{id=a layers=body layer_sprites=q/{layer}_{value}.png}\n::character{id=b layers=body layer_sprites=r/{layer}_{value}.png}\n::show{a body=1}\n::show{b body=1}\n").unwrap();
+        let files: &[(&str, &[u8])] = &[("q/body_1.png", &small), ("r/body_1.png", &big)];
         assert!(in_dir(files, |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir)).is_empty());
     }
 

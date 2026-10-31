@@ -1,6 +1,6 @@
 //! `::hud` and `::bg{color}` in the runtime: state, redraw, rollback, saves, hostile saves.
 
-use quillstone_script::{bg_color, parse, HudAnchor, HudKind, Program};
+use quillstone_script::{bg_color, parse, HudKind, Program};
 
 use crate::{Cmd, Input, Session, State};
 
@@ -10,11 +10,11 @@ vars: { hero.hp: 4, hero.max_hp: 10, gold: 2 }
 ---
 # start
 ::bg{color=#102030}
-::hud{id=hp bar=hero.hp max=hero.max_hp at=0.02,0.04 size=320,26 color=#cc3333 border=#fff}
-::hud{id=gold text=\"Gold {gold} a\\\\b\" at=0.9,0.1 anchor=right size=30 back=#00000099 pad=8 if=\"gold > 0\"}
-::hud{id=icon image=assets/heart.png at=0.5,0.5 anchor=center scale=0.5}
+::hud{id=hp bar=hero.hp max=hero.max_hp x=0.02 y=0.04 size=320,26 color=#cc3333 border=#fff}
+::hud{id=gold text=\"Gold {gold} a\\\\b\" x=0.9 y=0.1 size=30 back=#00000099 pad=8 if=\"gold > 0\"}
+::hud{id=icon image=assets/heart.png x=0.5 y=0.5 scale=0.5}
 Line one.
-::hud{id=gold text=\"Gold now {gold}\" at=0.9,0.1 anchor=right}
+::hud{id=gold text=\"Gold now {gold}\" x=0.9 y=0.1}
 Line two.
 ::hud{hide=icon}
 ::hud{hide=nothing}
@@ -100,8 +100,8 @@ fn saves_keep_the_elements_exactly() {
     }
     let (game, _) = Session::start(&p);
     let text = game.save();
-    assert!(text.lines().any(|l| l.starts_with("hud bar \"hp\" 0.02 0.04 left \"\" \"hero.hp\" \"hero.max_hp\" 320 26 ")), "{text}");
-    assert!(text.lines().any(|l| l.starts_with("hud text \"gold\" 0.9 0.1 right \"gold > 0\" \"Gold {gold} a")), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("hud bar \"hp\" 0.02 0.04 \"\" \"hero.hp\" \"hero.max_hp\" 320 26 ")), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("hud text \"gold\" 0.9 0.1 \"gold > 0\" \"Gold {gold} a")), "{text}");
 }
 
 #[test]
@@ -150,34 +150,32 @@ fn hostile_hud_records_are_refused_or_made_safe() {
     let (game, _) = Session::start(&p);
     let save = game.save();
     let refused = |rec: &str| Session::load(&p, &with_hud_records(&save, &[rec])).is_err();
-    assert!(refused("hud image \"icon\" 0.5 0.5 left \"\" \"../../secret.png\" 1"));
-    assert!(refused("hud image \"icon\" 0.5 0.5 left \"\" \"/etc/passwd\" 1"));
-    assert!(refused("hud image \"icon\" 0.5 0.5 left \"\" \"C:x.png\" 1"));
-    assert!(refused("hud blob \"a\" 0 0 left \"\""));
-    assert!(refused("hud text \"a\" 0 0 left \"\""), "too short");
-    assert!(refused("hud text \"a b\" 0 0 left \"\" \"x\" - - - 0"), "bad id");
-    assert!(refused("hud text \"a\" 0 0 sideways \"\" \"x\" - - - 0"), "bad anchor");
-    assert!(refused("hud text \"a\" zero 0 left \"\" \"x\" - - - 0"), "bad number");
-    assert!(refused("hud text \"a\" 0 0 left \"1 +\" \"x\" - - - 0"), "bad expression");
-    assert!(refused("hud text \"a\" 0 0 left \"random(1,2)\" \"x\" - - - 0"), "random in a condition");
-    assert!(refused("hud bar \"a\" 0 0 left \"\" \"1 +\" \"2\" 10 10 - 0,0,0,1 - 0"));
-    assert!(refused("hud text \"a\" 0 0 left \"\" \"x\" - 1,2 - 0"), "bad colour");
+    assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"../../secret.png\" 1"));
+    assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"/etc/passwd\" 1"));
+    assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"C:x.png\" 1"));
+    assert!(refused("hud blob \"a\" 0 0 \"\""));
+    assert!(refused("hud text \"a\" 0 0 \"\""), "too short");
+    assert!(refused("hud text \"a b\" 0 0 \"\" \"x\" - - - 0"), "bad id");
+    assert!(refused("hud text \"a\" zero 0 \"\" \"x\" - - - 0"), "bad number");
+    assert!(refused("hud text \"a\" 0 0 \"1 +\" \"x\" - - - 0"), "bad expression");
+    assert!(refused("hud text \"a\" 0 0 \"random(1,2)\" \"x\" - - - 0"), "random in a condition");
+    assert!(refused("hud bar \"a\" 0 0 \"\" \"1 +\" \"2\" 10 10 - 0,0,0,1 - 0"));
+    assert!(refused("hud text \"a\" 0 0 \"\" \"x\" - 1,2 - 0"), "bad colour");
     let long = "x".repeat(5000);
-    assert!(refused(&format!("hud text \"a\" 0 0 left \"\" \"{long}\" - - - 0")));
-    let many: Vec<String> = (0..300).map(|i| format!("hud text \"e{i}\" 0 0 left \"\" \"x\" - - - 0")).collect();
+    assert!(refused(&format!("hud text \"a\" 0 0 \"\" \"{long}\" - - - 0")));
+    let many: Vec<String> = (0..300).map(|i| format!("hud text \"e{i}\" 0 0 \"\" \"x\" - - - 0")).collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
     assert!(Session::load(&p, &with_hud_records(&save, &many)).is_err());
     // Numbers are clamped, NaN falls back.
     let (loaded, _) =
-        Session::load(&p, &with_hud_records(&save, &["hud text \"a\" 7 -3 right \"\" \"x\" 99999 2,2,2,NaN - -1"])).unwrap();
+        Session::load(&p, &with_hud_records(&save, &["hud text \"a\" 7 -3 \"\" \"x\" 99999 2,2,2,NaN - -1"])).unwrap();
     let h = &loaded.state().hud[0];
-    assert_eq!(h.at, [1.0, 0.0]);
-    assert_eq!(h.anchor, HudAnchor::Right);
+    assert_eq!((h.x, h.y), (1.0, 0.0));
     let HudKind::Text { size, color, pad, .. } = &h.kind else { panic!() };
     assert_eq!((*size, *pad), (Some(300.0), 0.0));
     assert_eq!(*color, Some([1.0, 1.0, 1.0, 0.0]));
     // The same id twice is one element.
-    let twice = ["hud text \"a\" 0 0 left \"\" \"x\" - - - 0", "hud text \"a\" 0.5 0 left \"\" \"y\" - - - 0"];
+    let twice = ["hud text \"a\" 0 0 \"\" \"x\" - - - 0", "hud text \"a\" 0.5 0 \"\" \"y\" - - - 0"];
     let (loaded, _) = Session::load(&p, &with_hud_records(&save, &twice)).unwrap();
     assert_eq!(loaded.state().hud.len(), 1);
 }

@@ -12,7 +12,7 @@ vars: { place: \"rooftop\", mood: \"happy\", hero.name: \"Alex\" }
 ::character{id=mika sprites=art/mika_{pose}.png}
 # start
 ::bg{src=\"bg/{place}.png\"}
-::show{mika {mood} at=right}
+::show{mika {mood} x=right}
 ![](items/{place}.png)
 One.
 ::choice

@@ -1,7 +1,7 @@
 # start
 
 ::bg{src=assets/rooftop.png}
-::show{mika neutral at=right}
+::show{mika neutral x=80%}
 
 **Mika:** Chapter one. You found the rooftop.
 

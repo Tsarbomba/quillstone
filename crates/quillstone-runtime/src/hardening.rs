@@ -219,8 +219,8 @@ fn a_list_at_the_limit_with_many_repeats_loads_fast_and_deduplicates() {
 fn a_save_with_too_many_states_or_stack_records_is_refused() {
     let p = parse(INV).unwrap();
     let (game, _) = Session::start(&p);
-    let one = game.save().replacen("quillstone-session 1\n", "", 1);
-    let many = format!("quillstone-session 1\n{}", one.repeat(1_001));
+    let one = game.save().replacen("quillstone-session 2\n", "", 1);
+    let many = format!("quillstone-session 2\n{}", one.repeat(1_001));
     // states without inputs between them are refused for that before anything else
     assert!(Session::load(&p, &many).is_err());
     let stack = "stack \"\" 0\n".repeat(300);
@@ -248,10 +248,10 @@ fn a_save_with_too_many_repeated_records_in_a_state_is_refused() {
 #[test]
 fn a_huge_position_offset_does_not_overflow() {
     let p = parse("# a\n**A:** one\n# b\n**A:** two\n").unwrap();
-    let text = format!("quillstone-session 1\nstate\nat \"b\" {}\nend\n", usize::MAX);
+    let text = format!("quillstone-session 2\nstate\nat \"b\" {}\nend\n", usize::MAX);
     let (s, _) = Session::load(&p, &text).unwrap();
     assert!(s.state().pc <= p.ops.len());
-    let stack = format!("quillstone-session 1\nstate\nat \"a\" 0\nstack \"b\" {}\nend\n", usize::MAX);
+    let stack = format!("quillstone-session 2\nstate\nat \"a\" 0\nstack \"b\" {}\nend\n", usize::MAX);
     assert!(Session::load(&p, &stack).is_ok());
 }
 

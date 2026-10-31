@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(loaded.state().sfx_loops.len(), 2);
         // load a save from before any loop into the same mixer: both stop
         let plain = parse("**A:** x\n").unwrap();
-        let (quiet, quiet_cmds) = Session::load(&plain, "quillstone-session 1\nstate\nat \"\" 0 0\nend\n").unwrap();
+        let (quiet, quiet_cmds) = Session::load(&plain, "quillstone-session 2\nstate\nat \"\" 0 0\nend\n").unwrap();
         assert!(quiet.state().sfx_loops.is_empty());
         assert_eq!(mixer.apply(&quiet_cmds), vec![stop_loop("rain.ogg"), stop_loop("wind.ogg")]);
         // a fresh mixer (hot reload after a restart) starts them from the save

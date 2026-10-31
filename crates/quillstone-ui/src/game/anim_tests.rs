@@ -57,7 +57,7 @@ const STORY: &str = "\
 ::bg{src=plain.png}
 ::show{a src=still.png id=idle}
 Nothing moves.
-::show{mika anim=talk at=0.3}
+::show{mika anim=talk x=0.3}
 Talking.
 ::hide{mika}
 ::show{x anim=once}
@@ -243,7 +243,7 @@ fn a_hot_reload_keeps_playing_from_the_first_frame_and_survives_a_removed_animat
     assert_eq!(pics(&g).last().unwrap(), "a.png", "a redraw restarts the clock");
     assert!(g.needs_ticks());
     // The animation is edited out (and its uses with it): the sprite is gone, the game goes on.
-    let edited = parse(&STORY.replace("::anim{id=talk frames=\"a.png 0.2, b.png 0.2\" loop}\n", "").replace("::show{mika anim=talk at=0.3}", "::show{mika src=a.png at=0.3}").replace("::hide{mika}", "::hide{all}")).unwrap();
+    let edited = parse(&STORY.replace("::anim{id=talk frames=\"a.png 0.2, b.png 0.2\" loop}\n", "").replace("::show{mika anim=talk x=0.3}", "::show{mika src=a.png x=0.3}").replace("::hide{mika}", "::hide{all}")).unwrap();
     g.reload(&edited).unwrap();
     let sprites = &g.view().sprites;
     assert!(sprites.iter().all(|s| !s.src.starts_with("anim:")), "no picture of a removed animation is left");

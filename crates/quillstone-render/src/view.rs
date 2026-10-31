@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, HudAnchor, Wipe};
+use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 
 use crate::hud::HudLayer;
 use crate::particles::ParticleLayer;
@@ -1448,7 +1448,7 @@ impl View {
                 let alpha = n.alpha();
                 let (size, pad) = ((theme.text_size * 0.75).round(), 16.0);
                 let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
-                crate::hud::draw_text(&mut out, &n.text, (VIRTUAL.w - 40.0, 40.0), HudAnchor::Right, size, color, back, pad);
+                crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad);
             }
         }
 
@@ -1568,8 +1568,7 @@ impl View {
         let c = self.camera.current();
         let z = c.zoom.max(1.0);
         let (w, h) = (VIRTUAL.w / z, VIRTUAL.h / z); // the part of the stage in view
-        let left = (c.x * VIRTUAL.w - w / 2.0).clamp(0.0, VIRTUAL.w - w);
-        let top = (c.y * VIRTUAL.h - h / 2.0).clamp(0.0, VIRTUAL.h - h);
+        let (left, top) = (c.x * (VIRTUAL.w - w), c.y * (VIRTUAL.h - h)); // the same rule as a sprite's `x=` / `y=`
         let (dx, dy) = self.shake.as_ref().map_or((0.0, 0.0), Shake::offset);
         // While shaking, zoom about the screen centre so the offset never shows the edge.
         let s = self.shake.as_ref().map_or(1.0, Shake::cover_zoom);
@@ -1702,7 +1701,7 @@ fn push_image(
     }
 }
 
-/// A sprite centred on `x` (0..1 across the screen), standing on the bottom edge.
+/// A sprite placed by `x`, `y`: the point that far across (down) it is that far across (down) the screen.
 fn push_sprite(
     out: &mut Vec<Draw>,
     src: &str,
@@ -1723,7 +1722,7 @@ fn push_sprite(
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
-    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x * VIRTUAL.w - w / 2.0, y * VIRTUAL.h - h, w, h), uv, alpha });
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x * (VIRTUAL.w - w), y * (VIRTUAL.h - h), w, h), uv, alpha });
 }
 
 #[cfg(test)]
@@ -2055,7 +2054,7 @@ mod tests {
     }
 
     #[test]
-    fn sprites_stand_on_the_bottom_edge_centred_on_x() {
+    fn x_and_y_put_the_point_that_far_across_a_sprite_that_far_across_the_screen() {
         let mut v = View::new();
         v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
@@ -2063,8 +2062,13 @@ mod tests {
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
         assert!(close(dest.h, SPRITE_HEIGHT * 0.5) && close(dest.w, SPRITE_HEIGHT * 0.25));
         assert!(close(dest.y + dest.h, VIRTUAL.h)); // bottom edge
-        assert!(close(dest.x + dest.w / 2.0, 0.25 * VIRTUAL.w)); // centred on x
+        assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w))); // a quarter of the free room
         assert_eq!((*uv, *alpha), (Rect::new(0.0, 0.0, 1.0, 1.0), 1.0));
+        // 0 is flush left, 1 flush right, 0.5 centred
+        v.apply(&[Cmd::ClearScene, sprite("a", 0.0, 1.0, 0), sprite("b", 1.0, 1.0, 0), sprite("c", 0.5, 1.0, 0)]);
+        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
+        let xs: Vec<f32> = images(&list).iter().map(|(_, d, _)| d.x).collect();
+        assert!(close(xs[0], 0.0) && close(xs[1], VIRTUAL.w - 470.0) && close(xs[2], (VIRTUAL.w - 470.0) / 2.0), "{xs:?}");
     }
 
     fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
@@ -2076,12 +2080,12 @@ mod tests {
     }
 
     #[test]
-    fn sprites_sit_where_y_puts_their_bottom_edge() {
+    fn y_puts_the_point_that_far_down_a_sprite_that_far_down_the_screen() {
         let mut v = View::new();
         v.apply(&[sprite("m", 0.5, 0.95, 0)]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let (_, dest, uv) = images(&list)[0];
-        assert!(close(dest.y + dest.h, 0.95 * VIRTUAL.h), "bottom edge at 95% of the height");
+        assert!(close(dest.y, 0.95 * (VIRTUAL.h - 940.0)), "95% of the 140 px of free room above the sprite");
         assert!(close(dest.h, SPRITE_HEIGHT) && close(uv.h, 1.0));
     }
 
@@ -2091,18 +2095,16 @@ mod tests {
         v.apply(&[sprite("low", 0.5, 1.2, 0), sprite("high", 0.5, -0.1, 0)]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let shown = images(&list);
-        // y = 1.2: the bottom 216 px of the 940 px sprite hang below the screen
+        // y = 1.2: the sprite starts 168 px down, so its last 28 px hang below the screen
         let (_, dest, uv) = shown[0];
         assert!(close(dest.y + dest.h, VIRTUAL.h));
-        assert!(close(uv.y, 0.0) && close(uv.h, (940.0 - 0.2 * VIRTUAL.h) / 940.0), "cut at the bottom edge: {uv:?}");
-        // y = -0.1: its bottom edge is above the screen, so nothing of it shows
-        assert_eq!(shown.len(), 1, "a sprite wholly off-screen is dropped");
-        // y = 0.5: 540 of 940 px stay above the screen's middle, the rest is cut at the top
-        v.apply(&[Cmd::ClearScene, sprite("mid", 0.5, 0.5, 0)]);
-        let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
-        let (_, dest, uv) = images(&list)[0];
-        assert!(close(dest.y, 0.0) && close(dest.h, 540.0));
-        assert!(close(uv.y, 400.0 / 940.0), "the top 400 px are cut off: {uv:?}");
+        assert!(close(uv.y, 0.0) && close(uv.h, (940.0 - 28.0) / 940.0), "cut at the bottom edge: {uv:?}");
+        // y = -0.1: it starts 14 px above the screen, so the top 14 px are cut off
+        let (_, dest, uv) = shown[1];
+        assert!(close(dest.y, 0.0) && close(uv.y, 14.0 / 940.0), "cut at the top edge: {uv:?}");
+        // far enough sideways, nothing of it shows
+        v.apply(&[Cmd::ClearScene, sprite("gone", -1.0, 1.0, 0)]);
+        assert!(images(&v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None)).is_empty(), "a sprite wholly off-screen is dropped");
     }
 
     #[test]
@@ -2190,7 +2192,7 @@ mod tests {
     #[test]
     fn sprites_hanging_off_the_screen_are_cut_at_its_edge() {
         let mut v = View::new();
-        v.apply(&[show("m", "m.png", 0.0, 0.0)]); // centred on the left edge
+        v.apply(&[show("m", "m.png", -235.0 / 1450.0, 0.0)]); // left edge 235 px (half the sprite) off the screen
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let (_, dest, uv) = images(&list)[0];
         assert_eq!(dest.x, 0.0);
@@ -2220,7 +2222,7 @@ mod tests {
     #[test]
     fn the_camera_zooms_into_the_stage_but_not_the_textbox() {
         let mut v = View::new().with_speed(0.0);
-        let camera = Camera { zoom: 2.0, x: 0.25, y: 0.25 };
+        let camera = Camera { zoom: 2.0, x: 0.0, y: 0.0 };
         v.apply(&[bg("bg.png", 0.0), say(None, "hi"), Cmd::Camera { camera, time: 1.0, ease: Ease::Linear }]);
         v.tick(1.0);
         assert_eq!(v.camera(), camera);
@@ -2229,7 +2231,11 @@ mod tests {
         assert_eq!(dest, Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), "still fills the screen");
         assert!(close(uv.w, 0.5) && close(uv.x, 0.0) && close(uv.y, 0.0), "showing the top-left quarter");
         assert!(list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)));
-        // the view can't leave the stage: x=0 still keeps the left edge on screen
+        // the same rule as a sprite: a quarter of the free room (half the stage), from the left and from the top
+        v.apply(&[Cmd::Camera { camera: Camera { zoom: 2.0, x: 0.25, y: 0.25 }, time: 0.0, ease: Ease::Linear }]);
+        let (_, _, uv) = images(&v.draw_list(&all_1080p, None))[0];
+        assert!(close(uv.x, 0.125) && close(uv.y, 0.125), "{uv:?}");
+        // the view can't leave the stage: x=0 keeps the left edge on screen
         v.apply(&[Cmd::Camera { camera: Camera { zoom: 2.0, x: 0.0, y: 0.5 }, time: 0.0, ease: Ease::Linear }]);
         let (_, _, uv) = images(&v.draw_list(&all_1080p, None))[0];
         assert!(close(uv.x, 0.0) && close(uv.y, 0.25));
@@ -2781,7 +2787,7 @@ mod tests {
         assert_eq!(view.background.as_ref().unwrap().src, "assets/rooftop.png");
         assert_eq!(view.sprites.len(), 1);
         assert_eq!(view.sprites[0].src, "assets/mika_neutral.png");
-        assert!(close(view.sprites[0].x, 0.72)); // "right"
+        assert!(close(view.sprites[0].x, 0.8)); // `x=80%`
         let d = view.dialogue.as_ref().unwrap();
         assert_eq!((d.speaker.as_deref(), d.color.is_some()), (Some("Mika"), true));
     }
@@ -3300,7 +3306,7 @@ mod tests {
         // a 1:2 picture at scale 1 is 940 tall and 470 wide: twice as wide, half as tall
         assert!(close(dest.w, 940.0) && close(dest.h, 470.0), "{dest:?}");
         assert!(close(dest.y + dest.h, VIRTUAL.h), "still standing on the bottom edge");
-        assert!(close(dest.x + dest.w / 2.0, 0.25 * VIRTUAL.w), "still centred on x");
+        assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w)), "still placed by x on its new size");
         // multiplied with scale
         v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, fade: 0.0 }]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
@@ -3333,9 +3339,9 @@ mod tests {
     fn a_flipped_sprite_is_cropped_at_the_screen_edge_with_the_right_part_of_the_picture() {
         let size = |_: &str| Some(Size::new(500.0, 1000.0)); // 470 wide
         for flip in [false, true] {
-            // centred at x=0: the left half (235 px) hangs off the screen
+            // placed so the left half (235 px) hangs off the screen
             let mut v = View::new();
-            v.apply(&[look_show("m", flip, 1.0, 1.0, 0.0)]);
+            v.apply(&[look_show("m", flip, 1.0, 1.0, -235.0 / 1450.0)]);
             let list = v.draw_list(&size, None);
             let (_, dest, uv) = images(&list)[0];
             assert!(close(dest.x, 0.0) && close(dest.w, 235.0), "{dest:?}");

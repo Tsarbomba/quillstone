@@ -244,8 +244,8 @@ pub struct SpriteState {
     /// Layers of a layered sprite (`src` is then empty): (layer id, picture) in the
     /// character's layer order; an empty picture is a hidden layer. Empty for a plain sprite.
     pub layers: Vec<(String, String)>,
+    /// Position as `x=` / `y=` in `::show`: the point this fraction across the sprite is this fraction across the screen.
     pub x: f32,
-    /// Where the bottom edge is, as a fraction of the screen height.
     pub y: f32,
     /// Drawing order among sprites: higher is in front, ties keep show order.
     pub z: i32,
@@ -288,8 +288,8 @@ impl SpriteState {
     }
 }
 
-/// What part of the stage is in view: `zoom` 1 shows all of it; the point
-/// `x`, `y` (0..1 across and down) is kept in the middle where possible.
+/// What part of the stage is in view: `zoom` 1 shows all of it; `x`, `y` (0..1) place the view over the
+/// stage like a sprite's `x=` / `y=` (0 = the left/top edge in view, 1 = the right/bottom edge).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
     pub zoom: f32,
@@ -943,13 +943,13 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Show { id, src, layers: layers_given, at, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
+            Op::Show { id, src, layers: layers_given, x: x_given, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
                 let (y, scale) = (*y_given, *scale_given);
                 let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 let layers = if src.is_empty() { merge_layers(program, id, layers_given, existing.map(|i| &state.sprites[i]), &state.vars, &mut out) } else { Vec::new() };
                 // A sprite already on stage keeps its place and size unless told otherwise.
-                let x = at.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
+                let x = x_given.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
                 let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
                 let y = y.or(existing.map(|i| state.sprites[i].y)).unwrap_or(1.0);
                 let z = z.or(existing.map(|i| state.sprites[i].z)).unwrap_or(0);
@@ -957,7 +957,7 @@ pub(crate) fn step_traced(
                 let (xscale, yscale) = (keep(*xscale_given, |s| s.xscale), keep(*yscale_given, |s| s.yscale));
                 let flip = flip.or(existing.map(|i| state.sprites[i].flip)).unwrap_or(false);
                 // A loop goes on through a new pose, unless the show sets position or size values.
-                let sets_values = at.is_some() || y_given.is_some() || scale_given.is_some() || xscale_given.is_some() || yscale_given.is_some();
+                let sets_values = x_given.is_some() || y_given.is_some() || scale_given.is_some() || xscale_given.is_some() || yscale_given.is_some();
                 let old_loop = existing.and_then(|i| state.sprites[i].looped);
                 let looped = if sets_values { None } else { old_loop };
                 let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, looped };
@@ -988,12 +988,12 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped: true } => {
+            Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped: true } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
                     // The sprite keeps the values it has (where each leg back ends); the far end is new.
                     s.flip = flip.unwrap_or(s.flip);
                     let far = SpriteLoop {
-                        x: at.unwrap_or(s.x),
+                        x: x.unwrap_or(s.x),
                         y: y.unwrap_or(s.y),
                         scale: scale.unwrap_or(s.scale),
                         xscale: xscale.unwrap_or(s.xscale),
@@ -1006,10 +1006,10 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Move { id, at, y, scale, flip, xscale, yscale, time, ease, looped: false } => {
+            Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped: false } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
                     s.looped = None; // a plain move ends a loop (the view glides on from where the sprite is)
-                    s.x = at.unwrap_or(s.x);
+                    s.x = x.unwrap_or(s.x);
                     s.y = y.unwrap_or(s.y);
                     s.scale = scale.unwrap_or(s.scale);
                     s.flip = flip.unwrap_or(s.flip);
@@ -1687,10 +1687,10 @@ vars: { trust: 0 }
 
     const SCENE: &str = "\
 ::character{id=mika name=Mika color=#ff0000 sprites=m_{pose}.png}
-::show{mika neutral at=left fade=0.3}
+::show{mika neutral x=left fade=0.3}
 **Mika:** Hi
 ::show{mika happy}
-::move{mika at=right time=1}
+::move{mika x=right time=1}
 **Mika:** Again
 ::hide{mika fade=0.5}
 **Mika:** Gone
@@ -1702,7 +1702,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -1711,11 +1711,11 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.28, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
         );
-        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 0.72, y: 1.0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 1.0, ease: Ease::InOut });
+        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 1.0, y: 1.0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 1.0, ease: Ease::InOut });
         assert_eq!(game.state().sprites.len(), 1);
-        assert_eq!(game.state().sprites[0].x, 0.72);
+        assert_eq!(game.state().sprites[0].x, 1.0);
 
         let cmds = game.input(Input::Advance);
         assert_eq!(cmds[0], Cmd::HideSprite { id: "mika".into(), fade: 0.5 });
@@ -1724,10 +1724,10 @@ vars: { trust: 0 }
 
     #[test]
     fn moves_keep_what_they_dont_change_and_the_camera_is_part_of_the_scene() {
-        let src = "::show{src=s.png id=s at=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
+        let src = "::show{src=s.png id=s x=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.28, y: 1.0, scale: 1.2, flip: false, xscale: 1.0, yscale: 1.0, time: 0.5, ease: Ease::InOut }));
+        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.0, y: 1.0, scale: 1.2, flip: false, xscale: 1.0, yscale: 1.0, time: 0.5, ease: Ease::InOut }));
         let camera = Camera { zoom: 1.5, x: 0.2, y: 0.5 };
         assert!(first.contains(&Cmd::Camera { camera, time: 3.0, ease: Ease::InOut }), "keeps the zoom it had");
         assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::Both }));
@@ -1751,7 +1751,7 @@ vars: { trust: 0 }
 
     #[test]
     fn sprites_have_a_height_and_a_depth_that_shows_and_moves_keep() {
-        let src = "::show{src=a.png id=a y=0.9 z=2}\n::show{src=b.png id=b}\n**A:** one\n::show{src=a2.png id=a}\n::move{a y=0.7 time=0.3 ease=out}\n**A:** two\n::move{a at=left time=0}\n::show{src=a3.png id=a y=1.1 z=-4}\n**A:** three\n";
+        let src = "::show{src=a.png id=a y=0.9 z=2}\n::show{src=b.png id=b}\n**A:** one\n::show{src=a2.png id=a}\n::move{a y=0.7 time=0.3 ease=out}\n**A:** two\n::move{a x=left time=0}\n::show{src=a3.png id=a y=1.1 z=-4}\n**A:** three\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
         assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "a" && *y == 0.9 && *z == 2)));
@@ -1761,7 +1761,7 @@ vars: { trust: 0 }
         assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), x: 0.5, y: 0.7, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 0.3, ease: Ease::Out });
         assert_eq!(game.state().sprites[0].y, 0.7);
         let three = game.input(Input::Advance);
-        assert!(matches!(&three[0], Cmd::MoveSprite { x, y, .. } if *x == 0.28 && *y == 0.7), "an `at` move keeps y");
+        assert!(matches!(&three[0], Cmd::MoveSprite { x, y, .. } if *x == 0.0 && *y == 0.7), "an `at` move keeps y");
         assert!(matches!(&three[1], Cmd::ShowSprite { y, z, .. } if *y == 1.1 && *z == -4), "unless told otherwise");
 
         // rollback restores y and z, and redraw carries them
@@ -1797,9 +1797,20 @@ vars: { trust: 0 }
         // hand-edited nonsense is pulled into range
         let wild = text.replace(" 0.85 7", " 9 900");
         let (loaded, _) = Session::load(&p, &wild).unwrap();
-        assert_eq!((loaded.state().sprites[0].y, loaded.state().sprites[0].z), (1.5, 100));
+        assert_eq!((loaded.state().sprites[0].y, loaded.state().sprites[0].z), (3.0, 100));
         let nan = text.replace(" 0.85 7", " NaN 7");
         assert_eq!(Session::load(&p, &nan).unwrap().0.state().sprites[0].y, 1.0);
+    }
+
+    #[test]
+    fn a_sprite_slid_off_the_screen_is_saved_and_a_save_with_the_old_positions_is_refused() {
+        let p = parse("::show{src=s.png id=s x=-150% y=250%}\n**A:** hi\n").unwrap();
+        let (game, _) = Session::start(&p);
+        let text = game.save();
+        let (loaded, _) = Session::load(&p, &text).unwrap();
+        assert_eq!((loaded.state().sprites[0].x, loaded.state().sprites[0].y), (-1.5, 2.5));
+        let old = text.replacen("quillstone-session 2", "quillstone-session 1", 1);
+        assert!(Session::load(&p, &old).is_err(), "positions changed meaning: an old save is not read");
     }
 
     #[test]
@@ -1834,7 +1845,7 @@ vars: { trust: 0 }
 
     #[test]
     fn hide_all_hides_every_sprite_and_unknown_hides_do_nothing() {
-        let src = "::show{src=a.png id=a at=left}\n::show{src=b.png id=b at=right}\n::hide{ghost}\n::hide{all fade=1}\n**X:** hi\n";
+        let src = "::show{src=a.png id=a x=left}\n::show{src=b.png id=b x=right}\n::hide{ghost}\n::hide{all fade=1}\n**X:** hi\n";
         let cmds = run_to_end(src, &[]);
         let hidden: Vec<&Cmd> = cmds.iter().filter(|c| matches!(c, Cmd::HideSprite { .. })).collect();
         assert_eq!(hidden.len(), 2);
@@ -1843,7 +1854,7 @@ vars: { trust: 0 }
 
     #[test]
     fn rollback_redraws_sprites_music_and_inline_images() {
-        let src = "::bg{src=bg.png}\n::music{src=m.ogg volume=0.5}\n::show{src=s.png id=s at=center}\n**A:** one\n![alt](pic.png)\n::voice{src=v.ogg}\n**A:** two\n**A:** three\n";
+        let src = "::bg{src=bg.png}\n::music{src=m.ogg volume=0.5}\n::show{src=s.png id=s x=center}\n**A:** one\n![alt](pic.png)\n::voice{src=v.ogg}\n**A:** two\n**A:** three\n";
         let p = parse(src).unwrap();
         let (mut game, _) = Session::start(&p);
         game.input(Input::Advance); // now on "two" with its image and voice
@@ -2757,7 +2768,7 @@ vars: { amount: 99 }
 
     #[test]
     fn move_resolves_flip_and_the_scales_from_the_sprite() {
-        let p = parse("::show{src=s.png id=s xscale=2}\n::move{s flip time=1}\n::move{s yscale=0.5 time=2 ease=out}\n::move{s at=left time=0}\n**A:** hi\n").unwrap();
+        let p = parse("::show{src=s.png id=s xscale=2}\n::move{s flip time=1}\n::move{s yscale=0.5 time=2 ease=out}\n::move{s x=left time=0}\n**A:** hi\n").unwrap();
         let (game, cmds) = Session::start(&p);
         let moves: Vec<_> = cmds.iter().filter_map(|c| if let Cmd::MoveSprite { flip, xscale, yscale, time, .. } = c { Some((*flip, *xscale, *yscale, *time)) } else { None }).collect();
         assert_eq!(moves, [(true, 2.0, 1.0, 1.0), (true, 2.0, 0.5, 2.0), (true, 2.0, 0.5, 0.0)]);

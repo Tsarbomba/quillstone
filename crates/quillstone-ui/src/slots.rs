@@ -10,7 +10,7 @@
 //! seq 1761430200000
 //! time "2026-10-25 22:10"
 //! preview "Mika: You came after all."
-//! quillstone-session 1
+//! quillstone-session 2
 //! ...
 //! ```
 
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn thumbnails_are_scaled_pictures_without_text() {
-        let p = parse("::bg{src=bg.png}\n::show{src=s.png id=s at=far-left}\n**A:** hi\n").unwrap();
+        let p = parse("::bg{src=bg.png}\n::show{src=s.png id=s x=12%}\n**A:** hi\n").unwrap();
         let (_, cmds) = Session::start(&p);
         let mut view = View::new().with_speed(0.0);
         view.apply(&cmds);

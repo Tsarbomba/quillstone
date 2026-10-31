@@ -10,19 +10,19 @@ vars: { hero.hp: 10, hero.max_hp: 10, hero.gold: 5 }
 # start
 
 ::bg{color=#000000}
-::hud{id=title text="{size=96}Chapter 1{/size}" at=0.5,0.38 anchor=center color=#ffffff fade=1}
+::hud{id=title text="{size=96}Chapter 1{/size}" x=0.5 y=0.38 color=#ffffff fade=1}
 ::wait{time=2}
-::hud{id=subtitle text="{size=40}The Quiet Harbour{/size}" at=0.5,0.52 anchor=center color=#ffd98c fade=1}
+::hud{id=subtitle text="{size=40}The Quiet Harbour{/size}" x=0.5 y=0.52 color=#ffd98c fade=1}
 ::wait{time=2}
 ::hud{hide=title fade=1}
 ::hud{hide=subtitle fade=1}
 ::wait{time=1.2}
 ::bg{src=assets/rooftop.png fade=1}
 
-::hud{id=hp bar=hero.hp max=hero.max_hp at=0.02,0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff fade=0.5}
-::hud{id=gold text="Gold: {hero.gold}" at=0.98,0.04 anchor=right size=32 color=#ffd98c back=#00000099 pad=12}
-::hud{id=low text="LOW HP" at=0.02,0.11 size=28 color=#ff5555 if="hero.hp <= 3"}
-::hud{id=key image=assets/gui/key.png at=0.98,0.14 anchor=right scale=0.5}
+::hud{id=hp bar=hero.hp max=hero.max_hp x=0.02 y=0.04 size=320,26 color=#cc3333 back=#333333 border=#ffffff fade=0.5}
+::hud{id=gold text="Gold: {hero.gold}" x=0.98 y=0.04 size=32 color=#ffd98c back=#00000099 pad=12}
+::hud{id=low text="LOW HP" x=0.02 y=0.11 size=28 color=#ff5555 if="hero.hp <= 3"}
+::hud{id=key image=assets/gui/key.png x=0.98 y=0.14 scale=0.5}
 
 You stand on the roof. The bar at the top left is your health, the text on the right is your gold.
 
@@ -60,7 +60,7 @@ Something glints between the tiles.
 
 # leave
 
-::hud{id=gold text="Gold: {hero.gold} (final)" at=0.98,0.04 anchor=right size=32 color=#ffffff back=#00000099 pad=12}
+::hud{id=gold text="Gold: {hero.gold} (final)" x=0.98 y=0.04 size=32 color=#ffffff back=#00000099 pad=12}
 The gold element was created again with the same id: it was replaced where it stood.
 ::hud{clear fade=0.5}
 All the elements are gone.

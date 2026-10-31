@@ -25,7 +25,7 @@ Two scenes in this story can be watched again later from Extras. Pick one now.
 # Rooftop
 
 ::bg{src=assets/rooftop.png}
-::show{mika neutral at=right}
+::show{mika neutral x=80%}
 ::set{roof_visits += 1}
 **Mika:** You came up here, too. Nobody else does.
 

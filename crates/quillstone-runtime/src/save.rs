@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAnchor, HudElem, HudExpr, HudKind, Op, Program, Tint, TINT_ALPHA, Value, Vars};
+use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudElem, HudExpr, HudKind, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
 use quillstone_script::{Ease, ANIM_PREFIX};
@@ -54,7 +54,7 @@ const MAX_EXTRA_VARS: usize = 1_024;
 /// save is tens of kilobytes. Bigger is refused ("unreadable" on the Load screen).
 pub const MAX_SAVE_BYTES: usize = 8 * 1024 * 1024;
 
-const MAGIC: &str = "quillstone-session 1";
+const MAGIC: &str = "quillstone-session 2"; // 2: sprite and HUD positions are `x=` / `y=` now
 
 /// Longest `pending wait` read from a save, in seconds (the language has no limit,
 /// but a wait this long is a hand-edited save, and the player can skip it anyway).
@@ -328,19 +328,18 @@ fn rgba(c: Option<[f32; 4]>) -> String {
     }
 }
 
-/// `hud <kind> "id" x y anchor "if" ...kind fields`: an empty `if` is no condition, `-` is "not set".
+/// `hud <kind> "id" x y "if" ...kind fields`: an empty `if` is no condition, `-` is "not set".
 fn hud_record(h: &HudElem) -> String {
     let head = format!(
-        "hud {} {} {} {} {} {}",
+        "hud {} {} {} {} {}",
         match &h.kind {
             HudKind::Text { .. } => "text",
             HudKind::Bar { .. } => "bar",
             HudKind::Image { .. } => "image",
         },
         q(&h.id),
-        h.at[0],
-        h.at[1],
-        h.anchor.name(),
+        h.x,
+        h.y,
         q(h.cond.as_ref().map_or("", |c| c.src.as_str()))
     );
     match &h.kind {
@@ -392,42 +391,41 @@ fn read_hud(t: &[String], n: usize) -> Result<HudElem, String> {
     if !quillstone_script::is_plain_ident(&id) {
         return Err(format!("line {n}: bad `hud` id `{id}`"));
     }
-    let at = [sane(f(3)?, 0.0, 1.0, 0.0), sane(f(4)?, 0.0, 1.0, 0.0)];
-    let anchor = HudAnchor::parse(arg(5)?).ok_or(format!("line {n}: bad `hud` anchor `{}`", arg(5)?))?;
-    let cond = match arg(6)? {
+    let (x, y) = (sane(f(3)?, 0.0, 1.0, 0.0), sane(f(4)?, 0.0, 1.0, 0.0));
+    let cond = match arg(5)? {
         "" => None,
-        _ => Some(expr(6)?),
+        _ => Some(expr(5)?),
     };
     let kind = match arg(1)? {
         "text" => {
-            let text = arg(7)?.to_string();
+            let text = arg(6)?.to_string();
             if text.len() > MAX_HUD_TEXT {
                 return Err(format!("line {n}: a `hud` text is too long"));
             }
-            let size = match arg(8)? {
+            let size = match arg(7)? {
                 "-" => None,
-                _ => Some(sane(f(8)?, 8.0, 300.0, 32.0)),
+                _ => Some(sane(f(7)?, 8.0, 300.0, 32.0)),
             };
-            HudKind::Text { text, size, color: opt_rgba(9)?, back: opt_rgba(10)?, pad: sane(f(11)?, 0.0, 200.0, 0.0) }
+            HudKind::Text { text, size, color: opt_rgba(8)?, back: opt_rgba(9)?, pad: sane(f(10)?, 0.0, 200.0, 0.0) }
         }
         "bar" => HudKind::Bar {
-            value: expr(7)?,
-            max: expr(8)?,
-            size: [sane(f(9)?, 1.0, 1920.0, 100.0), sane(f(10)?, 1.0, 1080.0, 20.0)],
-            color: opt_rgba(11)?,
-            back: opt_rgba(12)?.unwrap_or([0.2, 0.2, 0.2, 1.0]),
-            border: opt_rgba(13)?.map(|c| (c, sane(f(14).unwrap_or(2.0), 1.0, 3.0, 2.0))),
+            value: expr(6)?,
+            max: expr(7)?,
+            size: [sane(f(8)?, 1.0, 1920.0, 100.0), sane(f(9)?, 1.0, 1080.0, 20.0)],
+            color: opt_rgba(10)?,
+            back: opt_rgba(11)?.unwrap_or([0.2, 0.2, 0.2, 1.0]),
+            border: opt_rgba(12)?.map(|c| (c, sane(f(13).unwrap_or(2.0), 1.0, 3.0, 2.0))),
         },
         "image" => {
-            let src = arg(7)?;
+            let src = arg(6)?;
             if !is_inside(src) {
                 return Err(format!("line {n}: unsafe file path `{src}`"));
             }
-            HudKind::Image { src: src.to_string(), scale: sane(f(8)?, 0.05, 10.0, 1.0) }
+            HudKind::Image { src: src.to_string(), scale: sane(f(7)?, 0.05, 10.0, 1.0) }
         }
         other => return Err(format!("line {n}: unknown `hud` kind `{other}`")),
     };
-    Ok(HudElem { id, at, anchor, cond, kind })
+    Ok(HudElem { id, x, y, cond, kind })
 }
 
 fn write_state(out: &mut String, s: &State, program: &Program) {
@@ -716,9 +714,9 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 id: arg(1)?.to_string(),
                 src: layer_pic(2)?,
                 layers: Vec::new(),
-                x: sane(f(3)?, 0.0, 1.0, 0.5),
+                x: sane(f(3)?, *POSITION.start(), *POSITION.end(), 0.5),
                 scale: sane(f(4)?, 0.05, 10.0, 1.0),
-                y: if t.len() > 5 { sane(f(5)?, -0.5, 1.5, 1.0) } else { 1.0 },
+                y: if t.len() > 5 { sane(f(5)?, *POSITION.start(), *POSITION.end(), 1.0) } else { 1.0 },
                 z: if t.len() > 6 { num::<i32>(arg(6)?, n)?.clamp(-100, 100) } else { 0 },
                 // lenient: a damaged flag is just "not flipped"
                 flip: t.get(7).is_some_and(|v| v == "true"),
@@ -762,8 +760,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     return Err(format!("line {n}: a `loop` for the sprite `{id}`, which is not on stage"));
                 };
                 sprite.looped = Some(SpriteLoop {
-                    x: sane(f(2)?, 0.0, 1.0, 0.5),
-                    y: sane(f(3)?, -0.5, 1.5, 1.0),
+                    x: sane(f(2)?, *POSITION.start(), *POSITION.end(), 0.5),
+                    y: sane(f(3)?, *POSITION.start(), *POSITION.end(), 1.0),
                     scale: sane(f(4)?, 0.05, 10.0, 1.0),
                     xscale: sane(f(5)?, 0.05, 10.0, 1.0),
                     yscale: sane(f(6)?, 0.05, 10.0, 1.0),
@@ -886,7 +884,7 @@ vars: { name: \"Mi ka\", n: 0, ok: false }
 # start
 ::bg{src=bg.png}
 ::music{src=calm.ogg volume=0.5}
-::show{mika happy at=left}
+::show{mika happy x=left}
 **Mika:** Hello {name}.
 ![a scarf](scarf.png)
 ::voice{src=v.ogg}
@@ -1014,7 +1012,7 @@ Narration with \"quotes\" and a \\\\ backslash.
         assert!(Session::load(&p, "hello\n").is_err());
         assert!(Session::load(&p, &good[..good.len() / 2]).is_err());
         assert!(Session::load(&p, &good.replace("\"bg.png\"", "\"bg.png")).is_err());
-        assert!(Session::load(&p, "quillstone-session 1\nstate\nat \"gone\" 1\nend\n").is_err(), "old save, label gone");
+        assert!(Session::load(&p, "quillstone-session 2\nstate\nat \"gone\" 1\nend\n").is_err(), "old save, label gone");
     }
 
     #[test]

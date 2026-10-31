@@ -26,9 +26,9 @@ const STORY: &str = "\
 ---
 vars: { gold: 1, hp: 8 }
 ---
-::hud{id=gold text=\"Gold {gold}\" at=0.9,0.05 anchor=right}
+::hud{id=gold text=\"Gold {gold}\" x=0.9 y=0.05}
 ::hud{id=hp bar=hp max=10 size=200,20 color=#ff0000 back=#000000}
-::hud{id=low text=LOW at=0.1,0.2 if=\"hp < 4\"}
+::hud{id=low text=LOW x=0.1 y=0.2 if=\"hp < 4\"}
 Start.
 ::set{gold += 4, hp -= 6}
 Next.

@@ -34,7 +34,7 @@ You stand in a small town at night. Everything is within walking distance.
 # rooftop
 
 ::bg{src=assets/rooftop.png fade=0.5}
-::show{mika neutral at=right fade=0.3}
+::show{mika neutral x=80% fade=0.3}
 **Mika:** You found my rooftop. Come back any time.
 ::hide{all fade=0.3}
 ::jump{to=map}

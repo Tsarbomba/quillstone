@@ -14,7 +14,7 @@ vars: { hero.name: "Alex" }
 # start
 
 ::bg{src=assets/rooftop.png}
-::show{mika neutral at=right}
+::show{mika neutral x=80%}
 
 **Mika:** Hi! You must be the new student.
 

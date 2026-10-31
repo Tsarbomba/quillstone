@@ -56,8 +56,8 @@ fn deeply_nested_hud_expressions_are_errors_not_stack_overflows() {
         ];
         for src in &shapes {
             for rec in [
-                format!("hud text \"a\" 0 0 left \"{src}\" \"x\" - - - 0"),
-                format!("hud bar \"a\" 0 0 left \"\" \"{src}\" \"2\" 10 10 - 0,0,0,1 - 0"),
+                format!("hud text \"a\" 0 0 \"{src}\" \"x\" - - - 0"),
+                format!("hud bar \"a\" 0 0 \"\" \"{src}\" \"2\" 10 10 - 0,0,0,1 - 0"),
             ] {
                 assert!(Session::load(&p, &with_hud_records(&save, &[rec])).is_err(), "{}", &src[..20]);
             }
@@ -87,7 +87,7 @@ fn hud_text_in_one_state_is_capped_in_total() {
     let save = game.save();
     // 100 records of 1,500 bytes each: every record is fine alone and under the record count
     let text = "x".repeat(1500);
-    let many: Vec<String> = (0..100).map(|i| format!("hud text \"e{i}\" 0 0 left \"\" \"{text}\" - - - 0")).collect();
+    let many: Vec<String> = (0..100).map(|i| format!("hud text \"e{i}\" 0 0 \"\" \"{text}\" - - - 0")).collect();
     let e = Session::load(&p, &with_hud_records(&save, &many)).err().expect("refused");
     assert!(e.contains("bytes of text"), "{e}");
     // a normal handful is fine

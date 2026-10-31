@@ -51,7 +51,7 @@ fn bad_layer_declarations_are_refused() {
     assert!(line("layers=body,body layer_sprites=a/{layer}_{value}.png").contains("listed twice"));
     assert!(line("layers=body,,eyes layer_sprites=a/{layer}_{value}.png").contains("empty entry"));
     assert!(line("layers=a/b layer_sprites=a/{layer}_{value}.png").contains("layer id"));
-    assert!(line("layers=at layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
+    assert!(line("layers=x layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
     assert!(line("layers=none layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
     assert!(line("layers=a,b,c,d,e,f,g,h,i layer_sprites=a/{layer}_{value}.png").contains("at most 8"));
     assert!(line("layers=a,b,c,d,e,f,g,h layer_sprites=a/{layer}_{value}.png").is_empty(), "eight are fine");
@@ -62,21 +62,21 @@ fn bad_layer_declarations_are_refused() {
 
 #[test]
 fn a_show_sets_layers_in_the_characters_order() {
-    let p = ok("::show{mika mouth=smile body=casual eyes=open at=left}\n::show{mika eyes=none}\n::show{mika eyes=anim:blink}\n");
+    let p = ok("::show{mika mouth=smile body=casual eyes=open x=left}\n::show{mika eyes=none}\n::show{mika eyes=anim:blink}\n");
     let s = shows(&p);
     assert_eq!(s[0], ("mika", &[pair("body", "art/body_casual.png"), pair("eyes", "art/eyes_open.png"), pair("mouth", "art/mouth_smile.png")][..]));
     assert_eq!(s[1].1, [pair("eyes", "")], "none hides the layer");
     assert_eq!(s[2].1, [pair("eyes", "anim:blink")]);
-    assert!(matches!(&p.ops[0], Op::Show { src, at: Some(_), .. } if src.is_empty()), "a layered sprite has no src of its own");
+    assert!(matches!(&p.ops[0], Op::Show { src, x: Some(_), .. } if src.is_empty()), "a layered sprite has no src of its own");
 }
 
 #[test]
 fn the_first_layered_show_names_every_layer() {
     bad("::show{mika body=casual}\n", "missing: eyes, mouth");
-    bad("::show{mika at=left}\n", "missing: body, eyes, mouth");
+    bad("::show{mika x=left}\n", "missing: body, eyes, mouth");
     bad("::show{mika body=a eyes=none}\n", "missing: mouth");
     // after that, layers keep their values, so a show may name some or none
-    let p = ok("::show{mika body=a eyes=b mouth=c}\n::show{mika mouth=d}\n::show{mika at=0.2}\n");
+    let p = ok("::show{mika body=a eyes=b mouth=c}\n::show{mika mouth=d}\n::show{mika x=0.2}\n");
     assert_eq!(shows(&p).len(), 3);
     assert!(shows(&p)[2].1.is_empty(), "no layer named: only the position changes");
 }

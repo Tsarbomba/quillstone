@@ -13,11 +13,11 @@ vars: { look: \"casual\", mood: \"smile\", bad: \"../x\" }
 ::character{id=mika layers=body,eyes,mouth layer_sprites=art/{layer}_{value}.png}
 ::character{id=ren sprites=ren_{pose}.png layers=body,eyes layer_sprites=ren/{layer}_{value}.png}
 # start
-::show{mika body={look} eyes=open mouth={mood} at=left scale=0.8}
+::show{mika body={look} eyes=open mouth={mood} x=left scale=0.8}
 One.
 ::show{mika mouth=open}
 Two.
-::show{mika eyes=anim:blink body=formal at=right}
+::show{mika eyes=anim:blink body=formal x=right}
 Three.
 ::show{mika eyes=none}
 Four.
@@ -67,18 +67,18 @@ fn a_layered_show_composes_keeps_and_hides_layers() {
     assert_eq!(layers(&game, "mika"), all, "{{var}} values are resolved; the character's layer order");
     assert_eq!(mika(&game).src, "", "a layered sprite has no picture of its own");
     assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, src, layers, x, scale, .. }
-        if id == "mika" && src.is_empty() && *layers == all && *x == 0.28 && *scale == 0.8)));
+        if id == "mika" && src.is_empty() && *layers == all && *x == 0.0 && *scale == 0.8)));
     assert!(warnings(&first).is_empty());
     // only the mouth changes; the others keep their value, and so do position and size
     let cmds = next(&mut game);
     assert_eq!(layers(&game, "mika")[2].1, "art/mouth_open.png");
     assert_eq!(layers(&game, "mika")[..2], all[..2]);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowSprite { layers, x, scale, .. } if layers.len() == 3 && *x == 0.28 && *scale == 0.8)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowSprite { layers, x, scale, .. } if layers.len() == 3 && *x == 0.0 && *scale == 0.8)));
     // an animation as a layer, a new outfit and a new place
     next(&mut game);
     let now = layers(&game, "mika");
     assert_eq!((now[0].1.as_str(), now[1].1.as_str(), now[2].1.as_str()), ("art/body_formal.png", "anim:blink", "art/mouth_open.png"));
-    assert_eq!(mika(&game).x, 0.72);
+    assert_eq!(mika(&game).x, 1.0);
     // none hides one layer and keeps its place in the list
     next(&mut game);
     assert_eq!(layers(&game, "mika")[1], ("eyes".to_string(), String::new()));
