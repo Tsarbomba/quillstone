@@ -238,8 +238,17 @@ impl Gfx {
     }
 
     /// Show a video frame (RGBA8) under `key`, as if it were an image. The
-    /// texture is rewritten in place while the size stays the same.
+    /// texture is rewritten in place while the size stays the same. A frame the GPU can't
+    /// hold is not shown (as with images); its size is remembered so the warning comes once.
     pub fn set_frame(&mut self, key: &str, width: u32, height: u32, rgba: &[u8]) {
+        let max = self.device.limits().max_texture_dimension_2d;
+        if width > max || height > max {
+            if self.frame_sizes.insert(key.to_string(), (width, height)) != Some((width, height)) {
+                eprintln!("warning: video {key} is {width}x{height}; this GPU allows at most {max}x{max}");
+            }
+            self.images.remove(key);
+            return;
+        }
         if self.frame_sizes.get(key) == Some(&(width, height)) {
             if let Some(tex) = self.images.get(key) {
                 self.queue.write_texture(

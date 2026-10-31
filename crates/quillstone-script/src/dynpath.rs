@@ -149,7 +149,6 @@ pub(crate) fn is_device_name(part: &str) -> bool {
 /// A plain path comes back unchanged. The result is always inside the game folder.
 pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
     let parts = pieces(pattern)?;
-    let has_vars = parts.iter().any(|p| matches!(p, Piece::Var(_)));
     let mut out = String::with_capacity(pattern.len() + 16);
     for part in parts {
         match part {
@@ -164,7 +163,7 @@ pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
         }
     }
     // The name as a whole, not only each value: `c{a}.png` with `a = on` is `con.png`.
-    if has_vars && out.split('/').any(is_device_name) {
+    if out.split('/').any(is_device_name) {
         return Err(format!("{pattern} would make `{out}`, a name Windows keeps for devices"));
     }
     if is_inside(&out) {
@@ -367,7 +366,7 @@ mod tests {
         assert_eq!(resolve("assets/c{ok}.png", &v).unwrap(), "assets/cx.png");
         assert_eq!(resolve("assets/icon{ok}.png", &v).unwrap(), "assets/iconx.png");
         assert_eq!(resolve("assets/con_{ok}.png", &v).unwrap(), "assets/con_x.png", "a stem that merely starts with con");
-        assert_eq!(resolve("assets/con.png", &v).unwrap(), "assets/con.png", "plain paths are left alone");
+        assert!(resolve("assets/con.png", &v).is_err(), "a plain device name is refused too");
     }
 
     #[test]

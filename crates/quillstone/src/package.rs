@@ -190,7 +190,7 @@ pub fn unpack(archive: &Path, out: &Path) -> Result<(), String> {
             std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
         let mut from = archive.slice(path).expect("listed by the archive");
-        let mut file = std::fs::File::create(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+        let mut file = std::fs::File::create_new(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
         std::io::copy(&mut from, &mut file).map_err(|e| format!("cannot write {}: {e}", to.display()))?;
     }
     println!("unpacked {} file(s) into {} (the script is {})", paths.len(), out.display(), archive.main());

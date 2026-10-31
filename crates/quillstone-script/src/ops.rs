@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Component, Path};
 
+use crate::dynpath::is_device_name;
+
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
 ///
 /// `List` is a set of non-empty texts (no duplicates) that remembers the order
@@ -1059,11 +1061,15 @@ pub enum AssetKind {
 /// `\` is refused on every system: on Windows it is a separator, so
 /// `assets\..\..\x.png` would climb out there even though it is one name elsewhere.
 /// `:` is refused too, since Windows reads `C:x.png` as a drive; `//host/share` is already a root.
+/// So are the names Windows keeps for devices (`con`, `nul`, `com1`...): opening one never reads a file.
 pub fn is_inside(path: &str) -> bool {
     let p = Path::new(path);
     !path.is_empty()
         && !path.contains(['\\', ':'])
-        && p.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        && p.components().all(|c| match c {
+            Component::Normal(n) => !is_device_name(&n.to_string_lossy()),
+            c => matches!(c, Component::CurDir),
+        })
 }
 
 /// Guess what kind of asset a path is from its extension.
@@ -1307,6 +1313,12 @@ mod tests {
         assert!(!is_inside("assets\\..\\..\\x.png") && !is_inside("assets\\bg.png"), "backslashes, on any system");
         assert!(!is_inside("C:\\art\\bg.png") && !is_inside("C:/x.png") && !is_inside("C:x.png"), "drives, on any system");
         assert!(!is_inside("//host/share/x.png") && !is_inside("\\\\host\\share\\x.png"), "UNC, on any system");
+    }
+
+    #[test]
+    fn windows_device_names_are_not_inside() {
+        assert!(!is_inside("COM1") && !is_inside("assets/nul.png") && !is_inside("aux/bg.png"));
+        assert!(is_inside("assets/console.png") && is_inside("com10.png"), "only the exact stems");
     }
 
     #[test]

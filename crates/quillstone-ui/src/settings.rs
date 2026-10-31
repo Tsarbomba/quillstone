@@ -180,8 +180,8 @@ impl Settings {
 /// The smallest window a saved size may restore to, and the largest side a settings file may claim.
 const MIN_WINDOW: (u32, u32) = (320, 180);
 const MAX_WINDOW: u32 = 16384;
-/// Room kept for the title bar and the taskbar (the monitor's size is all the OS tells us).
-const FRAME_ROOM: u32 = 48;
+/// Room kept for the title bar and the taskbar at 100% scale (the monitor's size is all the OS tells us).
+pub const FRAME_ROOM: u32 = 48;
 
 /// A monitor's rectangle in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +190,8 @@ pub struct Area {
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    /// [`FRAME_ROOM`] scaled by the monitor's scale factor: the title bar grows with it.
+    pub room: u32,
 }
 
 /// Where and how big to open the window (inner size, outer position, physical pixels). `monitors`: the
@@ -197,12 +199,12 @@ pub struct Area {
 /// fits the monitor with a margin, centred. Later: the saved size, shrunk to fit the monitor it was on (or the
 /// primary one, when that is gone) and moved so the whole window is on it.
 pub fn window_placement(size: Option<(u32, u32)>, pos: Option<(i32, i32)>, monitors: &[Area]) -> ((u32, u32), (i32, i32)) {
-    let primary = monitors.first().copied().unwrap_or(Area { x: 0, y: 0, w: 1920, h: 1080 });
+    let primary = monitors.first().copied().unwrap_or(Area { x: 0, y: 0, w: 1920, h: 1080, room: FRAME_ROOM });
     let Some((w, h)) = size else {
         // 90% of the width and 85% of the height, at 16:9, never above the game's own size
         let unit = (primary.w * 90 / 100 / 16).min(primary.h * 85 / 100 / 9).min(VIRTUAL.w as u32 / 16).max(1);
         let (w, h) = (unit * 16, unit * 9);
-        return ((w, h), (primary.x + (primary.w - w) as i32 / 2, primary.y + (primary.h - h) as i32 / 2));
+        return ((w, h), (primary.x + primary.w.saturating_sub(w) as i32 / 2, primary.y + primary.h.saturating_sub(h) as i32 / 2));
     };
     let on = pos
         .and_then(|(x, y)| {
@@ -212,11 +214,11 @@ pub fn window_placement(size: Option<(u32, u32)>, pos: Option<(i32, i32)>, monit
         })
         .copied()
         .unwrap_or(primary);
-    let (min_h, max_h) = (MIN_WINDOW.1.min(on.h), on.h.saturating_sub(FRAME_ROOM));
+    let (min_h, max_h) = (MIN_WINDOW.1.min(on.h), on.h.saturating_sub(on.room));
     let size = (w.clamp(MIN_WINDOW.0.min(on.w), on.w), h.clamp(min_h, max_h.max(min_h)));
     let (x, y) = pos.unwrap_or((on.x + (on.w - size.0) as i32 / 2, on.y + (on.h - size.1) as i32 / 2));
     let x = x.clamp(on.x, on.x + (on.w - size.0) as i32);
-    let y = y.clamp(on.y, on.y + (on.h - (size.1 + FRAME_ROOM).min(on.h)) as i32);
+    let y = y.clamp(on.y, on.y + (on.h - (size.1 + on.room).min(on.h)) as i32);
     (size, (x, y))
 }
 
@@ -316,7 +318,7 @@ mod tests {
 
     #[test]
     fn the_first_window_is_the_games_size_or_the_biggest_16_9_that_fits() {
-        let area = |w, h| Area { x: 0, y: 0, w, h };
+        let area = |w, h| Area { x: 0, y: 0, w, h, room: FRAME_ROOM };
         assert_eq!(window_placement(None, None, &[area(2560, 1440)]), ((1920, 1080), (320, 180)));
         assert_eq!(window_placement(None, None, &[area(3840, 2160)]), ((1920, 1080), (960, 540)), "never above 1920x1080");
         let ((w, h), (x, y)) = window_placement(None, None, &[area(1920, 1080)]);
@@ -324,14 +326,14 @@ mod tests {
         assert!(w <= 1728 && h <= 918, "a margin for the taskbar and the title bar: {w}x{h}");
         let ((w, h), _) = window_placement(None, None, &[area(1280, 1024)]);
         assert!(w <= 1152 && h <= 870 && w * 9 == h * 16);
-        let second = Area { x: 1920, y: 0, w: 1920, h: 1080 };
+        let second = Area { x: 1920, y: 0, w: 1920, h: 1080, room: FRAME_ROOM };
         assert!(window_placement(None, None, &[second, area(1920, 1080)]).1 .0 >= 1920, "the first listed is the primary");
     }
 
     #[test]
     fn a_saved_window_is_clamped_onto_the_monitor() {
-        let main = Area { x: 0, y: 0, w: 1920, h: 1080 };
-        let side = Area { x: 1920, y: 0, w: 1280, h: 720 };
+        let main = Area { x: 0, y: 0, w: 1920, h: 1080, room: FRAME_ROOM };
+        let side = Area { x: 1920, y: 0, w: 1280, h: 720, room: FRAME_ROOM };
         let place = |size, pos, m: &[Area]| window_placement(Some(size), pos, m);
         assert_eq!(place((1280, 720), Some((100, 50)), &[main]), ((1280, 720), (100, 50)), "as saved");
         assert_eq!(place((1280, 720), None, &[main]), ((1280, 720), (320, 180)), "no position: centred");
@@ -353,6 +355,17 @@ mod tests {
         assert_eq!(place((10, 10), Some((0, 0)), &[main]).0, MIN_WINDOW);
         // no monitor known at all: still a sane window
         assert_eq!(window_placement(None, None, &[]).0, (1632, 918));
+    }
+
+    #[test]
+    fn a_monitor_with_no_size_or_a_big_title_bar_does_not_break_the_placement() {
+        let none = Area { x: 0, y: 0, w: 0, h: 0, room: FRAME_ROOM };
+        assert_eq!(window_placement(None, None, &[none]).1, (0, 0), "first launch, 0x0 monitor");
+        assert_eq!(window_placement(Some((1280, 720)), Some((5, 5)), &[none]).1, (0, 0), "saved size, 0x0 monitor");
+        // at 200% the title bar is twice as tall: the bottom edge stays on screen with that room
+        let big = Area { x: 0, y: 0, w: 1920, h: 1080, room: 2 * FRAME_ROOM };
+        let (_, (_, y)) = window_placement(Some((1280, 720)), Some((0, 900)), &[big]);
+        assert_eq!(y, 1080 - 720 - 2 * FRAME_ROOM as i32);
     }
 
     #[test]

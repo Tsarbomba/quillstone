@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
 use quillstone_script::{AssetKind, Op, Program};
-use quillstone_ui::settings::{window_placement, Area};
+use quillstone_ui::settings::{window_placement, Area, FRAME_ROOM};
 use quillstone_ui::{Assets, Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
 use winit::application::ApplicationHandler;
@@ -118,7 +118,7 @@ fn main() {
     let unlock_all = args.iter().any(|a| a == "--unlock-all");
     args.retain(|a| a != "--unlock-all");
     let (assets, path) = match args.first().cloned() {
-        Some(p) if p.ends_with(".qsa") => open_archive(Path::new(&p)),
+        Some(p) if is_archive(&p) => open_archive(Path::new(&p)),
         Some(p) => open_folder(PathBuf::from(p)),
         None => find_game().unwrap_or_else(|| {
             fatal(
@@ -252,6 +252,11 @@ fn game_id(name: &str) -> String {
 
 fn exe_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+}
+
+/// Whether an argument names a game archive; Windows users type `GAME.QSA` too.
+fn is_archive(arg: &str) -> bool {
+    Path::new(arg).extension().is_some_and(|e| e.eq_ignore_ascii_case("qsa"))
 }
 
 /// A game archive: its files come from it, except those that also sit loose in a `mods` folder beside it
@@ -470,10 +475,11 @@ impl App {
         }
     }
 
-    /// Remember the window's size and position, unless it is full screen or minimised (their values are no use).
+    /// Remember the window's size and position, unless it is full screen, maximised or minimised (their values are no use:
+    /// a maximised window would come back as a huge normal one).
     fn note_window(&mut self) {
         let Some(w) = &self.window else { return };
-        if w.fullscreen().is_some() || w.is_minimized() == Some(true) {
+        if w.fullscreen().is_some() || w.is_maximized() || w.is_minimized() == Some(true) {
             return;
         }
         let size = w.inner_size();
@@ -581,6 +587,9 @@ impl App {
     /// how its cutscene is doing.
     fn update_videos(&mut self, dt: f32) {
         self.videos.sync(&self.game.wanted_videos());
+        // Opening a clip blocks for a moment: that pause is not game time, or the next frame's
+        // `dt` would skip the clip's first frames and jump every fade and the typewriter.
+        self.last_frame = Instant::now();
         if !self.game.media_paused() {
             self.videos.advance(std::time::Duration::from_secs_f32(dt));
         }
@@ -673,7 +682,13 @@ impl ApplicationHandler for App {
             .primary_monitor()
             .into_iter()
             .chain(event_loop.available_monitors())
-            .map(|m| Area { x: m.position().x, y: m.position().y, w: m.size().width, h: m.size().height })
+            .map(|m| Area {
+                x: m.position().x,
+                y: m.position().y,
+                w: m.size().width,
+                h: m.size().height,
+                room: (FRAME_ROOM as f64 * m.scale_factor()).round() as u32,
+            })
             .collect();
         // (the primary monitor is listed twice if it is also in the list: harmless)
         let (size, pos) = window_placement(self.window_size, self.window_pos, &monitors);
@@ -814,6 +829,12 @@ impl ApplicationHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_archive_extension_is_matched_in_any_case() {
+        assert!(is_archive("game.qsa") && is_archive("C:\\g\\GAME.QSA") && is_archive("a.Qsa"));
+        assert!(!is_archive("game.qsa.txt") && !is_archive("qsa") && !is_archive("main.quill.md"));
+    }
 
     #[test]
     fn the_save_folder_follows_the_id_and_falls_back_to_the_title_then_the_file_name() {

@@ -35,7 +35,22 @@ const MAX_PATH_BYTES: usize = 4096;
 
 /// Write an archive of `files` (archive path, file on disk) to `out`, in the order given, with `main` (one of
 /// the paths) as the game's script. Paths must be unique and inside the game folder.
+/// It is written under a temporary name, opened again as the player will, and only then moved to `out`:
+/// a failure leaves no partial file, and nothing is written that [`Archive::open`] refuses.
 pub fn write(out: &Path, main: &str, files: &[(String, PathBuf)]) -> Result<(), String> {
+    let mut tmp = out.as_os_str().to_owned();
+    tmp.push(".part");
+    let tmp = PathBuf::from(tmp);
+    let done = write_file(&tmp, main, files)
+        .and_then(|()| Archive::open(&tmp).map(drop))
+        .and_then(|()| std::fs::rename(&tmp, out).map_err(|e| format!("cannot write {}: {e}", out.display())));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
+}
+
+fn write_file(out: &Path, main: &str, files: &[(String, PathBuf)]) -> Result<(), String> {
     let mut names = std::collections::HashSet::new();
     for (path, _) in files {
         if !is_inside(path) {
@@ -336,6 +351,19 @@ mod tests {
         let mut v = Vec::new();
         s.read_to_end(&mut v).unwrap();
         v
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_file_and_nothing_the_reader_refuses_is_kept() {
+        let d = dir("failed");
+        std::fs::write(d.join("m"), "x").unwrap();
+        let out = d.join("game.qsa");
+        let long = "a".repeat(MAX_PATH_BYTES + 1); // written fine, refused when read back
+        let err = write(&out, "m.txt", &[("m.txt".into(), d.join("m")), (long, d.join("m"))]).unwrap_err();
+        assert!(err.contains("far too long"), "{err}");
+        let err = write(&out, "m.txt", &[("m.txt".into(), d.join("gone"))]).unwrap_err();
+        assert!(err.contains("cannot read"), "{err}");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "only the source file is left");
     }
 
     #[test]

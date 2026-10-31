@@ -280,6 +280,17 @@ fn a_float_from_a_save_is_sane() {
     }
 }
 
+#[test]
+fn the_colour_of_the_saved_line_is_sane() {
+    let p = parse("::character{id=mika name=Mika color=#ffd98c}\n::bg{src=a.png}\n**Mika:** hi\n").unwrap();
+    let (game, _) = Session::start(&p);
+    let save = game.save();
+    let old = save.lines().find(|l| l.starts_with("line ")).unwrap().split(' ').nth(2).unwrap().to_string();
+    let text = save.replace(&old, "1e30,NaN,-5");
+    let (s, _) = Session::load(&p, &text).unwrap();
+    assert_eq!(s.state().line.as_ref().unwrap().color, Some([1.0, 0.0, 0.0]));
+}
+
 // ---- 5: wrong-typed vars and buy ---------------------------------------------------------------
 
 #[test]

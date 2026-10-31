@@ -841,7 +841,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     c => {
                         let parts: Vec<f32> = c.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
                         let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{c}`")) };
-                        Some([r, g, b])
+                        Some([sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)])
                     }
                 };
                 s.line = Some(Line { speaker, color, text: arg(3)?.to_string() });

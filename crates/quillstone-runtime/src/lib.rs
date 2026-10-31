@@ -1307,19 +1307,7 @@ impl<'p> Session<'p> {
     /// including the line on screen now. Built from the rollback history, so a
     /// rollback also takes the lines after it out of the backlog.
     pub fn backlog(&self) -> Vec<Logged> {
-        let mut out = Vec::new();
-        let mut log = |state: &State, input: Option<&Input>| match (&state.pending, input) {
-            (Some(Cmd::Say { .. }), _) => out.extend(state.line.clone().map(Logged::Line)),
-            (Some(Cmd::ShowChoices { options }), Some(Input::Choose(i))) => {
-                out.extend(options.get(*i).cloned().map(Logged::Choice));
-            }
-            _ => {}
-        };
-        for (state, input) in &self.history {
-            log(state, Some(input));
-        }
-        log(&self.state, None);
-        out
+        self.backlog_with(&quillstone_script::Catalog::default())
     }
 }
 
