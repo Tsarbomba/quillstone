@@ -52,7 +52,7 @@ fn open_extras(g: &mut Game) {
 
 /// Settings -> Main menu -> yes.
 fn to_menu(g: &mut Game) {
-    key(g, Key::Escape);
+    g.open_settings();
     click(g, button_rect(SettingsButton::MainMenu, true, 8, &Theme::default()));
     key(g, Key::Char('y'));
 }

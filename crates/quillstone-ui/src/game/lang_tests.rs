@@ -44,9 +44,9 @@ fn texts(g: &Game) -> Vec<String> {
     draws.into_iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text) } else { None }).collect()
 }
 
-/// Esc, down to the Language row (the ninth), and one step with `Right` (or `Left`).
+/// Open Settings, down to the Language row (the ninth), and one step with `Right` (or `Left`).
 fn switch(g: &mut Game, k: Key) {
-    key(g, Key::Escape);
+    g.open_settings();
     for _ in 0..8 {
         key(g, Key::Down);
     }
@@ -59,7 +59,7 @@ fn a_one_language_game_has_no_language_row() {
     let p = parse(BODY).unwrap();
     let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
     g.start_story();
-    key(&mut g, Key::Escape);
+    g.open_settings();
     assert!(!texts(&g).iter().any(|t| t == "Language"));
     assert_eq!(g.settings().language, None);
     for _ in 0..12 {
@@ -75,7 +75,7 @@ fn the_row_cycles_with_keys_and_the_line_is_translated_at_once() {
     let p = parse(&story()).unwrap();
     let mut g = game(&p, instant());
     assert_eq!(line(&g), "Hello, you have 3 coins.");
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let t = texts(&g);
     assert!(t.contains(&"Language".to_string()) && t.contains(&"English".to_string()), "{t:?}");
     for _ in 0..8 {
@@ -100,7 +100,7 @@ fn a_click_on_the_row_cycles_and_the_title_follows() {
     let p = parse(&story()).unwrap();
     let mut g = game(&p, instant());
     assert_eq!(g.title(), "Tale");
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let c = crate::screens::control_rect(8, crate::screens::rows(true), &Theme::default());
     g.handle(Event::CursorMoved(Some((c.x + c.w / 2.0, c.y + c.h / 2.0))));
     g.handle(Event::Press(Button::Left));
@@ -160,7 +160,7 @@ fn saves_carry_no_translated_text_and_load_in_any_language() {
 fn the_choice_persists_with_the_other_settings_and_hot_reload_keeps_it() {
     let p = parse(&story()).unwrap();
     let mut g = game(&p, instant());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     for _ in 0..8 {
         key(&mut g, Key::Down);
     }

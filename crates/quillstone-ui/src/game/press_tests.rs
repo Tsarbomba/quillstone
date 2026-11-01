@@ -110,7 +110,7 @@ fn mashing_needs_every_press_before_the_time_is_up() {
 }
 
 #[test]
-fn the_keys_that_advance_go_back_or_open_menus_are_swallowed_but_escape_still_opens_settings() {
+fn the_keys_that_advance_go_back_or_open_menus_are_swallowed_but_escape_still_opens_the_save_screen() {
     let p = parse(&story("key=up time=5")).unwrap();
     let mut g = at_prompt(&p);
     for k in [Key::Space, Key::Enter, Key::Right, Key::Left, Key::Backspace, Key::PageUp, Key::Down] {
@@ -125,7 +125,7 @@ fn the_keys_that_advance_go_back_or_open_menus_are_swallowed_but_escape_still_op
     assert!(!on_prompt(&g));
     let mut g = at_prompt(&p);
     key(&mut g, Key::Escape);
-    assert_eq!(g.screen, Screen::Settings);
+    assert_eq!(g.screen, Screen::Save);
     g.tick(100.0, false);
     key(&mut g, Key::Escape);
     assert!(on_prompt(&g), "the clock waited");

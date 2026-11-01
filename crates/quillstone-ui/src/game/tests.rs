@@ -236,7 +236,7 @@ fn no_wait_does_not_run_under_a_menu_or_a_dialog() {
     let p = parse(NW).unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space);
-    key(&mut g, Key::Escape); // settings
+    g.open_settings();
     g.tick(10.0, false);
     assert_eq!(line(&g), "two");
     key(&mut g, Key::Escape);
@@ -402,7 +402,7 @@ fn the_settings_screen_pauses_the_story_and_saves_only_changes() {
     let p = parse("**A:** one\n::wait{time=1}\n**A:** two\n").unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space); // now in the wait
-    key(&mut g, Key::Escape);
+    g.open_settings();
     assert_eq!(g.screen(), Screen::Settings);
     key(&mut g, Key::Space);
     g.tick(5.0, false);
@@ -411,7 +411,7 @@ fn the_settings_screen_pauses_the_story_and_saves_only_changes() {
     assert_eq!(g.screen(), Screen::Story);
     assert!(g.take_requests().is_empty(), "nothing changed, nothing to save");
 
-    g.handle(Event::Press(Button::Right));
+    g.open_settings();
     key(&mut g, Key::Down);
     key(&mut g, Key::Right); // auto-forward delay up a notch
     g.handle(Event::Press(Button::Right));
@@ -424,7 +424,7 @@ fn clicking_and_dragging_a_volume_slider() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
     g.take_audio();
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let music = ROWS.iter().position(|r| *r == Row::Music).unwrap();
     let t = track_rect(music, 8, &Theme::default());
     g.handle(Event::CursorMoved(Some((t.x + t.w * 0.25, t.y))));
@@ -447,7 +447,7 @@ fn text_speed_changes_apply_to_the_line_on_screen() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, Settings { text_speed: 10.0, ..Settings::default() });
     assert!(!g.view().dialogue.as_ref().unwrap().is_complete());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     for _ in 0..30 {
         key(&mut g, Key::Right); // text speed is the first row: all the way to instant
     }
@@ -463,7 +463,7 @@ fn fullscreen_from_f11_or_the_toggle() {
     let mut g = new_game(&p, instant());
     key(&mut g, Key::F11);
     assert_eq!(g.take_requests(), vec![Request::Fullscreen(true), Request::SaveSettings]);
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let row = ROWS.iter().position(|r| *r == Row::Fullscreen).unwrap();
     click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert!(!g.settings().fullscreen);
@@ -478,7 +478,7 @@ fn a_moved_settings_panel_takes_the_clicks_and_the_old_place_takes_none() {
     let mut g = new_game(&p, instant());
     let theme = Theme::parse("options_rect = 60, 40, 900, 980\noptions_text_size = 30\n").0;
     g.set_theme(theme.clone());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let row = ROWS.iter().position(|r| *r == Row::Fullscreen).unwrap();
     click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert!(!g.settings().fullscreen, "nothing at the old place");
@@ -492,10 +492,10 @@ fn a_moved_settings_panel_takes_the_clicks_and_the_old_place_takes_none() {
 fn quit_and_back_buttons() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     click_at(&mut g, centre(button_rect(SettingsButton::Back, true, 8, &Theme::default())));
     assert_eq!(g.screen(), Screen::Story);
-    key(&mut g, Key::Escape);
+    g.open_settings();
     click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     assert!(g.take_requests().is_empty(), "asks first");
     click_at(&mut g, centre(confirm_button_rect(false)));
@@ -511,7 +511,7 @@ fn a_confirm_launched_from_settings_returns_to_settings_on_no_and_proceeds_on_ye
     let p = parse(THREE).unwrap();
     for (button, yes_leaves) in [(SettingsButton::Quit, false), (SettingsButton::MainMenu, true)] {
         let mut g = new_game(&p, instant());
-        key(&mut g, Key::Escape);
+        g.open_settings();
         click_at(&mut g, centre(button_rect(button, true, 8, &Theme::default())));
         assert_eq!(g.screen(), Screen::Settings, "Settings stays open under the question");
         assert!(g.confirm.is_some());
@@ -590,7 +590,7 @@ fn a_full_screen_overlay_hides_the_stories_text_choices_and_quick_menu() {
     let none = |_: &str| None;
     type Open = fn(&mut Game);
     let opens: [(&str, Open); 4] = [
-        ("settings", |g| key(g, Key::Escape)),
+        ("settings", |g| g.open_settings()),
         ("history", |g| key(g, Key::Char('h'))),
         ("save", |g| key(g, Key::Char('s'))),
         ("load", |g| key(g, Key::Char('l'))),
@@ -622,7 +622,7 @@ fn a_hotspot_overlay_leaves_no_tooltip_and_a_confirm_over_the_story_keeps_the_st
     let known = |_: &str| Some(quillstone_render::Size::new(100.0, 100.0));
     g.handle(Event::CursorMoved(spot_centre(&g, 0)));
     assert!(has_text(&g.draw_list(&known), "Library"), "the tooltip shows on the map");
-    key(&mut g, Key::Escape);
+    g.open_settings();
     assert_eq!(g.screen(), Screen::Settings);
     assert!(!has_text(&g.draw_list(&known), "Library"), "no tooltip under settings");
     key(&mut g, Key::Escape);
@@ -761,7 +761,7 @@ fn reaching_a_choice_and_quitting_save_automatically() {
     assert!(!has_file(&g, "auto-1.save"), "nothing to save at the very start");
     key(&mut g, Key::Space);
     assert!(has_file(&g, "auto-1.save"), "arrived at a choice");
-    key(&mut g, Key::Escape);
+    g.open_settings();
     click_at(&mut g, centre(button_rect(SettingsButton::Quit, true, 8, &Theme::default())));
     key(&mut g, Key::Char('y'));
     assert!(has_file(&g, "auto-2.save"), "saved on the way out");
@@ -977,7 +977,7 @@ fn going_back_or_opening_a_screen_stops_skipping() {
 fn skip_unread_is_a_settings_toggle() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let row = ROWS.iter().position(|r| *r == Row::SkipUnread).unwrap();
     click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
     assert!(g.settings().skip_unread);
@@ -1054,7 +1054,7 @@ fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     g.start_story();
     key(&mut g, Key::Space);
     key(&mut g, Key::F5); // quick save on "two"
-    key(&mut g, Key::Escape);
+    g.open_settings();
     click_at(&mut g, centre(button_rect(SettingsButton::MainMenu, true, 8, &Theme::default())));
     key(&mut g, Key::Char('y'));
     assert_eq!(g.screen(), Screen::MainMenu);
@@ -2041,7 +2041,7 @@ fn backspace_leaves_a_shop_so_a_gamepad_can() {
 }
 
 #[test]
-fn escape_and_right_click_in_a_shop_open_settings_and_closing_them_returns_to_the_shop() {
+fn escape_and_right_click_in_a_shop_open_the_save_screen_and_closing_it_returns_to_the_shop() {
     let p = parse(SHOPPING).unwrap();
     for how in 0..4 {
         let mut g = new_game(&p, instant());
@@ -2058,12 +2058,12 @@ fn escape_and_right_click_in_a_shop_open_settings_and_closing_them_returns_to_th
             }
         };
         open(&mut g);
-        assert_eq!(g.screen(), Screen::Settings, "how {how}");
+        assert_eq!(g.screen(), Screen::Save, "how {how}");
         assert!(matches!(g.state().pending, Some(Cmd::ShowShop { .. })), "still waiting at the shop");
         if how < 2 {
-            open(&mut g); // the same key closes Settings
+            open(&mut g); // the same key closes Save
         } else {
-            click_at(&mut g, centre(crate::screens::button_rect(crate::screens::SettingsButton::Back, true, 8, &Theme::default())));
+            click_at(&mut g, centre(crate::screens::slots_back_rect()));
         }
         assert_eq!(g.screen(), Screen::Shop, "how {how}: back at the shop");
         assert_eq!((g.bag.page, g.bag.focus), (page, focus));
@@ -2126,7 +2126,7 @@ fn a_reload_with_settings_open_at_a_shop_keeps_settings_and_shows_the_shop_after
     click_cell(&mut g, 0);
     key(&mut g, Key::Right);
     let focus = g.bag.focus;
-    key(&mut g, Key::Escape);
+    g.open_settings();
     g.settings.text_speed = 33.0; // an edit that must be flushed on close
     g.reload(&p).unwrap();
     assert_eq!(g.screen(), Screen::Settings, "reload leaves Settings open");
@@ -2143,13 +2143,13 @@ fn a_reload_with_settings_open_at_a_shop_keeps_settings_and_shows_the_shop_after
     let p2 = parse(&without).unwrap();
     let mut g = new_game(&p2, instant());
     key(&mut g, Key::Space); // "Bye."
-    key(&mut g, Key::Escape);
+    g.open_settings();
     g.reload(&p).unwrap();
     assert_eq!(g.screen(), Screen::Settings);
     key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::Shop, "the shop appears when Settings closes");
     // a reload that drops the shop while Settings is open: no shop afterwards
-    key(&mut g, Key::Escape);
+    g.open_settings();
     g.reload(&p2).unwrap();
     assert_eq!(g.screen(), Screen::Settings);
     key(&mut g, Key::Escape);
@@ -2342,7 +2342,7 @@ fn a_flash_freezes_under_menus_like_other_timers() {
     let p = parse("::flash{time=1}\n**A:** one\n").unwrap();
     let mut g = new_game(&p, instant());
     g.tick(0.25, false);
-    key(&mut g, Key::Escape); // settings
+    g.open_settings(); // settings
     assert_eq!(g.screen(), Screen::Settings);
     for _ in 0..20 {
         g.tick(1.0, false);
@@ -2606,7 +2606,7 @@ fn the_mode_badge_shows_where_there_is_no_quick_menu_and_hides_under_overlays() 
     g.ask("Sure?", Then::Quit);
     assert_eq!(badge(&g).as_deref(), Some("AUTO"), "still shown over the story under a confirm");
     g.confirm = None;
-    key(&mut g, Key::Escape);
+    g.open_settings();
     assert_eq!(g.screen(), Screen::Settings);
     assert_eq!(badge(&g), None, "a full-screen overlay hides the story and its badge");
     key(&mut g, Key::Escape);
@@ -2729,7 +2729,7 @@ fn the_player_setting_overrides_the_theme_and_default_follows_it() {
 fn the_settings_row_cycles_the_quick_menu_and_it_is_saved() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     let row = ROWS.iter().position(|r| *r == Row::QuickMenu).unwrap();
     assert!(drawn(&g, "Quick menu") && drawn(&g, "Game default"));
     click_at(&mut g, centre(control_rect(row, &ROWS, &Theme::default())));
@@ -2827,7 +2827,7 @@ fn click_at_swallowed(g: &mut Game, at: Option<(f32, f32)>) {
 fn hiding_the_interface_works_only_on_the_story_screen() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());
-    key(&mut g, Key::Escape);
+    g.open_settings();
     assert_eq!(g.screen(), Screen::Settings);
     key(&mut g, Key::Char('u'));
     key(&mut g, Key::Escape);

@@ -161,7 +161,7 @@ fn menus_freeze_animations_and_loops_like_other_timers() {
     run(&mut g, 0.3);
     let frozen = g.draw_list(&big);
     assert_eq!(pics(&g).last().unwrap(), "b.png");
-    key(&mut g, Key::Escape); // settings
+    g.open_settings();
     assert!(!g.needs_ticks(), "nothing to tick under a menu");
     run(&mut g, 5.0);
     let under = pics(&g);

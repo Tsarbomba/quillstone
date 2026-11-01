@@ -32,7 +32,7 @@ fn they_move_while_the_story_runs_and_freeze_under_the_settings() {
         flakes(&g)
     });
     assert!(!a.is_empty() && a != b, "they fall");
-    key(&mut g, Key::Escape); // settings
+    g.open_settings();
     let frozen = flakes(&g);
     run(&mut g, 2.0);
     assert_eq!(flakes(&g), frozen, "the same clock as the other animations: stopped under a menu");

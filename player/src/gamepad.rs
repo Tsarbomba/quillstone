@@ -5,7 +5,7 @@
 //! | Button | Does |
 //! | --- | --- |
 //! | A | advance / confirm (Enter) |
-//! | B, Start | back, or the settings in the story (Esc) |
+//! | B, Start | back, or the save screen (with the game-menu tabs) in the story (Esc) |
 //! | X | roll back |
 //! | Y | history |
 //! | LB | auto-forward on/off |

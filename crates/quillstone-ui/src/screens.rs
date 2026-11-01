@@ -940,6 +940,71 @@ pub fn draw_slots(
     text(out, "Back", back, 34.0, theme.text_color, Align::Center);
 }
 
+// ---- game-menu tabs ------------------------------------------------------------------
+
+/// The tabs along the top of the Save, Load, Settings and History screens, like a game menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameTab {
+    Save,
+    Load,
+    Settings,
+    History,
+    MainMenu,
+    Quit,
+}
+
+impl GameTab {
+    /// Switches to a screen (the others ask a question first).
+    pub fn is_screen(self) -> bool {
+        !matches!(self, GameTab::MainMenu | GameTab::Quit)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            GameTab::Save => "Save",
+            GameTab::Load => "Load",
+            GameTab::Settings => "Settings",
+            GameTab::History => "History",
+            GameTab::MainMenu => "Main menu",
+            GameTab::Quit => "Quit",
+        }
+    }
+}
+
+/// The tabs on offer: from the main menu there is no story to save, read back or leave, so those are left out.
+pub fn game_tabs(in_story: bool) -> &'static [GameTab] {
+    if in_story {
+        &[GameTab::Save, GameTab::Load, GameTab::Settings, GameTab::History, GameTab::MainMenu, GameTab::Quit]
+    } else {
+        &[GameTab::Load, GameTab::Settings, GameTab::Quit]
+    }
+}
+
+const GAME_TAB_W: f32 = 200.0;
+const GAME_TAB_GAP: f32 = 10.0;
+/// The strip ends above every screen's title (the lowest starts at 40).
+const GAME_TAB_Y: f32 = 4.0;
+const GAME_TAB_H: f32 = 36.0;
+
+pub fn game_tab_rect(i: usize, count: usize) -> Rect {
+    let total = count as f32 * GAME_TAB_W + (count.max(1) - 1) as f32 * GAME_TAB_GAP;
+    Rect::new((VIRTUAL.w - total) / 2.0 + i as f32 * (GAME_TAB_W + GAME_TAB_GAP), GAME_TAB_Y, GAME_TAB_W, GAME_TAB_H)
+}
+
+pub fn game_tab_at(x: f32, y: f32, tabs: &[GameTab]) -> Option<GameTab> {
+    (0..tabs.len()).find(|&i| game_tab_rect(i, tabs.len()).contains(x, y)).map(|i| tabs[i])
+}
+
+/// Draw the strip; `current` is the screen being shown (highlighted like the slot page tabs).
+pub fn draw_game_tabs(out: &mut Vec<Draw>, theme: &Theme, tabs: &[GameTab], current: Option<GameTab>, hover: Option<GameTab>) {
+    for (i, &tab) in tabs.iter().enumerate() {
+        let r = game_tab_rect(i, tabs.len());
+        let color = if Some(tab) == current || hover == Some(tab) { theme.button_hover_color } else { theme.button_color };
+        out.push(Draw::Rect { rect: r, color });
+        text(out, tab.label(), r, 26.0, if Some(tab) == current { theme.accent_color } else { theme.text_color }, Align::Center);
+    }
+}
+
 // ---- confirm dialog and notices --------------------------------------------------------------
 
 const DIALOG: Rect = Rect::new(560.0, 380.0, 800.0, 300.0);
@@ -1577,5 +1642,28 @@ mod tests {
         let mut out = Vec::new();
         nine_slice(&mut out, "f.png", Size::new(80.0, 40.0), Rect::new(0.0, 0.0, 30.0, 30.0), 500.0);
         assert!(out.iter().all(|d| matches!(d, Draw::Image { dest, uv, .. } if dest.w > 0.0 && dest.h > 0.0 && uv.w > 0.0 && uv.h > 0.0)));
+    }
+
+    #[test]
+    fn the_game_tabs_are_hit_where_they_are_drawn_and_clear_every_screens_content() {
+        for in_story in [true, false] {
+            let tabs = game_tabs(in_story);
+            let mut out = Vec::new();
+            draw_game_tabs(&mut out, &Theme::default(), tabs, None, None);
+            for (i, &tab) in tabs.iter().enumerate() {
+                let r = game_tab_rect(i, tabs.len());
+                assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == r)), "drawn at its rect");
+                assert_eq!(game_tab_at(r.x + r.w / 2.0, r.y + r.h / 2.0, tabs), Some(tab));
+                assert!(r.x >= 0.0 && r.x + r.w <= VIRTUAL.w);
+                let next = tabs.get(i + 1).map(|_| game_tab_rect(i + 1, tabs.len()));
+                assert!(next.is_none_or(|n| n.x >= r.x + r.w), "tabs do not overlap");
+            }
+            assert_eq!(game_tab_at(0.0, 0.0, tabs), None);
+        }
+        // above the slot grid's page tabs, the history's and the slot screens' titles, and the default settings panel
+        let strip_bottom = game_tab_rect(0, 6).y + game_tab_rect(0, 6).h;
+        let settings = Theme::default().options_rect;
+        assert!(strip_bottom <= tab_rect(0, 3).y && strip_bottom <= 40.0 && strip_bottom <= settings[1]);
+        assert!(!game_tabs(false).contains(&GameTab::Save) && !game_tabs(false).contains(&GameTab::MainMenu));
     }
 }

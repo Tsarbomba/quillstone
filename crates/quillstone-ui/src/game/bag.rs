@@ -289,11 +289,11 @@ impl Game<'_> {
             }
             // The inventory over the story is an overlay like the history: Esc closes
             // it. The shop and a script's inventory are screens of the story, so
-            // Esc and a right click open Settings, as everywhere else.
+            // Esc and a right click open the game menu (Save), as everywhere else.
             Event::Press(Button::Right) | Event::Key(Key::Escape) if self.bag.overlay && self.screen == Screen::Inventory => {
                 self.close_bag()
             }
-            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.open_settings(),
+            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.open_game_menu(),
             Event::Key(Key::Char('s' | 'S')) => self.open_slots(Screen::Save),
             Event::Key(Key::Char('l' | 'L')) => self.open_slots(Screen::Load),
             Event::Key(Key::Char('h' | 'H')) => self.open_backlog(),

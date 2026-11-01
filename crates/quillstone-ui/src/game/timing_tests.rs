@@ -105,7 +105,7 @@ fn the_clock_waits_while_minimised_unfocused_or_a_screen_is_open() {
     g.tick(100.0, false);
     assert!(!g.needs_ticks(), "nothing moves while it waits");
     g.set_focused(true);
-    key(&mut g, Key::Escape); // settings
+    g.open_settings();
     g.tick(100.0, false);
     key(&mut g, Key::Escape);
     key(&mut g, Key::Char('h')); // history

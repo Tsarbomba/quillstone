@@ -123,10 +123,10 @@ double-click the exe. If it can't start, the reason is also written to
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
 | U | hide the textbox and quick menu to see the picture; the next key press or click brings them back (and does nothing else) |
-| Esc / right-click | settings: text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu (game default, always, on hover, hidden), Main menu, Quit |
-| I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the settings (closing them returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
+| Esc / right-click | the save screen, with a row of tabs along the top (Save, Load, Settings, History, Main menu, Quit) that works like a game menu: click one, or press Tab to move on to the next screen. Esc or right-click on any of those screens closes it again. Settings (text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu) is also the quick menu's Settings button. From the main menu the tabs are Load, Settings and Quit |
+| I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the save screen (closing it returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
 | J | the journal, in games that have one (the inventory's screen listing quests; over the story Esc, right-click or J closes it) |
-| typing | at a text input the keys type into the field (Enter or OK confirms, Backspace deletes, Esc opens the settings) and shortcut letters are off there |
+| typing | at a text input the keys type into the field (Enter or OK confirms, Backspace deletes, Esc opens the save screen) and shortcut letters are off there |
 | F11 | fullscreen |
 | Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
 

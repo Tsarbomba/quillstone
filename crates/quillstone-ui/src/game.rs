@@ -533,6 +533,9 @@ impl<'p> Game<'p> {
         if self.confirm.is_some() {
             return self.confirm_event(event);
         }
+        if self.game_tab_event(&event) {
+            return;
+        }
         match self.screen {
             Screen::MainMenu => self.menu_event(event),
             Screen::Story => self.story_event(event),
@@ -671,7 +674,7 @@ impl<'p> Game<'p> {
     /// and clicks that would otherwise advance, go back or open a menu. `false`: not for the prompt.
     fn press_event(&mut self, press: &KeyPress, event: &Event) -> bool {
         let hit = match event {
-            Event::Key(Key::Escape) => return false, // Settings, as everywhere
+            Event::Key(Key::Escape) => return false, // the game menu, as everywhere
             Event::Key(k) => match (press.key.as_str(), k) {
                 ("space" | "enter", Key::Space | Key::Enter) | ("left", Key::Left) | ("right", Key::Right) | ("up", Key::Up) | ("down", Key::Down) => true,
                 (n, Key::Char(c)) if n.len() == 1 && n.starts_with(c.to_ascii_lowercase()) => true,
@@ -828,6 +831,11 @@ impl<'p> Game<'p> {
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
             Screen::Input => self.draw_input_screen(&mut out, image_size),
         }
+        if self.current_tab().is_some() {
+            let tabs = game_tabs(self.in_story);
+            let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| game_tab_at(x, y, tabs));
+            draw_game_tabs(&mut out, theme, tabs, self.current_tab(), hover);
+        }
         if let Some(confirm) = &self.confirm {
             let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
             draw_confirm(&mut out, theme, &confirm.message, hover);
@@ -972,7 +980,7 @@ impl<'p> Game<'p> {
         }
         match event {
             Event::Press(Button::Left) => self.story_click(),
-            Event::Press(Button::Right) => self.open_settings(),
+            Event::Press(Button::Right) => self.open_game_menu(),
             Event::Wheel(dy) if dy > 0.0 => self.rollback(),
             Event::Wheel(dy) if dy < 0.0 => self.roll_forward(),
             Event::Key(key) => match key {
@@ -1020,7 +1028,7 @@ impl<'p> Game<'p> {
                     }
                 }
                 Key::Backspace | Key::Left => self.rollback(),
-                Key::Escape => self.open_settings(),
+                Key::Escape => self.open_game_menu(),
                 Key::PageUp | Key::Char('h' | 'H') => self.open_backlog(),
                 Key::Char('a' | 'A') => self.toggle_auto(),
                 Key::Char('s' | 'S') => self.open_slots(Screen::Save),
@@ -1354,9 +1362,90 @@ impl<'p> Game<'p> {
 
     fn close_settings(&mut self) {
         self.screen = self.home();
+        self.leave_settings();
+    }
+
+    /// Settings is being left (closed, or another game-menu tab opened): save what changed.
+    fn leave_settings(&mut self) {
         self.dragging = None;
         if self.settings != self.settings_before {
             self.requests.push(Request::SaveSettings);
+        }
+    }
+
+    /// What Esc and a right click open over the story, a shop, an inventory or a text entry: the Save
+    /// screen. A replay has nothing to save, so it gets Settings (where "Main menu" leaves it).
+    pub(super) fn open_game_menu(&mut self) {
+        if self.replay.is_some() {
+            self.open_settings();
+        } else {
+            self.open_slots(Screen::Save);
+        }
+    }
+
+    fn current_tab(&self) -> Option<GameTab> {
+        match self.screen {
+            Screen::Save => Some(GameTab::Save),
+            Screen::Load => Some(GameTab::Load),
+            Screen::Settings => Some(GameTab::Settings),
+            Screen::Backlog => Some(GameTab::History),
+            _ => None,
+        }
+    }
+
+    /// A click on a game-menu tab, or Tab (next screen, round again). `true`: the event was for the tabs.
+    fn game_tab_event(&mut self, event: &Event) -> bool {
+        let Some(current) = self.current_tab() else { return false };
+        let tabs = game_tabs(self.in_story);
+        let pick = match event {
+            Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| game_tab_at(x, y, tabs)) {
+                Some(tab) => tab,
+                None => return false,
+            },
+            Event::Key(Key::Tab) => {
+                let screens: Vec<GameTab> = tabs.iter().copied().filter(|t| t.is_screen()).collect();
+                let at = screens.iter().position(|&t| t == current).unwrap_or(0);
+                screens[(at + 1) % screens.len()]
+            }
+            _ => return false,
+        };
+        match pick {
+            _ if pick == current => {}
+            GameTab::MainMenu => self.ask_main_menu(),
+            GameTab::Quit => self.ask_quit(),
+            _ => {
+                if self.screen == Screen::Settings {
+                    self.leave_settings();
+                }
+                match pick {
+                    GameTab::Save => self.open_slots(Screen::Save),
+                    GameTab::Load => self.open_slots(Screen::Load),
+                    GameTab::Settings => self.open_settings(),
+                    _ => self.open_backlog(),
+                }
+            }
+        }
+        true
+    }
+
+    /// The main menu button: asks first (the screen stays open beneath the question, so No comes back to it).
+    fn ask_main_menu(&mut self) {
+        if self.replay.is_some() {
+            self.ask("Leave this replay and go back to Extras?", Then::MainMenu);
+        } else {
+            self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
+        }
+    }
+
+    fn ask_quit(&mut self) {
+        if self.in_story {
+            self.ask("Quit the game?", Then::Quit);
+        } else {
+            if self.screen == Screen::Settings {
+                self.close_settings();
+            }
+            self.save_read();
+            self.requests.push(Request::Quit); // nothing else to lose at the main menu
         }
     }
 
@@ -1382,23 +1471,8 @@ impl<'p> Game<'p> {
                     }
                 }
                 Some(SettingsHit::Button(SettingsButton::Back)) => self.close_settings(),
-                Some(SettingsHit::Button(SettingsButton::MainMenu)) => {
-                    // Settings stays open beneath the question, so No comes back to it.
-                    if self.replay.is_some() {
-                        self.ask("Leave this replay and go back to Extras?", Then::MainMenu);
-                    } else {
-                        self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
-                    }
-                }
-                Some(SettingsHit::Button(SettingsButton::Quit)) => {
-                    if self.in_story {
-                        self.ask("Quit the game?", Then::Quit);
-                    } else {
-                        self.close_settings();
-                        self.save_read();
-                        self.requests.push(Request::Quit); // nothing else to lose at the main menu
-                    }
-                }
+                Some(SettingsHit::Button(SettingsButton::MainMenu)) => self.ask_main_menu(),
+                Some(SettingsHit::Button(SettingsButton::Quit)) => self.ask_quit(),
                 None => {}
             },
             Event::Release(Button::Left) => self.dragging = None,
@@ -1526,3 +1600,5 @@ mod gallery_video_tests;
 mod quickicon_tests;
 #[cfg(test)]
 mod console_tests;
+#[cfg(test)]
+mod menu_tabs_tests;

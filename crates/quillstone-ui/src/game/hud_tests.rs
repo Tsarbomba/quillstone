@@ -74,7 +74,7 @@ fn the_hud_is_under_a_confirm_but_not_under_full_screen_screens() {
     assert!(has_text(&list, "Sure?") && has_text(&list, "Gold 1"), "the story, HUD included, stays under a confirm");
     type Open = fn(&mut Game);
     let opens: [(&str, Open); 4] = [
-        ("settings", |g| key(g, Key::Escape)),
+        ("settings", |g| g.open_settings()),
         ("history", |g| key(g, Key::Char('h'))),
         ("save", |g| key(g, Key::Char('s'))),
         ("load", |g| key(g, Key::Char('l'))),

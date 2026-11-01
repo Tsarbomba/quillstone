@@ -141,7 +141,7 @@ fn text_is_ignored_outside_the_input_screen() {
     let mut g = new_game(&p, instant());
     type_in(&mut g, "abc");
     assert_eq!((g.screen(), line(&g)), (Screen::Story, "First.".to_string()));
-    key(&mut g, Key::Escape);
+    g.open_settings();
     type_in(&mut g, "abc");
     assert_eq!(g.screen(), Screen::Settings);
     assert!(!g.wants_text());
@@ -201,19 +201,19 @@ fn ok_is_dimmed_only_while_there_is_nothing_to_confirm() {
 }
 
 #[test]
-fn escape_and_right_click_open_settings_and_closing_returns_with_the_text_kept() {
+fn escape_and_right_click_open_save_and_closing_returns_with_the_text_kept() {
     let p = parse(ASK).unwrap();
     let mut g = at_input(&p);
     type_in(&mut g, "Sa");
     key(&mut g, Key::Escape);
-    assert_eq!(g.screen(), Screen::Settings);
+    assert_eq!(g.screen(), Screen::Save);
     assert!(!g.wants_text());
     type_in(&mut g, "zzz");
     key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::Input);
-    assert_eq!(field(&g), "Sa", "typed text kept, nothing added behind the settings");
+    assert_eq!(field(&g), "Sa", "typed text kept, nothing added behind the Save screen");
     g.handle(Event::Press(Button::Right));
-    assert_eq!(g.screen(), Screen::Settings);
+    assert_eq!(g.screen(), Screen::Save);
     g.handle(Event::Press(Button::Right));
     assert_eq!(g.screen(), Screen::Input);
     type_in(&mut g, "m");

@@ -127,7 +127,7 @@ impl Game<'_> {
             }
             Event::Key(Key::Enter) => self.confirm_input(),
             Event::Press(Button::Left) if self.ok_under_cursor() => self.confirm_input(),
-            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.open_settings(),
+            Event::Press(Button::Right) | Event::Key(Key::Escape) => self.open_game_menu(),
             Event::Key(Key::F5) => self.quick_save(),
             Event::Key(Key::F9) => self.quick_load(),
             // Letters, digits, Space, Tab, the wheel and the rest do nothing here.

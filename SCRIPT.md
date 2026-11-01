@@ -688,7 +688,7 @@ part; default `#333333`), `border` (an outline colour; drawn outside the bar's s
 | Attribute | |
 | --- | --- |
 | `call=#phone` | A press **calls** that label and, when it ends with `::return`, shows the same line again (like an item's Use). The label must exist and take no parameters; `check` says which line is wrong. |
-| `open=journal` | A press opens a built-in screen instead, as the quick menu and keys do: `journal` (J), `inventory` (I), `history` (H), `save` (S), `load` (L) or `settings` (Esc). `journal` and `inventory` need a game that has one. |
+| `open=journal` | A press opens a built-in screen instead, as the quick menu and keys do: `journal` (J), `inventory` (I), `history` (H), `save` (S), `load` (L) or `settings` (the quick menu's Settings button). `journal` and `inventory` need a game that has one. |
 | `hover=assets/phone_hover.png` | For a picture button: shown instead of the picture while the mouse is over it. It needs `call=` or `open=` and is checked and packaged like the picture. A text button simply lights up under the mouse. |
 
 `call=` and `open=` can't be combined. Buttons work **only while the story waits at a normal line**
@@ -1126,7 +1126,7 @@ The dog sails over you.
 - A wrong key does nothing (it is not a miss, so a slip of the finger is forgiving). While
   the prompt is up, Space, Enter, the arrows, Backspace, PageUp and the letters do not
   advance, go back or open the history, auto-forward and so on, whatever the key asked for;
-  Esc still opens Settings, and the quick menu buttons still work. A key that was already
+  Esc still opens the Save screen, and the quick menu buttons still work. A key that was already
   held down when the prompt appeared does not count, and holding a key does not repeat it:
   every press is a new one. The same goes for the timing bar.
 - The clock stands still while the window is not in focus or minimised and while Settings,
@@ -1226,7 +1226,7 @@ You pick up a brass key.
   out and nothing is skipped. Esc, a right click, the I key or the Close button closes it.
 - `::inventory` opens the same screen from the script. The story waits until the player
   presses its Close button (or I, or Backspace) and then carries on; Esc or a right click opens the
-  settings instead, which return to the inventory, and S, L, H, F5 and F9 work there too. Rollback, saves and hot reload work with it like with
+  Save screen instead, which returns to the inventory, and S, L, H, F5 and F9 work there too. Rollback, saves and hot reload work with it like with
   any other waiting step, and `quillstone test` treats it as one click.
 
 ## Journal
@@ -1298,8 +1298,8 @@ vars: { gold: 40, pack: [], polite: false }
   appear once per shop.
 - The story waits at the shop, which shows every offered item with its picture, name
   and price, and how much the player has. The Leave button (or Backspace, the gamepad's X) ends the
-  block and the story continues after it. Esc or a right click opens the settings
-  instead, as everywhere else, and closing them returns to the shop (page, selection
+  block and the story continues after it. Esc or a right click opens the Save screen
+  instead, as everywhere else, and closing it returns to the shop (page, selection
   and purchases kept); S, L, H, F5 and F9 work there too (save, load, history, quick
   save and load). If no item is on offer the block
   is skipped.
@@ -1357,7 +1357,7 @@ Asks the player to type a text and stores it in a variable (a name, mostly).
   when it looks like a number (`n == "42"`, not `n == 42`).
 - Letters and digits go to the field while it is up, so shortcuts like A, H, S, L, I, U and Tab
   do nothing there; Backspace deletes and never goes back. Esc and a right click open the
-  settings (closing them returns to the field with the text kept); F5 and F9 quick save and load.
+  Save screen (closing it returns to the field with the text kept); F5 and F9 quick save and load.
   A gamepad's A confirms (the default when the field is empty), X deletes and B or Start
   opens the settings; there is no on-screen keyboard.
 - Whatever the player types shows exactly as typed: `{`, `}`, `*` and `\` in a name can't
@@ -1681,6 +1681,16 @@ options_panel_border = 40             # the 9-slice corner size in the picture's
   1920x1080 screen) and stretches the edges and the middle, so rounded corners come from the picture.
   The border is cut back if it is more than half of the picture or of the panel.
 - `check` reports a missing or unreadable picture; `package` includes the pictures.
+
+**The game menu.** Esc and a right click during the story (also over a shop, an inventory or a text
+input) open the Save screen. A row of tabs runs along the top of the
+Save, Load, Settings and History screens: Save, Load, Settings, History, Main menu and Quit (the
+last two ask first, like the Settings buttons). A click on a tab, or the Tab key (next screen,
+round again), moves between them; Esc or a right click closes back to where the player came from.
+From the main menu the row shows Load, Settings and Quit only. The tabs use the theme's
+`button_color`, `button_hover_color` (current tab and hover), `text_color` and `accent_color`
+(the current tab's label). A Settings panel placed with `options_rect` above y = 40 is covered by them.
+During a scene replay Esc opens Settings instead, where Main menu leaves the replay.
 
 **The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items and Journal
 in a game with an inventory or a journal) sits in a row directly below the textbox. `quick_align` says

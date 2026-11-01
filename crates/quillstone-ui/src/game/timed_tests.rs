@@ -95,7 +95,7 @@ fn settings_history_and_confirms_pause_the_clock() {
     let p = parse(STORY).unwrap();
     let mut g = at_choice(&p);
     g.tick(1.0, false);
-    key(&mut g, Key::Escape); // settings
+    g.open_settings();
     g.tick(100.0, false);
     key(&mut g, Key::Escape);
     assert_eq!((g.screen(), g.view().choices.len()), (Screen::Story, 3));

@@ -4,8 +4,9 @@
 //! 1-9 or click = choose, Backspace / Left / mouse wheel up = go back,
 //! H / Page Up = history, A = auto-forward, S / L = save / load screens,
 //! F5 / F9 = quick save / quick load, Tab = skip on/off, hold Ctrl = skip,
-//! Esc / right-click = settings, F11 = fullscreen. The game logic lives in `quillstone-ui`; this file only
-//! turns window events into its `Event`s and carries out what comes back.
+//! Esc / right-click = save screen (with tabs to Load, Settings, History), F11 = fullscreen. The game
+//! logic lives in `quillstone-ui`; this file only turns window events into its `Event`s and carries out
+//! what comes back.
 
 // A shipped game opens no console window (build with `--features no-console`).
 #![cfg_attr(feature = "no-console", windows_subsystem = "windows")]
