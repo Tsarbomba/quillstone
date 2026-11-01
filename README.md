@@ -1,4 +1,4 @@
-# Quillstone
+<h1 align="center"><img src="qs_logo.jpg" alt="Quillstone" width="600"></h1>
 
 A lightweight but powerful visual novel engine written in Rust, and an
 alternative to the established VN engines. It is small, starts fast, and keeps
