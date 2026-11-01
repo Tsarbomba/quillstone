@@ -368,6 +368,15 @@ pub struct Line {
     pub text: String,
 }
 
+/// One active call: where `::return` goes back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Frame {
+    pub ret: usize,
+    /// A Use or HUD button made the call from a line, so `::return` shows that same line again
+    /// (see [`call_from_line`]).
+    pub line: bool,
+}
+
 /// Everything needed to resume the game exactly: cheap to clone, easy to serialize later.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
@@ -377,8 +386,8 @@ pub struct State {
     /// advances it. It is part of the scene, so rollback and roll forward replay
     /// the same rolls, and saves keep it.
     pub rng: u64,
-    /// Return addresses of active `::call`s.
-    pub stack: Vec<usize>,
+    /// Active `::call`s, innermost last.
+    pub stack: Vec<Frame>,
     pub background: Option<String>,
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
@@ -643,14 +652,22 @@ pub fn waits_at_line(state: &State) -> bool {
 }
 
 /// A call that comes back to this same line, which is shown again. Passing the label's start
-/// counts a visit for `seen(label)`; this isn't a new one.
+/// counts a visit for `seen(label)`; the return takes that one back ([`return_to`]), but only when
+/// the label does come back (one that jumps away leaves the count as it was).
 fn call_from_line(state: &mut State, program: &Program, label: &str) {
-    for var in program.counted.get(&state.pc).into_iter().flatten() {
-        let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
-        state.vars.insert(var.clone(), Value::Int(n - 1));
-    }
-    state.stack.push(state.pc);
+    state.stack.push(Frame { ret: state.pc, line: true });
     state.pc = program.labels[label];
+}
+
+/// `::return`: back to the frame's address. A line call shows its line again, which would count a second visit.
+fn return_to(state: &mut State, program: &Program, frame: Frame) {
+    if frame.line {
+        for var in program.counted.get(&frame.ret).into_iter().flatten() {
+            let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
+            state.vars.insert(var.clone(), Value::Int(n.saturating_sub(1)));
+        }
+    }
+    state.pc = frame.ret;
 }
 
 /// The label of the shown HUD element `id`, when it is a `call=` button.
@@ -1060,7 +1077,7 @@ pub(crate) fn step_traced(
         // Passing a label that some `seen(label)` asks about.
         for var in program.counted.get(&state.pc).into_iter().flatten() {
             let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(0);
-            state.vars.insert(var.clone(), Value::Int(n + 1));
+            state.vars.insert(var.clone(), Value::Int(n.saturating_add(1)));
         }
         match op {
             Op::Say { speaker, color, text } => {
@@ -1335,11 +1352,11 @@ pub(crate) fn step_traced(
                         state.vars.insert(name.clone(), value);
                     }
                 }
-                state.stack.push(state.pc + 1);
+                state.stack.push(Frame { ret: state.pc + 1, line: false });
                 state.pc = *target;
             }
             Op::Return => match state.stack.pop() {
-                Some(back) => state.pc = back,
+                Some(frame) => return_to(state, program, frame),
                 None => break, // `::return` outside a `::call` ends the story
             },
             Op::Set(effect) => {

@@ -247,7 +247,11 @@ mod real {
                 Action::PlayVoice { src } => {
                     let Some(data) = self.stream(&src) else { return self.voice_ended = true };
                     match self.voice_track.play(data) {
-                        Ok(handle) => self.voice = Some(handle),
+                        Ok(handle) => {
+                            self.voice = Some(handle);
+                            // An earlier clip of this batch that failed must not end this one.
+                            self.voice_ended = false;
+                        }
                         Err(e) => {
                             self.warn(&src, e);
                             self.voice_ended = true;

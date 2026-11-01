@@ -54,9 +54,10 @@ fn shorten(s: &str) -> String {
     one.chars().take(EDGE_TEXT - 1).collect::<String>().trim_end().to_string() + "\u{2026}"
 }
 
-/// `if a and b`, or nothing when there is no condition.
-fn when(conds: &[String]) -> String {
-    if conds.is_empty() { String::new() } else { format!("if {}", conds.join(" and ")) }
+/// `if a and b`, or nothing when there is no condition. An `or` among several is bracketed.
+fn when(conds: &[&Expr]) -> String {
+    let text = |c: &&Expr| if conds.len() > 1 && matches!(c, Expr::Or(..)) { format!("({})", cond_text(c)) } else { cond_text(c) };
+    if conds.is_empty() { String::new() } else { format!("if {}", conds.iter().map(text).collect::<Vec<_>>().join(" and ")) }
 }
 
 /// A condition's text; the hidden variable of a `{once}` option reads as `once`.
@@ -92,7 +93,12 @@ fn build(program: &Program) -> Graph {
             edges.push((from, to, kind, label));
         }
     };
-    let terminates = |op: &Op| matches!(op, Op::Jump { cond: None, .. } | Op::Return | Op::End | Op::Choice { .. });
+    let terminates = |op: &Op| match op {
+        Op::Jump { cond: None, .. } | Op::Return | Op::End => true,
+        // A choice whose options all have an `if` can offer nothing, and the story goes on past it.
+        Op::Choice { options, .. } => options.iter().any(|o| o.cond.is_none()),
+        _ => false,
+    };
 
     for k in 0..hs.len() {
         // Falls in from above: the label before it, unless that ends in a jump, return or choice.
@@ -112,33 +118,39 @@ fn build(program: &Program) -> Graph {
         }
     }
     // The open `::if` branches: (condition, op index where the branch ends).
-    let mut guards: Vec<(String, usize)> = Vec::new();
+    let mut guards: Vec<(Expr, usize)> = Vec::new();
     for (i, op) in program.ops.iter().enumerate() {
         guards.retain(|(_, end)| *end > i);
         let from = owner(i);
-        if matches!(op, Op::End) {
-            nodes[from].ends = true;
-        }
         // Ops after a jump that nothing leads to can't run.
         let dead = i > 0 && terminates(&program.ops[i - 1]) && !label_starts.contains(&i) && !jump_targets.contains(&i);
         if dead {
             continue;
         }
-        let g: Vec<String> = guards.iter().map(|(c, _)| c.clone()).collect();
-        let with = |own: Option<String>| when(&g.iter().cloned().chain(own).collect::<Vec<_>>());
+        if matches!(op, Op::End) {
+            nodes[from].ends = true;
+        }
+        let g: Vec<Expr> = guards.iter().map(|(c, _)| c.clone()).collect();
+        let with = |own: Option<&Expr>| when(&g.iter().chain(own).collect::<Vec<_>>());
         match op {
             // `::if c` skips past its branch when `c` is false; inside it, `c` holds.
             Op::Jump { target: t, cond: Some(Expr::Not(c)) } if program.block_jumps.contains(&i) => {
                 if let Some(to) = target(*t) {
-                    add(from, to, Kind::Flow, with(Some(format!("not {c}"))));
+                    add(from, to, Kind::Flow, with(Some(&Expr::Not(c.clone()))));
                 }
-                guards.push((c.to_string(), *t));
+                guards.push(((**c).clone(), *t));
             }
-            // The jump over an `::else`: the fall-through edges already say it.
-            Op::Jump { .. } if program.block_jumps.contains(&i) => {}
+            // The jump over an `::else`: the fall-through edges already say it, unless the `::else` ends in a
+            // jump of its own (then nothing falls through, and this is the only way into the next label).
+            Op::Jump { target: t, .. } if program.block_jumps.contains(&i) => {
+                let falls = t.checked_sub(1).is_none_or(|b| !terminates(&program.ops[b]));
+                if let Some(to) = target(*t).filter(|_| !falls) {
+                    add(from, to, Kind::Flow, with(None));
+                }
+            }
             Op::Jump { target: t, cond } => {
                 if let Some(to) = target(*t) {
-                    add(from, to, Kind::Jump, with(cond.as_ref().map(cond_text)));
+                    add(from, to, Kind::Jump, with(cond.as_ref()));
                 }
             }
             Op::Call { target: t, .. } => {
@@ -155,7 +167,7 @@ fn build(program: &Program) -> Graph {
                     } else if o.default {
                         text += " (default)";
                     }
-                    let cond = when(&g.iter().cloned().chain(o.cond.as_ref().map(cond_text)).collect::<Vec<_>>());
+                    let cond = when(&g.iter().chain(o.cond.as_ref()).collect::<Vec<_>>());
                     add(from, to, Kind::Choice, if cond.is_empty() { text } else { format!("{text} [{cond}]") });
                 }
             }
@@ -470,5 +482,32 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
     fn a_jump_does_not_also_fall_through_and_an_if_without_jumps_adds_no_edge() {
         let (m, _) = both("# A\n::if{x}\nHi.\n::endif\n::jump{to=c}\n# B\nHi.\n::jump{to=c}\n# C\nHi.\n");
         assert!(m.contains("n0 ==> n2") && m.contains("n1 ==> n2") && !m.contains("n0 --> n1"), "{m}");
+    }
+
+    #[test]
+    fn an_else_that_jumps_still_lets_the_if_branch_fall_into_the_next_label() {
+        let m = both("# A\n::if{x}\nHi.\n::else\n::jump{to=c}\n::endif\n# B\nBye.\n::end\n# C\nHi.\n::end\n").0;
+        assert!(m.contains("n0 -->|\"if x\"| n1") && !m.contains("unreachable"), "{m}");
+    }
+
+    #[test]
+    fn a_choice_whose_options_all_have_an_if_lets_the_story_go_on() {
+        let m = both("# A\n::choice\n- [Go](#a){if x}\n::\n# B\nHi.\n::end\n").0;
+        assert!(m.contains("n0 --> n1") && !m.contains("unreachable"), "{m}");
+        let m = both("# A\n::choice\n- [Go](#a)\n::\n# B\nHi.\n::end\n").0;
+        assert!(!m.contains("n0 --> n1") && m.contains("class n1 unreachable"), "an open choice always offers something: {m}");
+    }
+
+    #[test]
+    fn conditions_keep_their_brackets() {
+        let m = both("# A\n::jump{to=b if=\"not (x or y)\"}\n# B\n::if{a or b}\n::jump{to=a if=c}\n::endif\n# C\nHi.\n").0;
+        assert!(m.contains("if not (x or y)"), "{m}");
+        assert!(m.contains("if (a or b) and c") && m.contains("if not (a or b)"), "{m}");
+    }
+
+    #[test]
+    fn a_label_that_only_loops_back_is_not_drawn_as_an_ending() {
+        let m = both("# A\n::jump{to=a}\n::end\n").0;
+        assert!(m.contains("n0[\"A\"]"), "{m}");
     }
 }

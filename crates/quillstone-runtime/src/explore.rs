@@ -216,7 +216,7 @@ struct Explorer<'p> {
     program: &'p Program,
     limit: usize,
     nodes: Vec<Node>,
-    index: HashMap<(usize, Vec<usize>, Vars, bool), usize>,
+    index: HashMap<(usize, Vec<crate::Frame>, Vars, bool), usize>,
     queue: VecDeque<usize>,
     /// Ops that ever ran.
     ran: Vec<bool>,

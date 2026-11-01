@@ -130,3 +130,15 @@ fn the_prompt_is_translated_like_an_input_prompt() {
     s.input(Input::Choose(0));
     assert!(p.translatable().iter().any(|t| t.text == "Pick {n} lock!"));
 }
+
+#[test]
+fn the_tester_does_not_play_a_miss_a_bar_cannot_have() {
+    // all of the bar is good and nothing times out: the `miss` branch is really never reached
+    let src = |bar: &str| {
+        format!("---\nvars: {{ hit: \"\" }}\n---\n::timing{{result=hit {bar}}}\n::if{{hit == \"miss\"}}\n::jump{{to=m}}\n::endif\nOk.\n::end\n# m\nMissed.\n::end\n")
+    };
+    let all = explore(&parse(&src("good=0%..100%")).unwrap(), 1000);
+    assert!(all.warnings.iter().any(|w| w.message.contains("never reached")), "the miss label is reported never reached: {:?}", all.warnings);
+    let timed = explore(&parse(&src("good=0%..100% time=5")).unwrap(), 1000);
+    assert!(timed.warnings.is_empty(), "a time limit makes a miss possible: {:?}", timed.warnings);
+}

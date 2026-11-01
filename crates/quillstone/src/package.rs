@@ -17,7 +17,7 @@
 //! `game/`, so a folder release unzipped over an archive one (or the reverse) cannot override it.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use quillstone_script::{is_inside, kind_from_path, AssetKind, Program};
 
@@ -51,6 +51,11 @@ impl Files {
     fn extend(&mut self, files: impl IntoIterator<Item = String>) {
         files.into_iter().for_each(|f| self.insert(f));
     }
+}
+
+/// The folder a script sits in. A bare name (`main.quill.md`) has the parent `""`, which `read_dir` refuses.
+pub fn script_dir(script: &Path) -> &Path {
+    script.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
 }
 
 /// An output folder must not exist yet, or be empty: nothing is ever overwritten.
@@ -130,13 +135,19 @@ fn is_asset_file(name: &str) -> bool {
     crate::picture::PICTURE_EXTENSIONS.contains(&ext.as_str()) || matches!(ext.as_str(), "ttf" | "otf") || kind_from_path(name) != AssetKind::Image
 }
 
+/// A game-folder path as the folder walk spells it: `./a/b.png` and `a//b.png` both name `a/b.png`.
+fn tidy(file: &str) -> String {
+    let parts = Path::new(file).components().filter_map(|c| if let Component::Normal(p) = c { p.to_str() } else { None });
+    parts.collect::<Vec<_>>().join("/")
+}
+
 /// Asset files under the game folder that `package` would leave out, sorted, as game-folder paths with `/`.
 /// Skips dot-files and dot-folders, symbolic links and [`NOT_ASSETS`]. Case is ignored in the
 /// comparison like the archive's fallback lookup, so a file used under other capitals counts as used.
 /// `None` when the game's files can't be listed (`check` and `package` report that themselves) or when other
 /// scripts sit beside this one (a folder shared by several games, like `examples/`: most files would be "unused").
 pub fn unused_assets(root: &Path, script_name: &str, program: &Program) -> Option<Vec<String>> {
-    let used: std::collections::HashSet<String> = used_files(root, script_name, program).ok()?.list.iter().map(|f| f.to_lowercase()).collect();
+    let used: std::collections::HashSet<String> = used_files(root, script_name, program).ok()?.list.iter().map(|f| tidy(f).to_lowercase()).collect();
     let beside = std::fs::read_dir(root).ok()?.filter_map(Result::ok).filter_map(|e| e.file_name().into_string().ok());
     let others = beside.filter(|n| n.to_ascii_lowercase().ends_with(".quill.md") && !used.contains(&n.to_lowercase())).count();
     if others > 0 {
@@ -164,7 +175,7 @@ pub fn unused_assets(root: &Path, script_name: &str, program: &Program) -> Optio
 }
 
 pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
-    let root = opts.script.parent().unwrap_or_else(|| Path::new("."));
+    let root = script_dir(opts.script);
     if !opts.player.is_file() {
         return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
     }
@@ -315,6 +326,20 @@ fn copy(from: &Path, to: &Path) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_script_name_sits_in_the_current_folder() {
+        assert_eq!(script_dir(Path::new("main.quill.md")), Path::new("."));
+        assert_eq!(script_dir(Path::new("game/main.quill.md")), Path::new("game"));
+        // `read_dir("")` fails; this is what made `check main.quill.md` skip the unused list and `{x}.png` match nothing
+        assert!(std::fs::read_dir(script_dir(Path::new("main.quill.md"))).is_ok());
+    }
+
+    #[test]
+    fn dot_slash_and_double_slash_paths_name_the_same_file() {
+        assert_eq!(tidy("./assets//bg.png"), "assets/bg.png");
+        assert_eq!(tidy("assets/bg.png"), "assets/bg.png");
+    }
 
     #[test]
     fn the_exe_is_named_after_the_title() {

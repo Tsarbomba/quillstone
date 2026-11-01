@@ -199,6 +199,8 @@ pub struct Area {
 /// fits the monitor with a margin, centred. Later: the saved size, shrunk to fit the monitor it was on (or the
 /// primary one, when that is gone) and moved so the whole window is on it.
 pub fn window_placement(size: Option<(u32, u32)>, pos: Option<(i32, i32)>, monitors: &[Area]) -> ((u32, u32), (i32, i32)) {
+    // A monitor that reports 0x0 is as good as none (it would give a 0x0 window).
+    let monitors: Vec<Area> = monitors.iter().copied().filter(|m| m.w > 0 && m.h > 0).collect();
     let primary = monitors.first().copied().unwrap_or(Area { x: 0, y: 0, w: 1920, h: 1080, room: FRAME_ROOM });
     let Some((w, h)) = size else {
         // 90% of the width and 85% of the height, at 16:9, never above the game's own size
@@ -360,8 +362,10 @@ mod tests {
     #[test]
     fn a_monitor_with_no_size_or_a_big_title_bar_does_not_break_the_placement() {
         let none = Area { x: 0, y: 0, w: 0, h: 0, room: FRAME_ROOM };
-        assert_eq!(window_placement(None, None, &[none]).1, (0, 0), "first launch, 0x0 monitor");
-        assert_eq!(window_placement(Some((1280, 720)), Some((5, 5)), &[none]).1, (0, 0), "saved size, 0x0 monitor");
+        assert_eq!(window_placement(None, None, &[none]), window_placement(None, None, &[]), "first launch, 0x0 monitor");
+        assert_eq!(window_placement(Some((1280, 720)), Some((5, 5)), &[none]).0, (1280, 720), "saved size, 0x0 monitor");
+        let real = Area { x: 0, y: 0, w: 1920, h: 1080, room: FRAME_ROOM };
+        assert_eq!(window_placement(None, None, &[none, real]), window_placement(None, None, &[real]), "0x0 is skipped as the primary");
         // at 200% the title bar is twice as tall: the bottom edge stays on screen with that room
         let big = Area { x: 0, y: 0, w: 1920, h: 1080, room: 2 * FRAME_ROOM };
         let (_, (_, y)) = window_placement(Some((1280, 720)), Some((0, 900)), &[big]);

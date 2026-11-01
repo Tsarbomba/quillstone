@@ -600,10 +600,12 @@ impl App {
     /// (they are drawn like images, under their file name), and tell the game
     /// how its cutscene is doing.
     fn update_videos(&mut self, dt: f32) {
-        self.videos.sync(&self.game.wanted_videos());
         // Opening a clip blocks for a moment: that pause is not game time, or the next frame's
-        // `dt` would skip the clip's first frames and jump every fade and the typewriter.
-        self.last_frame = Instant::now();
+        // `dt` would skip the clip's first frames and jump every fade and the typewriter. Only the
+        // `sync` is taken out; the audio update before it and the rendering after it are real time.
+        let synced = Instant::now();
+        self.videos.sync(&self.game.wanted_videos());
+        self.last_frame += synced.elapsed();
         if !self.game.media_paused() {
             self.videos.advance(std::time::Duration::from_secs_f32(dt));
         }

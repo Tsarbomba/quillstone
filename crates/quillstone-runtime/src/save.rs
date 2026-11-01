@@ -14,7 +14,7 @@ use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, Particle
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_LIMIT};
 use quillstone_script::{Ease, ANIM_PREFIX};
-use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
+use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
@@ -498,8 +498,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     };
     w("state".into());
     w(format!("at {}", position(program, s.pc)));
-    for &ret in &s.stack {
-        w(format!("stack {}", position(program, ret)));
+    for f in &s.stack {
+        // `linecall` is a call a Use or HUD button made from a line; saves from before have only `stack`.
+        w(format!("{} {}", if f.line { "linecall" } else { "stack" }, position(program, f.ret)));
     }
     for (name, value) in &s.vars {
         w(var_record(name, value));
@@ -741,11 +742,11 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.pc = resolve(program, &t[1..], n)?;
                 saw_at = true;
             }
-            "stack" => {
+            "stack" | "linecall" => {
                 if s.stack.len() >= MAX_STACK_RECORDS {
                     return Err(format!("line {n}: more than {MAX_STACK_RECORDS} `stack` records in a state"));
                 }
-                s.stack.push(resolve(program, &t[1..], n)?);
+                s.stack.push(Frame { ret: resolve(program, &t[1..], n)?, line: t[0] == "linecall" });
             }
             "var" => {
                 let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;

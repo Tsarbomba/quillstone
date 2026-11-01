@@ -1306,12 +1306,14 @@ impl TimingBar {
         self.hit_at(self.marker(elapsed))
     }
 
-    /// The outcomes this bar can have.
+    /// The outcomes this bar can have. A miss needs a time limit or part of the bar outside `good`.
     pub fn hits(&self) -> &'static [Hit] {
-        if self.perfect.is_some() {
-            &[Hit::Miss, Hit::Good, Hit::Perfect]
-        } else {
-            &[Hit::Miss, Hit::Good]
+        let miss = self.time.is_some() || self.good[0] > 0.0 || self.good[1] < 1.0;
+        match (miss, self.perfect.is_some()) {
+            (true, true) => &[Hit::Miss, Hit::Good, Hit::Perfect],
+            (true, false) => &[Hit::Miss, Hit::Good],
+            (false, true) => &[Hit::Good, Hit::Perfect],
+            (false, false) => &[Hit::Good],
         }
     }
 }
@@ -1636,6 +1638,14 @@ mod tests {
         assert_eq!(no_perfect.hits(), [Hit::Miss, Hit::Good]);
         assert_eq!(b.hits(), [Hit::Miss, Hit::Good, Hit::Perfect]);
         assert_eq!(b.hit(0.5), Hit::Perfect, "a press half a sweep in: the marker is mid-bar");
+    }
+
+    #[test]
+    fn a_bar_that_is_all_good_with_no_time_limit_cannot_miss() {
+        let all = TimingBar { good: [0.0, 1.0], perfect: None, time: None, ..bar(1.0) };
+        assert_eq!(all.hits(), [Hit::Good]);
+        assert_eq!(TimingBar { time: Some(5.0), ..all.clone() }.hits(), [Hit::Miss, Hit::Good], "the time limit is a miss");
+        assert_eq!(TimingBar { good: [0.0, 0.9], ..all }.hits(), [Hit::Miss, Hit::Good]);
     }
 
     #[test]

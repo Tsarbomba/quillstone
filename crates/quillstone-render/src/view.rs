@@ -686,7 +686,7 @@ pub struct View {
     theme: Theme,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
     art_scale: Option<f32>,
-    /// The picture size of each sprite, noted by every draw while a hotspot follows a sprite: hit-testing
+    /// The size of each picture a sprite is drawn with (by path, so layers and crossfading poses differ), noted by every draw while a hotspot follows a sprite: hit-testing
     /// has no way to ask for sizes, and uses the same geometry as drawing (`push_sprite`).
     sprite_sizes: RefCell<HashMap<String, Size>>,
     /// The script's frame animations (a picture `anim:<id>` plays one).
@@ -1314,9 +1314,8 @@ impl View {
     pub fn spot_rect(&self, spot: &Spot) -> Option<Rect> {
         let Some(id) = &spot.sprite else { return Some(hotspot_rect(spot)) };
         let sprite = self.sprites.iter().find(|s| s.id == *id).filter(|s| !s.hiding)?;
-        let size = self.sprite_sizes.borrow().get(id).copied()?;
         let mut drawn = Vec::new();
-        self.push_sprite_views(&mut drawn, sprite, &|_| Some(size));
+        self.push_sprite_views(&mut drawn, sprite, &|src| self.sprite_sizes.borrow().get(src).copied());
         let view = self.stage_transform();
         let mut rects = drawn.into_iter().filter_map(|d| match d {
             Draw::Image { dest, .. } => Some(view(dest)),
@@ -1449,7 +1448,7 @@ impl View {
             let noted = |src: &str| {
                 let size = image_size(src);
                 if let Some(size) = size.filter(|_| follows) {
-                    self.sprite_sizes.borrow_mut().insert(s.id.clone(), size);
+                    self.sprite_sizes.borrow_mut().insert(src.to_string(), size);
                 }
                 size
             };
@@ -2857,6 +2856,21 @@ mod tests {
         let (drawn, spot) = drawn_and_spot(&v, &size);
         assert!(close(spot.w, 1600.0) && close(spot.h, 1200.0), "{spot:?}");
         assert!(spot.x <= drawn.x && spot.y <= drawn.y && spot.x + spot.w >= drawn.x + drawn.w, "{spot:?} holds {drawn:?}");
+    }
+
+    #[test]
+    fn a_hotspot_on_a_layered_sprite_covers_every_layer_whatever_its_size() {
+        let size = |s: &str| Some(if s == "body.png" { Size::new(500.0, 1000.0) } else { Size::new(100.0, 100.0) });
+        let mut v = View::new();
+        let layers = vec![("body".to_string(), "body.png".to_string()), ("face".to_string(), "face.png".to_string())];
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
+        let drawn: Vec<Rect> = images(&v.draw_list(&size, None)).iter().map(|(_, r, _)| *r).collect();
+        assert_eq!(drawn.len(), 2, "{drawn:?}");
+        let (l, t) = (drawn.iter().map(|r| r.x).fold(f32::MAX, f32::min), drawn.iter().map(|r| r.y).fold(f32::MAX, f32::min));
+        let (r, b) = (drawn.iter().map(|r| r.x + r.w).fold(0.0, f32::max), drawn.iter().map(|r| r.y + r.h).fold(0.0, f32::max));
+        let spot = v.spot_rect(&v.hotspots[0]).unwrap();
+        assert_eq!(spot, Rect::new(l, t, r - l, b - t), "the hit rect is the union of what is drawn");
+        assert!(drawn.iter().any(|d| d.h > 300.0) && spot.h > 300.0, "the big body is in it: {spot:?}");
     }
 
     #[test]

@@ -165,7 +165,7 @@ fn at(program: &Program, script: &Path, line: usize) -> String {
 
 fn check(path: &Path) -> Result<(), String> {
     let program = load(path)?;
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = crate::package::script_dir(path);
 
     let mut missing = 0;
     let hot = hotspot_images(&program);
@@ -213,7 +213,7 @@ fn check(path: &Path) -> Result<(), String> {
             missing += 1;
             eprintln!("{msg}");
         }
-        for msg in quick_menu_warnings(&root.join(theme_path), root) {
+        for msg in quick_menu_warnings(&root.join(theme_path), root, program.inventory.is_some(), program.journal.is_some()) {
             eprintln!("{msg}");
         }
     }
@@ -256,7 +256,7 @@ const UNUSED_LISTED: usize = 20;
 /// The warning about picture, audio, video and font files in the game folder that `package` would leave out
 /// (a summary line, then the files, capped), or nothing. Advice only.
 fn unused_asset_lines(path: &Path, program: &Program) -> Vec<String> {
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = crate::package::script_dir(path);
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
     let unused = package::unused_assets(root, name, program).unwrap_or_default();
     if unused.is_empty() {
@@ -626,7 +626,7 @@ fn check_voices(program: &Program, path: &Path, root: &Path, problems: &mut usiz
 /// The recording script: one row per line, tab-separated.
 fn voices(path: &Path) -> Result<(), String> {
     let program = load(path)?;
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = crate::package::script_dir(path);
     let folder = program.voice_folder.clone().unwrap_or_else(|| "voice".into());
     let files = voice_folder_files(&program, root);
     if program.voice_folder.is_none() {
@@ -729,8 +729,8 @@ fn theme_problems(file: &Path, root: &Path) -> Vec<String> {
 }
 
 /// Warnings about the quick menu's picture buttons: ones that overlap, and ones placed partly off the
-/// screen (the player moves those back in).
-fn quick_menu_warnings(file: &Path, root: &Path) -> Vec<String> {
+/// screen (the player moves those back in). `inventory` and `journal` say which of those buttons the game has.
+fn quick_menu_warnings(file: &Path, root: &Path, inventory: bool, journal: bool) -> Vec<String> {
     use quillstone_render::theme::QUICK_IDS;
     use quillstone_ui::screens::{quick_button_size, quick_layout};
     let Ok(text) = std::fs::read_to_string(file) else { return Vec::new() };
@@ -760,7 +760,7 @@ fn quick_menu_warnings(file: &Path, root: &Path) -> Vec<String> {
             ));
         }
     }
-    let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, true, true, &size_of);
+    let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, inventory, journal, &size_of);
     let overlap = |a: &quillstone_render::Rect, b: &quillstone_render::Rect| {
         a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
     };
@@ -1047,6 +1047,19 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
     Ok(())
 }
 
+/// A hotspot as the text listing shows it. The timed screen's hidden timeout has no text and no size, and a
+/// sprite-bound region's rect is relative to the sprite, so neither can be printed as a screen region.
+fn spot_line(s: &quillstone_runtime::Spot) -> String {
+    if s.hidden && s.label.is_empty() && s.sprite.is_none() && s.rect[2] == 0.0 && s.rect[3] == 0.0 {
+        return "(time out)".into();
+    }
+    if let Some(id) = &s.sprite {
+        return format!("{}  [follows sprite {id}]", plain(&s.label));
+    }
+    let [x, y, w, h] = s.rect.map(|v| v * 100.0);
+    format!("{}  [region {x:.0}%,{y:.0}% {w:.0}%x{h:.0}%]", plain(&s.label))
+}
+
 fn print_cmds(cmds: &[Cmd]) {
     for cmd in cmds {
         match cmd {
@@ -1110,8 +1123,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::ShowHotspots { spots } => {
                 println!();
                 for (i, s) in spots.iter().enumerate() {
-                    let [x, y, w, h] = s.rect.map(|v| v * 100.0);
-                    println!("  {}. {}  [region {x:.0}%,{y:.0}% {w:.0}%x{h:.0}%]", i + 1, plain(&s.label));
+                    println!("  {}. {}", i + 1, spot_line(s));
                 }
             }
             Cmd::ShowInventory => println!("\n[inventory]"),
@@ -1565,7 +1577,7 @@ mod tests {
     fn quick_warnings(theme: &str, files: &[(&str, &[u8])]) -> Vec<String> {
         let mut files = files.to_vec();
         files.push(("t.txt", theme.as_bytes()));
-        in_dir(&files, |dir| quick_menu_warnings(&dir.join("t.txt"), dir))
+        in_dir(&files, |dir| quick_menu_warnings(&dir.join("t.txt"), dir, true, true))
     }
 
     #[test]
@@ -1606,6 +1618,26 @@ mod tests {
         // a text button placed over the row's buttons
         let row = quick_warnings("quick_back_pos = 1700, 1050\nquick_back_size = 100, 40\n", &[]);
         assert!(row.iter().any(|m| m.contains("`back` and")), "a text button placed on the row's buttons: {row:?}");
+    }
+
+    #[test]
+    fn quick_menu_overlap_warnings_only_count_buttons_the_game_has() {
+        use quillstone_ui::screens::quick_layout;
+        // `back` leaves the row once it has a position, so measure the row with it already placed
+        let theme = quillstone_render::Theme::parse("quick_back_pos = 0, 0\nquick_back_size = 40, 20\n").0;
+        let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, true, true, &|_| None);
+        let journal = layout.buttons.iter().find(|(b, _)| b.id() == "journal").unwrap().1;
+        // a button placed exactly where the row's Journal button sits
+        let text = format!("quick_back_pos = {}, {}\nquick_back_size = 40, 20\n", journal.x, journal.y);
+        let warns = |inventory, journal| {
+            std::fs::create_dir_all(std::env::temp_dir().join("qs-quick-overlap")).unwrap();
+            let file = std::env::temp_dir().join("qs-quick-overlap").join(format!("t{inventory}{journal}.txt"));
+            std::fs::write(&file, &text).unwrap();
+            quick_menu_warnings(&file, file.parent().unwrap(), inventory, journal)
+        };
+        assert!(warns(true, true).iter().any(|m| m.contains("`journal`")), "{:?}", warns(true, true));
+        assert!(!warns(true, false).iter().any(|m| m.contains("`journal`")), "no journal, no button to overlap");
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("qs-quick-overlap"));
     }
 
     #[test]
@@ -1907,6 +1939,14 @@ mod tests {
     }
 
     #[test]
+    fn check_counts_assets_written_with_dot_slash_or_double_slash_as_used() {
+        const PNG: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
+        let script = "::bg{src=./assets/bg.png}\n::bg{src=assets//b2.png}\nHi.\n";
+        let files: &[(&str, &[u8])] = &[("s.quill.md", script.as_bytes()), ("assets/bg.png", PNG), ("assets/b2.png", PNG)];
+        assert!(unused_in(files).is_empty());
+    }
+
+    #[test]
     fn check_stays_quiet_when_every_asset_is_used_or_the_folder_is_shared() {
         const PNG: &[u8] = include_bytes!("../../../examples/assets/gui/key.png");
         let used = "::bg{src=assets/a.png}\nHi.\n";
@@ -1923,5 +1963,15 @@ mod tests {
         let lines = unused_in(&files);
         assert_eq!(lines.len(), 1 + 20 + 1, "{lines:?}");
         assert!(lines[0].contains("25 file(s)") && lines[21].trim() == "and 5 more", "{lines:?}");
+    }
+
+    #[test]
+    fn the_text_listing_names_the_timeout_and_sprite_bound_regions() {
+        let src = "::show{id=bug src=b.png}\n::hotspots{time=5 default=#slow}\n- [The bug](#a){sprite=bug rect=0.5,0,0.5,0.5}\n- [Door](#a){rect=0,0,.5,.5}\n::\n# A\nHi.\n# Slow\nHi.\n";
+        let program = parse(src).unwrap();
+        let (_, cmds) = Session::start(&program);
+        let Some(Cmd::ShowHotspots { spots }) = cmds.into_iter().find(|c| matches!(c, Cmd::ShowHotspots { .. })) else { panic!("no hotspots") };
+        let lines: Vec<String> = spots.iter().map(spot_line).collect();
+        assert_eq!(lines, ["The bug  [follows sprite bug]", "Door  [region 0%,0% 50%x50%]", "(time out)"], "{lines:?}");
     }
 }

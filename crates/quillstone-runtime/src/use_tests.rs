@@ -169,3 +169,49 @@ fn the_tester_plays_a_use_label_once_and_does_not_call_it_unreached() {
     assert!(report.errors.is_empty() && !report.partial, "{report:?}");
     assert!(report.warnings.iter().all(|w| !w.message.contains("drink") && !w.message.contains("Glug")), "{:?}", report.warnings);
 }
+
+/// The name of the hidden counter behind `seen(label)`.
+fn counter(p: &quillstone_script::Program) -> String {
+    p.counted.values().flatten().next().expect("a `seen` counter").clone()
+}
+
+#[test]
+fn a_use_label_that_jumps_away_does_not_cost_seen_a_visit() {
+    let src = "---\ninventory: bag\nvars: { potions: 1, bag: [] }\n---\n::item{id=p count=potions use=#drink}\n# start\n**A:** hello\n::end\n\
+# drink\n::jump{to=away}\n# away\n::if{seen(start) > 5}\n**A:** often\n::endif\n**A:** away\n::end\n";
+    let p = parse(src).unwrap();
+    let seen = counter(&p);
+    let (mut s, _) = Session::start(&p);
+    s.input(Input::Use("p".into()));
+    assert!(matches!(&s.state().pending, Some(Cmd::Say { text, .. }) if text == "away"));
+    assert_eq!(int(&s, &seen), 1, "start was visited once and never left through a return");
+    // the line call is saved as such; a save from before (plain `stack`) still loads
+    let saved = s.save();
+    assert!(saved.contains("linecall "), "{saved}");
+    let (loaded, _) = Session::load(&p, &saved).unwrap();
+    assert_eq!(loaded.state(), s.state());
+    assert!(Session::load(&p, &saved.replace("linecall ", "stack ")).is_ok());
+}
+
+#[test]
+fn a_hand_edited_seen_counter_at_the_limits_does_not_overflow() {
+    let src = "---\ninventory: bag\nvars: { potions: 1, bag: [] }\n---\n::item{id=p count=potions use=#drink}\n# start\n**A:** hello\n\
+::jump{to=start}\n# drink\n::return\n::if{seen(start) > 1}\n**A:** x\n::endif\n";
+    let p = parse(src).unwrap();
+    let seen = counter(&p);
+    let line = |n: i64| format!("var {} int {n}", crate::save::q(&seen));
+    for (edit, ops) in [(i64::MAX, 1), (i64::MIN, 2)] {
+        let (s, _) = Session::start(&p);
+        let saved = s.save().replace(&line(1), &line(edit));
+        assert!(saved.contains(&line(edit)), "{saved}");
+        let (mut s, _) = Session::load(&p, &saved).unwrap();
+        // MAX: the jump back passes `start` again (+1). MIN: Use, then `::return` shows the line again (-1).
+        if ops == 1 {
+            s.input(Input::Advance);
+            assert_eq!(int(&s, &seen), i64::MAX);
+        } else {
+            s.input(Input::Use("p".into()));
+            assert_eq!(int(&s, &seen), i64::MIN + 1, "the line's own pass adds one back to the saturated floor");
+        }
+    }
+}
