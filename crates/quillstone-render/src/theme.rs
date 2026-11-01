@@ -42,6 +42,18 @@ impl QuickMenu {
     }
 }
 
+/// Where the quick menu's flowing row (the buttons without a `_pos`) sits along the textbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuickAlign {
+    /// Starts at the textbox's left edge.
+    Left,
+    /// Centred on the textbox.
+    Center,
+    /// Ends at the textbox's right edge (the default, so existing games don't move).
+    #[default]
+    Right,
+}
+
 /// The dialogue box at 1920x1080 (`x, y, w, h`) unless the theme moves it.
 pub const DEFAULT_TEXTBOX: [f32; 4] = [160.0, 780.0, 1600.0, 260.0];
 /// Text inset `left, top, right, bottom` inside the textbox. The top inset is used
@@ -146,6 +158,8 @@ pub struct Theme {
     pub name_align: Align,
     /// When the quick menu is shown (the player may override it in Settings).
     pub quick_menu: QuickMenu,
+    /// Where the quick menu's row sits along the textbox.
+    pub quick_align: QuickAlign,
     /// Picture buttons and positions for the quick menu, indexed like [`QUICK_IDS`].
     pub quick_icons: [QuickIcon; 11],
     /// `quick_buttons = listed`: only buttons with a picture or a position of their own are shown.
@@ -243,6 +257,7 @@ impl Default for Theme {
             text_align: Align::Left,
             name_align: Align::Left,
             quick_menu: QuickMenu::Visible,
+            quick_align: QuickAlign::Right,
             quick_icons: Default::default(),
             quick_listed: false,
             menu_background: None,
@@ -481,6 +496,12 @@ impl Theme {
                 "quick_menu" => match QuickMenu::from_name(value) {
                     Some(m) => t.quick_menu = m,
                     None => bad("`quick_menu` must be `visible`, `hover` or `hidden`".into()),
+                },
+                "quick_align" => match value {
+                    "left" => t.quick_align = QuickAlign::Left,
+                    "center" => t.quick_align = QuickAlign::Center,
+                    "right" => t.quick_align = QuickAlign::Right,
+                    _ => bad("`quick_align` must be `left`, `center` or `right`".into()),
                 },
                 "quick_buttons" => match value {
                     "all" => t.quick_listed = false,
@@ -798,6 +819,18 @@ mod tests {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
         assert_eq!(t, Theme::default(), "nothing took effect");
+    }
+
+    #[test]
+    fn quick_align_is_left_center_or_right() {
+        assert_eq!(Theme::default().quick_align, QuickAlign::Right);
+        for (name, want) in [("left", QuickAlign::Left), ("center", QuickAlign::Center), ("right", QuickAlign::Right)] {
+            let (t, problems) = Theme::parse(&format!("quick_align = {name}\n"));
+            assert!(t.quick_align == want && problems.is_empty(), "{name}: {problems:?}");
+        }
+        let (t, problems) = Theme::parse("quick_menu = hover\nquick_align = middle\n");
+        assert_eq!(t.quick_align, QuickAlign::Right);
+        assert!(problems.len() == 1 && problems[0].contains("line 2") && problems[0].contains("quick_align"), "{problems:?}");
     }
 
     #[test]

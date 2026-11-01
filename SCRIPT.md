@@ -1602,6 +1602,7 @@ overlay_color = #050510e0           # behind settings, history and save/load
 textbox_image = assets/gui/textbox.png   # stretched over the textbox (1600x260 unless textbox_rect says otherwise)
 quick_menu = visible                # visible (default), hover or hidden (see below)
 quick_buttons = all                 # all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
+quick_align = right                  # right (default), center or left: where the row sits along the textbox (see below)
 menu_background = assets/gui/menu.png
 menu_music = assets/audio/menu.ogg
 voice_duck = 0.5                    # music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
@@ -1682,10 +1683,11 @@ options_panel_border = 40             # the 9-slice corner size in the picture's
 - `check` reports a missing or unreadable picture; `package` includes the pictures.
 
 **The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items and Journal
-in a game with an inventory or a journal) sits in a row directly below the textbox, aligned with its right
-edge. When there is no room below (the textbox ends less than 36 px above the bottom of the screen)
-the row is drawn just inside the bottom edge of the textbox instead; a textbox narrower than the
-row moves the row right so that every button stays on the screen. `quick_menu` says when it shows:
+in a game with an inventory or a journal) sits in a row directly below the textbox. `quick_align` says
+where along the textbox: `right` (default) ends at its right edge, `left` starts at its left edge,
+`center` is centred on it; the row is always moved as far as needed to stay on the screen. When there
+is no room below (the textbox ends less than 36 px above the bottom of the screen) the row is drawn
+just inside the bottom edge of the textbox instead. `quick_menu` says when it shows:
 
 | `quick_menu` | |
 | --- | --- |
@@ -1711,9 +1713,10 @@ quick_back_size = 56, 56                     # width, height (16 to 512 each)
 - `_icon`, `_hover` and `_on` are PNG, JPEG or WebP files; an id that isn't in the list, a bad
   number or a `_hover` or `_on` without its `_icon` is reported like any other theme mistake.
 - Without `_size` a picture button is as big as its picture (kept between 16 and 512 px on a
-  side); a text button is 150x32.
+  side); a text button is 150x32. A text label wider than its button is drawn smaller (down to
+  10 px) so that it stays inside it; the button keeps the size the theme gave.
 - A button with `_pos` leaves the row and sits there (pulled back in if it would leave the screen);
-  the other buttons keep the row below the textbox, right-aligned as before (those to the left of the
+  the other buttons keep the row below the textbox, placed by `quick_align` (those to the left of the
   gap shift right to close it). A picture button without `_pos` stays in the row, as wide and tall
   as its picture. `_pos` and `_size` work on a text button too.
 - Without `_hover` the picture is drawn a little dimmed (80%) until the cursor is on it; with one

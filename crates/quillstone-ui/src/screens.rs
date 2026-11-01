@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
+use quillstone_render::theme::{QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
@@ -38,6 +38,7 @@ pub enum QuickButton {
 const QUICK_W: f32 = 150.0;
 const QUICK_GAP: f32 = 8.0;
 const QUICK_H: f32 = 32.0;
+const QUICK_TEXT: f32 = 24.0;
 /// Space between the textbox and the row below it.
 const QUICK_MARGIN: f32 = 4.0;
 /// Where a row `h` tall has its top edge: directly below the textbox, or, when there is no
@@ -51,10 +52,22 @@ fn quick_y_for(tb: Rect, h: f32) -> f32 {
     }
 }
 
-/// The right edge of a row `total` wide: the textbox's, or further right when the textbox is too
-/// narrow for the whole row (so no button leaves the screen).
-fn quick_right_for(tb: Rect, total: f32) -> f32 {
-    (tb.x + tb.w).max(total + QUICK_GAP)
+/// The left edge of a row `total` wide, aligned to the textbox; right keeps a gap from the screen's left
+/// edge when the textbox is too narrow for the row. Always kept on the screen.
+fn quick_left_for(tb: Rect, total: f32, align: QuickAlign) -> f32 {
+    let left = match align {
+        QuickAlign::Left => tb.x,
+        QuickAlign::Center => tb.x + (tb.w - total) / 2.0,
+        QuickAlign::Right => (tb.x + tb.w - total).max(QUICK_GAP),
+    };
+    left.min(VIRTUAL.w - total).max(0.0)
+}
+
+/// The size a button's text label is drawn at: [`QUICK_TEXT`], smaller (not below 10) when the label
+/// would be wider than the button, with a little room on both sides. Same estimate as the other one-line labels.
+fn quick_text_size(label: &str, width: f32) -> f32 {
+    let needed = label.chars().count() as f32 * 0.55 * QUICK_TEXT;
+    (QUICK_TEXT * (width - 8.0) / needed).clamp(10.0, QUICK_TEXT)
 }
 
 /// Every button, in the order of the theme's ids ([`quillstone_render::theme::QUICK_IDS`]).
@@ -138,7 +151,7 @@ impl QuickLayout {
 }
 
 /// Lay the buttons out. The ones without a `quick_<id>_pos` keep the row below the textbox
-/// (right-aligned, Journal and Items leftmost); the others sit at their position, kept on the screen.
+/// (placed by `quick_align`, Journal and Items leftmost); the others sit at their position, kept on the screen.
 /// `size_of` gives a loaded picture's size: a button whose picture isn't loaded is a text button.
 pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, journal: bool, size_of: &dyn Fn(&str) -> Option<Size>) -> QuickLayout {
     let specs = &theme.quick_icons;
@@ -146,17 +159,17 @@ pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, journal: bool, siz
     // `quick_buttons = listed` drops the built-in buttons that the theme doesn't give a picture or a place.
     let listed = |k: usize| !theme.quick_listed || specs[k].icon.is_some() || specs[k].pos.is_some();
     let flow: Vec<usize> =
-        [10, 9].into_iter().chain(0..9).filter(|&k| specs[k].pos.is_none() && listed(k) && (k != 10 || journal)).collect();
+        [10, 9].into_iter().chain(0..9).filter(|&k| specs[k].pos.is_none() && listed(k) && (k != 9 || inventory) && (k != 10 || journal))
+        .collect();
     let total = flow.iter().map(|&k| dims[k].0).sum::<f32>() + flow.len().saturating_sub(1) as f32 * QUICK_GAP;
     let row_h = flow.iter().map(|&k| dims[k].1).fold(0.0, f32::max);
-    let (right, y) = (quick_right_for(tb, total), quick_y_for(tb, row_h));
+    let (left, y) = (quick_left_for(tb, total, theme.quick_align), quick_y_for(tb, row_h));
     let mut rects = [None; 11];
-    let mut x = right;
-    for &k in flow.iter().rev() {
+    let mut x = left;
+    for &k in &flow {
         let (w, h) = dims[k];
-        x -= w;
         rects[k] = Some(Rect::new(x, y + (row_h - h) / 2.0, w, h));
-        x -= QUICK_GAP;
+        x += w + QUICK_GAP;
     }
     for (k, spec) in specs.iter().enumerate() {
         if let Some([px, py]) = spec.pos {
@@ -167,7 +180,7 @@ pub fn quick_layout(tb: Rect, theme: &Theme, inventory: bool, journal: bool, siz
     let mut zone = Vec::new();
     if !flow.is_empty() {
         let top = y.min(tb.y + tb.h);
-        zone.push(Rect::new(right - total, top, total, y + row_h - top));
+        zone.push(Rect::new(left, top, total, y + row_h - top));
     }
     let shown = |k: usize| (k != 9 || inventory) && (k != 10 || journal) && listed(k);
     zone.extend((0..11).filter(|&k| shown(k) && specs[k].pos.is_some()).filter_map(|k| rects[k]));
@@ -241,7 +254,7 @@ pub fn draw_quick(
         } else {
             theme.dim_color
         };
-        text(out, label, rect, 24.0, fade(color), Align::Center);
+        text(out, label, rect, quick_text_size(label, rect.w), fade(color), Align::Center);
     }
 }
 
@@ -1135,6 +1148,63 @@ mod tests {
         let l = quick_layout(TEXTBOX, &listed, true, true, &sized);
         assert_eq!(l.buttons.iter().map(|b| b.0).collect::<Vec<_>>(), [QuickButton::Journal]);
         assert!(quick_layout(TEXTBOX, &listed, true, false, &sized).buttons.is_empty());
+    }
+
+    fn row_span(l: &QuickLayout) -> (f32, f32) {
+        let rects = l.buttons.iter().map(|b| b.1);
+        (rects.clone().map(|r| r.x).fold(f32::MAX, f32::min), rects.map(|r| r.x + r.w).fold(0.0, f32::max))
+    }
+
+    #[test]
+    fn quick_align_places_the_row_on_the_textbox_and_keeps_it_on_screen() {
+        let row = |align: &str, tb: Rect| row_span(&quick_layout(tb, &themed(&format!("quick_align = {align}\n")), false, false, &sized));
+        let total = 9.0 * QUICK_W + 8.0 * QUICK_GAP;
+        let (l, r) = row("left", TEXTBOX);
+        assert!((l - TEXTBOX.x).abs() < 1e-3 && (r - l - total).abs() < 1e-3);
+        let (l, r) = row("center", TEXTBOX);
+        assert!(((l + r) / 2.0 - (TEXTBOX.x + TEXTBOX.w / 2.0)).abs() < 1e-3);
+        let (_, r) = row("right", TEXTBOX);
+        assert!((r - (TEXTBOX.x + TEXTBOX.w)).abs() < 1e-3);
+        // a textbox far right or left, or narrower than the row: every mode stays within 0..1920
+        for tb in [Rect::new(1500.0, 780.0, 400.0, 260.0), Rect::new(0.0, 780.0, 300.0, 260.0), Rect::new(1400.0, 780.0, 520.0, 260.0)] {
+            for align in ["left", "center", "right"] {
+                let (l, r) = row(align, tb);
+                assert!(l >= 0.0 && r <= VIRTUAL.w, "{align} {tb:?}: {l}..{r}");
+            }
+        }
+        // the hover zone follows the row
+        let l = quick_layout(TEXTBOX, &themed("quick_align = center\n"), false, false, &sized);
+        let (a, b) = row_span(&l);
+        assert!((l.zone[0].x - a).abs() < 1e-3 && (l.zone[0].w - (b - a)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_game_without_an_inventory_reserves_no_items_slot() {
+        let (with, without) = (plain(true), plain(false));
+        assert!((row_span(&with).1 - row_span(&without).1).abs() < 1e-3);
+        assert!((row_span(&without).0 - row_span(&with).0 - (QUICK_W + QUICK_GAP)).abs() < 1e-3);
+        assert!((with.zone[0].w - without.zone[0].w - (QUICK_W + QUICK_GAP)).abs() < 1e-3);
+        let t = themed("quick_align = left\n");
+        let l = quick_layout(TEXTBOX, &t, false, false, &sized);
+        assert_eq!((l.buttons[0].0, l.buttons[0].1.x, l.zone[0].x), (QuickButton::Back, TEXTBOX.x, TEXTBOX.x), "no gap before Back");
+    }
+
+    #[test]
+    fn a_label_wider_than_its_button_is_drawn_smaller_inside_it() {
+        // the cell keeps the theme's size; the text shrinks to fit it
+        let t = themed("quick_settings_size = 60, 32\nquick_back_size = 300, 32\n");
+        let layout = quick_layout(TEXTBOX, &t, false, false, &sized);
+        let mut out = Vec::new();
+        draw_quick(&mut out, &t, &layout, &QuickLook::default(), &sized, 1.0);
+        let size_of_label = |what: &str| out.iter().find_map(|d| match d {
+            Draw::Text { text, size, rect, .. } if text == what => Some((*size, *rect)),
+            _ => None,
+        });
+        let (size, rect) = size_of_label("Settings").unwrap();
+        assert_eq!(rect, layout.rect(QuickButton::Settings).unwrap(), "drawn in the hit-test rect");
+        assert!((10.0..24.0).contains(&size) && "Settings".len() as f32 * 0.55 * size <= rect.w, "{size}");
+        assert_eq!(size_of_label("Back").unwrap().0, 24.0, "a roomy button keeps the normal size");
+        assert_eq!(size_of_label("Q.Save").unwrap().0, 24.0);
     }
 
     fn images_of(list: &[Draw]) -> Vec<(&str, f32)> {
