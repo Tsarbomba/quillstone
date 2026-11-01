@@ -10,7 +10,7 @@ a game's story, look and assets organised in a few plain files.
   programming language to learn, and any text editor works.
 - **A built-in story tester.** `quillstone test` plays every branch of a script
   and reports dead ends, unreachable scenes and choices that are never offered,
-  before a player finds them.
+  before a player finds them. `quillstone graph` draws the story as a flowchart.
 - **Structured projects.** Story, theme and translations are separate plain
   text files. Translators work in their own files and never touch the script.
 - **Video as a first-class feature.** Cutscenes, video backgrounds and looping
@@ -255,7 +255,7 @@ show items, the built-in inventory and shop screens, and a theme that restyles t
 | `quillstone-video` | `Decoder` trait, decoder threads + frame queue (`Clip`), which clips play (`Videos`), a test-pattern decoder |
 | `quillstone-render` | virtual 1920x1080 screen, letterboxing, `View` (sprites, fades, typewriter) + `Draw` list, `build_frame` (quads + text jobs), image prep (mipmaps, alpha bleeding) |
 | `quillstone-audio` | `Mixer`: runtime commands -> audio actions (music crossfades, voice per line, rollback-safe) on music/sfx/voice channels |
-| `quillstone` | the CLI (`check`, `test`, `voices`, `lang export`, `dump`, `package`, text-mode `run`) |
+| `quillstone` | the CLI (`check`, `test`, `graph`, `voices`, `lang export`, `dump`, `package`, text-mode `run`) |
 | `quillstone-ui` | `Game`: input routing per screen, settings (+ file), backlog, quick menu, auto-forward, skip mode, save/load slots, confirm dialogs |
 | `player/` | the window: winit + wgpu draws the frame, cosmic-text rasterizes text, kira plays sound, FFmpeg decodes video |
 

@@ -271,6 +271,9 @@ impl Parser {
 
         let fixups = std::mem::take(&mut self.fixups);
         let user_jumps: std::collections::HashSet<usize> = fixups.iter().map(|f| f.op).collect();
+        self.program.block_jumps = (0..self.program.ops.len())
+            .filter(|i| matches!(self.program.ops[*i], Op::Jump { .. }) && !user_jumps.contains(i))
+            .collect();
         for f in fixups {
             match self.program.labels.get(&f.label).copied() {
                 Some(target) => {
@@ -838,6 +841,7 @@ impl Parser {
             None => None,
         };
         let at = self.here();
+        self.program.headings.push(Heading { label: name.clone(), text: text.to_string(), line });
         if self.program.labels.insert(name.clone(), at).is_some() {
             let first = self.label_lines.get(&name).map(|&l| format!(" (first defined at {})", self.describe(l))).unwrap_or_default();
             self.err(line, format!("duplicate label `{name}`{first}"));

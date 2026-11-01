@@ -9,6 +9,13 @@ wait, a video, a choice). Everything else runs instantly in between.
 with no way out, unreachable parts, options never offered, misspelt variables);
 `quillstone run script.quill.md` plays it in the terminal; `quillstone dump` shows
 the compiled form. Errors name the file and line.
+`quillstone graph script.quill.md > story.md` writes the story's structure as a flowchart:
+a box per heading (as you wrote it, grouped per `::include`d file), an arrow for running on
+into the next heading, `::jump` (thick), `::call` (dashed), each choice or hotspot (labelled
+with its text) and the inventory's Use. A condition shows as `if ...`, an ending has rounded
+ends and a heading nothing leads to is dashed red. The output is Mermaid, which GitHub and VS
+Code draw as a picture; `--format dot` gives Graphviz and `-o file` writes a file. It reads
+the script, it doesn't play it: for what can actually happen, use `test`.
 `check` also warns (never an error) about pictures, audio, video and fonts in the game
 folder that nothing uses, the files `package` would leave out: it lists the first 20.
 It stays quiet when other scripts sit beside this one (one assets folder shared by several games).

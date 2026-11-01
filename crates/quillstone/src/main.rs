@@ -10,6 +10,7 @@ use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
 use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
 
+mod graph;
 mod lang;
 mod package;
 mod pattern;
@@ -32,6 +33,9 @@ USAGE:
                                 create or update lang/<code>.txt for a language listed in the
                                 script's `languages:`: new texts are added, texts no longer in
                                 the script are flagged obsolete (translations are never deleted)
+    quillstone graph <script> [--format mermaid|dot] [-o <file>]
+                                draw the story's labels and the ways between them as a flowchart
+                                (Mermaid by default, to the screen unless -o names a file)
     quillstone dump  <script>   print the compiled ops and labels
     quillstone run   <script> [--start <label>] [--set var=value]...
                                 play the script in the terminal; --start begins at a label and
@@ -62,6 +66,7 @@ fn main() -> ExitCode {
             };
         }
         ["dump", file] => dump(Path::new(file)),
+        ["graph", file, flags @ ..] => graph_cmd(Path::new(file), flags),
         ["voices", file] => voices(Path::new(file)),
         ["lang", "export", file, code] => load(Path::new(file)).and_then(|p| lang::export(Path::new(file), &p, code)),
         ["run", file, flags @ ..] => run_flags(flags).and_then(|at| run(Path::new(file), &at)),
@@ -77,6 +82,33 @@ fn main() -> ExitCode {
         Err(msg) => {
             eprintln!("{msg}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// `graph <script> [--format mermaid|dot] [-o <file>]`.
+fn graph_cmd(path: &Path, flags: &[&str]) -> Result<(), String> {
+    let (mut format, mut out) = (graph::Format::Mermaid, None);
+    let mut it = flags.iter();
+    while let Some(&flag) = it.next() {
+        match flag {
+            "--format" => {
+                format = match it.next() {
+                    Some(&"mermaid") => graph::Format::Mermaid,
+                    Some(&"dot") => graph::Format::Dot,
+                    _ => return Err("--format is `mermaid` or `dot`".into()),
+                }
+            }
+            "-o" => out = Some(it.next().ok_or("-o needs a file name")?),
+            _ => return Err(format!("unknown option `{flag}`\n\n{USAGE}")),
+        }
+    }
+    let text = graph::render(&load(path)?, format);
+    match out {
+        Some(file) => std::fs::write(file, text).map_err(|e| format!("cannot write {file}: {e}")),
+        None => {
+            print!("{text}");
+            Ok(())
         }
     }
 }

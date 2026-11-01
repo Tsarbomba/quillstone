@@ -116,6 +116,80 @@ pub enum Expr {
     Random(Box<Expr>, Box<Expr>),
 }
 
+/// The condition as the author could have written it, for the flowchart export: nested
+/// operations are parenthesised rather than weighed by precedence.
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn arg(f: &mut fmt::Formatter<'_>, e: &Expr) -> fmt::Result {
+            match e {
+                Expr::Lit(_) | Expr::Var(_) | Expr::Func(..) | Expr::Count(_) | Expr::Random(..) => write!(f, "{e}"),
+                _ => write!(f, "({e})"),
+            }
+        }
+        let list = |f: &mut fmt::Formatter<'_>, es: &[&Expr]| {
+            for (i, e) in es.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{e}")?;
+            }
+            Ok(())
+        };
+        match self {
+            Expr::Lit(Value::Str(s)) => write!(f, "\"{s}\""),
+            Expr::Lit(v) => write!(f, "{v}"),
+            Expr::Var(v) => f.write_str(v),
+            Expr::Not(e) => {
+                f.write_str("not ")?;
+                arg(f, e)
+            }
+            Expr::Neg(e) => {
+                f.write_str("-")?;
+                arg(f, e)
+            }
+            Expr::And(a, b) | Expr::Or(a, b) => {
+                arg(f, a)?;
+                f.write_str(if matches!(self, Expr::And(..)) { " and " } else { " or " })?;
+                arg(f, b)
+            }
+            Expr::Cmp(a, c, b) => {
+                arg(f, a)?;
+                let op = match c {
+                    Cmp::Eq => "==",
+                    Cmp::Ne => "!=",
+                    Cmp::Lt => "<",
+                    Cmp::Le => "<=",
+                    Cmp::Gt => ">",
+                    Cmp::Ge => ">=",
+                };
+                write!(f, " {op} ")?;
+                arg(f, b)
+            }
+            Expr::Has(l, e) => {
+                write!(f, "{l} has ")?;
+                arg(f, e)
+            }
+            Expr::Bin(a, op, b) => {
+                arg(f, a)?;
+                write!(f, " {} ", op.symbol())?;
+                arg(f, b)
+            }
+            Expr::Func(func, args) => {
+                let name = match func {
+                    Func::Min => "min",
+                    Func::Max => "max",
+                    Func::Abs => "abs",
+                };
+                write!(f, "{name}(")?;
+                list(f, &args.iter().collect::<Vec<_>>())?;
+                f.write_str(")")
+            }
+            Expr::Count(l) => write!(f, "count({l})"),
+            Expr::Random(a, b) => write!(f, "random({a}, {b})"),
+        }
+    }
+}
+
 /// The whole-number operators, loosest first: `+ -`, then `* / %`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -525,6 +599,17 @@ pub struct Replay {
 /// Most scenes a game may list for replay.
 pub const MAX_REPLAYS: usize = 64;
 
+/// A heading that became a label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Heading {
+    /// The label name (the slug).
+    pub label: String,
+    /// The heading as written, after the `#`s (parameters included).
+    pub text: String,
+    /// Program line (1-based; see [`Program::locate`]).
+    pub line: usize,
+}
+
 /// A fully compiled script: a flat list of ops with all jumps resolved to indices.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
@@ -556,6 +641,11 @@ pub struct Program {
     pub lines: Vec<usize>,
     /// Label name (slugified heading) -> index of the first op after it.
     pub labels: BTreeMap<String, usize>,
+    /// Every heading that makes a label, in the order written (included files where they are included):
+    /// the story's structure as the author wrote it, for the flowchart export.
+    pub headings: Vec<Heading>,
+    /// The `Jump` ops the compiler made for `::if` / `::elif` / `::else`, not written as `::jump`.
+    pub block_jumps: BTreeSet<usize>,
     /// Labels written with parameters (`# heal(amount, who)`): label -> parameter names.
     /// Only `::call` reaches them, and it must pass exactly these.
     pub params: BTreeMap<String, Vec<String>>,
