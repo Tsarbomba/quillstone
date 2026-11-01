@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
+use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_LIMIT};
 use quillstone_script::{Ease, ANIM_PREFIX};
@@ -452,7 +452,7 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             if !is_inside(src) {
                 return Err(format!("line {n}: unsafe file path `{src}`"));
             }
-            HudKind::Image { src: src.to_string(), scale: sane(f(7)?, 0.05, 10.0, 1.0) }
+            HudKind::Image { src: normal_path(src), scale: sane(f(7)?, 0.05, 10.0, 1.0) }
         }
         other => return Err(format!("line {n}: unknown `hud` kind `{other}`")),
     };
@@ -485,7 +485,7 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             if !matches!(kind, HudKind::Image { .. }) || !is_inside(h) {
                 return Err(format!("line {n}: bad `hud` hover picture `{h}`"));
             }
-            hover = Some(h.to_string());
+            hover = Some(normal_path(h));
         }
     }
     Ok(HudElem { id, x, y, cond, kind, action, hover })
@@ -702,7 +702,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
         // Saves are shared between players, so a path in one must not reach outside the game folder.
         let path = |i: usize| -> Result<String, String> {
             let p = arg(i)?;
-            if is_inside(p) { Ok(p.to_string()) } else { Err(format!("line {n}: unsafe file path `{p}`")) }
+            if is_inside(p) { Ok(normal_path(p)) } else { Err(format!("line {n}: unsafe file path `{p}`")) }
         };
         // A picture: a file, or an animation the script declares.
         let pic = |i: usize| -> Result<String, String> {

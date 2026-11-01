@@ -306,7 +306,8 @@ impl Theme {
                 continue;
             };
             let (key, value) = (key.trim(), value.trim());
-            let path = || (!value.is_empty()).then(|| value.to_string());
+            // Normalised like the script's own paths, so one file under two spellings is one file.
+            let path = || (!value.is_empty()).then(|| if quillstone_script::is_inside(value) { quillstone_script::normal_path(value) } else { value.to_string() });
             let size = |v: &str| v.parse::<f32>().ok().filter(|s| (8.0..=200.0).contains(s));
             let color_slot = match key {
                 "text_color" => Some(&mut t.text_color),

@@ -18,7 +18,7 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
     if !program.languages.iter().any(|l| l.code == code) {
         return Err(format!("`{code}` is not in the script's `languages:` (they are: {known})"));
     }
-    let root = crate::package::script_dir(script);
+    let root = quillstone_ui::source::script_dir(script);
     let file = language_file(code);
     let old = match read_translation(root, code)? {
         None => Catalog::default(),
@@ -60,7 +60,7 @@ fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
 /// What `check` finds in the translation files: errors count as problems (printed here), the
 /// rest are warnings. Returns the number of errors.
 pub fn check(script: &Path, program: &Program) -> usize {
-    let root = crate::package::script_dir(script);
+    let root = quillstone_ui::source::script_dir(script);
     let mut errors = 0;
     let strings: BTreeSet<String> = program.translatable().into_iter().map(|s| s.text).collect();
     let spoken = program.spoken();

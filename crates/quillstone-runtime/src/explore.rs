@@ -96,9 +96,9 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                     Cmd::ShowChoices { options, locked } => (options.clone(), locked.clone()),
                     Cmd::ShowHotspots { spots } => {
                         // A region bound to a sprite that isn't shown can't be clicked (the explorer doesn't know
-                        // where sprites are, so a shown one counts); the timeout is told apart by its empty label.
+                        // where sprites are, so a shown one counts); the timeout is told apart by `Spot::is_timeout`.
                         let gone = |s: &Spot| s.sprite.as_ref().filter(|id| !state.sprites.iter().any(|p| &p.id == *id)).map(|_| String::new());
-                        let label = |s: &Spot| if s.label.is_empty() { "(time out)".to_string() } else { s.label.clone() };
+                        let label = |s: &Spot| if s.is_timeout() { "(time out)".to_string() } else { s.label.clone() };
                         (spots.iter().map(label).collect(), spots.iter().map(gone).collect())
                     }
                     _ => (Vec::new(), Vec::new()),

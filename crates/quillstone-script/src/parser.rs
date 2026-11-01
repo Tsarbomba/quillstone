@@ -548,7 +548,7 @@ impl Parser {
                     Err(m) => self.err(line, m),
                 },
                 "theme" if !unquote(val).is_empty() => match check_inside("theme", unquote(val)) {
-                    Ok(()) => self.program.theme = Some(unquote(val).to_string()),
+                    Ok(p) => self.program.theme = Some(p),
                     Err(m) => self.err(line, m),
                 },
                 "theme" => self.err(line, "`theme` needs a file name, like `theme: theme.txt`"),
@@ -665,24 +665,26 @@ impl Parser {
             if entry.is_empty() {
                 continue;
             }
-            if let Err(m) = check_inside(key, entry) {
-                self.err(line, m);
-                continue;
-            }
-            if let Some(t) = thumb {
-                if t.is_empty() {
-                    self.err(line, format!("`{entry}` has a `|` but no thumbnail after it"));
-                } else if let Err(m) = check_inside("thumbnail", t) {
+            let entry = match check_inside(key, entry) {
+                Ok(e) => e,
+                Err(m) => {
                     self.err(line, m);
-                } else if kind_from_path(t) != AssetKind::Image {
-                    self.err(line, format!("the thumbnail `{t}` of `{entry}` must be a picture (PNG, JPEG or WebP)"));
-                } else {
-                    self.program.gallery_thumbs.entry(entry.to_string()).or_insert_with(|| t.to_string());
+                    continue;
+                }
+            };
+            if let Some(t) = thumb {
+                match check_inside("thumbnail", t) {
+                    _ if t.is_empty() => self.err(line, format!("`{entry}` has a `|` but no thumbnail after it")),
+                    Err(m) => self.err(line, m),
+                    Ok(_) if kind_from_path(t) != AssetKind::Image => {
+                        self.err(line, format!("the thumbnail `{t}` of `{entry}` must be a picture (PNG, JPEG or WebP)"))
+                    }
+                    Ok(t) => drop(self.program.gallery_thumbs.entry(entry.clone()).or_insert(t)),
                 }
             }
             let list = if key == "gallery" { &mut self.program.gallery } else { &mut self.program.music_room };
-            if !list.iter().any(|p| p == entry) {
-                list.push(entry.to_string());
+            if !list.contains(&entry) {
+                list.push(entry);
             }
         }
     }
@@ -934,14 +936,17 @@ impl Parser {
             self.err(line, "image has no path");
             return;
         }
-        if let Err(m) = self.picture_path("path", path) {
-            self.err(line, format!("image {m}"));
-            return;
-        }
-        let op = if kind_from_path(path) == AssetKind::Video {
-            Op::Video { src: path.to_string(), fit: Fit::Contain, looped: false, skippable: false }
+        let path = match self.picture_path("path", path) {
+            Ok(p) => p,
+            Err(m) => {
+                self.err(line, format!("image {m}"));
+                return;
+            }
+        };
+        let op = if kind_from_path(&path) == AssetKind::Video {
+            Op::Video { src: path, fit: Fit::Contain, looped: false, skippable: false }
         } else {
-            Op::Image { src: path.to_string(), alt: alt.to_string() }
+            Op::Image { src: path, alt: alt.to_string() }
         };
         self.push(op, line);
     }
@@ -1434,11 +1439,11 @@ impl Parser {
                     let intro = match intro {
                         None => None,
                         Some(Some(i)) if !i.is_empty() => match check_inside("intro", &i) {
-                            Ok(()) if i == src => {
+                            Ok(i) if i == src => {
                                 self.err(line, "`intro` and `src` are the same file: `src` is the loop, `intro` plays once before it");
                                 return None;
                             }
-                            Ok(()) => Some(i),
+                            Ok(i) => Some(i),
                             Err(m) => {
                                 self.err(line, m);
                                 return None;
@@ -1735,7 +1740,7 @@ impl Parser {
         }
 
         self.extra_words(line, "show", &bare, if src_attr.is_some() || anim_attr.is_some() { 1 } else { 2 })?;
-        let (id, src) = match (src_attr, anim_attr) {
+        let (id, mut src) = match (src_attr, anim_attr) {
             (_, Some(anim)) => {
                 // Like a pose sprite, a character's name addresses the character's sprite.
                 let Some(who) = id_attr.or_else(|| bare.first().cloned()) else {
@@ -1786,9 +1791,12 @@ impl Parser {
         };
 
         if !is_anim {
-            if let Err(m) = self.picture_path("src", &src) {
-                self.err(line, m);
-                return None;
+            match self.picture_path("src", &src) {
+                Ok(p) => src = p,
+                Err(m) => {
+                    self.err(line, m);
+                    return None;
+                }
             }
         }
         self.show_rest(line, a, id, src, Vec::new(), flip)
@@ -1825,11 +1833,13 @@ impl Parser {
                 self.anim_ref(line, id)?
             } else {
                 let path = c.layer_path(layer, value).unwrap_or_default();
-                if let Err(m) = self.picture_path(layer, &path) {
-                    self.err(line, m);
-                    return None;
+                match self.picture_path(layer, &path) {
+                    Ok(p) => p,
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
                 }
-                path
             };
             layers.push((layer.clone(), picture));
         }
@@ -1921,6 +1931,8 @@ impl Parser {
             self.err(line, m);
             return;
         }
+        let sprites = sprites.map(|t| normal_path(&t));
+        let layer_sprites = layer_sprites.map(|t| normal_path(&t));
         let layers = match self.character_layers(line, layers.as_deref(), layer_sprites.as_deref()) {
             Ok(l) => l,
             Err(m) => {
@@ -2034,9 +2046,10 @@ impl Parser {
                 };
                 return self.err(line, msg);
             };
-            if let Err(m) = check_image_path(file, "frames", "an animation frame") {
-                return self.err(line, m);
-            }
+            let file = match check_image_path(file, "frames", "an animation frame") {
+                Ok(f) => f,
+                Err(m) => return self.err(line, m),
+            };
             let seconds = match seconds.parse::<f32>() {
                 Ok(s) if s.is_finite() && ANIM_FRAME_SECONDS.contains(&s) => s,
                 _ => {
@@ -2044,7 +2057,7 @@ impl Parser {
                     return self.err(line, format!("frame `{file} {seconds}`: the time must be a number of seconds from {lo} to {hi}"));
                 }
             };
-            list.push(AnimFrame { file: file.to_string(), seconds });
+            list.push(AnimFrame { file, seconds });
         }
         if self.program.anims.contains_key(&id) {
             return self.err(line, format!("animation `{id}` is declared twice"));
@@ -2505,7 +2518,7 @@ impl Parser {
     /// `{variable}` parts name text variables (see `dynpath`). A variable the front
     /// matter doesn't declare is allowed, like in dialogue (a `::set` can create it;
     /// `quillstone test` warns when nothing sets it); a declared non-text one can never fit.
-    fn picture_path(&self, key: &str, path: &str) -> Result<(), String> {
+    fn picture_path(&self, key: &str, path: &str) -> Result<String, String> {
         if !crate::is_pattern(path) {
             return check_inside(key, path);
         }
@@ -2532,7 +2545,7 @@ impl Parser {
             }
         }
         if is_inside(&sample) {
-            Ok(())
+            Ok(normal_path(path))
         } else {
             Err(format!("`{key}={path}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"))
         }
@@ -2672,7 +2685,7 @@ impl Parser {
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
         match a.value(key) {
             Some(v) if !v.is_empty() => match if cmd == "bg" { self.picture_path(key, &v) } else { check_inside(key, &v) } {
-                Ok(()) => Some(v),
+                Ok(v) => Some(v),
                 Err(m) => {
                     self.err(line, m);
                     None
@@ -2931,8 +2944,7 @@ impl Parser {
             if let Some(label) = default_to.filter(|_| time.is_some()) {
                 // The timeout is one more outcome, like a timed choice's default: a hidden option
                 // nothing can click, so the explorer, graph, rollback and saves need no new case.
-                let area = Area { rect: [0.0; 4], sprite: None, image: None, hidden: true };
-                options.push(ChoiceOption { text: String::new(), target: UNSET, effects: Vec::new(), cond: None, area: Some(area), default: true, lock: None, line });
+                options.push(ChoiceOption { text: String::new(), target: UNSET, effects: Vec::new(), cond: None, area: Some(Area::timeout()), default: true, lock: None, line });
                 labels.push((label, line));
             }
             for (k, (label, ln)) in labels.into_iter().enumerate() {
@@ -3153,31 +3165,26 @@ fn include_path(inner: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// A game-folder path without `.` parts, so two spellings of one file compare equal (callers
-/// compare ignoring case too, for systems that do).
-fn normal_path(path: &str) -> String {
-    path.split('/').filter(|p| !p.is_empty() && *p != ".").collect::<Vec<_>>().join("/")
-}
-
 fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String> {
-    check_inside(key, path)?;
+    let path = check_inside(key, path)?;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !path.contains('.') || !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
         return Err(format!("bad `{key}={path}` ({what} must be a .png, .jpg or .webp file)"));
     }
-    Ok(path.to_string())
+    Ok(path)
 }
 
 /// A file named by the script must be relative and inside the game folder, or a save
-/// that mentions it can't be loaded again (and the game can't be packaged).
-fn check_inside(key: &str, path: &str) -> Result<(), String> {
+/// that mentions it can't be loaded again (and the game can't be packaged). Returns the path
+/// normalised, which is the spelling the program keeps.
+fn check_inside(key: &str, path: &str) -> Result<String, String> {
     if path.contains(['{', '}']) {
         Err(format!(
             "`{key}={path}`: braces can't be part of a file name; a `{{variable}}` in a name works only for pictures \
              (`::show`, `::bg` and inline images)"
         ))
     } else if is_inside(path) {
-        Ok(())
+        Ok(normal_path(path))
     } else {
         Err(format!(
             "`{key}={path}`: a path must be relative and inside the game folder (no `..`, drive letters, backslashes or leading `/`)"

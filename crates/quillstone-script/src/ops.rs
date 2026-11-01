@@ -1224,6 +1224,12 @@ pub fn is_inside(path: &str) -> bool {
         })
 }
 
+/// A game-folder path without empty and `.` parts, so two spellings of one file compare equal (callers
+/// compare ignoring case too, for systems that do). Only for paths [`is_inside`] already accepted.
+pub fn normal_path(path: &str) -> String {
+    path.split('/').filter(|p| !p.is_empty() && *p != ".").collect::<Vec<_>>().join("/")
+}
+
 /// Guess what kind of asset a path is from its extension.
 pub fn kind_from_path(path: &str) -> AssetKind {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -1306,15 +1312,12 @@ impl TimingBar {
         self.hit_at(self.marker(elapsed))
     }
 
-    /// The outcomes this bar can have. A miss needs a time limit or part of the bar outside `good`.
-    pub fn hits(&self) -> &'static [Hit] {
-        let miss = self.time.is_some() || self.good[0] > 0.0 || self.good[1] < 1.0;
-        match (miss, self.perfect.is_some()) {
-            (true, true) => &[Hit::Miss, Hit::Good, Hit::Perfect],
-            (true, false) => &[Hit::Miss, Hit::Good],
-            (false, true) => &[Hit::Good, Hit::Perfect],
-            (false, false) => &[Hit::Good],
-        }
+    /// The outcomes this bar can have. A miss needs a time limit or part of the bar outside `good`; a good
+    /// needs part of `good` outside `perfect`; a perfect needs a `perfect` zone.
+    pub fn hits(&self) -> Vec<Hit> {
+        let miss = self.time.is_some() || self.good != [0.0, 1.0];
+        let good = self.perfect.is_none_or(|p| p[0] > self.good[0] || p[1] < self.good[1]);
+        [(miss, Hit::Miss), (good, Hit::Good), (self.perfect.is_some(), Hit::Perfect)].into_iter().filter(|(on, _)| *on).map(|(_, h)| h).collect()
     }
 }
 
@@ -1396,6 +1399,17 @@ pub struct Area {
     pub image: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
+}
+
+impl Area {
+    /// The stand-in region of a timed `::hotspots` screen's timeout: hidden, empty and on nothing, so nothing can click it.
+    pub fn timeout() -> Area {
+        Area { rect: [0.0; 4], sprite: None, image: None, hidden: true }
+    }
+
+    pub fn is_timeout(&self) -> bool {
+        *self == Area::timeout()
+    }
 }
 
 /// One instruction of the compiled script.
@@ -1638,6 +1652,12 @@ mod tests {
         assert_eq!(no_perfect.hits(), [Hit::Miss, Hit::Good]);
         assert_eq!(b.hits(), [Hit::Miss, Hit::Good, Hit::Perfect]);
         assert_eq!(b.hit(0.5), Hit::Perfect, "a press half a sweep in: the marker is mid-bar");
+    }
+
+    #[test]
+    fn a_perfect_zone_that_covers_good_leaves_no_good_outcome() {
+        let same = TimingBar { good: [0.4, 0.6], perfect: Some([0.4, 0.6]), ..bar(1.0) };
+        assert_eq!(same.hits(), [Hit::Miss, Hit::Perfect]);
     }
 
     #[test]

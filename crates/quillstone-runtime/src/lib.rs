@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -212,6 +212,14 @@ pub struct Spot {
     pub image: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
+}
+
+impl Spot {
+    /// The timeout of a timed `::hotspots` screen (see [`Area::timeout`]), which has no text of its own.
+    pub fn is_timeout(&self) -> bool {
+        let area = Area { rect: self.rect, sprite: self.sprite.clone(), image: self.image.clone(), hidden: self.hidden };
+        self.label.is_empty() && area.is_timeout()
+    }
 }
 
 /// An item as the inventory and shop screens show it (see `::item`).
@@ -659,13 +667,18 @@ fn call_from_line(state: &mut State, program: &Program, label: &str) {
     state.pc = program.labels[label];
 }
 
+/// Move the visit counters of the labels at `pc` (`seen(label)`) by `delta`; a counter not set yet starts at `default`.
+fn count_visits(state: &mut State, program: &Program, pc: usize, default: i64, delta: i64) {
+    for var in program.counted.get(&pc).into_iter().flatten() {
+        let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(default);
+        state.vars.insert(var.clone(), Value::Int(n.saturating_add(delta)));
+    }
+}
+
 /// `::return`: back to the frame's address. A line call shows its line again, which would count a second visit.
 fn return_to(state: &mut State, program: &Program, frame: Frame) {
     if frame.line {
-        for var in program.counted.get(&frame.ret).into_iter().flatten() {
-            let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
-            state.vars.insert(var.clone(), Value::Int(n.saturating_sub(1)));
-        }
+        count_visits(state, program, frame.ret, 1, -1);
     }
     state.pc = frame.ret;
 }
@@ -1075,10 +1088,7 @@ pub(crate) fn step_traced(
             out.extend(labels.iter().map(|label| Cmd::ReplayReached { label: label.clone() }));
         }
         // Passing a label that some `seen(label)` asks about.
-        for var in program.counted.get(&state.pc).into_iter().flatten() {
-            let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(0);
-            state.vars.insert(var.clone(), Value::Int(n.saturating_add(1)));
-        }
+        count_visits(state, program, state.pc, 0, 1);
         match op {
             Op::Say { speaker, color, text } => {
                 show_textbox(state, &mut out);

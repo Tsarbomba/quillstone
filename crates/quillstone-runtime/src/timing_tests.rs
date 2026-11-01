@@ -142,3 +142,18 @@ fn the_tester_does_not_play_a_miss_a_bar_cannot_have() {
     let timed = explore(&parse(&src("good=0%..100% time=5")).unwrap(), 1000);
     assert!(timed.warnings.is_empty(), "a time limit makes a miss possible: {:?}", timed.warnings);
 }
+
+#[test]
+fn a_perfect_zone_that_covers_good_leaves_no_good_branch() {
+    let p = parse(
+        "---\nvars: { hit: \"\" }\n---\n::timing{result=hit good=40%..60% perfect=40%..60%}\n::if{hit == \"good\"}\n::jump{to=g}\n::endif\n\
+         Ok.\n::end\n# g\nGood.\n::end\n",
+    )
+    .unwrap();
+    let r = explore(&p, 1000);
+    assert!(r.warnings.iter().any(|w| w.message.contains("never reached")), "{:?}", r.warnings);
+    let (mut s, first) = Session::start(&p);
+    assert!(matches!(first.last(), Some(Cmd::ShowTiming { .. })), "{first:?}");
+    assert!(s.input(Input::Choose(1)).is_empty(), "good is not an outcome of this bar");
+    assert!(!s.input(Input::Choose(2)).is_empty(), "perfect is");
+}

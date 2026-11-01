@@ -282,7 +282,7 @@ fn open_archive(qsa: &Path) -> (Assets, PathBuf) {
 
 /// A game in a folder: the script's own folder holds its files.
 fn open_folder(script: PathBuf) -> (Assets, PathBuf) {
-    (Assets::folder(script.parent().unwrap_or_else(|| Path::new(""))), script)
+    (Assets::folder(quillstone_ui::source::script_dir(&script)), script)
 }
 
 /// A shipped game, started by double-clicking: `game.qsa` beside the executable, else the script next to

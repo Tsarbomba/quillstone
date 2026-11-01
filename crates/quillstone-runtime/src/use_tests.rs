@@ -200,18 +200,19 @@ fn a_hand_edited_seen_counter_at_the_limits_does_not_overflow() {
     let p = parse(src).unwrap();
     let seen = counter(&p);
     let line = |n: i64| format!("var {} int {n}", crate::save::q(&seen));
-    for (edit, ops) in [(i64::MAX, 1), (i64::MIN, 2)] {
+    // A game loaded with the counter hand-edited to `edit`.
+    let loaded = |edit: i64| {
         let (s, _) = Session::start(&p);
         let saved = s.save().replace(&line(1), &line(edit));
         assert!(saved.contains(&line(edit)), "{saved}");
-        let (mut s, _) = Session::load(&p, &saved).unwrap();
-        // MAX: the jump back passes `start` again (+1). MIN: Use, then `::return` shows the line again (-1).
-        if ops == 1 {
-            s.input(Input::Advance);
-            assert_eq!(int(&s, &seen), i64::MAX);
-        } else {
-            s.input(Input::Use("p".into()));
-            assert_eq!(int(&s, &seen), i64::MIN + 1, "the line's own pass adds one back to the saturated floor");
-        }
-    }
+        Session::load(&p, &saved).unwrap().0
+    };
+    // MAX: the jump back passes `start` again (+1).
+    let mut s = loaded(i64::MAX);
+    s.input(Input::Advance);
+    assert_eq!(int(&s, &seen), i64::MAX);
+    // MIN: Use, then `::return` shows the line again (-1).
+    let mut s = loaded(i64::MIN);
+    s.input(Input::Use("p".into()));
+    assert_eq!(int(&s, &seen), i64::MIN + 1, "the line's own pass adds one back to the saturated floor");
 }

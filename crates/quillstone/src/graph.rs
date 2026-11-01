@@ -100,21 +100,31 @@ fn build(program: &Program) -> Graph {
         _ => false,
     };
 
-    for k in 0..hs.len() {
-        // Falls in from above: the label before it, unless that ends in a jump, return or choice.
-        let prev = if k == 0 { (off == 1).then_some(0) } else { Some(k - 1 + off) };
-        let before = at(k).checked_sub(1).map(|i| &program.ops[i]);
-        if let Some(prev) = prev.filter(|_| before.is_none_or(|op| !terminates(op)) || k > 0 && at(k - 1) == at(k)) {
-            add(prev, k + off, Kind::Flow, String::new());
-        }
-    }
+    // Which ops can run: a label start or a jump target, or the op after a live one that doesn't end the flow.
     let label_starts: HashSet<usize> = (0..hs.len()).map(at).collect();
     let mut jump_targets: HashSet<usize> = HashSet::new();
     for op in &program.ops {
         match op {
-            Op::Jump { target, .. } => drop(jump_targets.insert(*target)),
+            Op::Jump { target, .. } | Op::Call { target, .. } => drop(jump_targets.insert(*target)),
             Op::Choice { options, .. } => jump_targets.extend(options.iter().map(|o| o.target)),
             _ => {}
+        }
+    }
+    let mut live = vec![false; program.ops.len()];
+    for i in 0..live.len() {
+        live[i] = i == 0
+            || label_starts.contains(&i)
+            || jump_targets.contains(&i)
+            || live[i - 1] && !terminates(&program.ops[i - 1]);
+    }
+    // Op `t` is reached by running on from the op before it (not by a jump or a label alone).
+    let falls_into = |t: usize| t > 0 && live[t - 1] && !terminates(&program.ops[t - 1]);
+
+    for k in 0..hs.len() {
+        // Falls in from above: the label before it, unless that ends in a jump, return or choice.
+        let prev = if k == 0 { (off == 1).then_some(0) } else { Some(k - 1 + off) };
+        if let Some(prev) = prev.filter(|_| falls_into(at(k)) || k > 0 && at(k - 1) == at(k)) {
+            add(prev, k + off, Kind::Flow, String::new());
         }
     }
     // The open `::if` branches: (condition, op index where the branch ends).
@@ -122,9 +132,7 @@ fn build(program: &Program) -> Graph {
     for (i, op) in program.ops.iter().enumerate() {
         guards.retain(|(_, end)| *end > i);
         let from = owner(i);
-        // Ops after a jump that nothing leads to can't run.
-        let dead = i > 0 && terminates(&program.ops[i - 1]) && !label_starts.contains(&i) && !jump_targets.contains(&i);
-        if dead {
+        if !live[i] {
             continue;
         }
         if matches!(op, Op::End) {
@@ -143,8 +151,7 @@ fn build(program: &Program) -> Graph {
             // The jump over an `::else`: the fall-through edges already say it, unless the `::else` ends in a
             // jump of its own (then nothing falls through, and this is the only way into the next label).
             Op::Jump { target: t, .. } if program.block_jumps.contains(&i) => {
-                let falls = t.checked_sub(1).is_none_or(|b| !terminates(&program.ops[b]));
-                if let Some(to) = target(*t).filter(|_| !falls) {
+                if let Some(to) = target(*t).filter(|_| !falls_into(*t)) {
                     add(from, to, Kind::Flow, with(None));
                 }
             }
@@ -167,7 +174,7 @@ fn build(program: &Program) -> Graph {
                     } else if o.default {
                         text += " (default)";
                     }
-                    let cond = when(&g.iter().chain(o.cond.as_ref()).collect::<Vec<_>>());
+                    let cond = with(o.cond.as_ref());
                     add(from, to, Kind::Choice, if cond.is_empty() { text } else { format!("{text} [{cond}]") });
                 }
             }
@@ -503,6 +510,15 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
         let m = both("# A\n::jump{to=b if=\"not (x or y)\"}\n# B\n::if{a or b}\n::jump{to=a if=c}\n::endif\n# C\nHi.\n").0;
         assert!(m.contains("if not (x or y)"), "{m}");
         assert!(m.contains("if (a or b) and c") && m.contains("if not (a or b)"), "{m}");
+    }
+
+    #[test]
+    fn dead_ops_after_a_jump_do_not_fall_into_the_next_label() {
+        for dead in ["", "::jump{to=b}\n"] {
+            let m = both(&format!("# A\n::jump{{to=c}}\nHi.\n{dead}# B\n::end\n# C\n::end\n")).0;
+            assert!(!m.contains("n0 --> n1") && !m.contains("n0 ==> n1"), "{m}");
+            assert!(m.contains("class n1 unreachable"), "{m}");
+        }
     }
 
     #[test]

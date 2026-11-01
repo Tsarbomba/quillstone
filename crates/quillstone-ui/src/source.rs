@@ -23,10 +23,16 @@ pub fn read_include_in(assets: &Assets, rel: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// The game folder of a script: the folder it sits in. A bare name (`main.quill.md`) has the parent `""`,
+/// which `read_dir` refuses.
+pub fn script_dir(script: &Path) -> &Path {
+    script.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."))
+}
+
 /// Compile `src`, the text of the script at `script`, reading its `::include`s from the script's
 /// folder (the game folder). Errors name the included file they are in.
 pub fn parse_script(script: &Path, src: &str) -> Result<Program, Vec<ParseError>> {
-    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    let root = script_dir(script);
     let main = script.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     parse_files(src, &main, &|rel| read_include(root, rel))
 }
@@ -49,7 +55,7 @@ pub fn error_lines(script: &Path, errors: &[ParseError]) -> Vec<String> {
 
 /// The files a running game depends on besides the theme: the script and every file it includes.
 pub fn script_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf> {
-    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    let root = script_dir(script);
     std::iter::once(script.to_path_buf()).chain(program.included_files().map(|f| root.join(f))).collect()
 }
 
@@ -75,7 +81,7 @@ pub fn read_translation_in(assets: &Assets, code: &str) -> Result<Option<String>
 /// one `lang/<code>.txt:line: message` per problem. A file that doesn't parse is left out, and a
 /// translation whose tags don't match its original is blanked: that text shows the script's own.
 pub fn load_translations(script: &Path, program: &Program) -> (BTreeMap<String, Catalog>, Vec<String>) {
-    load_translations_in(&Assets::folder(script.parent().unwrap_or_else(|| Path::new("."))), program)
+    load_translations_in(&Assets::folder(script_dir(script)), program)
 }
 
 /// Like [`load_translations`], from any [`Assets`].
@@ -111,13 +117,21 @@ pub fn load_translations_in(assets: &Assets, program: &Program) -> (BTreeMap<Str
 
 /// The translation files a running game depends on (they may not exist yet).
 pub fn translation_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf> {
-    let root = script.parent().unwrap_or_else(|| Path::new("."));
+    let root = script_dir(script);
     program.languages.iter().skip(1).map(|l| root.join(language_file(&l.code))).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_script_name_sits_in_the_current_folder() {
+        assert_eq!(script_dir(Path::new("main.quill.md")), Path::new("."));
+        assert_eq!(script_dir(Path::new("game/main.quill.md")), Path::new("game"));
+        // `read_dir("")` fails; this is what made `check main.quill.md` skip the unused list and `{x}.png` match nothing
+        assert!(std::fs::read_dir(script_dir(Path::new("main.quill.md"))).is_ok());
+    }
 
     fn game(files: &[(&str, &str)]) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("qs-source-{}-{:?}", std::process::id(), std::thread::current().id()));

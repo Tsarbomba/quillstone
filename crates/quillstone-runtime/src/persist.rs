@@ -236,6 +236,13 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_slash_gallery_entry_unlocks_from_the_plain_spelling() {
+        let p = parse("---\ngallery: [./cg.png]\n---\n::bg{src=cg.png}\nHi.\n").unwrap();
+        let (s, _) = Session::start(&p);
+        assert!(s.unlocked("cg.png"));
+    }
+
+    #[test]
     fn persistent_values_carry_into_the_next_playthrough() {
         let p = parse(STORY).unwrap();
         let (mut s, first) = Session::start(&p);

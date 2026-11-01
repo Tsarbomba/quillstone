@@ -8,7 +8,7 @@
 //!
 //! Braces are not allowed in game file names; there is no escape for them.
 
-use crate::{is_inside, is_ident, Value, Vars};
+use crate::{is_inside, is_ident, normal_path, Value, Vars};
 
 /// What the game carries for a picture whose name could not be built. It is a
 /// harmless path inside the game folder (so saves keep loading) that no real
@@ -167,7 +167,7 @@ pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
         return Err(format!("{pattern} would make `{out}`, a name Windows keeps for devices"));
     }
     if is_inside(&out) {
-        Ok(out)
+        Ok(normal_path(&out))
     } else {
         debug_assert!(false, "`{out}` escaped the game folder");
         Err(format!("`{pattern}` doesn't make a path inside the game folder"))

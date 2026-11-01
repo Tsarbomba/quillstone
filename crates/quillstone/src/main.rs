@@ -165,7 +165,7 @@ fn at(program: &Program, script: &Path, line: usize) -> String {
 
 fn check(path: &Path) -> Result<(), String> {
     let program = load(path)?;
-    let root = crate::package::script_dir(path);
+    let root = quillstone_ui::source::script_dir(path);
 
     let mut missing = 0;
     let hot = hotspot_images(&program);
@@ -256,7 +256,7 @@ const UNUSED_LISTED: usize = 20;
 /// The warning about picture, audio, video and font files in the game folder that `package` would leave out
 /// (a summary line, then the files, capped), or nothing. Advice only.
 fn unused_asset_lines(path: &Path, program: &Program) -> Vec<String> {
-    let root = crate::package::script_dir(path);
+    let root = quillstone_ui::source::script_dir(path);
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
     let unused = package::unused_assets(root, name, program).unwrap_or_default();
     if unused.is_empty() {
@@ -626,7 +626,7 @@ fn check_voices(program: &Program, path: &Path, root: &Path, problems: &mut usiz
 /// The recording script: one row per line, tab-separated.
 fn voices(path: &Path) -> Result<(), String> {
     let program = load(path)?;
-    let root = crate::package::script_dir(path);
+    let root = quillstone_ui::source::script_dir(path);
     let folder = program.voice_folder.clone().unwrap_or_else(|| "voice".into());
     let files = voice_folder_files(&program, root);
     if program.voice_folder.is_none() {
@@ -1050,7 +1050,7 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
 /// A hotspot as the text listing shows it. The timed screen's hidden timeout has no text and no size, and a
 /// sprite-bound region's rect is relative to the sprite, so neither can be printed as a screen region.
 fn spot_line(s: &quillstone_runtime::Spot) -> String {
-    if s.hidden && s.label.is_empty() && s.sprite.is_none() && s.rect[2] == 0.0 && s.rect[3] == 0.0 {
+    if s.is_timeout() {
         return "(time out)".into();
     }
     if let Some(id) = &s.sprite {
@@ -1574,10 +1574,10 @@ mod tests {
         }
     }
 
-    fn quick_warnings(theme: &str, files: &[(&str, &[u8])]) -> Vec<String> {
+    fn quick_warnings(theme: &str, files: &[(&str, &[u8])], inventory: bool, journal: bool) -> Vec<String> {
         let mut files = files.to_vec();
         files.push(("t.txt", theme.as_bytes()));
-        in_dir(&files, |dir| quick_menu_warnings(&dir.join("t.txt"), dir, true, true))
+        in_dir(&files, |dir| quick_menu_warnings(&dir.join("t.txt"), dir, inventory, journal))
     }
 
     #[test]
@@ -1606,17 +1606,17 @@ mod tests {
         let (w, h) = picture::read_picture(Path::new("../../examples/assets/gui/key.png")).unwrap();
         assert!(w >= 16 && h >= 16 && w < 400, "the fixture is a button-sized picture: {w}x{h}");
         let clean = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 20, 20\nquick_skip_icon = assets/key.png\n\
-                                    quick_settings_icon = assets/key.png\nquick_settings_pos = 200, 20\n", &key);
+                                    quick_settings_icon = assets/key.png\nquick_settings_pos = 200, 20\n", &key, true, true);
         assert!(clean.is_empty(), "{clean:?}");
-        assert!(quick_warnings("text_size = 40\n", &[]).is_empty() && quick_warnings("quick_menu = hover\n", &[]).is_empty());
+        assert!(quick_warnings("text_size = 40\n", &[], true, true).is_empty() && quick_warnings("quick_menu = hover\n", &[], true, true).is_empty());
         let both = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 20, 20\nquick_history_icon = assets/key.png\n\
-                                   quick_history_pos = 25, 25\n", &key);
+                                   quick_history_pos = 25, 25\n", &key, true, true);
         assert!(both.len() == 1 && both[0].contains("t.txt:4:") && both[0].contains("`back` and `history` overlap"), "{both:?}");
         assert!(both[0].contains("`history` is on top"), "{both:?}");
-        let off = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 1910, 1075\n", &key);
+        let off = quick_warnings("quick_back_icon = assets/key.png\nquick_back_pos = 1910, 1075\n", &key, true, true);
         assert!(off.len() == 1 && off[0].contains("t.txt:2:") && off[0].contains("past the 1920x1080 screen"), "{off:?}");
         // a text button placed over the row's buttons
-        let row = quick_warnings("quick_back_pos = 1700, 1050\nquick_back_size = 100, 40\n", &[]);
+        let row = quick_warnings("quick_back_pos = 1700, 1050\nquick_back_size = 100, 40\n", &[], true, true);
         assert!(row.iter().any(|m| m.contains("`back` and")), "a text button placed on the row's buttons: {row:?}");
     }
 
@@ -1629,15 +1629,9 @@ mod tests {
         let journal = layout.buttons.iter().find(|(b, _)| b.id() == "journal").unwrap().1;
         // a button placed exactly where the row's Journal button sits
         let text = format!("quick_back_pos = {}, {}\nquick_back_size = 40, 20\n", journal.x, journal.y);
-        let warns = |inventory, journal| {
-            std::fs::create_dir_all(std::env::temp_dir().join("qs-quick-overlap")).unwrap();
-            let file = std::env::temp_dir().join("qs-quick-overlap").join(format!("t{inventory}{journal}.txt"));
-            std::fs::write(&file, &text).unwrap();
-            quick_menu_warnings(&file, file.parent().unwrap(), inventory, journal)
-        };
+        let warns = |inventory, journal| quick_warnings(&text, &[], inventory, journal);
         assert!(warns(true, true).iter().any(|m| m.contains("`journal`")), "{:?}", warns(true, true));
         assert!(!warns(true, false).iter().any(|m| m.contains("`journal`")), "no journal, no button to overlap");
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("qs-quick-overlap"));
     }
 
     #[test]
