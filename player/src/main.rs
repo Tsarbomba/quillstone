@@ -512,6 +512,7 @@ impl App {
         self.game.set_minimized(minimized);
         if let Some(audio) = &mut self.audio {
             audio.set_paused(minimized);
+            audio.set_video_paused(self.game.media_paused());
         }
         self.last_frame = Instant::now();
         self.settled = minimized;
@@ -608,6 +609,10 @@ impl App {
         self.last_frame += synced.elapsed();
         if !self.game.media_paused() {
             self.videos.advance(std::time::Duration::from_secs_f32(dt));
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.set_video_sound(self.videos.sound());
+            audio.set_video_paused(self.game.media_paused());
         }
         for (src, e) in self.videos.take_errors() {
             eprintln!("warning: cannot play video {src}: {e}");

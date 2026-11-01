@@ -859,11 +859,12 @@ impl<'p> Game<'p> {
     /// (and the one it is crossfading from), a video menu background, or the gallery clip being viewed.
     pub fn wanted_videos(&self) -> Vec<Wanted> {
         let is_video = |src: &str| kind_from_path(src) == AssetKind::Video;
-        let looping = |src: &str| Wanted { src: src.to_string(), looped: true, generation: 0 };
+        let looping = |src: &str| Wanted { src: src.to_string(), looped: true, sound: false, generation: 0 };
         let mut out = Vec::new();
-        // A gallery clip open full screen is the only thing playing (muted, like every video).
+        // A gallery clip open full screen is the only thing playing, and the only looping one with sound
+        // (backgrounds are muted: they sit under the story's own music).
         if let Some(src) = self.viewed_video() {
-            return vec![looping(src)];
+            return vec![Wanted { sound: true, ..looping(src) }];
         }
         if !self.in_story {
             out.extend(self.theme().menu_background.as_deref().filter(|s| is_video(s)).map(looping));
@@ -873,7 +874,7 @@ impl<'p> Game<'p> {
         // the same file would be kept and stand in for it, and the cutscene would never end.
         let cutscene = self.view.video.as_ref().map(|v| v.src.as_str());
         if let Some(v) = &self.view.video {
-            out.push(Wanted { src: v.src.clone(), looped: v.looped, generation: self.video_generation });
+            out.push(Wanted { src: v.src.clone(), looped: v.looped, sound: true, generation: self.video_generation });
         }
         let backgrounds = [self.view.background.as_ref().map(|b| b.src.as_str()), self.view.previous_background.as_deref()];
         out.extend(backgrounds.into_iter().flatten().filter(|s| is_video(s) && Some(*s) != cutscene).map(looping));

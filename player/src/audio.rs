@@ -15,6 +15,7 @@
 
 use quillstone_audio::Action;
 use quillstone_ui::Assets;
+use quillstone_video::Wanted;
 
 #[cfg(feature = "audio")]
 pub use real::Audio;
@@ -39,6 +40,10 @@ mod stub {
         }
 
         pub fn set_paused(&mut self, _paused: bool) {}
+
+        pub fn set_video_sound(&mut self, _want: Option<&Wanted>) {}
+
+        pub fn set_video_paused(&mut self, _paused: bool) {}
 
         pub fn take_failed_loops(&mut self) -> Vec<String> {
             Vec::new()
@@ -87,6 +92,13 @@ mod real {
         music_track: TrackHandle,
         sfx_track: TrackHandle,
         voice_track: TrackHandle,
+        /// A playing video's sound: its own track so it pauses with the picture (not with the music),
+        /// and is never ducked. It follows the music volume.
+        video_track: TrackHandle,
+        video_sound: Option<StreamingSoundHandle<FromFileError>>,
+        /// What `set_video_sound` last acted on.
+        video_wanted: Option<Wanted>,
+        video_paused: bool,
         /// Times the start of a music intro and the loop that follows it.
         clock: ClockHandle,
         /// The track that is playing (the loop part, when there is an intro).
@@ -123,7 +135,7 @@ mod real {
                 }
             };
             let mut track = || manager.add_sub_track(TrackBuilder::new()).ok();
-            let (music_track, sfx_track, voice_track) = (track()?, track()?, track()?);
+            let (music_track, sfx_track, voice_track, video_track) = (track()?, track()?, track()?, track()?);
             let mut clock = manager.add_clock(ClockSpeed::TicksPerSecond(CLOCK_HZ)).ok()?;
             clock.start();
 
@@ -133,6 +145,10 @@ mod real {
                 music_track,
                 sfx_track,
                 voice_track,
+                video_track,
+                video_sound: None,
+                video_wanted: None,
+                video_paused: false,
                 clock,
                 music: None,
                 music_intro: None,
@@ -184,6 +200,38 @@ mod real {
                 if paused { track.pause(t) } else { track.resume(t) }
             }
             if paused { self.clock.pause() } else { self.clock.start() }
+        }
+
+        /// Start or stop a video's sound to match `want` (`Videos::sound`), every frame; acts only
+        /// when it changed. A video without a sound track stays silent, quietly.
+        pub fn set_video_sound(&mut self, want: Option<&Wanted>) {
+            if self.video_wanted.as_ref() == want {
+                return;
+            }
+            self.video_wanted = want.cloned();
+            if let Some(mut old) = self.video_sound.take() {
+                old.stop(Tween::default());
+            }
+            let Some(w) = want else { return };
+            let data = match crate::ffaudio::open(&self.assets, &w.src) {
+                Ok(data) => data,
+                Err(FromFileError::NoDefaultTrack) => return,
+                Err(e) => return self.warn(&w.src, e),
+            };
+            let data = if w.looped { data.loop_region(..) } else { data };
+            match self.video_track.play(data) {
+                Ok(handle) => self.video_sound = Some(handle),
+                Err(e) => self.warn(&w.src, e),
+            }
+        }
+
+        /// Hold the video's sound with its picture (the clips' clocks stand still while a menu is
+        /// open or the window is minimised). A short ramp only: the picture stops at once.
+        pub fn set_video_paused(&mut self, paused: bool) {
+            if paused != self.video_paused {
+                self.video_paused = paused;
+                if paused { self.video_track.pause(Tween::default()) } else { self.video_track.resume(Tween::default()) }
+            }
         }
 
         /// `true` once when the voice clip ended by itself or could not start (the music comes back up).
@@ -264,6 +312,9 @@ mod real {
                     }
                 }
                 Action::SetChannelVolume { channel, volume } => {
+                    if channel == Channel::Music {
+                        self.video_track.set_volume(channel_gain_db(volume), tween(DECLICK));
+                    }
                     let track = match channel {
                         Channel::Music => &mut self.music_track,
                         Channel::Sfx => &mut self.sfx_track,

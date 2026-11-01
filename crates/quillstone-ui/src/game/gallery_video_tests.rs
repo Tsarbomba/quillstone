@@ -64,6 +64,7 @@ fn opening_a_clip_plays_it_looped_and_closing_stops_it() {
     assert_eq!(g.extras.viewing, Some(1));
     let w = g.wanted_videos();
     assert_eq!((w.len(), w[0].src.as_str(), w[0].looped), (1, "loop.webm", true));
+    assert!(w[0].sound, "the viewer plays the clip's sound");
     assert!(g.needs_ticks(), "the player keeps drawing while a clip plays");
     assert!(texts(&g).iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "loop.webm")));
     g.handle(Event::Press(Button::Left));

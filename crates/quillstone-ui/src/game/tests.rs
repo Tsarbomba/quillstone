@@ -1170,6 +1170,21 @@ fn the_game_says_which_videos_should_play() {
 }
 
 #[test]
+fn a_cutscene_has_sound_and_backgrounds_do_not() {
+    let sound = |g: &Game| g.wanted_videos().into_iter().map(|w| (w.src, w.sound)).collect::<Vec<_>>();
+    let p = parse(MOVIE).unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(sound(&g), vec![("loop.webm".to_string(), false)]);
+    key(&mut g, Key::Space);
+    assert_eq!(sound(&g), vec![("clip.webm".to_string(), true), ("loop.webm".to_string(), false)]);
+    key(&mut g, Key::Space); // skipped: nothing wants sound any more
+    assert!(g.wanted_videos().iter().all(|w| !w.sound));
+    let mut menu = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
+    menu.set_theme(Theme { menu_background: Some("menu.webm".into()), ..Theme::default() });
+    assert_eq!(sound(&menu), vec![("menu.webm".to_string(), false)]);
+}
+
+#[test]
 fn a_cutscene_of_the_background_video_file_replaces_it_and_ends() {
     let p = parse("::bg{src=a.webm}\n**A:** before\n::video{src=a.webm}\n**A:** after\n").unwrap();
     let mut g = new_game(&p, instant());

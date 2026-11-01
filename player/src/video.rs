@@ -3,7 +3,8 @@
 //! [`opener`] gives `quillstone_video::Videos` a way to open files; each clip
 //! gets an [`FfmpegDecoder`] on its own thread (see `quillstone_video::Clip`).
 //! Frames are decoded in software with FFmpeg's frame threads and converted
-//! to RGBA for upload. Hardware decode and the clip's audio track come later.
+//! to RGBA for upload. Hardware decode comes later. The clip's sound is a second FFmpeg input
+//! of the same file, played by `audio` (see `ffaudio`).
 //! Without the feature, every video reports that no decoder is built in.
 
 use quillstone_ui::Assets;

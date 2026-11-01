@@ -7,8 +7,8 @@
 //! - [`Videos`]: starts and stops clips to match what the story wants on screen.
 //! - [`TestPattern`]: a synthetic decoder for tests and for trying the pipeline.
 //!
-//! The clock is advanced by the caller (frame time for now; the audio clock
-//! once video audio plays), so everything here is testable without a codec.
+//! The clock is advanced by the caller (frame time; a clip's sound is started by the
+//! player when its first picture shows and is not used as the clock), so everything here is testable without a codec.
 
 pub mod probe;
 
@@ -292,6 +292,8 @@ fn decode_loop(mut decoder: Box<dyn Decoder>, looped: bool, shared: &Shared) {
 pub struct Wanted {
     pub src: String,
     pub looped: bool,
+    /// Play the clip's own sound too (only one wanted clip at a time gets it: the first).
+    pub sound: bool,
     /// Changes when the same file should start over (e.g. rollback to a cutscene).
     pub generation: u64,
 }
@@ -304,15 +306,18 @@ pub struct Videos {
     /// until [`Videos::retry_failed`]).
     failed: HashMap<String, String>,
     new_errors: Vec<(String, String)>,
+    /// The wanted clip that has sound.
+    sound: Option<Wanted>,
 }
 
 impl Videos {
     pub fn new(open: OpenFn) -> Videos {
-        Videos { open, clips: HashMap::new(), failed: HashMap::new(), new_errors: Vec::new() }
+        Videos { open, clips: HashMap::new(), failed: HashMap::new(), new_errors: Vec::new(), sound: None }
     }
 
     /// Start what is wanted and not playing; stop what is no longer wanted.
     pub fn sync(&mut self, wanted: &[Wanted]) {
+        self.sound = wanted.iter().find(|w| w.sound).cloned();
         self.clips.retain(|src, (generation, _)| wanted.iter().any(|w| w.src == *src && w.generation == *generation));
         for w in wanted {
             if self.clips.contains_key(&w.src) || self.failed.contains_key(&w.src) {
@@ -368,6 +373,14 @@ impl Videos {
 
     pub fn finished(&self, src: &str) -> bool {
         self.clips.get(src).is_some_and(|(_, c)| c.finished())
+    }
+
+    /// The clip whose sound should be heard now: wanted with sound, open and without an error, and
+    /// its first picture already on screen (the sound starts with the picture, not before it).
+    pub fn sound(&self) -> Option<&Wanted> {
+        let w = self.sound.as_ref()?;
+        let (g, clip) = self.clips.get(&w.src)?;
+        (*g == w.generation && clip.frame_id() > 0 && clip.error().is_none()).then_some(w)
     }
 
     /// The sources of all clips playing now.
@@ -539,7 +552,7 @@ mod tests {
     }
 
     fn want(src: &str, generation: u64) -> Wanted {
-        Wanted { src: src.into(), looped: false, generation }
+        Wanted { src: src.into(), looped: false, sound: false, generation }
     }
 
     #[test]
@@ -580,6 +593,49 @@ mod tests {
         v.retry_failed(); // after a hot reload
         v.sync(&[want("missing.webm", 0)]);
         assert_eq!(v.take_errors().len(), 1, "tried again");
+    }
+
+    fn want_sound(src: &str, generation: u64) -> Wanted {
+        Wanted { sound: true, ..want(src, generation) }
+    }
+
+    #[test]
+    fn a_clip_with_sound_is_heard_from_its_first_picture_until_it_is_dropped() {
+        let mut v = videos();
+        v.sync(&[want_sound("a.webm", 0), want("bg.webm", 0)]);
+        assert_eq!(v.sound(), None, "no picture yet");
+        v.advance(Duration::ZERO);
+        assert_eq!(v.sound(), Some(&want_sound("a.webm", 0)));
+        v.sync(&[want("bg.webm", 0)]); // skipped
+        assert_eq!(v.sound(), None);
+    }
+
+    #[test]
+    fn a_muted_clip_has_no_sound() {
+        let mut v = videos();
+        v.sync(&[want("bg.webm", 0)]);
+        v.advance(Duration::ZERO);
+        assert_eq!(v.sound(), None);
+    }
+
+    #[test]
+    fn rolling_back_to_the_cutscene_restarts_its_sound() {
+        let mut v = videos();
+        v.sync(&[want_sound("long.webm", 1)]);
+        v.advance(Duration::ZERO);
+        v.sync(&[want_sound("long.webm", 2)]);
+        assert_eq!(v.sound(), None, "the new run has shown nothing yet");
+        v.advance(Duration::ZERO);
+        assert_eq!(v.sound(), Some(&want_sound("long.webm", 2)));
+    }
+
+    #[test]
+    fn a_broken_clip_is_silent() {
+        let mut v = videos();
+        v.sync(&[want_sound("broken.webm", 0)]);
+        v.advance(SEC);
+        v.advance(SEC);
+        assert_eq!(v.sound(), None);
     }
 
     #[test]

@@ -815,7 +815,12 @@ or Vorbis sound. These are royalty-free and they are what a shipped game can
 play, so `quillstone check` refuses other videos (MP4, AV1, H.264, Ogg Theora...)
 and shows how to convert them, e.g.
 `ffmpeg -i in.mp4 -c:v libvpx-vp9 -crf 32 -b:v 0 -c:a libopus out.webm`.
-Video sound isn't played yet. An unskippable video only blocks clicks while it
+A video's own sound plays with its picture: a `::video` cutscene and a clip opened in the Extras
+gallery have sound; a looping `::bg` video and a video menu background are always muted. The sound
+uses the **music** volume setting. Voice lines don't turn it down, and music already playing keeps playing
+under it (stop the music before a cutscene if you want the clip alone). It starts with the first picture,
+and stops when the clip is skipped, rolled back past, replaced or closed; a menu over the story or a
+minimised window holds it with the picture. A clip without a sound track is simply silent. An unskippable video only blocks clicks while it
 is really playing, so a file that can't be decoded never traps the player.
 
 ## Flow
@@ -1395,7 +1400,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
   locked tile stays a `?`, and the entry itself unlocks as above, never the thumbnail). Without a
   thumbnail a picture's tile shows the picture and a clip's tile is a dark placeholder with a play
   symbol and the clip's name (no thumbnail is made from the video). Opening a clip
-  plays it on repeat, full screen and fitted like a picture, without sound; click, Esc or
+  plays it on repeat, full screen and fitted like a picture, with its sound; click, Esc or
   Enter closes it, Left/Right move to the next unlocked entry, picture or clip. The clip stops
   as soon as it is closed.
   **`music_room:`** does the same for `::music` tracks (named after their file:
