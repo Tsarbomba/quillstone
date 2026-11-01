@@ -726,6 +726,9 @@ fn theme_problems(t: &ThemeFile, root: &Path) -> Vec<String> {
             asset_problem(root, asset, kind, "can't be used as a font", picture::font_problem)
         } else if is_music {
             asset_problem(root, asset, kind, "won't play in a shipped game", |f| unplayable(f, AssetKind::Audio))
+        } else if theme.menu_background.as_deref() == Some(asset) && kind_from_path(asset) == AssetKind::Video {
+            // the menu's background may be a clip
+            asset_problem(root, asset, kind, "won't play in a shipped game", |f| unplayable(f, AssetKind::Video))
         } else {
             asset_problem(root, asset, kind, "won't play in a shipped game", |f| picture::read_picture(f).err())
         };
@@ -1353,6 +1356,15 @@ mod tests {
         let script = "---\ntheme: t.txt\n---\nHi.\n";
         assert!(checked(script, &[("t.txt", b"font = assets/f.ttf"), ("assets/f.ttf", FONT)]).is_ok());
         assert!(checked(script, &[("t.txt", b"font = assets/f.ttf")]).is_err());
+    }
+
+    #[test]
+    fn a_menu_background_may_be_a_video() {
+        let clip: &[u8] = include_bytes!("../../../examples/assets/flashback.webm");
+        assert!(themed("menu_background = assets/m.webm\n", &[("assets/m.webm", clip)]).is_empty());
+        assert_eq!(themed("menu_background = assets/m.webm\n", &[]).len(), 1);
+        assert_eq!(themed("menu_background = assets/m.webm\n", &[("assets/m.webm", b"junk")]).len(), 1);
+        assert_eq!(themed("textbox_image = assets/m.webm\n", &[("assets/m.webm", clip)]).len(), 1);
     }
 
     #[test]
