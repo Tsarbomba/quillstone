@@ -2257,7 +2257,14 @@ fn the_market_demo_can_be_played_through_the_screens() {
     let mut g = new_game(&p, instant());
     g.set_theme(theme);
     key(&mut g, Key::Char('i'));
-    assert!(drawn_texts(&g).contains(&"Nothing here yet.".to_string()), "an empty pack at the start");
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Tonic".to_string()) && texts.contains(&"x1".to_string()), "one tonic to start with: {texts:?}");
+    click_cell(&mut g, 0);
+    click_bag(&mut g, crate::bag::use_rect);
+    assert!(line(&g).contains("You drink a tonic") && line(&g).contains("0 left"), "{}", line(&g));
+    key(&mut g, Key::Space); // back at the opening line
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"Nothing here yet.".to_string()), "no tonic left");
     key(&mut g, Key::Char('i'));
     assert_eq!(g.screen(), Screen::Story);
     key(&mut g, Key::Space); // the opening line
@@ -3054,4 +3061,128 @@ fn the_host_seed_decides_the_rolls_and_a_new_game_moves_it_on() {
     let (a, b) = roll(Some(11));
     assert_ne!(a, b, "a second playthrough rolls differently");
     assert_eq!(roll(None), roll(None), "the default is a fixed seed");
+}
+
+// ---- counted items and Use -------------------------------------------------------------------------
+
+const POTIONS: &str = "---\ninventory: bag\nvars: { gold: 12, potions: 2, bag: [] }\n---\n::item{id=potion name=\"Potion\" price=5 count=potions use=#drink text=\"Heals.\"}\n**A:** one\n::choice\n- [Go](#next)\n::\n# next\n**A:** two\n::wait{time=1}\n::end\n# drink\n::set{potions -= 1}\n**A:** Glug.\n::return\n";
+
+/// The Use button's fill colour, if it is drawn.
+fn use_fill(g: &Game) -> Option<[f32; 4]> {
+    let at = crate::bag::use_rect(g.theme());
+    let list = g.draw_list(&|_| Some(quillstone_render::Size::new(64.0, 64.0)));
+    list.into_iter().find_map(|d| match d {
+        quillstone_render::Draw::Rect { rect, color } if rect == at => Some(color),
+        _ => None,
+    })
+}
+
+fn potions(g: &Game) -> i64 {
+    g.state().vars["potions"].as_int().unwrap()
+}
+
+#[test]
+fn a_counted_item_shows_x_and_its_count_and_is_gone_at_zero() {
+    let p = parse(POTIONS).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Potion".to_string()) && texts.contains(&"x2".to_string()), "{texts:?}");
+    key(&mut g, Key::Escape);
+    for _ in 0..2 {
+        key(&mut g, Key::Char('i'));
+        key(&mut g, Key::Right);
+        key(&mut g, Key::Enter);
+        key(&mut g, Key::Space); // past "Glug."
+    }
+    assert_eq!(potions(&g), 0);
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"Nothing here yet.".to_string()));
+}
+
+#[test]
+fn the_use_button_closes_the_inventory_and_runs_the_label_then_the_line_returns() {
+    let p = parse(POTIONS).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    assert_eq!(use_fill(&g), None, "no button until an item with a Use action is selected");
+    click_cell(&mut g, 0);
+    let on = use_fill(&g).expect("the button shows");
+    click_bag(&mut g, crate::bag::use_rect);
+    assert_eq!((g.screen(), line(&g).as_str(), potions(&g)), (Screen::Story, "Glug.", 1));
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "one", "back at the line where the player was");
+    // greyed over a choice: the button looks dimmer and does nothing
+    key(&mut g, Key::Space);
+    assert!(matches!(g.state().pending, Some(Cmd::ShowChoices { .. })));
+    key(&mut g, Key::Char('i'));
+    click_cell(&mut g, 0);
+    assert!(use_fill(&g).unwrap()[3] < on[3]);
+    click_bag(&mut g, crate::bag::use_rect);
+    key(&mut g, Key::Enter);
+    assert_eq!((g.screen(), potions(&g)), (Screen::Inventory, 1));
+    assert_eq!(notice(&g).as_deref(), Some("Can't use that now"));
+}
+
+#[test]
+fn use_does_nothing_over_a_wait_or_in_an_inventory_the_script_opened() {
+    let p = parse(POTIONS).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.pick(0);
+    key(&mut g, Key::Space); // past "two": the wait
+    assert!(matches!(g.state().pending, Some(Cmd::Wait { .. })));
+    key(&mut g, Key::Char('i'));
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!((g.screen(), potions(&g)), (Screen::Inventory, 2));
+    // `::inventory` is a screen of the story, not a way to step out of it into a label
+    let p = parse(&POTIONS.replace("::wait{time=1}", "::inventory")).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.pick(0);
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Inventory);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!((g.screen(), potions(&g)), (Screen::Inventory, 2));
+}
+
+#[test]
+fn rolling_back_a_use_and_a_save_made_inside_it_both_work() {
+    let p = parse(POTIONS).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('i'));
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!((line(&g).as_str(), potions(&g)), ("Glug.", 1));
+    g.quick_save();
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "one");
+    g.quick_load();
+    key(&mut g, Key::Char('y'));
+    assert_eq!((line(&g).as_str(), potions(&g), g.state().stack.len()), ("Glug.", 1, 1), "back inside the label");
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "one");
+    g.handle(Event::Wheel(1.0)); // back into "Glug."
+    g.handle(Event::Wheel(1.0)); // and before the use
+    assert_eq!((line(&g).as_str(), potions(&g)), ("one", 2));
+}
+
+const POTION_SHOP: &str = "---\ninventory: bag\nvars: { gold: 12, potions: 0, bag: [] }\n---\n::item{id=potion name=\"Potion\" price=5 count=potions}\n**A:** hi\n::shop{pay=gold into=bag}\n- potion\n::\n**A:** bye\n";
+
+#[test]
+fn a_counted_item_in_a_shop_is_bought_again_and_again_and_shows_in_the_inventory() {
+    let p = parse(POTION_SHOP).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    click_cell(&mut g, 0);
+    click_cell(&mut g, 0);
+    assert_eq!((potions(&g), notice(&g).as_deref()), (2, Some("Bought Potion")));
+    assert!(!drawn_texts(&g).contains(&"Owned".to_string()));
+    click_cell(&mut g, 0);
+    assert_eq!((potions(&g), notice(&g).as_deref()), (2, Some("Not enough gold")));
+    click_bag(&mut g, crate::bag::close_rect);
+    key(&mut g, Key::Char('i'));
+    assert!(drawn_texts(&g).contains(&"x2".to_string()));
 }

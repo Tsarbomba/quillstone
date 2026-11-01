@@ -31,7 +31,7 @@ pub enum CellState {
 pub struct BagCell {
     pub name: String,
     pub icon: Option<String>,
-    /// Shown under the name (a shop's price).
+    /// Shown under the name (a shop's price, an inventory item's "x3").
     pub price: Option<String>,
     pub state: CellState,
 }
@@ -51,6 +51,8 @@ pub enum Hit {
     Prev,
     Next,
     Close,
+    /// The Use button (see [`BagScreen::use_button`]); `hit` doesn't report it, the caller checks [`use_rect`].
+    Use,
 }
 
 /// Everything the screen shows.
@@ -66,6 +68,8 @@ pub struct BagScreen<'a> {
     /// The cell the keyboard is on (on this page).
     pub focus: Option<usize>,
     pub hover: Option<Hit>,
+    /// A Use button for the selected item: `Some(true)` works, `Some(false)` is greyed.
+    pub use_button: Option<bool>,
     pub detail: Option<&'a Detail>,
     pub close_label: &'a str,
     /// Shown instead of the grid when there are no cells.
@@ -156,6 +160,12 @@ pub fn cell_rect(theme: &Theme, i: usize) -> Rect {
 pub fn close_rect(theme: &Theme) -> Rect {
     let p = panel_rect(theme);
     inside(Rect::new(p.x + p.w - MARGIN - CLOSE_W, bottom_row_y(theme), CLOSE_W, BOTTOM_ROW_H))
+}
+
+/// The Use button: in the bottom row, left of Close.
+pub fn use_rect(theme: &Theme) -> Rect {
+    let c = close_rect(theme);
+    inside(Rect::new(c.x - 20.0 - CLOSE_W, c.y, CLOSE_W, BOTTOM_ROW_H))
 }
 
 pub fn prev_rect(theme: &Theme) -> Rect {
@@ -317,6 +327,13 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
         let label = format!("Page {} of {}", s.page + 1, s.pages);
         text(out, label, page_label_rect(theme), 26.0, theme.dim_color, Align::Center);
     }
+    if let Some(enabled) = s.use_button {
+        let r = use_rect(theme);
+        let [br, bg, bb, ba] = theme.button_color;
+        let (fill, label) = if enabled { (lit(s.hover == Some(Hit::Use)), theme.text_color) } else { ([br, bg, bb, ba * 0.45], theme.dim_color) };
+        out.push(Draw::Rect { rect: r, color: fill });
+        text(out, "Use", r, 34.0, label, Align::Center);
+    }
     let close = close_rect(theme);
     out.push(Draw::Rect { rect: close, color: lit(s.hover == Some(Hit::Close)) });
     text(out, s.close_label, close, 34.0, theme.text_color, Align::Center);
@@ -373,6 +390,7 @@ mod tests {
                         pages: pages(&t, count),
                         focus: None,
                         hover: None,
+                        use_button: Some(false),
                         detail: Some(&Detail { name: "n".into(), text: "t".into(), price: Some("p".into()) }),
                         close_label: "Close",
                         empty: "Nothing",
@@ -406,7 +424,7 @@ mod tests {
         assert_eq!(t.inventory_cell_size[1], quillstone_render::theme::MIN_CELL_HEIGHT);
         let shown = vec![BagCell { name: "Key".into(), icon: Some("i.png".into()), price: Some("5 gold".into()), state: CellState::Normal }];
         let screen = BagScreen {
-            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None,
+            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None, use_button: None,
             detail: None, close_label: "Close", empty: "Nothing",
         };
         let mut out = Vec::new();
@@ -492,6 +510,7 @@ mod tests {
             pages: 1,
             focus: None,
             hover: Some(Hit::Cell(0)),
+            use_button: None,
             detail: None,
             close_label: "Leave",
             empty: "",
@@ -514,6 +533,27 @@ mod tests {
     }
 
     #[test]
+    fn the_use_button_sits_left_of_close_and_is_dimmer_when_it_cannot_be_used() {
+        let t = Theme::default();
+        let (u, c) = (use_rect(&t), close_rect(&t));
+        assert!(u.x + u.w < c.x && u.y == c.y && inside_screen(u));
+        let fill = |use_button| {
+            let screen = BagScreen {
+                title: "T", background: None, money: None, cells: &[], page: 0, pages: 1, focus: None, hover: None, use_button,
+                detail: None, close_label: "Close", empty: "",
+            };
+            let mut out = Vec::new();
+            draw_bag(&mut out, &t, &screen, &|_| None);
+            out.iter().find_map(|d| match d {
+                Draw::Rect { rect, color } if *rect == u => Some(color[3]),
+                _ => None,
+            })
+        };
+        assert_eq!(fill(None), None);
+        assert!(fill(Some(false)).unwrap() < fill(Some(true)).unwrap());
+    }
+
+    #[test]
     fn long_names_shrink_instead_of_wrapping() {
         assert_eq!(fit_size("Key", 28.0, 224.0), 28.0);
         let s = fit_size("The extremely long name of a thing", 28.0, 224.0);
@@ -527,7 +567,7 @@ mod tests {
         let shown = vec![BagCell { name: name.into(), icon: None, price: None, state: CellState::Normal }];
         let mut out = Vec::new();
         let screen = BagScreen {
-            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None,
+            title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None, use_button: None,
             detail: None, close_label: "Close", empty: "Nothing",
         };
         draw_bag(&mut out, &t, &screen, &|_| None);

@@ -135,6 +135,8 @@ struct Parser {
     blocks: Vec<IfBlock>,
     /// Labels with parameters and the line of their heading (for the fall-through check).
     param_labels: Vec<(String, usize)>,
+    /// `use=#label` of each item, to check once all labels are known: (label, line).
+    item_uses: Vec<(String, usize)>,
     /// `::sfx{stop=file}` targets, checked against the files the script plays.
     sfx_stops: Vec<(String, usize)>,
     /// `replays:` entries (line, label, title), checked once all labels are known.
@@ -304,6 +306,14 @@ impl Parser {
                     };
                     self.err(f.line, msg);
                 }
+            }
+        }
+
+        for (label, line) in std::mem::take(&mut self.item_uses) {
+            if !self.program.labels.contains_key(&label) {
+                self.err(line, format!("`use=#{label}`: unknown label `{label}`"));
+            } else if self.program.params.contains_key(&label) {
+                self.err(line, format!("`use=#{label}`: `{label}` takes parameters, and the Use button can't give them"));
             }
         }
 
@@ -1917,7 +1927,7 @@ impl Parser {
         Some(anim_src(id))
     }
 
-    /// `::item{id=key name="Brass key" icon=assets/key.png price=15 text="..."}`
+    /// `::item{id=key name="Brass key" icon=assets/key.png price=15 text="..." count=keys use=#unlock}`
     fn item(&mut self, line: usize, inner: &str) {
         let mut a = match Attrs::parse(inner) {
             Ok(a) => a,
@@ -1925,8 +1935,9 @@ impl Parser {
         };
         let (id, name, icon) = (a.value("id"), a.value("name"), a.value("icon"));
         let (price, text) = (a.value("price"), a.value("text"));
+        let (count, use_label) = (a.value("count"), a.value("use"));
         if let Some(extra) = a.leftover(&[]) {
-            let msg = format!("unknown attribute `{extra}` for `::item` (it takes: id, name, icon, price, text)");
+            let msg = format!("unknown attribute `{extra}` for `::item` (it takes: id, name, icon, price, text, count, use)");
             return self.err(line, msg);
         }
         let Some(id) = id else { return self.err(line, "`::item` needs `id=...`") };
@@ -1944,8 +1955,21 @@ impl Parser {
             Ok(p) => p,
             Err(m) => return self.err(line, m),
         };
+        if let Some(c) = &count {
+            if !matches!(self.program.vars.get(c), Some(Value::Int(_))) {
+                return self.err(line, format!("`count={c}`: `{c}` must be a whole-number variable declared in `vars:`"));
+            }
+        }
+        let use_label = match use_label.as_deref().map(|u| u.strip_prefix('#').filter(|l| !l.is_empty())) {
+            Some(None) => return self.err(line, "`use=` names a label, like `use=#drink-potion`"),
+            Some(Some(l)) => Some(l.to_string()),
+            None => None,
+        };
+        if let Some(l) = &use_label {
+            self.item_uses.push((l.clone(), line));
+        }
         let name = name.filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
-        let item = Item { id: id.clone(), name, icon, price, text: text.unwrap_or_default(), line };
+        let item = Item { id: id.clone(), name, icon, price, text: text.unwrap_or_default(), count, use_label, line };
         self.program.items.insert(id, item);
     }
 
@@ -2038,6 +2062,14 @@ impl Parser {
                     ),
                 );
             }
+            // A bought counted item changes its count variable instead of the list.
+            let counts: Vec<String> = stock.iter().filter_map(|e| self.program.items[&e.item].count.clone()).collect();
+            for count in counts {
+                if self.program.persistent.contains(&count) != pay_kept {
+                    let msg = format!("`{count}` and `{pay}` must both be persistent or neither (rolling back a purchase would give the item twice or lose both)");
+                    self.err(line, msg);
+                }
+            }
             self.push(Op::Shop { pay, into, stock }, line);
         }
         j
@@ -2082,6 +2114,10 @@ impl Parser {
         let price = price.ok_or_else(|| {
             format!("`{key}` has no price: give the item a `price=` or write `- {key}{{price=10}}`")
         })?;
+        // A counted item can be bought again and again: a free one would never run out.
+        if price == 0 && self.program.items[key].count.is_some() {
+            return Err(format!("`{key}` has a `count=`, so a shop needs a price above 0 for it (a free one could be bought forever)"));
+        }
         Ok(ShopEntry { item: key.to_string(), price, cond })
     }
 
@@ -3803,6 +3839,36 @@ mod tests {
     }
 
     #[test]
+    fn an_item_may_name_an_int_to_count_it_and_a_label_to_use_it() {
+        let head = "---\ninventory: bag\nvars: { bag: [], potions: 3, name: \"x\", gold: 9 }\n---\n";
+        let p = ok(&format!("{head}::item{{id=potion count=potions use=#drink-potion}}\n# drink potion\nHi.\n# a\nHi.\n"));
+        let potion = &p.items["potion"];
+        assert_eq!((potion.count.as_deref(), potion.use_label.as_deref()), (Some("potions"), Some("drink-potion")));
+        let bad = |item: &str, line: usize, msg: &str| {
+            let errors = errs(&format!("{head}{item}\n# drink\nHi.\n"));
+            assert!(errors.iter().any(|e| e.line == line && e.message.contains(msg)), "{item}: {errors:?}");
+        };
+        bad("::item{id=a count=name}", 5, "whole-number variable");
+        bad("::item{id=a count=bag}", 5, "whole-number variable");
+        bad("::item{id=a count=nothing}", 5, "whole-number variable");
+        bad("::item{id=a use=#nowhere}", 5, "unknown label `nowhere`");
+        bad("::item{id=a use=drink}", 5, "names a label");
+        bad("::item{id=a use=#}", 5, "names a label");
+        let params = errs(&format!("{head}::item{{id=a use=#heal}}\n# heal(n)\nHi.\n::return\n"));
+        assert!(params.iter().any(|e| e.line == 5 && e.message.contains("takes parameters")), "{params:?}");
+    }
+
+    #[test]
+    fn a_counted_item_in_a_shop_needs_a_price_and_a_matching_persistence() {
+        let head = "---\nvars: { bag: [], potions: 3, gold: 9 }\n---\n";
+        let shop = |item: &str| format!("{head}{item}\n::shop{{pay=gold into=bag}}\n- potion\n::\n");
+        assert!(has_err(&shop("::item{id=potion count=potions price=0}"), "price above 0"));
+        ok(&shop("::item{id=potion count=potions price=4}"));
+        let kept = "---\nvars: { bag: [], gold: 9 }\npersistent: { potions: 3 }\n---\n::item{id=potion count=potions price=4}\n::shop{pay=gold into=bag}\n- potion\n::\n";
+        assert!(has_err(kept, "both be persistent"));
+    }
+
+    #[test]
     fn the_staging_demo_uses_y_z_size_and_nw() {
         let p = ok(include_str!("../../../examples/staging.quill.md"));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Move { y: Some(_), .. })));
@@ -3842,9 +3908,10 @@ mod tests {
     #[test]
     fn the_market_demo_parses_with_items_a_shop_and_an_inventory_call() {
         let p = ok(include_str!("../../../examples/market.quill.md"));
-        assert_eq!(p.items.len(), 4);
+        assert_eq!(p.items.len(), 5);
         assert_eq!(p.inventory.as_deref(), Some("pack"));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::Shop { stock, .. } if stock.len() == 4 && stock[3].cond.is_some() && stock[3].price == 18)));
+        assert_eq!(p.items["tonic"].use_label.as_deref(), Some("drink-tonic"));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Shop { stock, .. } if stock.len() == 5 && stock[3].cond.is_some() && stock[3].price == 18)));
         assert!(p.ops.contains(&Op::Inventory));
         assert_eq!(p.item_icons().count(), 4);
         assert!(p.unknown_items().is_empty());

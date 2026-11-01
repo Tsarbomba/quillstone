@@ -91,6 +91,7 @@ impl Session<'_> {
                     Input::Advance => out.push_str("input advance\n"),
                     Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
                     Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
+                    Input::Use(id) => out.push_str(&format!("input use {}\n", q(id))),
                     Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
                 }
                 out
@@ -148,6 +149,7 @@ impl<'p> Session<'p> {
                         (Some("advance"), _) => Input::Advance,
                         (Some("choose"), Some(i)) => Input::Choose(num(i, n)?),
                         (Some("buy"), Some(i)) => Input::Buy(num(i, n)?),
+                        (Some("use"), Some(id)) => Input::Use(id.clone()),
                         // Only kept so the history lines up: the state before it is what rollback uses.
                         (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_LIMIT).collect()),
                         _ => return Err(format!("line {n}: bad input record")),

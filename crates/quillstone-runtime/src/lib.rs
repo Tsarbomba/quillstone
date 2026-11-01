@@ -32,6 +32,8 @@ mod tint_tests;
 mod timed_tests;
 #[cfg(test)]
 mod locked_tests;
+#[cfg(test)]
+mod use_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -202,6 +204,10 @@ pub struct ItemInfo {
     pub text: String,
     /// The price the item was declared with, if any.
     pub price: Option<i64>,
+    /// How many the player has, for an item declared with `count=` (see [`inventory_items`]).
+    pub count: Option<i64>,
+    /// The item has a Use action (`use=#label`).
+    pub has_use: bool,
 }
 
 /// One item on offer in a shop (see [`Cmd::ShowShop`]).
@@ -220,6 +226,9 @@ pub enum Input {
     Choose(usize),
     /// Buy the item at this index of the shop's offered list.
     Buy(usize),
+    /// Use the item with this id from the inventory: `::call` its `use=` label from the
+    /// line the story waits at (see [`can_use`]).
+    Use(String),
     /// The player's answer to a [`Cmd::AskInput`], as typed: it is cleaned up (see
     /// [`finish_input`]) and stored in the variable. An answer that is empty
     /// after that, with no default to use, is ignored and the story keeps waiting.
@@ -548,18 +557,50 @@ pub fn choice_timer(state: &State, program: &Program) -> Option<ChoiceTimer> {
 /// shows, under its own name and without a picture, so nothing in a list is lost.
 pub fn item_info(program: &Program, id: &str) -> ItemInfo {
     match program.items.get(id) {
-        Some(i) => ItemInfo { id: id.to_string(), name: i.name.clone(), icon: i.icon.clone(), text: i.text.clone(), price: i.price },
-        None => ItemInfo { id: id.to_string(), name: id.to_string(), icon: None, text: String::new(), price: None },
+        Some(i) => ItemInfo {
+            id: id.to_string(),
+            name: i.name.clone(),
+            icon: i.icon.clone(),
+            text: i.text.clone(),
+            price: i.price,
+            count: None,
+            has_use: i.use_label.is_some(),
+        },
+        None => ItemInfo { id: id.to_string(), name: id.to_string(), icon: None, text: String::new(), price: None, count: None, has_use: false },
     }
 }
 
-/// What the inventory screen lists: the items in the game's inventory list, in
-/// the order they were added. Empty when the game has no inventory.
+/// What the inventory screen lists: the items in the game's inventory list, in the order they were
+/// added, then the items declared with `count=` whose count is above 0 (in declaration order; the
+/// list doesn't matter for them). Empty when the game has no inventory.
 pub fn inventory_items(program: &Program, vars: &Vars) -> Vec<ItemInfo> {
     let Some(Value::List(held)) = program.inventory.as_ref().and_then(|name| vars.get(name)) else {
         return Vec::new();
     };
-    held.iter().map(|id| item_info(program, id)).collect()
+    let counted = |id: &str| program.items.get(id).is_some_and(|i| i.count.is_some());
+    let mut out: Vec<ItemInfo> = held.iter().filter(|id| !counted(id)).map(|id| item_info(program, id)).collect();
+    let mut stacks: Vec<_> = program.items.values().filter(|i| i.count.is_some()).collect();
+    stacks.sort_by_key(|i| i.line);
+    for item in stacks {
+        let n = item.count.as_ref().and_then(|c| vars.get(c)).and_then(Value::as_int).unwrap_or(0);
+        if n > 0 {
+            out.push(ItemInfo { count: Some(n), ..item_info(program, &item.id) });
+        }
+    }
+    out
+}
+
+/// Whether the player may use the item `id` now: the inventory shows it, it has a `use=` label, and
+/// the story waits at a line the player advances (not a choice, `::wait`, `::input`, shop, `{nw}`
+/// line or video), with room on the call stack.
+pub fn can_use(program: &Program, state: &State, id: &str) -> bool {
+    let at_line = matches!(&state.pending, Some(Cmd::Say { .. })) && !moves_on_by_itself(&state.pending);
+    let label = program.items.get(id).and_then(|i| i.use_label.as_ref()).and_then(|l| program.labels.get(l));
+    at_line
+        && !state.finished
+        && state.stack.len() < MAX_CALL_DEPTH
+        && label.is_some()
+        && inventory_items(program, &state.vars).iter().any(|i| i.id == id)
 }
 
 /// Indices of the shop lines currently on offer (their condition, if any, is true).
@@ -581,14 +622,21 @@ fn shop_cmd(program: &Program, pay: &str, into: &str, stock: &[ShopEntry], vars:
         .into_iter()
         .map(|i| {
             let s = &stock[i];
-            ShopItem { item: item_info(program, &s.item), price: s.price, owned: held.contains(&s.item) }
+            // A counted item can be bought again: it is never "owned".
+            let owned = held.contains(&s.item) && counted_var(program, &s.item).is_none();
+            ShopItem { item: item_info(program, &s.item), price: s.price, owned }
         })
         .collect();
     Cmd::ShowShop { pay: pay.to_string(), money: money(vars, pay), items }
 }
 
+/// The variable counting the item `id` (`count=`), if it has one.
+fn counted_var<'a>(program: &'a Program, id: &str) -> Option<&'a String> {
+    program.items.get(id)?.count.as_ref()
+}
+
 /// Buy the `index`th offered item of the shop at `state.pc`: pay and add it to the
-/// list. `false` (and nothing changes) if it is owned, costs more than the player
+/// list (or add 1 to its count, for an item with `count=`). `false` (and nothing changes) if it is owned, costs more than the player
 /// has, or isn't there, so money can never go below zero.
 fn buy(state: &mut State, program: &Program, index: usize) -> bool {
     let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return false };
@@ -600,13 +648,20 @@ fn buy(state: &mut State, program: &Program, index: usize) -> bool {
     if !matches!(state.vars.get(pay), None | Some(Value::Int(_))) {
         return false;
     }
-    let owned = held.contains(&entry.item);
+    let count = counted_var(program, &entry.item);
+    if count.is_some_and(|c| !matches!(state.vars.get(c), Some(Value::Int(_)))) {
+        return false;
+    }
+    let owned = count.is_none() && held.contains(&entry.item);
     if owned || entry.price < 0 || entry.price > money(&state.vars, pay) {
         return false;
     }
     let lit = |v| Expr::Lit(v);
     Effect { var: pay.clone(), op: AssignOp::Sub, value: lit(Value::Int(entry.price)) }.apply(&mut state.vars);
-    Effect { var: into.clone(), op: AssignOp::Add, value: lit(Value::Str(entry.item.clone())) }.apply(&mut state.vars);
+    match count {
+        Some(c) => Effect { var: c.clone(), op: AssignOp::Add, value: lit(Value::Int(1)) }.apply(&mut state.vars),
+        None => Effect { var: into.clone(), op: AssignOp::Add, value: lit(Value::Str(entry.item.clone())) }.apply(&mut state.vars),
+    }
     true
 }
 
@@ -851,6 +906,19 @@ pub(crate) fn step_traced(
                 let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return Vec::new() };
                 let cmd = shop_cmd(program, pay, into, stock, &state.vars);
                 return block(state, &mut Vec::new(), cmd);
+            }
+            (Cmd::Say { .. }, Some(Input::Use(id))) => {
+                if !can_use(program, state, &id) {
+                    return Vec::new();
+                }
+                // A call that comes back to this same line, which is shown again. Passing the
+                // label's start counts a visit for `seen(label)`; this isn't a new one.
+                for var in program.counted.get(&state.pc).into_iter().flatten() {
+                    let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
+                    state.vars.insert(var.clone(), Value::Int(n - 1));
+                }
+                state.stack.push(state.pc);
+                state.pc = program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")];
             }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
                 let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) else { return Vec::new() };

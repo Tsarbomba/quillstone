@@ -1,8 +1,9 @@
 //! The inventory and shop screens' input: what a click, a key or the wheel does
 //! on the grid (see `crate::bag` for the layout). The inventory is view-only; in a
-//! shop a click on an item buys it.
+//! shop a click on an item buys it. An item with a `use=` label has a Use button
+//! (or Enter) while the story waits at a line.
 
-use quillstone_runtime::{inventory_items, ItemInfo};
+use quillstone_runtime::{can_use, inventory_items, ItemInfo};
 
 use super::*;
 use crate::bag::{self, BagCell, BagScreen, CellState, Detail, Hit};
@@ -22,6 +23,8 @@ pub(super) struct Bag {
 struct Shelf {
     cells: Vec<BagCell>,
     details: Vec<Detail>,
+    /// The id of each inventory cell's item when it has a Use action (empty in a shop).
+    uses: Vec<Option<String>>,
     /// The shop's money line and label for what it is paid in.
     shop: Option<(String, String)>,
 }
@@ -148,18 +151,43 @@ impl Game<'_> {
                     })
                     .collect();
                 let details = items.iter().map(|s| info_detail(&s.item, Some(format!("{} {label}", price_line(s.price))))).collect();
-                Shelf { cells, details, shop: Some((format!("{}: {money}", capitalise(&label)), label)) }
+                Shelf { cells, details, uses: Vec::new(), shop: Some((format!("{}: {money}", capitalise(&label)), label)) }
             }
-            (Screen::Shop, _) => Shelf { cells: Vec::new(), details: Vec::new(), shop: None },
+            (Screen::Shop, _) => Shelf { cells: Vec::new(), details: Vec::new(), uses: Vec::new(), shop: None },
             _ => {
                 let items: Vec<ItemInfo> = inventory_items(self.program, &self.session.state().vars).into_iter().map(localize).collect();
                 let cells = items
                     .iter()
-                    .map(|i| BagCell { name: i.name.clone(), icon: i.icon.clone(), price: None, state: CellState::Normal })
+                    .map(|i| BagCell { name: i.name.clone(), icon: i.icon.clone(), price: i.count.map(|n| format!("x{n}")), state: CellState::Normal })
                     .collect();
                 let details = items.iter().map(|i| info_detail(i, i.price.map(price_line))).collect();
-                Shelf { cells, details, shop: None }
+                let uses = items.iter().map(|i| i.has_use.then(|| i.id.clone())).collect();
+                Shelf { cells, details, uses, shop: None }
             }
+        }
+    }
+
+    /// Whether the Use button works for the item `id`: the inventory was opened over the story
+    /// (not by `::inventory`), no replay is running, and the story waits at a line (see `can_use`).
+    fn can_use_now(&self, id: &str) -> bool {
+        self.bag.overlay && self.screen == Screen::Inventory && self.replay.is_none() && can_use(self.program, self.session.state(), id)
+    }
+
+    /// The Use button for the selected item, if it has one: whether it works.
+    fn use_button(&self, shelf: &Shelf) -> Option<bool> {
+        let id = shelf.uses.get(self.bag.focus?)?.as_deref()?;
+        Some(self.can_use_now(id))
+    }
+
+    /// The Use button or Enter: close the inventory and call the item's label.
+    fn use_selected(&mut self) {
+        let shelf = self.shelf();
+        let Some(id) = self.bag.focus.and_then(|f| shelf.uses.get(f)).cloned().flatten() else { return };
+        if self.can_use_now(&id) {
+            self.screen = Screen::Story;
+            self.forward(Input::Use(id));
+        } else {
+            self.notify("Can't use that now");
         }
     }
 
@@ -173,7 +201,11 @@ impl Game<'_> {
         let page = self.bag.page.min(pages - 1);
         let start = page * per;
         let shown = &shelf.cells[start.min(shelf.cells.len())..(start + per).min(shelf.cells.len())];
-        let hover = self.pointer().and_then(|(x, y)| bag::hit(theme, x, y, shown.len(), pages));
+        let use_button = self.use_button(&shelf);
+        let hover = self.pointer().and_then(|(x, y)| match use_button {
+            Some(_) if bag::use_rect(theme).contains(x, y) => Some(Hit::Use),
+            _ => bag::hit(theme, x, y, shown.len(), pages),
+        });
         let focus = self.bag.focus.and_then(|f| f.checked_sub(start)).filter(|&f| f < shown.len());
         // The description follows the mouse, else the keyboard.
         let detail_at = match hover {
@@ -191,6 +223,7 @@ impl Game<'_> {
             pages,
             focus,
             hover,
+            use_button,
             detail: detail_at.and_then(|i| shelf.details.get(i)),
             close_label: if shop { "Leave" } else { "Close" },
             empty: "Nothing here yet.",
@@ -206,12 +239,16 @@ impl Game<'_> {
         let on_page = shelf_len.saturating_sub(self.bag.page * per).min(per);
         match event {
             Event::Press(Button::Left) => {
+                let use_clicked = self.use_button(&self.shelf()).is_some() && self.cursor.is_some_and(|(x, y)| bag::use_rect(theme).contains(x, y));
+                if use_clicked {
+                    return self.use_selected();
+                }
                 match self.cursor.and_then(|(x, y)| bag::hit(theme, x, y, on_page, pages)) {
-                    Some(Hit::Cell(i)) => self.bag_activate(self.bag.page * per + i),
+                    Some(Hit::Cell(i)) => self.bag_activate(self.bag.page * per + i, false),
                     Some(Hit::Prev) => self.turn_bag_page(-1, per, pages),
                     Some(Hit::Next) => self.turn_bag_page(1, per, pages),
                     Some(Hit::Close) => self.close_bag(),
-                    None => {}
+                    Some(Hit::Use) | None => {}
                 }
             }
             // The inventory over the story is an overlay like the history: Esc closes
@@ -234,7 +271,7 @@ impl Game<'_> {
             Event::Key(Key::PageDown) => self.turn_bag_page(1, per, pages),
             Event::Key(Key::Enter | Key::Space) => {
                 if let Some(f) = self.bag.focus {
-                    self.bag_activate(f);
+                    self.bag_activate(f, true);
                 }
             }
             Event::Key(key @ (Key::Up | Key::Down | Key::Left | Key::Right)) if shelf_len > 0 => {
@@ -268,10 +305,14 @@ impl Game<'_> {
         self.bag.focus = self.bag.focus.map(|f| (page * per + f % per).min(n.saturating_sub(1)));
     }
 
-    /// Click or Enter on the cell `i`: look at it in the inventory, buy it in a shop.
-    fn bag_activate(&mut self, i: usize) {
+    /// Click or Enter on the cell `i`: look at it in the inventory (Enter also uses it), buy it in a shop.
+    fn bag_activate(&mut self, i: usize, by_key: bool) {
         self.bag.focus = Some(i);
         if self.screen != Screen::Shop {
+            // Enter on an item with a Use action uses it; a click only selects it (the Use button is for that).
+            if by_key && self.use_button(&self.shelf()).is_some() {
+                self.use_selected();
+            }
             return;
         }
         let shelf = self.shelf();

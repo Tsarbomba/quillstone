@@ -493,6 +493,11 @@ pub struct Item {
     pub price: Option<i64>,
     /// The description shown when the item is hovered or selected.
     pub text: String,
+    /// An int variable holding how many the player has (`count=`): the item is then
+    /// shown while it is above 0, whatever the inventory list holds.
+    pub count: Option<String>,
+    /// The label the inventory's Use button calls (`use=#label`).
+    pub use_label: Option<String>,
     /// Source line (1-based) of the declaration.
     pub line: usize,
 }

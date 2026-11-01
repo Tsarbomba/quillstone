@@ -962,6 +962,7 @@ used, like characters:
 ````markdown
 ::item{id=key name="Brass key" icon=assets/gui/key.png price=15 text="Opens the clock tower."}
 ::item{id=map}
+::item{id=potion name="Potion" count=potions use=#drink-potion}
 ````
 
 - `id` is the text stored in list variables (`inventory += "key"`): letters, digits,
@@ -970,6 +971,26 @@ used, like characters:
   shown when the item is hovered or selected.
 - `icon` is a picture (PNG, JPEG or WebP) drawn above the name. `price` is a whole
   number, 0 or more: what a shop asks unless its line says otherwise.
+- `count=potions` makes a stack: it names a whole-number variable declared in `vars:`
+  (or `persistent:`), and the item is shown with "x3" under its name while that number
+  is above 0, and not at all at 0 or less. For an item with `count=` the list is not
+  looked at (set the number, not `pack += "potion"`); items without it work as before.
+  Counted items are listed after the others, in the order they are declared.
+- `use=#drink-potion` gives the item a **Use** button on the [inventory](#inventory)
+  screen: it calls that label (a label without parameters; `quillstone check` reports
+  an unknown one). The item's count is not changed for you, the label does it:
+
+  ````markdown
+  # drink-potion
+
+  ::set{potions -= 1}
+  ::set{hp += 5}
+  You drink the potion. ({potions} left)
+  ::return
+  ````
+
+  A `use=` item with no `count=` is used the same way and stays in its list unless the
+  label does `::set{pack -= "scroll"}`.
 - A list may hold an id that was never declared: the screens show it under its id
   with no picture. `quillstone check` warns about a `+= "x"` or `has "x"` on the
   inventory list that names no item (usually a typo) and checks the icons.
@@ -997,8 +1018,18 @@ You pick up a brass key.
   cells with the item's picture and name. Pointing at an item (or moving to it with
   the arrow keys) shows its description, and its price if it has one, in a box under
   the grid. With more items than fit, the mouse wheel, Page Up/Down and the arrow keys turn
-  pages. It is view-only; to let an item do something, offer a choice with
+  pages. Selecting an item (a click, or the arrow keys) only shows it; an item with
+  [`use=`](#items) also shows a **Use** button next to Close, and Enter or Space on
+  the selected item presses it. To let another item do something, offer a choice with
   `if pack has "key"`.
+- Use works only when the player opened the inventory over the story (the Items
+  button or I) and the story is waiting for them to advance a line. It closes the
+  inventory and **calls** the label as a normal step, so when the label ends with
+  `::return` the same line is shown again; rollback goes back to before the use and a
+  save made inside the label loads inside it. Over a choice, `::wait`, `::input`, a shop,
+  a line ending in `{nw}`, a scene replay, or in an inventory opened by `::inventory`,
+  the button is shown greyed and a press only says "Can't use that now".
+  `quillstone test` uses each such item once, so its label counts as reached.
 - Opened by the player, it sits over the story, which waits: a `::wait` doesn't run
   out and nothing is skipped. Esc, a right click, the I key or the Close button closes it.
 - `::inventory` opens the same screen from the script. The story waits until the player
@@ -1042,6 +1073,9 @@ vars: { gold: 40, pack: [], polite: false }
   new money. An item already in the list is marked **Owned** and can't be bought again;
   an item that costs more than the player has is greyed out and a click only says
   "Not enough gold". Money can never go below zero.
+- An item with [`count=`](#items) is never "owned": buying it adds 1 to its count
+  variable (and nothing to `into`), as often as the player can pay. Its price must be
+  above 0, and its count variable must be `persistent:` exactly when `pay` is.
 - `pay` and `into` must both be `persistent:` or both ordinary variables
   (`quillstone check` reports the line). A persistent list with ordinary money, or the
   reverse, would give the item twice or lose both the money and the item when a purchase

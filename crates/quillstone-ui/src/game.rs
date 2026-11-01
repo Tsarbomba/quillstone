@@ -1174,7 +1174,10 @@ impl<'p> Game<'p> {
 
     /// Move the story on. Arriving at a choice, shop or text entry is a checkpoint: auto save.
     fn forward(&mut self, input: Input) {
-        self.mark_current_read();
+        // Using an item leaves the line unread: it comes back after the label.
+        if !matches!(input, Input::Use(_)) {
+            self.mark_current_read();
+        }
         let purchase = matches!(input, Input::Buy(_));
         let cmds = self.session.input(input);
         self.show(&cmds);

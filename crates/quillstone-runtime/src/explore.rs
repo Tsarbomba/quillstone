@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
+use crate::{can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -66,6 +66,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
         ran: vec![false; program.ops.len()],
         offered: HashSet::new(),
         shop_offered: HashSet::new(),
+        used: HashSet::new(),
         reported: HashSet::new(),
         endings: BTreeSet::new(),
         report: Report::default(),
@@ -132,6 +133,17 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 }
                 answers.into_iter().map(|a| (Input::Text(a), None)).collect()
             }
+            Some(Cmd::Say { .. }) => {
+                // Using an item runs its label and comes back to this line: each item is tried once,
+                // the first time it can be used (every use at every line would multiply the situations).
+                let mut inputs = vec![(Input::Advance, None)];
+                for id in program.items.keys().filter(|id| can_use(program, &state, id)) {
+                    if x.used.insert(id.clone()) {
+                        inputs.push((Input::Use(id.clone()), Some(format!("use {}", program.items[id].name))));
+                    }
+                }
+                inputs
+            }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
         };
@@ -197,6 +209,8 @@ struct Explorer<'p> {
     offered: HashSet<(usize, usize)>,
     /// (shop op, stock line) pairs that were ever on offer.
     shop_offered: HashSet<(usize, usize)>,
+    /// Items whose Use action was already tried.
+    used: HashSet<String>,
     /// (line, kind) already reported, to say each thing once.
     reported: HashSet<(usize, &'static str)>,
     endings: BTreeSet<usize>,
