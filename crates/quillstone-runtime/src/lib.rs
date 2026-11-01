@@ -191,8 +191,10 @@ pub enum Cmd {
 pub struct Spot {
     /// Shown as a tooltip while hovered.
     pub label: String,
-    /// `x, y, w, h` as fractions (0..1) of the screen.
+    /// `x, y, w, h` as fractions (0..1) of the screen, or of the sprite's drawn rect when `sprite` is set.
     pub rect: [f32; 4],
+    /// The region follows this sprite; the view works out where it is, and it can't be clicked while the sprite is not shown.
+    pub sprite: Option<String>,
     /// Drawn stretched into the region.
     pub image: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
@@ -534,10 +536,16 @@ fn visible_options(options: &[ChoiceOption], vars: &Vars) -> Vec<usize> {
 /// Whether anything in `shown` can be picked. A choice with only locked options is treated as
 /// one with no options at all (the story carries on past it), or nothing could move the game on.
 fn any_pickable(options: &[ChoiceOption], shown: &[usize], vars: &Vars) -> bool {
-    shown.iter().any(|&i| pickable(&options[i], vars))
+    // The jump a timed hotspot screen adds for its timeout is not something to pick.
+    shown.iter().any(|&i| pickable(&options[i], vars) && !is_timeout(&options[i]))
 }
 
-/// The time limit of the timed `::choice` the state waits at. The runtime never counts the
+/// The invisible option of a timed `::hotspots` that carries `default=#label` (see `ChoiceOption::default`).
+pub fn is_timeout(option: &ChoiceOption) -> bool {
+    option.default && option.area.is_some()
+}
+
+/// The time limit of the timed `::choice` or `::hotspots` the state waits at. The runtime never counts the
 /// time: the frontend does, and sends [`Input::Choose`] with `default` when it runs out.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChoiceTimer {
@@ -551,7 +559,7 @@ pub struct ChoiceTimer {
 /// untrusted) and hot reload can't leave a wrong one behind. The default is the option marked
 /// `{default}`, or the first pickable one when that is hidden or locked by its condition.
 pub fn choice_timer(state: &State, program: &Program) -> Option<ChoiceTimer> {
-    if !matches!(state.pending, Some(Cmd::ShowChoices { .. })) {
+    if !matches!(state.pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
         return None;
     }
     let Some(Op::Choice { options, time: Some(seconds) }) = program.ops.get(state.pc) else { return None };
@@ -788,7 +796,7 @@ fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
             .filter_map(|&i| {
                 let o = &options[i];
                 let area = o.area.as_ref()?;
-                Some(Spot { label: interpolate(&o.text, vars), rect: area.rect, image: area.image.clone(), hidden: area.hidden })
+                Some(Spot { label: interpolate(&o.text, vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hidden: area.hidden })
             })
             .collect();
         Cmd::ShowHotspots { spots }

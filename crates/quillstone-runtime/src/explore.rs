@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, HudAction, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{can_press, can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
+use crate::{can_press, can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -94,7 +94,13 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 }
                 let (labels, locked) = match pending {
                     Cmd::ShowChoices { options, locked } => (options.clone(), locked.clone()),
-                    Cmd::ShowHotspots { spots } => (spots.iter().map(|s| s.label.clone()).collect(), Vec::new()),
+                    Cmd::ShowHotspots { spots } => {
+                        // A region bound to a sprite that isn't shown can't be clicked (the explorer doesn't know
+                        // where sprites are, so a shown one counts); the timeout is told apart by its empty label.
+                        let gone = |s: &Spot| s.sprite.as_ref().filter(|id| !state.sprites.iter().any(|p| &p.id == *id)).map(|_| String::new());
+                        let label = |s: &Spot| if s.label.is_empty() { "(time out)".to_string() } else { s.label.clone() };
+                        (spots.iter().map(label).collect(), spots.iter().map(gone).collect())
+                    }
                     _ => (Vec::new(), Vec::new()),
                 };
                 let open = |i: &usize| !locked.get(*i).is_some_and(Option::is_some);
@@ -1165,6 +1171,29 @@ mod tests {
         let r = test(src);
         assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
         assert_eq!(r.endings.len(), 2, "both options are played, whatever the timer");
+    }
+
+    #[test]
+    fn the_tester_plays_the_timeout_of_a_timed_hotspot_screen_as_one_more_branch() {
+        let src = "# a\n::hotspots{time=3 default=#slow}\n- [Door](#door){rect=0,0,0.1,0.1}\n::\n# door\nDoor.\n::end\n# slow\nToo slow.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert_eq!(r.endings.len(), 2, "the door and the timeout");
+    }
+
+    #[test]
+    fn a_sprite_hotspot_counts_as_offered_only_while_its_sprite_is_shown() {
+        let screen = "::hotspots\n- [Bug](#caught){sprite=bug}\n- [Door](#door){rect=0,0,0.1,0.1}\n::\n# caught\nCaught.\n::end\n# door\nDoor.\n::end\n";
+        let shown = test(&format!("::show{{id=bug src=bug.png}}\n# a\n{screen}"));
+        assert!(shown.errors.is_empty() && shown.warnings.is_empty(), "{:?}", (messages(&shown.errors), messages(&shown.warnings)));
+        assert_eq!(shown.endings.len(), 2, "caught and door");
+        let hidden = test(&format!("::show{{id=bug src=bug.png}}\n::hide{{bug}}\n# a\n{screen}"));
+        assert_eq!(hidden.endings.len(), 1, "only the door can be clicked");
+        // shown on one path only: both branches are explored, each with what is on stage
+        let src = "---\nvars: { lit: false }\n---\n# a\n::choice\n- [Light](#on)\n- [Dark](#off)\n::\n# on\n::show{id=bug src=bug.png}\n::jump{to=map}\n# off\n::jump{to=map}\n# map\n::hotspots\n- [Bug](#caught){sprite=bug}\n- [Door](#door){rect=0,0,0.1,0.1}\n::\n# caught\nCaught.\n::end\n# door\nDoor.\n::end\n";
+        let r = test(src);
+        assert!(r.errors.is_empty(), "{:?}", messages(&r.errors));
+        assert_eq!(r.endings.len(), 2, "caught (lit path) and door");
     }
 
     #[test]

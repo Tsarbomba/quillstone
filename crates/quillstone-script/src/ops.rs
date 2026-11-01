@@ -1248,7 +1248,9 @@ pub struct ChoiceOption {
     pub cond: Option<Cond>,
     /// Set for the entries of a `::hotspots` block: where on the screen to click.
     pub area: Option<Area>,
-    /// Picked when a timed choice runs out (`{default}`); only in a `::choice{time=..}`.
+    /// Picked when a timed choice runs out (`{default}`); only in a `::choice{time=..}`. In a timed
+    /// `::hotspots{time=.. default=#label}` it marks the invisible, unclickable option the parser adds
+    /// to carry that jump (empty text, a zero-size hidden area): it is the only `default` with an `area`.
     pub default: bool,
     /// `{show}` / `{show="reason"}`: while `cond` is false the option is drawn greyed instead of hidden.
     pub lock: Option<Lock>,
@@ -1268,8 +1270,11 @@ pub struct Lock {
 /// A clickable region of the screen (`::hotspots`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Area {
-    /// `x, y, w, h` as fractions (0..1) of the screen.
+    /// `x, y, w, h` as fractions (0..1) of the screen, or of the sprite's drawn rect when `sprite` is set.
     pub rect: [f32; 4],
+    /// `sprite=id`: the region follows that sprite (`rect` is then relative to it; the whole sprite when
+    /// the author gave none). Not clickable while the sprite is not shown.
+    pub sprite: Option<String>,
     /// Drawn stretched into the region; invisible until hovered without one.
     pub image: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.

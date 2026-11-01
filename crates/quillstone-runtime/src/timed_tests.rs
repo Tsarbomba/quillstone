@@ -119,3 +119,60 @@ fn a_save_moved_to_a_script_where_the_choice_is_not_timed_has_no_timer() {
     let (loaded, _) = Session::load(&untimed, &save).unwrap();
     assert_eq!(timer(&loaded, &untimed), None);
 }
+
+// ---- timed hotspots ------------------------------------------------------------------------------
+
+const HOT: &str = "\
+---
+vars: { open: true }
+---
+# start
+::show{id=bug src=bug.png}
+::hotspots{time=3 default=#slow}
+- [Bug](#caught){sprite=bug}
+- [Door](#door){rect=0,0,0.1,0.1, if open}
+::
+# caught
+Caught.
+::end
+# door
+Door.
+::end
+# slow
+Too slow.
+::end
+";
+
+#[test]
+fn a_timed_hotspot_screen_has_a_timer_whose_default_is_the_timeout_jump() {
+    let p = parse(HOT).unwrap();
+    let (mut game, _) = Session::start(&p);
+    assert_eq!(timer(&game, &p), Some(ChoiceTimer { seconds: 3.0, default: 2 }), "after the bug and the door");
+    // the door is gone: the timeout moves up in the visible list, still last
+    let gated = parse(&HOT.replace("open: true", "open: false")).unwrap();
+    let (closed, _) = Session::start(&gated);
+    assert_eq!(timer(&closed, &gated), Some(ChoiceTimer { seconds: 3.0, default: 1 }));
+    let cmds = game.input(Input::Choose(2));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Say { text, .. } if text == "Too slow.")));
+    assert_eq!(timer(&game, &p), None);
+}
+
+#[test]
+fn a_timed_hotspot_screen_with_nothing_to_click_is_skipped_not_waited_out() {
+    let p = parse("---\nvars: { open: false }\n---\n# a\n::hotspots{time=3 default=#slow}\n- [Door](#a){rect=0,0,0.1,0.1, if open}\n::\n# slow\nToo slow.\n::end\n").unwrap();
+    let (game, _) = Session::start(&p);
+    assert!(matches!(&game.state().pending, Some(Cmd::Say { text, .. }) if text == "Too slow."));
+}
+
+#[test]
+fn a_timed_hotspot_screen_survives_a_save_with_the_same_timer() {
+    let p = parse(HOT).unwrap();
+    let (game, _) = Session::start(&p);
+    let text = game.save();
+    assert!(text.contains("pending hotspots"));
+    let (loaded, _) = Session::load(&p, &text).unwrap();
+    assert_eq!(timer(&loaded, &p), Some(ChoiceTimer { seconds: 3.0, default: 2 }));
+    let untimed = parse(&HOT.replace("::hotspots{time=3 default=#slow}", "::hotspots")).unwrap();
+    let (loaded, _) = Session::load(&untimed, &text).unwrap();
+    assert_eq!(timer(&loaded, &untimed), None, "the script decides, not the save");
+}

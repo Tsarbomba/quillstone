@@ -346,9 +346,11 @@ fn hidden_hotspots(program: &Program) -> Vec<(usize, String)> {
     for (pc, op) in program.ops.iter().enumerate() {
         let Op::Choice { options, .. } = op else { continue };
         for (i, a) in options.iter().enumerate() {
-            let Some(ra) = a.area.as_ref().filter(|_| a.cond.is_none()).map(|a| a.rect) else { continue };
+            // A region bound to a sprite is relative to it, and the timeout has no rect: neither is compared.
+            let fixed = |o: &quillstone_script::ChoiceOption| o.area.as_ref().filter(|a| a.sprite.is_none() && !o.default).map(|a| a.rect);
+            let Some(ra) = fixed(a).filter(|_| a.cond.is_none()) else { continue };
             for b in options[i + 1..].iter().filter(|b| b.cond.is_none()) {
-                let Some(rb) = b.area.as_ref().map(|a| a.rect) else { continue };
+                let Some(rb) = fixed(b) else { continue };
                 let eps = 1e-4;
                 let covered = rb[0] <= ra[0] + eps
                     && rb[1] <= ra[1] + eps
@@ -1142,6 +1144,13 @@ mod tests {
         assert_eq!(blocks("# a\n::hotspots\n- [x](#a){rect=0,0,0.1,0.1, hidden}\n- [y](#a){rect=0.5,0.5,0.1,0.1, hidden}\n::\n"), 1);
         assert_eq!(blocks("# a\n::hotspots\n- [x](#a){rect=0,0,0.1,0.1, hidden}\n- [y](#a){rect=0.5,0.5,0.1,0.1}\n::\n"), 0);
         assert_eq!(blocks("# a\n::choice\n- [x](#a)\n::\n"), 0);
+    }
+
+    #[test]
+    fn sprite_regions_and_the_timeout_are_not_compared_with_screen_rects() {
+        // the sprite's rect is relative to it and the timeout has none: neither "lies under" the big region
+        let src = "::show{id=bug src=b.png}\n# a\n::hotspots{time=3 default=#a}\n- [Bug](#a){sprite=bug rect=0.1,0.1,0.1,0.1}\n- [All](#a){rect=0,0,1,1}\n::\n";
+        assert!(hidden_hotspots(&parse(src).unwrap()).is_empty());
     }
 
     #[test]

@@ -139,6 +139,8 @@ struct Parser {
     item_uses: Vec<(String, usize)>,
     /// `call=#label` of each HUD button, checked the same way: (label, line).
     hud_calls: Vec<(String, usize)>,
+    /// `sprite=id` of each hotspot, checked against the sprites the script shows: (id, line).
+    sprite_refs: Vec<(String, usize)>,
     /// `::sfx{stop=file}` targets, checked against the files the script plays.
     sfx_stops: Vec<(String, usize)>,
     /// `replays:` entries (line, label, title), checked once all labels are known.
@@ -319,6 +321,14 @@ impl Parser {
                 self.err(line, format!("`use=#{label}`: unknown label `{label}`"));
             } else if self.program.params.contains_key(&label) {
                 self.err(line, format!("`use=#{label}`: `{label}` takes parameters, and the Use button can't give them"));
+            }
+        }
+
+        let shown: std::collections::HashSet<String> =
+            self.program.ops.iter().filter_map(|op| if let Op::Show { id, .. } = op { Some(id.clone()) } else { None }).collect();
+        for (id, line) in std::mem::take(&mut self.sprite_refs) {
+            if !shown.contains(&id) {
+                self.err(line, format!("`sprite={id}`: no `::show` ever shows a sprite called `{id}`"));
             }
         }
 
@@ -2732,28 +2742,30 @@ impl Parser {
         let line = self.base + start + 1;
         let name = if hot { "::hotspots" } else { "::choice" };
         let mut time = None;
-        if hot {
-            if !inner.is_empty() {
-                self.err(line, format!("`{name}` takes no attributes"));
-            }
-        } else {
-            match Attrs::parse(inner) {
-                Ok(mut a) => {
-                    let value = a.take("time");
-                    if let Some(extra) = a.leftover(&[]) {
-                        self.err(line, format!("unknown attribute `{extra}` for `::choice` (it takes: time)"));
-                    }
-                    match value {
-                        None => {}
-                        Some(v) => match v.as_deref().map(parse_choice_time) {
-                            Some(Ok(t)) => time = Some(t),
-                            Some(Err(m)) => self.err(line, m),
-                            None => self.err(line, "`time` needs a number of seconds, like `::choice{time=8}`"),
-                        },
-                    }
+        let mut default_to = None;
+        match Attrs::parse(inner) {
+            Ok(mut a) => {
+                let value = a.take("time");
+                let jump = if hot { a.take("default") } else { None };
+                let takes = if hot { "time, default" } else { "time" };
+                if let Some(extra) = a.leftover(&[]) {
+                    self.err(line, format!("unknown attribute `{extra}` for `{name}` (it takes: {takes})"));
                 }
-                Err(m) => self.err(line, m),
+                match value {
+                    None => {}
+                    Some(v) => match v.as_deref().map(parse_choice_time) {
+                        Some(Ok(t)) => time = Some(t),
+                        Some(Err(m)) => self.err(line, m),
+                        None => self.err(line, format!("`time` needs a number of seconds, like `{name}{{time=8}}`")),
+                    },
+                }
+                match jump.map(|j| j.as_deref().and_then(|j| j.strip_prefix('#')).map(slug)) {
+                    None => {}
+                    Some(Some(label)) if !label.is_empty() => default_to = Some(label),
+                    Some(_) => self.err(line, "`default` needs a label, like `default=#too-slow`"),
+                }
             }
+            Err(m) => self.err(line, m),
         }
         let mut options = Vec::new();
         let mut labels = Vec::new();
@@ -2783,8 +2795,16 @@ impl Parser {
         if !closed {
             self.err(line, format!("`{name}` is never closed with a line containing only `::`"));
         }
+        if hot && time.is_some() != default_to.is_some() {
+            let msg = if time.is_some() {
+                "a timed `::hotspots` needs `default=#label`: where to go when time runs out"
+            } else {
+                "`default=#label` needs a timed block (`::hotspots{time=3 default=#too-slow}`)"
+            };
+            self.err(line, msg);
+        }
         let defaults: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.default).map(|(k, _)| k).collect();
-        if time.is_some() && defaults.is_empty() && !options.is_empty() {
+        if !hot && time.is_some() && defaults.is_empty() && !options.is_empty() {
             self.err(line, "a timed `::choice` needs one option marked `{default}`: the one picked when time runs out");
         }
         for &k in defaults.iter().skip(1) {
@@ -2799,6 +2819,13 @@ impl Parser {
             self.err(line, if hot { "`::hotspots` has no regions" } else { "`::choice` has no options" });
         } else {
             let op = self.here();
+            if let Some(label) = default_to.filter(|_| time.is_some()) {
+                // The timeout is one more outcome, like a timed choice's default: a hidden option
+                // nothing can click, so the explorer, graph, rollback and saves need no new case.
+                let area = Area { rect: [0.0; 4], sprite: None, image: None, hidden: true };
+                options.push(ChoiceOption { text: String::new(), target: UNSET, effects: Vec::new(), cond: None, area: Some(area), default: true, lock: None, line });
+                labels.push((label, line));
+            }
             for (k, (label, ln)) in labels.into_iter().enumerate() {
                 self.fixups.push(Fixup { op, option: Some(k), label, line: ln });
             }
@@ -2837,7 +2864,7 @@ impl Parser {
         let mut default = false;
         let mut show: Option<String> = None;
         if hot && tail.is_empty() {
-            return Err("a hotspot needs `{rect=x,y,w,h}` after its label".into());
+            return Err("a hotspot needs `{rect=x,y,w,h}` or `{sprite=id}` after its label".into());
         }
         if !tail.is_empty() {
             let inner = tail
@@ -2848,13 +2875,23 @@ impl Parser {
             if hot {
                 let rect = take_attr(&mut inner, "rect");
                 let image = take_attr(&mut inner, "image");
-                area = Some(Area {
-                    rect: parse_rect(&rect.ok_or("a hotspot needs `rect=x,y,w,h` (each 0 to 1 or a percentage)")?)?,
-                    image: image.map(|i| check_hotspot_image(&i)).transpose()?,
-                    hidden: false,
-                });
-            } else if ["rect", "image"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
-                return Err("`rect=` and `image=` only belong in a `::hotspots` block".into());
+                let sprite = take_attr(&mut inner, "sprite");
+                if sprite.as_deref() == Some("") {
+                    return Err("`sprite=` needs a sprite name, like `sprite=firefly`".into());
+                }
+                // Following a sprite, `rect=` is relative to it and the whole sprite when left out.
+                let rect = match (&sprite, rect) {
+                    (Some(_), None) => [0.0, 0.0, 1.0, 1.0],
+                    (_, Some(r)) => parse_rect(&r)?,
+                    (None, None) => return Err("a hotspot needs `rect=x,y,w,h` (each 0 to 1 or a percentage) or `sprite=id`".into()),
+                };
+                let sprite = sprite.map(|s| self.sprite_id(&s));
+                if let Some(id) = &sprite {
+                    self.sprite_refs.push((id.clone(), line));
+                }
+                area = Some(Area { rect, sprite, image: image.map(|i| check_hotspot_image(&i)).transpose()?, hidden: false });
+            } else if ["rect", "image", "sprite"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
+                return Err("`rect=`, `image=` and `sprite=` only belong in a `::hotspots` block".into());
             }
             let inner = inner.as_str();
             for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
@@ -3878,6 +3915,75 @@ mod tests {
     }
 
     #[test]
+    fn a_timed_hotspot_screen_adds_a_hidden_option_that_jumps_when_time_runs_out() {
+        let p = ok("# a\n::hotspots{time=3 default=#too-slow}\n- [Go](#a){rect=0,0.5,0.5,0.5}\n::\n# too slow\n::end\n");
+        let Op::Choice { options, time } = &p.ops[0] else { panic!() };
+        assert_eq!(*time, Some(3.0));
+        assert_eq!(options.len(), 2);
+        let late = &options[1];
+        assert!(late.default && late.text.is_empty() && late.target == p.labels["too-slow"]);
+        assert!(late.area.as_ref().is_some_and(|a| a.hidden && a.rect == [0.0; 4]), "nothing can click it");
+        assert!(!options[0].default);
+        let plain = ok("# a\n::hotspots\n- [Go](#a){rect=0,0.5,0.5,0.5}\n::\n");
+        assert!(matches!(&plain.ops[0], Op::Choice { time: None, options } if options.len() == 1));
+    }
+
+    #[test]
+    fn timed_hotspot_errors_name_the_line() {
+        let line = |src: &str, msg: &str| {
+            let e = errs(src);
+            e.iter().find(|e| e.message.contains(msg)).unwrap_or_else(|| panic!("{msg}: {e:?}")).line
+        };
+        let block = |attrs: &str| format!("# a\n# b\n::hotspots{attrs}\n- [x](#a){{rect=0,0,1,1}}\n::\n");
+        for bad in ["0.4", "601", "abc", "nan"] {
+            assert_eq!(line(&block(&format!("{{time={bad} default=#b}}")), "bad `time="), 3, "{bad}");
+        }
+        assert_eq!(line(&block("{time=3}"), "needs `default=#label`"), 3);
+        assert_eq!(line(&block("{default=#b}"), "needs a timed block"), 3);
+        assert_eq!(line(&block("{time=3 default=#nowhere}"), "unknown label `nowhere`"), 3);
+        assert_eq!(line(&block("{time=3 default=b}"), "`default` needs a label"), 3);
+        assert_eq!(line(&block("{time=3 default}"), "`default` needs a label"), 3);
+        assert_eq!(line(&block("{time=3 default=#b speed=2}"), "unknown attribute `speed`"), 3);
+        ok(&block("{time=0.5 default=#b}"));
+        ok(&block("{time=600 default=#b}"));
+        // a choice still takes only `time`, and its default is an option
+        assert!(has_err("# a\n::choice{time=3 default=#a}\n- [x](#a){default}\n::\n", "unknown attribute `default`"));
+    }
+
+    #[test]
+    fn a_hotspot_can_follow_a_sprite_with_a_relative_rect() {
+        let src = |tail: &str| format!("::show{{id=fly src=assets/fly.png}}\n# a\n::hotspots\n- [Fly](#a){tail}\n::\n");
+        let area = |tail: &str| {
+            let p = ok(&src(tail));
+            let Op::Choice { options, .. } = p.ops.iter().find(|o| matches!(o, Op::Choice { .. })).unwrap() else { panic!() };
+            options[0].area.clone().unwrap()
+        };
+        let whole = area("{sprite=fly}");
+        assert_eq!((whole.sprite.as_deref(), whole.rect), (Some("fly"), [0.0, 0.0, 1.0, 1.0]));
+        let part = area("{sprite=fly rect=25%,0,0.5,0.5 image=assets/gui/pin.png, hidden}");
+        assert_eq!((part.rect, part.hidden, part.image.as_deref()), ([0.25, 0.0, 0.5, 0.5], true, Some("assets/gui/pin.png")));
+        assert_eq!(area("{rect=0,0,1,1}").sprite, None);
+        // a character's name finds the sprite its `::show` made
+        ok("::character{id=mika name=Mika sprites=m_{pose}.png}\n::show{mika happy}\n# a\n::hotspots\n- [M](#a){sprite=Mika}\n::\n");
+    }
+
+    #[test]
+    fn sprite_hotspot_errors_name_the_line() {
+        let line = |src: &str, msg: &str| {
+            let e = errs(src);
+            e.iter().find(|e| e.message.contains(msg)).unwrap_or_else(|| panic!("{msg}: {e:?}")).line
+        };
+        let show = "::show{id=fly src=assets/fly.png}\n";
+        let spot = |tail: &str| format!("{show}# a\n::hotspots\n- [Fly](#a){tail}\n::\n");
+        assert_eq!(line(&spot("{sprite=bee}"), "no `::show` ever shows a sprite called `bee`"), 4);
+        assert_eq!(line(&spot("{sprite=fly rect=0,0,2,1}"), "bad `rect="), 4);
+        assert_eq!(line(&spot("{sprite=fly rect=0.5,0,0.8,1}"), "outside the screen"), 4);
+        assert_eq!(line(&spot("{sprite=}"), "`sprite=` needs a sprite name"), 4);
+        assert_eq!(line(&spot("{once}"), "needs `rect="), 4);
+        assert!(has_err(&format!("{show}# a\n::choice\n- [x](#a){{sprite=fly}}\n::\n"), "only belong in a `::hotspots` block"));
+    }
+
+    #[test]
     fn timed_choice_errors_name_the_line() {
         let line = |src: &str, msg: &str| {
             let e = errs(src);
@@ -3893,7 +3999,6 @@ mod tests {
         assert_eq!(line("# a\n::choice{time}\n- [x](#a){default}\n::\n", "`time` needs a number"), 2);
         assert_eq!(line("# a\n::choice{speed=2}\n- [x](#a)\n::\n", "unknown attribute `speed`"), 2);
         // not for hotspots (or anything else)
-        assert!(has_err("# a\n::hotspots{time=5}\n- [x](#a){rect=0,0,1,1}\n::\n", "takes no attributes"));
         assert!(has_err("# a\n::hotspots\n- [x](#a){rect=0,0,1,1, default}\n::\n", "only belongs in a timed `::choice`"));
         assert!(has_err("# a\n::shop{time=5 pay=g into=i}\n::\n", "unknown attribute"));
     }
@@ -4233,7 +4338,7 @@ mod tests {
         e("# a\n::choice\n- [x](#a){hidden}\n::\n", "`hidden` only belongs in a `::hotspots`");
         e("# a\n::hotspots\n- [x](#a){rect=0,0,1,1}\n", "never closed");
         e("# a\n::choice\n- [x](#a){rect=0,0,1,1}\n::\n", "only belong in a `::hotspots`");
-        e("# a\n::hotspots{x}\n- [x](#a){rect=0,0,1,1}\n::\n", "takes no attributes");
+        e("# a\n::hotspots{x}\n- [x](#a){rect=0,0,1,1}\n::\n", "unknown attribute `x` for `::hotspots` (it takes: time, default)");
         e(&line3("- [x](#nowhere){rect=0,0,1,1}"), "unknown label");
     }
 

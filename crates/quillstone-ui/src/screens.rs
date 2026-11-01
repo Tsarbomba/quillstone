@@ -325,11 +325,13 @@ pub fn draw_mode_badge(out: &mut Vec<Draw>, theme: &Theme, auto: bool, skipping:
 }
 
 /// The countdown bar of a timed `::choice`: a dim track above the first button with the
-/// time left (`left`, 0..1) filling it from the left.
+/// time left (`left`, 0..1) filling it from the left. With no buttons (a timed `::hotspots`)
+/// it runs along the top of the screen, as wide as the buttons would be.
 pub fn draw_choice_timer(out: &mut Vec<Draw>, theme: &Theme, buttons: usize, left: f32) {
-    let Some(first) = quillstone_render::choice_rects(theme, buttons).first().copied() else { return };
+    let Some(first) = quillstone_render::choice_rects(theme, buttons.max(1)).first().copied() else { return };
     let h = theme.choice_timer_height;
-    let track = Rect::new(first.x, (first.y - 8.0 - h).max(0.0), first.w, h);
+    let y = if buttons == 0 { 24.0 + h } else { first.y };
+    let track = Rect::new(first.x, (y - 8.0 - h).max(0.0), first.w, h);
     out.push(Draw::Rect { rect: track, color: [0.0, 0.0, 0.0, 0.45] });
     let left = left.clamp(0.0, 1.0);
     if left > 0.0 {

@@ -150,7 +150,9 @@ fn build(program: &Program) -> Graph {
                 for o in options {
                     let Some(to) = target(o.target) else { continue };
                     let mut text = shorten(&o.text);
-                    if o.default {
+                    if quillstone_runtime::is_timeout(o) {
+                        text = "(time out)".into();
+                    } else if o.default {
                         text += " (default)";
                     }
                     let cond = when(&g.iter().cloned().chain(o.cond.as_ref().map(cond_text)).collect::<Vec<_>>());
@@ -404,6 +406,15 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
 ";
         let d = both(EVERY_KIND).1;
         assert_eq!(d, expected, "{d}");
+    }
+
+    #[test]
+    fn a_timed_hotspot_screen_has_a_time_out_edge_to_its_default_label() {
+        let src = "::show{id=bug src=b.png}\n# Hunt\n::hotspots{time=5 default=#slow}\n- [The bug](#caught){sprite=bug}\n::\n# Caught\nGot it.\n::end\n# Slow\nToo slow.\n::end\n";
+        let (m, d) = both(src);
+        assert!(m.contains("-->|\"The bug\"|") && m.contains("-->|\"(time out)\"|"), "{m}");
+        assert!(d.contains("[label=\"(time out)\"]") && !d.contains("(default)"), "{d}");
+        assert!(!m.contains("unreachable"), "the timeout reaches the label: {m}");
     }
 
     #[test]

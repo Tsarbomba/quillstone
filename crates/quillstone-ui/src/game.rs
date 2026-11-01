@@ -599,9 +599,9 @@ impl<'p> Game<'p> {
         }
     }
 
-    /// The timer of the timed `::choice` on screen (shown, whether or not it counts now).
+    /// The timer of the timed `::choice` or `::hotspots` on screen (shown, whether or not it counts now).
     fn choice_timer(&self) -> Option<ChoiceTimer> {
-        if !self.in_story || self.screen != Screen::Story || self.view.choices.is_empty() {
+        if !self.in_story || self.screen != Screen::Story || (self.view.choices.is_empty() && self.view.hotspots.is_empty()) {
             return None;
         }
         choice_timer(self.session.state(), self.program)
@@ -882,15 +882,19 @@ impl<'p> Game<'p> {
             Event::Wheel(dy) if dy < 0.0 => self.roll_forward(),
             Event::Key(key) => match key {
                 Key::Space | Key::Enter if !self.view.choices.is_empty() || !self.view.hotspots.is_empty() => {
-                    if let Some(f) = self.choice_focus {
+                    // A region following a sprite that has gone can't be picked (the mouse can't hit it either).
+                    let gone = |g: &Game, f: usize| g.view.hotspots.get(f).is_some_and(|s| g.view.spot_rect(s).is_none());
+                    if let Some(f) = self.choice_focus.filter(|&f| !gone(self, f)) {
                         self.pick(f);
                     }
                 }
                 // Hotspots: the arrows cycle through the regions (Backspace still goes back).
                 Key::Up | Key::Down | Key::Left | Key::Right if !self.view.hotspots.is_empty() => {
-                    // Hidden regions are skipped: focus would give them away.
-                    let shown: Vec<usize> =
-                        (0..self.view.hotspots.len()).filter(|&i| !self.view.hotspots[i].hidden).collect();
+                    // Hidden regions are skipped: focus would give them away. So are those following a sprite
+                    // that isn't on screen.
+                    let shown: Vec<usize> = (0..self.view.hotspots.len())
+                        .filter(|&i| !self.view.hotspots[i].hidden && self.view.spot_rect(&self.view.hotspots[i]).is_some())
+                        .collect();
                     let backwards = matches!(key, Key::Up | Key::Left);
                     let next = match (self.choice_focus, backwards) {
                         _ if shown.is_empty() => None,
@@ -1406,6 +1410,8 @@ mod tint_tests;
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod hotspot_timed_tests;
 #[cfg(test)]
 mod locked_tests;
 #[cfg(test)]

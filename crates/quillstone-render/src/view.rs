@@ -7,7 +7,8 @@
 //! What is actually in the scene lives in the runtime's `State`, and a rollback
 //! sends `Cmd::ClearScene` + the scene again, so the two never drift apart.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 
 use quillstone_runtime::{Camera, Cmd, Spot};
 use quillstone_script::markup::{rich, Rich};
@@ -685,6 +686,9 @@ pub struct View {
     theme: Theme,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
     art_scale: Option<f32>,
+    /// The picture size of each sprite, noted by every draw while a hotspot follows a sprite: hit-testing
+    /// has no way to ask for sizes, and uses the same geometry as drawing (`push_sprite`).
+    sprite_sizes: RefCell<HashMap<String, Size>>,
     /// The script's frame animations (a picture `anim:<id>` plays one).
     anims: BTreeMap<String, Anim>,
     /// Seconds since the background / the outgoing background started being shown.
@@ -727,6 +731,7 @@ impl View {
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
             art_scale: None,
+            sprite_sizes: RefCell::default(),
             anims: BTreeMap::new(),
             bg_clock: 0.0,
             previous_bg_clock: 0.0,
@@ -1300,7 +1305,53 @@ impl View {
     /// Which hotspot (if any) contains this virtual-space point. Later ones are
     /// drawn on top, so they win where regions overlap.
     pub fn hotspot_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.hotspots.iter().rposition(|s| hotspot_rect(s).contains(x, y))
+        self.hotspots.iter().rposition(|s| self.spot_rect(s).is_some_and(|r| r.contains(x, y)))
+    }
+
+    /// Where a hotspot is on screen now. A plain one is its rect; one bound to a sprite is `rect` (a
+    /// fraction of it) of where that sprite is drawn this moment, camera and shake included, and
+    /// `None` while the sprite isn't shown (or no frame has drawn it yet): it can't be clicked or focused.
+    pub fn spot_rect(&self, spot: &Spot) -> Option<Rect> {
+        let Some(id) = &spot.sprite else { return Some(hotspot_rect(spot)) };
+        let sprite = self.sprites.iter().find(|s| s.id == *id).filter(|s| !s.hiding)?;
+        let size = self.sprite_sizes.borrow().get(id).copied()?;
+        let mut drawn = Vec::new();
+        self.push_sprite_views(&mut drawn, sprite, &|_| Some(size));
+        let view = self.stage_transform();
+        let mut rects = drawn.into_iter().filter_map(|d| match d {
+            Draw::Image { dest, .. } => Some(view(dest)),
+            _ => None,
+        });
+        let first = rects.next()?;
+        let (l, t, r, b) = rects.fold((first.x, first.y, first.x + first.w, first.y + first.h), |(l, t, r, b), q| {
+            (l.min(q.x), t.min(q.y), r.max(q.x + q.w), b.max(q.y + q.h))
+        });
+        let [x, y, w, h] = spot.rect;
+        let (sw, sh) = (r - l, b - t);
+        Some(Rect::new(l + x * sw, t + y * sh, w * sw, h * sh))
+    }
+
+    /// Every picture of one sprite at its place and size (the pose, an outgoing pose, layers).
+    fn push_sprite_views(&self, stage: &mut Vec<Draw>, s: &SpriteView, image_size: &dyn Fn(&str) -> Option<Size>) {
+        let (x, y, look) = (s.current_x(), s.current_y(), s.look());
+        if let Some(prev) = &s.previous_src {
+            push_sprite(stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, self.art_scale, image_size);
+        }
+        // The layers of a layered sprite: the same place and size for each, back to front, and
+        // each one crossfades on its own when its picture changes.
+        for (src, t) in &s.previous_layers {
+            push_sprite(stage, self.picture(src, *t), (x, y), look, 1.0, self.art_scale, image_size);
+        }
+        push_sprite(stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), self.art_scale, image_size);
+        for l in &s.layers {
+            let (sprite_alpha, layer_alpha) = (s.alpha(), l.alpha());
+            if let Some(prev) = &l.previous_src {
+                // Under a layer that fades in; when the layer fades out to nothing, it fades with it.
+                let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
+                push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
+            }
+            push_sprite(stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+        }
     }
 
     /// Everything to draw this frame, back to front.
@@ -1393,26 +1444,16 @@ impl View {
         // Back to front by z; the sort is stable, so equal z keeps the order sprites were shown in.
         let mut order: Vec<&SpriteView> = self.sprites.iter().collect();
         order.sort_by_key(|s| s.z);
+        let follows = self.hotspots.iter().any(|h| h.sprite.is_some());
         for s in order {
-            let (x, y, look) = (s.current_x(), s.current_y(), s.look());
-            if let Some(prev) = &s.previous_src {
-                push_sprite(&mut stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, self.art_scale, image_size);
-            }
-            // The layers of a layered sprite: the same place and size for each, back to front, and
-            // each one crossfades on its own when its picture changes.
-            for (src, t) in &s.previous_layers {
-                push_sprite(&mut stage, self.picture(src, *t), (x, y), look, 1.0, self.art_scale, image_size);
-            }
-            push_sprite(&mut stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), self.art_scale, image_size);
-            for l in &s.layers {
-                let (sprite_alpha, layer_alpha) = (s.alpha(), l.alpha());
-                if let Some(prev) = &l.previous_src {
-                    // Under a layer that fades in; when the layer fades out to nothing, it fades with it.
-                    let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
-                    push_sprite(&mut stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
+            let noted = |src: &str| {
+                let size = image_size(src);
+                if let Some(size) = size.filter(|_| follows) {
+                    self.sprite_sizes.borrow_mut().insert(s.id.clone(), size);
                 }
-                push_sprite(&mut stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
-            }
+                size
+            };
+            self.push_sprite_views(&mut stage, s, &noted);
         }
         // Particles are screen space: `layer=back` ones go between the background and the sprites, the
         // rest over the sprites; neither follows the camera or the shake.
@@ -1466,8 +1507,8 @@ impl View {
 
         let theme = &self.theme;
         for spot in &self.hotspots {
-            if let Some(src) = &spot.image {
-                push_image(&mut out, src, hotspot_rect(spot), Fit::Stretch, 1.0, image_size);
+            if let (Some(src), Some(rect)) = (&spot.image, self.spot_rect(spot)) {
+                push_image(&mut out, src, rect, Fit::Stretch, 1.0, image_size);
             }
         }
 
@@ -1543,7 +1584,7 @@ impl View {
         // A hovered region's tint and outline are over the textbox, so one that
         // reaches under it can be seen (hit-testing gives it the click, too).
         for (i, spot) in self.hotspots.iter().enumerate() {
-            let rect = hotspot_rect(spot);
+            let Some(rect) = self.spot_rect(spot) else { continue };
             if ui && hover == Some(i) && !spot.hidden {
                 let [r, g, b, _] = theme.accent_color;
                 out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
@@ -1601,13 +1642,17 @@ impl View {
         }
 
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
-        if let Some(spot) = hover.filter(|_| ui).and_then(|i| self.hotspots.get(i)).filter(|s| !s.hidden) {
+        if let Some((spot, r)) = hover
+            .filter(|_| ui)
+            .and_then(|i| self.hotspots.get(i))
+            .filter(|s| !s.hidden)
+            .and_then(|s| Some((s, self.spot_rect(s)?)))
+        {
             let Rich { text, runs, .. } = rich(&spot.label);
             let size = (theme.text_size * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
                 .min(VIRTUAL.w - 2.0 * TIP_MARGIN);
             let h = size * 1.35 + TIP_PAD;
-            let r = hotspot_rect(spot);
             let (ax, ay) = pointer.map_or((r.x + r.w / 2.0 - w / 2.0, r.y + r.h + 8.0), |(px, py)| (px + 24.0, py + 28.0));
             let tip = Rect::new(
                 ax.clamp(TIP_MARGIN, VIRTUAL.w - w - TIP_MARGIN),
@@ -2665,7 +2710,7 @@ mod tests {
     }
 
     fn spot(label: &str, rect: [f32; 4], image: Option<&str>) -> Spot {
-        Spot { label: label.into(), rect, image: image.map(String::from), hidden: false }
+        Spot { label: label.into(), rect, sprite: None, image: image.map(String::from), hidden: false }
     }
 
     #[test]
@@ -2755,6 +2800,81 @@ mod tests {
         let key = list.iter().position(|d| matches!(d, Draw::Image { src, .. } if src == "k.png")).unwrap();
         let panel = list.iter().position(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)).unwrap();
         assert!(key < panel);
+    }
+
+    fn follower(sprite: &str, rect: [f32; 4]) -> Cmd {
+        Cmd::ShowHotspots { spots: vec![Spot { label: "Fly".into(), rect, sprite: Some(sprite.into()), image: None, hidden: false }] }
+    }
+
+    /// Where the first (only) picture is drawn now, and where the first hotspot is: they must agree.
+    fn drawn_and_spot(v: &View, size: &dyn Fn(&str) -> Option<Size>) -> (Rect, Rect) {
+        let drawn = images(&v.draw_list(size, None))[0].1;
+        (drawn, v.spot_rect(&v.hotspots[0]).expect("the sprite is shown"))
+    }
+
+    #[test]
+    fn a_hotspot_bound_to_a_sprite_is_where_the_sprite_is_drawn_through_moves_scale_stretch_and_flip() {
+        let size = |_: &str| Some(Size::new(500.0, 1000.0));
+        let mut v = View::new();
+        v.apply(&[show("fly", "fly.png", 0.0, 0.0), follower("fly", [0.0, 0.0, 1.0, 1.0])]);
+        assert_eq!(v.spot_rect(&v.hotspots[0]), None, "no frame has drawn it yet");
+        let (drawn, spot) = drawn_and_spot(&v, &size);
+        assert_eq!(spot, drawn);
+        assert_eq!(v.hotspot_at(drawn.x + 5.0, drawn.y + 5.0), Some(0));
+        let old = (drawn.x + drawn.w / 2.0, drawn.y + drawn.h / 2.0);
+        // half way through a slide, with no draw in between: the hotspot has moved with the sprite
+        v.apply_each(&[slide("fly", 1.0, 1.0, 1.0, Ease::Linear)], false);
+        v.tick(0.5);
+        let (drawn, spot) = drawn_and_spot(&v, &size);
+        assert_eq!(spot, drawn);
+        assert!(drawn.x > 100.0, "it did move: {drawn:?}");
+        assert_eq!(v.hotspot_at(old.0, old.1), None, "its old place misses");
+        assert_eq!(v.hotspot_at(drawn.x + drawn.w / 2.0, drawn.y + drawn.h / 2.0), Some(0));
+        // scale, stretch and flip are the sprite's own
+        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, fade: 0.0 }], false);
+        v.tick(10.0);
+        let (drawn, spot) = drawn_and_spot(&v, &size);
+        assert_eq!(spot, drawn);
+        assert!(close(drawn.w, 470.0) && close(drawn.h, 470.0), "{drawn:?}");
+        // a rect is a fraction of the sprite: its top right quarter
+        v.apply_each(&[follower("fly", [0.5, 0.0, 0.5, 0.5])], false);
+        let spot = v.spot_rect(&v.hotspots[0]).unwrap();
+        assert_eq!(spot, Rect::new(drawn.x + drawn.w / 2.0, drawn.y, drawn.w / 2.0, drawn.h / 2.0));
+        assert_eq!(v.hotspot_at(spot.x + 1.0, spot.y + 1.0), Some(0));
+        assert_eq!(v.hotspot_at(drawn.x + 1.0, drawn.y + 1.0), None);
+    }
+
+    #[test]
+    fn a_sprite_hotspot_follows_a_pixel_sized_sprite_and_the_camera() {
+        let size = |_: &str| Some(Size::new(400.0, 300.0));
+        let mut v = View::new().with_art_scale(Some(2.0));
+        v.apply(&[show("fly", "fly.png", 0.5, 0.0), follower("fly", [0.0, 0.0, 1.0, 1.0])]);
+        let (drawn, spot) = drawn_and_spot(&v, &size);
+        assert!(close(drawn.w, 800.0) && close(drawn.h, 600.0), "{drawn:?}");
+        assert_eq!(spot, drawn);
+        v.apply_each(&[Cmd::Camera { camera: Camera { zoom: 2.0, x: 1.0, y: 0.0 }, time: 0.0, ease: Ease::Linear }], false);
+        // zoomed 2x: the hotspot is the whole sprite's place, of which the screen edge crops the part drawn
+        let (drawn, spot) = drawn_and_spot(&v, &size);
+        assert!(close(spot.w, 1600.0) && close(spot.h, 1200.0), "{spot:?}");
+        assert!(spot.x <= drawn.x && spot.y <= drawn.y && spot.x + spot.w >= drawn.x + drawn.w, "{spot:?} holds {drawn:?}");
+    }
+
+    #[test]
+    fn a_hotspot_of_a_sprite_that_is_not_shown_is_not_clickable() {
+        let mut v = View::new();
+        v.apply(&[follower("ghost", [0.0, 0.0, 1.0, 1.0])]);
+        v.draw_list(&all_1080p, None);
+        assert_eq!(v.spot_rect(&v.hotspots[0]), None);
+        assert_eq!(v.hotspot_at(960.0, 540.0), None, "nothing shown under the sprite's name");
+        v.apply_each(&[show("ghost", "g.png", 0.5, 0.0)], false);
+        v.draw_list(&all_1080p, None);
+        assert_eq!(v.hotspot_at(960.0, 900.0), Some(0));
+        v.apply_each(&[hide("ghost", 1.0)], false);
+        v.tick(0.1);
+        assert_eq!(v.hotspot_at(960.0, 900.0), None, "fading out counts as gone");
+        v.tick(2.0);
+        assert_eq!(v.hotspot_at(960.0, 900.0), None);
+        assert!(v.draw_list(&all_1080p, None).iter().all(|d| !matches!(d, Draw::Rect { color, .. } if *color == v.theme().accent_color)));
     }
 
     #[test]
@@ -3108,7 +3228,7 @@ mod tests {
 
     #[test]
     fn a_hotspot_map_with_a_hidden_box_draws_no_line() {
-        let spot = quillstone_runtime::Spot { label: "Door".into(), rect: [0.1, 0.1, 0.2, 0.2], image: None, hidden: false };
+        let spot = quillstone_runtime::Spot { label: "Door".into(), rect: [0.1, 0.1, 0.2, 0.2], sprite: None, image: None, hidden: false };
         let mut v = View::new().with_speed(0.0);
         v.apply(&[say(None, "Where to?"), Cmd::ShowHotspots { spots: vec![spot.clone()] }]);
         assert!(v.draw_list(&no_images, None).iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Where to?")));
@@ -3354,7 +3474,7 @@ mod tests {
             bg("bg.png", 0.0),
             show("m", "m.png", 0.5, 0.0),
             Cmd::ShowImage { src: "inline.png".into(), alt: String::new() },
-            Cmd::ShowHotspots { spots: vec![Spot { label: "Map".into(), rect: [0.0, 0.0, 0.2, 0.2], image: Some("art.png".into()), hidden: false }] },
+            Cmd::ShowHotspots { spots: vec![Spot { label: "Map".into(), rect: [0.0, 0.0, 0.2, 0.2], sprite: None, image: Some("art.png".into()), hidden: false }] },
             say(Some("A"), "hello"),
             Cmd::FadeOut { time: 0.0, color: [0.0; 3] },
             Cmd::Flash { time: 1.0, color: [1.0; 3] },

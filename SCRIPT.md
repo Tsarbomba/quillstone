@@ -893,8 +893,8 @@ is really playing, so a file that can't be decoded never traps the player.
   a question is open and while the window is not the active one. Picking by click or key
   works as usual, hovering changes nothing, auto-forward never picks for the player, and
   skipping stops at the choice. A timed choice is an error without `default` (or with
-  two), `default` is an error without `time`, and `::hotspots` and `::shop` can't be
-  timed. `quillstone check` warns when the time is under 2 seconds, too quick to read;
+  two), `default` is an error without `time`, and `::shop` can't be timed (a
+  `::hotspots` block can: see Hotspots). `quillstone check` warns when the time is under 2 seconds, too quick to read;
   `quillstone test` plays the default like any other option. The bar's look is a theme
   setting (see Themes).
 - Falling off the end of a label continues into the next one, so end each scene
@@ -960,7 +960,8 @@ object to find, a point-and-click scene.
 ::
 ````
 
-- An entry is `- [label](#target){rect=x,y,w,h ...}`. `rect` is required: the
+- An entry is `- [label](#target){rect=x,y,w,h ...}`. `rect` is required (unless the region
+  follows a sprite, see below): the
   region's left, top, width and height on the screen, each a number from 0 to 1 or a
   percentage (no spaces inside it), and it must lie inside the screen. The label
   shows as a small tooltip next to the mouse while the region is hovered.
@@ -986,6 +987,36 @@ object to find, a point-and-click scene.
   don't pick hotspots. Skip and auto-forward stop at the block, it is an auto save
   point like a choice, and the pick isn't added to the history. Going back
   returns to the screen before the click.
+- **Timed screens.** `::hotspots{time=3 default=#too-slow}` gives the player 3 seconds
+  (0.5 to 600, a plain number) and jumps to the label when time runs out; both are
+  needed together. It counts down like a timed `::choice` (see Choices): the same bar
+  (along the top of the screen, since there are no buttons), starting when the screen
+  appears and again after a rollback or a load, waiting while Settings, the history or
+  a question is open and while the window is not the active one, never picked for the
+  player by auto-forward, and skipping stops at the screen. The jump is a label, not
+  one of the regions, because running out of time is the player clicking nothing;
+  a region's own effects don't run. `quillstone test` plays the timeout as one more
+  outcome and `quillstone graph` draws it as a "(time out)" edge.
+- **Regions that follow a sprite.** `sprite=firefly` instead of `rect=` binds the region to
+  a sprite: it is wherever that sprite is drawn right now, through `::move` (also a
+  looping one), `::anim` frames, `scale`, `xscale`, `flip`, `sprite_size: pixels` and the
+  camera. The name is the one a `::show` gave the sprite (`::show{id=firefly src=...}` or a
+  character's name); `quillstone check` reports a name no `::show` uses. With a
+  `rect=` too, the rect is a fraction (0 to 1, or a percentage) of the sprite's own
+  rectangle, say the lower half `rect=0,50%,1,50%`; without one it is the whole sprite.
+  While the sprite is not on stage (not yet shown, hidden, fading out) the region can't be
+  clicked or reached with the arrow keys; `quillstone test` counts it as offered
+  while the sprite is shown, since it can't tell where it is. Highlight, tooltip and an
+  `image=` follow the sprite too. Example, a lamp that bobs across the screen
+  (`examples/minigame.quill.md`):
+
+  ````markdown
+  ::show{id=lamp src=assets/lamp.png x=10% y=40%}
+  ::move{lamp x=90% time=2 ease=inout loop}
+  ::hotspots{time=5 default=#too-slow}
+  - [The lamp](#caught){sprite=lamp}
+  ::
+  ````
 - `quillstone check` checks the images and warns about a region that can never
   be clicked because a later one covers it entirely, or a block whose regions are all
   `hidden`; `quillstone test` follows
