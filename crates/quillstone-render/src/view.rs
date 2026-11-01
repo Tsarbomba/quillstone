@@ -14,7 +14,7 @@ use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 
-use crate::hud::HudLayer;
+use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
 use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
@@ -1320,14 +1320,38 @@ impl View {
         hover: Option<usize>,
         pointer: Option<(f32, f32)>,
     ) -> Vec<Draw> {
-        self.draw_list_ui(image_size, hover, pointer, true)
+        self.draw_list_ui(image_size, hover, pointer, true, HudLook::default())
+    }
+
+    /// [`View::draw_list_at`] with the HUD buttons' look: where the mouse is and whether they work now.
+    pub fn draw_list_hud(
+        &self,
+        image_size: &dyn Fn(&str) -> Option<Size>,
+        hover: Option<usize>,
+        pointer: Option<(f32, f32)>,
+        hud: HudLook,
+    ) -> Vec<Draw> {
+        self.draw_list_ui(image_size, hover, pointer, true, hud)
+    }
+
+    /// The pictures of the HUD buttons (see [`HudLayer::button_pictures`]).
+    pub fn hud_button_pictures(&self) -> impl Iterator<Item = &str> {
+        self.hud.button_pictures()
+    }
+
+    /// The HUD button under the point (see [`HudLayer::button_at`]); `image_size` is as for the draw list.
+    pub fn hud_button_at(&self, image_size: &dyn Fn(&str) -> Option<Size>, x: f32, y: f32) -> Option<&quillstone_script::HudElem> {
+        if self.hide_ui {
+            return None;
+        }
+        self.hud.button_at(&self.theme, image_size, x, y)
     }
 
     /// Only the picture: stage, inline images, video, flash and hotspot art, without
     /// the textbox, choices, hotspot outline or tooltip. What a full-screen overlay
     /// (settings, backlog, ...) leaves under its dim.
     pub fn draw_scene(&self, image_size: &dyn Fn(&str) -> Option<Size>) -> Vec<Draw> {
-        self.draw_list_ui(image_size, None, None, false)
+        self.draw_list_ui(image_size, None, None, false, HudLook::default())
     }
 
     fn draw_list_ui(
@@ -1336,6 +1360,7 @@ impl View {
         hover: Option<usize>,
         pointer: Option<(f32, f32)>,
         ui: bool,
+        hud: HudLook,
     ) -> Vec<Draw> {
         let mut out = Vec::new();
         let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
@@ -1463,7 +1488,7 @@ impl View {
         // The HUD is story UI: over the cover and the flash (a title card can sit on a black
         // screen), under the textbox. Not with a full-screen overlay up, nor when the player hid the UI.
         if ui && !self.hide_ui {
-            self.hud.draw(&self.theme, image_size, &mut out);
+            self.hud.draw(&self.theme, image_size, hud, &mut out);
             // A passing message in the top right corner, over the HUD.
             if let Some(n) = &self.notice {
                 let alpha = n.alpha();

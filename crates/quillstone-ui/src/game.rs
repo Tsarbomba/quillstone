@@ -6,7 +6,7 @@
 //! up (story, settings, backlog) and what each input means there lives here.
 
 use quillstone_audio::{Action, Channel, Mixer};
-use quillstone_render::{textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
+use quillstone_render::{hud::HudLook, textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
 use quillstone_runtime::{choice_timer, voice_name, ChoiceTimer, Cmd, Input, Logged, Session, State};
 use quillstone_script::{kind_from_path, AssetKind, Program, Value};
 use quillstone_video::Wanted;
@@ -18,6 +18,7 @@ use crate::slots::{Page, SlotInfo, Storage};
 mod bag;
 mod extras;
 mod console;
+mod hud;
 mod input;
 mod lang;
 mod replay;
@@ -665,7 +666,8 @@ impl<'p> Game<'p> {
             // The tooltip of a hotspot follows the mouse, or sits by the region when the keyboard picked it.
             let pointer = self.pointer().filter(|_| pointed);
             if story || self.screen == Screen::MainMenu {
-                self.view.draw_list_at(image_size, hover_choice, pointer)
+                let look = HudLook { pointer: self.pointer().filter(|_| story), active: self.hud_ready() };
+                self.view.draw_list_hud(image_size, hover_choice, pointer, look)
             } else {
                 // A full-screen overlay is up: only the picture stays under its dim.
                 self.view.draw_scene(image_size)
@@ -691,7 +693,7 @@ impl<'p> Game<'p> {
             // The quick menu's pictures: asked for every frame of the story (so they stay loaded
             // even while the menu is hidden), their sizes kept for hit-testing.
             let mut sizes = self.quick_sizes.borrow_mut();
-            for src in theme.quick_pictures() {
+            for src in theme.quick_pictures().into_iter().chain(self.view.hud_button_pictures()) {
                 if let Some(size) = image_size(src) {
                     sizes.insert(src.to_string(), size);
                 }
@@ -946,6 +948,9 @@ impl<'p> Game<'p> {
         if let Some(button) = self.quick_button_under_cursor() {
             return self.quick_press(button);
         }
+        if let Some((id, action)) = self.hud_button_under_cursor() {
+            return self.hud_press(&id, action);
+        }
         self.story_click_on_stage();
     }
 
@@ -1178,7 +1183,7 @@ impl<'p> Game<'p> {
     /// Move the story on. Arriving at a choice, shop or text entry is a checkpoint: auto save.
     fn forward(&mut self, input: Input) {
         // Using an item leaves the line unread: it comes back after the label.
-        if !matches!(input, Input::Use(_)) {
+        if !matches!(input, Input::Use(_) | Input::Hud(_)) {
             self.mark_current_read();
         }
         let purchase = matches!(input, Input::Buy(_));

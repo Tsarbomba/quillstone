@@ -664,6 +664,7 @@ Attributes for every kind:
 | `x=right` `y=4%` | Where the element is, placed as a sprite is (see "Placing things: `x` and `y`"): `x` is `left` `center` `right` or a number or percentage from 0 to 100%, `y` is `top` `center` `bottom` or the same; the point that far across the element is that far across the screen, so the element is always wholly on screen. Default `left` and `top`. A text element's width is estimated, so in between the three keywords it can be a few pixels off. |
 | `if="hero.hp <= 3"` | Draw the element only while the condition is true; it is checked every time the screen is drawn. `random` isn't allowed, as in any condition. |
 | `fade=0.3` | Fade in over that many seconds (more than 0, up to 10) when the element is created. |
+| `call=` `open=` `hover=` | Make a text or picture element a button: see "Buttons" below. |
 
 Attributes of a **text** element: `size` (8 to 300; default the theme's text size), `color`
 (default the theme's text colour), `back` (a panel behind the text, e.g. `back=#00000099`; colours
@@ -680,6 +681,36 @@ part; default `#333333`), `border` (an outline colour; drawn outside the bar's s
 ::hud{id=clock text="Day {day}, {hero.gold} gold" x=0.98 y=0.04 size=32 back=#00000099 pad=12 fade=0.3}
 ::hud{id=low text="LOW HP" x=0.02 y=0.11 color=#ff5555 if="hero.hp <= 3"}
 ::hud{id=heart image=assets/heart.png x=0.02 y=0.9 scale=0.5}
+```
+
+**Buttons.** A text or picture element (not a bar) becomes a button with one of these:
+
+| Attribute | |
+| --- | --- |
+| `call=#phone` | A press **calls** that label and, when it ends with `::return`, shows the same line again (like an item's Use). The label must exist and take no parameters; `check` says which line is wrong. |
+| `open=journal` | A press opens a built-in screen instead, as the quick menu and keys do: `journal` (J), `inventory` (I), `history` (H), `save` (S), `load` (L) or `settings` (Esc). `journal` and `inventory` need a game that has one. |
+| `hover=assets/phone_hover.png` | For a picture button: shown instead of the picture while the mouse is over it. It needs `call=` or `open=` and is checked and packaged like the picture. A text button simply lights up under the mouse. |
+
+`call=` and `open=` can't be combined. Buttons work **only while the story waits at a normal line**
+(the same rule as an item's Use). Over a choice, a timed choice, `::input`, `::wait`, a shop, a `{nw}`
+line, a replay or while skipping they are drawn dimmed and a press only says "Can't use that now". A
+click on a button never also moves the story on; a choice or hotspot under the same spot wins over the
+button, and so does the quick menu. Buttons are **mouse only**: the keyboard and a gamepad already have
+their own keys for the screens, and a `call=` button gets no focus of its own. The click area is the
+rectangle the element is drawn at (for text its estimated box), so keep a button clear of the textbox.
+You show, hide and change a button with `::hud` like any element, and it follows the scene through
+rollback, saves and hot reload; a save can only name a label some `::hud` of the script offers.
+`quillstone test` presses each `call=` button once, where it can be pressed, so its label is not
+reported as unreached, and `quillstone graph` draws a dotted edge from a "HUD" node to each such label.
+
+```
+::hud{id=phone image=assets/phone.png hover=assets/phone_hover.png call=#phone x=right y=0.12}
+::hud{id=log text="Journal" open=journal x=0.02 y=0.12 back=#00000099 pad=10}
+
+# phone
+::set{calls += 1}
+Mika: *rrring* Hello? ... Oh, it's you.
+::return
 ```
 
 `::hud{hide=clock fade=0.3}` removes one element (with an optional fade out); hiding an id that

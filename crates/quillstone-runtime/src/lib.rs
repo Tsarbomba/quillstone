@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudElem, Op, Particles, Program, ShopEntry, Tint, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -34,6 +34,8 @@ mod timed_tests;
 mod locked_tests;
 #[cfg(test)]
 mod use_tests;
+#[cfg(test)]
+mod hud_button_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -232,6 +234,9 @@ pub enum Input {
     /// Use the item with this id from the inventory: `::call` its `use=` label from the
     /// line the story waits at (see [`can_use`]).
     Use(String),
+    /// Press the HUD button with this element id: `::call` its `call=` label from the line the
+    /// story waits at (see [`can_press`]). The label is the shown element's, never the input's.
+    Hud(String),
     /// The player's answer to a [`Cmd::AskInput`], as typed: it is cleaned up (see
     /// [`finish_input`]) and stored in the variable. An answer that is empty
     /// after that, with no default to use, is ignored and the story keeps waiting.
@@ -610,14 +615,50 @@ pub fn journal_items(program: &Program, vars: &Vars) -> Vec<(ItemInfo, bool)> {
     open.iter().filter(|id| !done.contains(id)).map(|id| entry(id, false)).chain(done.iter().map(|id| entry(id, true))).collect()
 }
 
+/// The story waits at a line the player advances (not a choice, `::wait`, `::input`, shop, `{nw}`
+/// line or video): the only place a Use or HUD button works.
+pub fn waits_at_line(state: &State) -> bool {
+    matches!(&state.pending, Some(Cmd::Say { .. })) && !moves_on_by_itself(&state.pending) && !state.finished
+}
+
+/// A call that comes back to this same line, which is shown again. Passing the label's start
+/// counts a visit for `seen(label)`; this isn't a new one.
+fn call_from_line(state: &mut State, program: &Program, label: &str) {
+    for var in program.counted.get(&state.pc).into_iter().flatten() {
+        let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
+        state.vars.insert(var.clone(), Value::Int(n - 1));
+    }
+    state.stack.push(state.pc);
+    state.pc = program.labels[label];
+}
+
+/// The label of the shown HUD element `id`, when it is a `call=` button.
+fn hud_call(program: &Program, state: &State, id: &str) -> Option<String> {
+    let elem = state.hud.iter().find(|h| h.id == id)?;
+    match &elem.action {
+        Some(HudAction::Call(l)) if program.labels.contains_key(l) => Some(l.clone()),
+        _ => None,
+    }
+}
+
+/// Whether the HUD button `id` may be pressed now: it is shown (its `if=` holds), the story waits at a
+/// line (see [`waits_at_line`]), and a `call=` button also has room on the call stack.
+pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
+    let Some(elem) = state.hud.iter().find(|h| h.id == id) else { return false };
+    waits_at_line(state)
+        && elem.cond.as_ref().is_none_or(|c| c.expr.test(&state.vars))
+        && match &elem.action {
+            Some(HudAction::Call(_)) => state.stack.len() < MAX_CALL_DEPTH && hud_call(program, state, id).is_some(),
+            Some(HudAction::Open(_)) => true,
+            None => false,
+        }
+}
+
 /// Whether the player may use the item `id` now: the inventory shows it, it has a `use=` label, and
-/// the story waits at a line the player advances (not a choice, `::wait`, `::input`, shop, `{nw}`
-/// line or video), with room on the call stack.
+/// the story waits at a line (see [`waits_at_line`]), with room on the call stack.
 pub fn can_use(program: &Program, state: &State, id: &str) -> bool {
-    let at_line = matches!(&state.pending, Some(Cmd::Say { .. })) && !moves_on_by_itself(&state.pending);
     let label = program.items.get(id).and_then(|i| i.use_label.as_ref()).and_then(|l| program.labels.get(l));
-    at_line
-        && !state.finished
+    waits_at_line(state)
         && state.stack.len() < MAX_CALL_DEPTH
         && label.is_some()
         && inventory_items(program, &state.vars).iter().any(|i| i.id == id)
@@ -933,14 +974,11 @@ pub(crate) fn step_traced(
                 if !can_use(program, state, &id) {
                     return Vec::new();
                 }
-                // A call that comes back to this same line, which is shown again. Passing the
-                // label's start counts a visit for `seen(label)`; this isn't a new one.
-                for var in program.counted.get(&state.pc).into_iter().flatten() {
-                    let n = state.vars.get(var).and_then(Value::as_int).unwrap_or(1);
-                    state.vars.insert(var.clone(), Value::Int(n - 1));
-                }
-                state.stack.push(state.pc);
-                state.pc = program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")];
+                call_from_line(state, program, program.items[&id].use_label.as_ref().expect("checked by can_use"));
+            }
+            (Cmd::Say { .. }, Some(Input::Hud(id))) => {
+                let Some(label) = hud_call(program, state, &id).filter(|_| can_press(program, state, &id)) else { return Vec::new() };
+                call_from_line(state, program, &label);
             }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
                 let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) else { return Vec::new() };

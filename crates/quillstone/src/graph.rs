@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{Expr, Op, Program, ONCE};
+use quillstone_script::{Expr, HudAction, Op, Program, ONCE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -18,8 +18,13 @@ enum Kind {
     Jump,
     Call,
     Choice,
-    /// The inventory's Use button.
+    /// The inventory's Use button, or a HUD button.
     Use,
+}
+
+/// The made-up node that item uses ("Inventory") or HUD buttons ("HUD") hang off.
+fn is_hub(n: &Node, name: &str) -> bool {
+    n.pseudo && n.text == name
 }
 
 struct Node {
@@ -164,10 +169,32 @@ fn build(program: &Program) -> Graph {
             }
         }
     }
-    // Static reachability from where the story starts, the inventory and the replay scenes.
+    // Each HUD button that calls a label hangs off one "HUD" node, like item uses off Inventory.
+    let hud_calls: Vec<(&str, &str)> = program
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Hud { elem, .. } => match &elem.action {
+                Some(HudAction::Call(l)) => Some((elem.id.as_str(), l.as_str())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if !hud_calls.is_empty() {
+        let hud = nodes.len();
+        nodes.push(Node { text: "HUD".into(), file: None, ends: false, unreachable: false, pseudo: true });
+        for (id, label) in hud_calls {
+            if let Some(to) = by_label(label) {
+                add(hud, to, Kind::Use, id.to_string());
+            }
+        }
+    }
+    // Static reachability from where the story starts, the inventory, HUD buttons and the replay scenes.
     let mut live = vec![false; nodes.len()];
     let mut todo: Vec<usize> = vec![owner(0)];
-    todo.extend(nodes.iter().position(|n| n.pseudo && n.text == "Inventory"));
+    todo.extend(nodes.iter().position(|n| is_hub(n, "Inventory")));
+    todo.extend(nodes.iter().position(|n| is_hub(n, "HUD")));
     todo.extend(program.replays.iter().filter_map(|r| by_label(&r.label)));
     while let Some(n) = todo.pop() {
         if !std::mem::replace(&mut live[n], true) {
@@ -212,7 +239,7 @@ fn mermaid(g: &Graph) -> String {
     let node = |i: usize| {
         let n = &g.nodes[i];
         let t = mermaid_text(&n.text);
-        match (n.pseudo && n.text == "Inventory", n.ends) {
+        match (is_hub(n, "Inventory") || is_hub(n, "HUD"), n.ends) {
             (true, _) => format!("n{i}{{{{\"{t}\"}}}}"),
             (_, true) => format!("n{i}([\"{t}\"])"),
             _ if n.pseudo => format!("n{i}((\"{t}\"))"),
@@ -257,7 +284,7 @@ fn dot(g: &Graph) -> String {
         let n = &g.nodes[i];
         let mut attrs = format!("label=\"{}\"", dot_text(&n.text));
         match (n.pseudo, n.ends) {
-            (true, _) if n.text == "Inventory" => attrs += ", shape=hexagon",
+            (true, _) if n.text == "Inventory" || n.text == "HUD" => attrs += ", shape=hexagon",
             (true, _) => attrs += ", shape=circle",
             (_, true) => attrs += ", peripheries=2",
             _ => {}
@@ -377,6 +404,17 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
 ";
         let d = both(EVERY_KIND).1;
         assert_eq!(d, expected, "{d}");
+    }
+
+    #[test]
+    fn a_hud_button_hangs_off_a_hud_node_with_a_dotted_edge_to_its_label() {
+        let src = "---\njournal: quests\nvars: { quests: [] }\n---\n::hud{id=phone text=Phone call=#ring}\n::hud{id=log text=Log open=journal}\n\
+# Start\nHi.\n::end\n# Ring\nBrrr.\n::return\n";
+        let (m, d) = both(src);
+        assert!(m.contains("n3{{\"HUD\"}}") && m.contains("n3 -.->|\"phone\"| n2"), "{m}");
+        assert!(d.contains("n3 [label=\"HUD\", shape=hexagon];") && d.contains("n3 -> n2 [label=\"phone\", style=dotted];"), "{d}");
+        assert!(!m.contains("unreachable"), "the label is reached through the button: {m}");
+        assert!(!both("# Start\nHi.\n::end\n").0.contains("HUD"), "no node without a button");
     }
 
     #[test]

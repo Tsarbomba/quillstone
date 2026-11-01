@@ -11,6 +11,22 @@ use crate::layout::{is_wide, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 use crate::view::{faded, Align, Draw};
 
+/// How buttons look this frame: where the mouse is, and whether they work now (else they are dimmed).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudLook {
+    pub pointer: Option<(f32, f32)>,
+    pub active: bool,
+}
+
+impl Default for HudLook {
+    fn default() -> Self {
+        HudLook { pointer: None, active: true }
+    }
+}
+
+/// How faint a button is while it can't be pressed (as a greyed cell in the inventory).
+const INERT_ALPHA: f32 = 0.45;
+
 /// One element on screen, with its fade.
 #[derive(Debug, Clone, PartialEq)]
 struct Item {
@@ -118,47 +134,78 @@ impl HudLayer {
     }
 
     /// Push the draws of every element that is on (its condition true, not faded out).
-    pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, out: &mut Vec<Draw>) {
+    pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, out: &mut Vec<Draw>) {
         for item in self.items.iter().filter(|i| i.alpha > 0.0) {
-            let e = &item.elem;
-            if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
-                continue;
+            self.draw_item(item, theme, image_size, look, out);
+        }
+    }
+
+    /// The pictures of the buttons (normal and hover), whose sizes hit-testing needs.
+    pub fn button_pictures(&self) -> impl Iterator<Item = &str> {
+        let buttons = self.items.iter().filter(|i| i.elem.action.is_some());
+        buttons.flat_map(|i| i.elem.image().into_iter().chain(i.elem.hover.as_deref()))
+    }
+
+    /// The button under the point, if any: the topmost one, at the rect it is drawn at.
+    pub fn button_at(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, x: f32, y: f32) -> Option<&HudElem> {
+        let look = HudLook::default();
+        let mut live = self.items.iter().rev().filter(|i| i.target > 0.0 && i.alpha > 0.0 && i.elem.action.is_some());
+        live.find(|i| self.draw_item(i, theme, image_size, look, &mut Vec::new()).is_some_and(|r| r.contains(x, y))).map(|i| &i.elem)
+    }
+
+    /// Push one element's draws and say where it is (none when it is off or its picture is unknown).
+    fn draw_item(&self, item: &Item, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, out: &mut Vec<Draw>) -> Option<Rect> {
+        let e = &item.elem;
+        if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
+            return None;
+        }
+        let button = e.action.is_some();
+        let alpha = if button && !look.active { item.alpha * INERT_ALPHA } else { item.alpha };
+        let under_mouse = |r: Rect| button && look.active && look.pointer.is_some_and(|(x, y)| r.contains(x, y));
+        match &e.kind {
+            HudKind::Text { text, size, color, back, pad } => {
+                let shown = interpolate(text, &self.vars);
+                let size = size.unwrap_or(theme.text_size);
+                let color = faded(color.unwrap_or(theme.text_color), alpha);
+                let back = back.map(|b| faded(b, alpha));
+                let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad);
+                // A text button under the mouse gets the theme's hover colour as its panel.
+                let back = if under_mouse(r) { Some(theme.button_hover_color) } else { back };
+                Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad))
             }
-            match &e.kind {
-                HudKind::Text { text, size, color, back, pad } => {
-                    let shown = interpolate(text, &self.vars);
-                    let size = size.unwrap_or(theme.text_size);
-                    let color = faded(color.unwrap_or(theme.text_color), item.alpha);
-                    draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back.map(|b| faded(b, item.alpha)), *pad);
-                }
-                HudKind::Bar { value, max, size: [w, h], color, back, border } => {
-                    let int = |x: &quillstone_script::HudExpr| x.expr.eval(&self.vars).as_int().unwrap_or(0);
-                    let (v, m) = (int(value), int(max));
-                    let frac = if m <= 0 { 0.0 } else { (v as f64 / m as f64).clamp(0.0, 1.0) as f32 };
-                    let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
-                    if let Some((c, t)) = border {
-                        let c = faded(*c, item.alpha);
-                        for bar in [
-                            Rect::new(r.x - t, r.y - t, r.w + 2.0 * t, *t),
-                            Rect::new(r.x - t, r.y + r.h, r.w + 2.0 * t, *t),
-                            Rect::new(r.x - t, r.y, *t, r.h),
-                            Rect::new(r.x + r.w, r.y, *t, r.h),
-                        ] {
-                            out.push(Draw::Rect { rect: bar, color: c });
-                        }
-                    }
-                    out.push(Draw::Rect { rect: r, color: faded(*back, item.alpha) });
-                    if frac > 0.0 {
-                        let fill = faded(color.unwrap_or(theme.accent_color), item.alpha);
-                        out.push(Draw::Rect { rect: Rect::new(r.x, r.y, r.w * frac, r.h), color: fill });
+            HudKind::Bar { value, max, size: [w, h], color, back, border } => {
+                let int = |x: &quillstone_script::HudExpr| x.expr.eval(&self.vars).as_int().unwrap_or(0);
+                let (v, m) = (int(value), int(max));
+                let frac = if m <= 0 { 0.0 } else { (v as f64 / m as f64).clamp(0.0, 1.0) as f32 };
+                let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
+                if let Some((c, t)) = border {
+                    let c = faded(*c, item.alpha);
+                    for bar in [
+                        Rect::new(r.x - t, r.y - t, r.w + 2.0 * t, *t),
+                        Rect::new(r.x - t, r.y + r.h, r.w + 2.0 * t, *t),
+                        Rect::new(r.x - t, r.y, *t, r.h),
+                        Rect::new(r.x + r.w, r.y, *t, r.h),
+                    ] {
+                        out.push(Draw::Rect { rect: bar, color: c });
                     }
                 }
-                HudKind::Image { src, scale } => {
-                    let Some(s) = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0) else { continue };
-                    let (w, h) = (s.w * scale, s.h * scale);
-                    let dest = Rect::new(placed(e.x, w, VIRTUAL.w), placed(e.y, h, VIRTUAL.h), w, h);
-                    out.push(Draw::Image { src: src.clone(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: item.alpha });
+                out.push(Draw::Rect { rect: r, color: faded(*back, item.alpha) });
+                if frac > 0.0 {
+                    let fill = faded(color.unwrap_or(theme.accent_color), item.alpha);
+                    out.push(Draw::Rect { rect: Rect::new(r.x, r.y, r.w * frac, r.h), color: fill });
                 }
+                Some(r)
+            }
+            HudKind::Image { src, scale } => {
+                let s = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0)?;
+                let (w, h) = (s.w * scale, s.h * scale);
+                let dest = Rect::new(placed(e.x, w, VIRTUAL.w), placed(e.y, h, VIRTUAL.h), w, h);
+                // The hover picture is asked for every frame (so it is loaded before the first hover) and takes
+                // the place of the normal one under the mouse once it is.
+                let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
+                let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
+                out.push(Draw::Image { src: shown.clone(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha });
+                Some(dest)
             }
         }
     }
@@ -219,7 +266,7 @@ pub(crate) fn draw_text(
     color: [f32; 4],
     back: Option<[f32; 4]>,
     pad: f32,
-) {
+) -> Rect {
     let r = rich(shown);
     // `{size=..}` runs make characters (and so lines) bigger than the base size.
     let run_size = |run: &quillstone_script::markup::TextRun| run.style.size.map_or(size, |s| s.resolve(size));
@@ -246,11 +293,13 @@ pub(crate) fn draw_text(
     } else {
         Align::Right
     };
+    let whole = Rect::new(left, top, width, height);
     if let Some(back) = back {
-        out.push(Draw::Rect { rect: Rect::new(left, top, width, height), color: back });
+        out.push(Draw::Rect { rect: whole, color: back });
     }
     let rect = Rect::new(left + pad, top + pad, width - 2.0 * pad, height - 2.0 * pad);
     out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align, outline: None });
+    whole
 }
 
 #[cfg(test)]

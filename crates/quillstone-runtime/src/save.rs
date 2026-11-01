@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudElem, HudExpr, HudKind, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
+use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::INPUT_MAX_LIMIT;
 use quillstone_script::{Ease, ANIM_PREFIX};
@@ -92,6 +92,7 @@ impl Session<'_> {
                     Input::Choose(i) => out.push_str(&format!("input choose {i}\n")),
                     Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
                     Input::Use(id) => out.push_str(&format!("input use {}\n", q(id))),
+                    Input::Hud(id) => out.push_str(&format!("input hud {}\n", q(id))),
                     Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
                 }
                 out
@@ -150,6 +151,7 @@ impl<'p> Session<'p> {
                         (Some("choose"), Some(i)) => Input::Choose(num(i, n)?),
                         (Some("buy"), Some(i)) => Input::Buy(num(i, n)?),
                         (Some("use"), Some(id)) => Input::Use(id.clone()),
+                        (Some("hud"), Some(id)) if quillstone_script::is_plain_ident(id) => Input::Hud(id.clone()),
                         // Only kept so the history lines up: the state before it is what rollback uses.
                         (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_LIMIT).collect()),
                         _ => return Err(format!("line {n}: bad input record")),
@@ -338,8 +340,20 @@ fn rgba(c: Option<[f32; 4]>) -> String {
     }
 }
 
-/// `hud <kind> "id" x y "if" ...kind fields`: an empty `if` is no condition, `-` is "not set".
+/// `hud <kind> "id" x y "if" ...kind fields ["action" "hover"]`: an empty `if` is no condition, `-` is "not
+/// set". A button ends with its action (`call:label` or `open:screen`) and its hover picture ("" for none).
 fn hud_record(h: &HudElem) -> String {
+    let mut record = hud_body(h);
+    let action = match &h.action {
+        Some(HudAction::Call(l)) => format!("call:{l}"),
+        Some(HudAction::Open(s)) => format!("open:{}", s.name()),
+        None => return record,
+    };
+    record += &format!(" {} {}", q(&action), q(h.hover.as_deref().unwrap_or("")));
+    record
+}
+
+fn hud_body(h: &HudElem) -> String {
     let head = format!(
         "hud {} {} {} {} {}",
         match &h.kind {
@@ -373,6 +387,11 @@ fn hud_source_bytes(h: &HudElem) -> usize {
             HudKind::Bar { value, max, .. } => value.src.len() + max.src.len(),
             HudKind::Image { src, .. } => src.len(),
         }
+        + match &h.action {
+            Some(HudAction::Call(l)) => l.len(),
+            _ => 0,
+        }
+        + h.hover.as_ref().map_or(0, String::len)
 }
 
 fn parse_rgba(s: &str, n: usize) -> Result<[f32; 4], String> {
@@ -381,7 +400,7 @@ fn parse_rgba(s: &str, n: usize) -> Result<[f32; 4], String> {
     Ok([r, g, b, a].map(|c| sane(c, 0.0, 1.0, 0.0)))
 }
 
-fn read_hud(t: &[String], n: usize) -> Result<HudElem, String> {
+fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<HudElem, String> {
     let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: a `hud` record is too short"));
     let f = |i: usize| -> Result<f32, String> { num(arg(i)?, n) };
     let opt_rgba = |i: usize| -> Result<Option<[f32; 4]>, String> {
@@ -435,7 +454,39 @@ fn read_hud(t: &[String], n: usize) -> Result<HudElem, String> {
         }
         other => return Err(format!("line {n}: unknown `hud` kind `{other}`")),
     };
-    Ok(HudElem { id, x, y, cond, kind })
+    // Only text and images can be buttons; records from before buttons end here.
+    let tail = match kind {
+        HudKind::Text { .. } => 11,
+        HudKind::Image { .. } => 8,
+        HudKind::Bar { .. } => usize::MAX,
+    };
+    let (mut action, mut hover) = (None, None);
+    if let Some(a) = t.get(tail).filter(|a| !a.is_empty()) {
+        let found = match a.split_once(':') {
+            // A file may only call a label that a `::hud` in the script offers: nothing else is a button.
+            Some(("call", l)) if program.hud_calls.contains(l) => Some(HudAction::Call(l.to_string())),
+            Some(("open", s)) => HudScreen::from_name(s).map(HudAction::Open).filter(|a| match a {
+                HudAction::Open(HudScreen::Inventory) => program.inventory.is_some(),
+                HudAction::Open(HudScreen::Journal) => program.journal.is_some(),
+                _ => true,
+            }),
+            _ => None,
+        };
+        match found {
+            Some(a) => action = Some(a),
+            // A script edited under a running game may have dropped the button; the element stays, inert.
+            None if edited => {}
+            None => return Err(format!("line {n}: the `hud` button `{a}` is not one this script offers")),
+        }
+        let h = t.get(tail + 1).map_or("", String::as_str);
+        if action.is_some() && !h.is_empty() {
+            if !matches!(kind, HudKind::Image { .. }) || !is_inside(h) {
+                return Err(format!("line {n}: bad `hud` hover picture `{h}`"));
+            }
+            hover = Some(h.to_string());
+        }
+    }
+    Ok(HudElem { id, x, y, cond, kind, action, hover })
 }
 
 fn write_state(out: &mut String, s: &State, program: &Program) {
@@ -711,7 +762,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 if s.hud.len() >= MAX_HUD_RECORDS {
                     return Err(format!("line {n}: more than {MAX_HUD_RECORDS} `hud` records in a state"));
                 }
-                let elem = read_hud(&t, n)?;
+                let elem = read_hud(&t, n, program, edited)?;
                 let total: usize = s.hud.iter().chain(std::iter::once(&elem)).map(hud_source_bytes).sum();
                 if total > MAX_HUD_TOTAL {
                     return Err(format!("line {n}: the `hud` records of a state hold more than {MAX_HUD_TOTAL} bytes of text"));

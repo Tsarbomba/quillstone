@@ -20,7 +20,10 @@ vars: { gold: 40, pack: [], polite: false, tonics: 1, quests: [gate, tower], que
      Journal button and the J key show it, and `::journal` opens it from the script.
      `journal_done: quests_done` names the list of finished ones, which the journal
      shows after the open ones, greyed and marked Done: finishing a quest is just
-     `::set{quests_done += "gate"}`. -->
+     `::set{quests_done += "gate"}`.
+     The map in the top right corner is a HUD button: `call=#look-map` on a `::hud` makes
+     the picture clickable, and a press calls that label and returns to the same line (it
+     is dimmed over choices and shops, where it does nothing). -->
 
 ::item{id=key name="Brass key" icon=assets/gui/key.png price=15 text="Opens the gate of the clock tower."}
 ::item{id=lamp name="Oil lamp" icon=assets/gui/lamp.png price=12 text="Burns for hours. Good for dark tunnels."}
@@ -33,6 +36,7 @@ vars: { gold: 40, pack: [], polite: false, tonics: 1, quests: [gate, tower], que
 # start
 
 ::bg{src=assets/night.png}
+::hud{id=map image=assets/gui/map.png scale=0.6 x=0.99 y=0.02 call=#look-map}
 The night market opens at midnight. You have {gold} gold and a feeling that something at the clock tower is waiting for you.
 Press I at any time to look in your pack, and J for your journal.
 
@@ -103,4 +107,9 @@ You go home with your purchases, and the market closes behind you.
 
 ::set{tonics -= 1}
 You drink a tonic. It tastes terrible, and your hands stop shaking. ({tonics} left)
+::return
+
+# look-map
+
+You unfold the map. Every street is there, and one that is on no other map.
 ::return

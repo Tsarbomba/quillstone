@@ -17,9 +17,9 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-use quillstone_script::{is_ident, Cmp, Expr, Op, Program, Value, Vars, ONCE, SEEN};
+use quillstone_script::{is_ident, Cmp, Expr, HudAction, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
+use crate::{can_press, can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -140,6 +140,12 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 for id in program.items.keys().filter(|id| can_use(program, &state, id)) {
                     if x.used.insert(id.clone()) {
                         inputs.push((Input::Use(id.clone()), Some(format!("use {}", program.items[id].name))));
+                    }
+                }
+                // The same for each HUD button that calls a label (`open=` buttons need nothing).
+                for h in state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_))) && can_press(program, &state, &h.id)) {
+                    if x.used.insert(format!("hud:{}", h.id)) {
+                        inputs.push((Input::Hud(h.id.clone()), Some(format!("press {}", h.id))));
                     }
                 }
                 inputs

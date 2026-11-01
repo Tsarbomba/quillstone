@@ -633,6 +633,8 @@ pub struct Program {
     /// Front matter `journal_done:`: a list whose entries the journal shows after the open ones, greyed
     /// and marked Done. Only with a `journal:`.
     pub journal_done: Option<String>,
+    /// The labels some `::hud{call=#label}` offers: a save's HUD button may name only these.
+    pub hud_calls: std::collections::BTreeSet<String>,
     /// Front matter `sprite_size: pixels`: sprites are drawn at their picture's pixel size times this
     /// (`art_scale:`, default 1). `None`: every sprite is the same fixed height.
     pub art_scale: Option<f32>,
@@ -1125,6 +1127,44 @@ pub enum HudKind {
     Image { src: String, scale: f32 },
 }
 
+/// A built-in screen a HUD button can open (`open=`): the same ones the quick menu and keys reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudScreen {
+    Inventory,
+    Journal,
+    History,
+    Save,
+    Load,
+    Settings,
+}
+
+impl HudScreen {
+    pub const NAMES: [(&'static str, HudScreen); 6] = [
+        ("inventory", HudScreen::Inventory),
+        ("journal", HudScreen::Journal),
+        ("history", HudScreen::History),
+        ("save", HudScreen::Save),
+        ("load", HudScreen::Load),
+        ("settings", HudScreen::Settings),
+    ];
+
+    pub fn from_name(name: &str) -> Option<HudScreen> {
+        Self::NAMES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+    }
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES.iter().find(|(_, s)| *s == self).map_or("", |(n, _)| n)
+    }
+}
+
+/// What pressing a HUD element does. `Call` is a label the script offered with `call=#label` (a save may
+/// only name such a label: see `Program::hud_calls`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HudAction {
+    Call(String),
+    Open(HudScreen),
+}
+
 /// One always-on overlay element (`::hud`). `id` is its key: a new element with the
 /// same id replaces it in place. `x` and `y` place it as `::show` does (0..1: the point that far across the element
 /// is that far across the screen).
@@ -1136,6 +1176,10 @@ pub struct HudElem {
     /// Drawn only while this is true (checked every time it is drawn).
     pub cond: Option<HudExpr>,
     pub kind: HudKind,
+    /// Makes the element a button (text and image elements only).
+    pub action: Option<HudAction>,
+    /// The picture an image button shows under the mouse.
+    pub hover: Option<String>,
 }
 
 impl HudElem {
@@ -1399,6 +1443,7 @@ impl Op {
                 .filter(|(_, l)| !l.is_empty() && anim_id(l).is_none())
                 .map(|(_, l)| (AssetKind::Image, l.as_str()))
                 .collect(),
+            Op::Hud { elem, .. } => self.asset().into_iter().chain(elem.hover.iter().map(|h| (AssetKind::Image, h.as_str()))).collect(),
             _ => self.asset().into_iter().collect(),
         }
     }

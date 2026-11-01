@@ -230,3 +230,133 @@ fn the_hud_demo_plays_to_the_end_with_live_numbers() {
     assert!(!has_text(&list, "Gold: 7 (final)"), "cleared at the end");
     assert!(g.state().hud.is_empty());
 }
+
+// ---- clickable elements (`call=` / `open=`) ----
+
+const PHONE: &str = "\
+---
+vars: { calls: 0, quests: [] }
+journal: quests
+---
+::hud{id=phone image=assets/phone.png call=#phone hover=assets/phone_hover.png x=0.9 y=0.1}
+::hud{id=log text=Log open=journal x=0 y=0}
+# start
+**A:** one
+**A:** two
+::choice
+- [Go](#next)
+::
+# next
+::wait{time=5}
+**A:** after
+::end
+# phone
+::set{calls += 1}
+**A:** Ring.
+::return
+";
+
+/// The phone is 100 x 100 at x=0.9, y=0.1: (1638, 98) to (1738, 198). "Log" is at the top left corner.
+const ON_PHONE: Option<(f32, f32)> = Some((1688.0, 148.0));
+const ON_LOG: Option<(f32, f32)> = Some((5.0, 5.0));
+
+fn sized(_: &str) -> Option<Size> {
+    Some(Size::new(100.0, 100.0))
+}
+
+fn click(g: &mut Game, at: Option<(f32, f32)>) {
+    g.draw_list(&sized); // the frontend's draw is what tells the game how big the pictures are
+    g.handle(Event::CursorMoved(at));
+    g.handle(Event::Press(Button::Left));
+    g.handle(Event::Release(Button::Left));
+}
+
+fn said(g: &Game) -> String {
+    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
+}
+
+fn calls(g: &Game) -> i64 {
+    g.state().vars["calls"].as_int().unwrap()
+}
+
+/// The phone picture's file and opacity as drawn.
+fn phone(g: &Game) -> (String, f32) {
+    g.draw_list(&sized)
+        .iter()
+        .find_map(|d| match d {
+            Draw::Image { src, alpha, .. } if src.contains("phone") => Some((src.clone(), *alpha)),
+            _ => None,
+        })
+        .expect("the phone is drawn")
+}
+
+#[test]
+fn a_click_on_a_hud_button_calls_the_label_and_the_line_comes_back_without_advancing() {
+    let p = parse(PHONE).unwrap();
+    let mut g = new_game(&p);
+    assert_eq!(said(&g), "one");
+    click(&mut g, ON_PHONE);
+    assert_eq!((said(&g).as_str(), calls(&g)), ("Ring.", 1));
+    key(&mut g, Key::Space);
+    assert_eq!(said(&g), "one", "the click did not move the story on, and the label returned to the same line");
+    key(&mut g, Key::Space);
+    assert_eq!(said(&g), "two");
+}
+
+#[test]
+fn a_hud_button_is_hit_where_it_is_drawn_and_shows_its_hover_picture_under_the_mouse() {
+    let p = parse(PHONE).unwrap();
+    let mut g = new_game(&p);
+    assert_eq!(phone(&g).0, "assets/phone.png");
+    g.draw_list(&sized);
+    g.handle(Event::CursorMoved(ON_PHONE));
+    assert_eq!(phone(&g).0, "assets/phone_hover.png");
+    g.handle(Event::CursorMoved(Some((1700.0, 400.0))));
+    assert_eq!(phone(&g).0, "assets/phone.png");
+    // one pixel outside the picture is only a click on the story
+    click(&mut g, Some((1637.0, 148.0)));
+    assert_eq!((said(&g).as_str(), calls(&g)), ("two", 0));
+    click(&mut g, Some((1639.0, 148.0)));
+    assert_eq!(calls(&g), 1);
+    // a text button lights up under the mouse
+    g.handle(Event::CursorMoved(None));
+    let lit = |g: &Game| g.draw_list(&sized).iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == g.view().theme().button_hover_color));
+    assert!(!lit(&g));
+    g.handle(Event::CursorMoved(ON_LOG));
+    assert!(lit(&g));
+}
+
+#[test]
+fn a_hud_button_is_dimmed_and_does_nothing_over_a_choice_or_a_wait() {
+    let p = parse(PHONE).unwrap();
+    let mut g = new_game(&p);
+    assert_eq!(phone(&g).1, 1.0);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    assert!(matches!(g.state().pending, Some(Cmd::ShowChoices { .. })));
+    assert_eq!(phone(&g).1, 0.45, "dimmed over choices");
+    click(&mut g, ON_PHONE);
+    assert_eq!((calls(&g), g.screen()), (0, Screen::Story));
+    assert!(matches!(g.state().pending, Some(Cmd::ShowChoices { .. })), "the click did not pick or advance");
+    assert_eq!(g.notice.as_ref().map(|(m, _)| m.as_str()), Some("Can't use that now"));
+    g.pick(0);
+    assert!(matches!(g.state().pending, Some(Cmd::Wait { .. })));
+    assert_eq!(phone(&g).1, 0.45, "dimmed over a wait");
+    click(&mut g, ON_PHONE);
+    click(&mut g, ON_LOG);
+    assert_eq!((calls(&g), g.screen()), (0, Screen::Story), "inert, `open=` buttons too");
+}
+
+#[test]
+fn an_open_button_opens_the_screen_like_its_key_and_does_not_advance() {
+    let p = parse(PHONE).unwrap();
+    let mut g = new_game(&p);
+    click(&mut g, ON_LOG);
+    assert!(g.screen() == Screen::Inventory && g.bag.journal, "the journal");
+    key(&mut g, Key::Char('j'));
+    assert_eq!((g.screen(), said(&g).as_str()), (Screen::Story, "one"));
+    let p = parse(&PHONE.replace("open=journal", "open=settings")).unwrap();
+    let mut g = new_game(&p);
+    click(&mut g, ON_LOG);
+    assert_eq!(g.screen(), Screen::Settings);
+}
