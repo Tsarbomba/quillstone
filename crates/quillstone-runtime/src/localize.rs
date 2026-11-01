@@ -100,6 +100,12 @@ impl Session<'_> {
                     }
                     _ => Cmd::ShowTiming { prompt, bar },
                 },
+                Cmd::ShowPress { prompt, press } => match self.program.ops.get(self.state.pc) {
+                    Some(Op::Press { prompt: src, .. }) if i == last => {
+                        Cmd::ShowPress { prompt: interpolate(cat.text(None, src), vars), press }
+                    }
+                    _ => Cmd::ShowPress { prompt, press },
+                },
                 Cmd::AskInput { prompt, default, max } => match self.program.ops.get(self.state.pc) {
                     Some(Op::Input { prompt: src, .. }) if i == last => {
                         Cmd::AskInput { prompt: interpolate(cat.text(None, src), vars), default, max }

@@ -1089,6 +1089,57 @@ timing_marker_color = #ffffff                  # the plain marker (default text_
   pictures are checked by `quillstone check` and packed by `quillstone package` like other theme
   pictures.
 
+## Key prompts
+
+Ask for a key within a time: a quick-time event ("Duck!") or, with `count`, button mashing
+("Force the door!"). Like the timing bar it is one step of the story: the result is stored in
+a variable and the story goes on with the next line, where `::if` can branch on it
+(`examples/minigame.quill.md` has a dodge and a door at the end):
+
+````markdown
+---
+vars: { ok: "" }
+---
+::press{key=space time=1.2 result=ok prompt="Duck! Press **Space**!"}
+::if{ok == "hit"}
+The dog sails over you.
+::endif
+::press{key=enter time=4 count=12 result=ok prompt="Force the door!"}
+````
+
+- `key` (required) is one of `space`, `enter`, `left`, `right`, `up`, `down`, `click` (a mouse
+  click) or a letter `a` to `z`. Anything else is an error that lists these. The prompt draws
+  a key cap with the key's name. `space` and `enter` are the same key here (either one
+  counts), which is what lets the gamepad's confirm button press them.
+- `time` (required, seconds, 0.5 to 600, a plain number) is the limit.
+- `count` (optional, 1 to 200, default 1) is how many presses it takes: a bar under the time
+  bar fills with each one. All of them within `time` is a hit.
+- `result` (required) is a text variable declared in `vars:`. It is set to `"hit"` or
+  `"miss"` (time ran out first).
+- `prompt` (optional) is shown above the key cap, with `{name}` values and styling like the
+  timing bar's, and translated through `lang export` too.
+- A wrong key does nothing (it is not a miss, so a slip of the finger is forgiving). While
+  the prompt is up, Space, Enter, the arrows, Backspace, PageUp and the letters do not
+  advance, go back or open the history, auto-forward and so on, whatever the key asked for;
+  Esc still opens Settings, and the quick menu buttons still work. A key that was already
+  held down when the prompt appeared does not count, and holding a key does not repeat it:
+  every press is a new one. The same goes for the timing bar.
+- The clock stands still while the window is not in focus or minimised and while Settings,
+  History or a confirmation is open, and starts once the line before it is fully typed. Skip
+  mode stops at the prompt and auto-forward never presses it.
+- Rollback goes back to before the prompt, which starts afresh (full time, no presses); roll
+  forward uses the recorded result. A save made at the prompt loads at the prompt, started
+  afresh.
+- `quillstone test` plays both results as branches; `quillstone graph` draws no extra arrows.
+  `quillstone run` asks you to type `h` (hit) or `m` (miss).
+- Looks: a key cap in `panel_color` (or the picture `press_key_image`), the time bar in
+  `choice_timer_color` (default `accent_color`) and the presses bar in `timing_perfect_color`
+  (default `name_color`), in the middle of the screen.
+
+````
+press_key_image = assets/gui/keycap.png   # the key cap, 160x120 on the 1920x1080 screen (checked and packed like other theme pictures)
+````
+
 ## Items
 
 Items give the things in a list variable a name, a picture and a description for
@@ -1553,6 +1604,7 @@ choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (def
 choice_timer_height = 8             # its thickness, 2 to 40
 timing_bar_image = assets/gui/lockbar.png   # the ::timing bar's track and marker pictures, and zone and marker colours:
 timing_marker_image = assets/gui/needle.png # timing_good_color, timing_perfect_color, timing_marker_color (see "Timing bar")
+press_key_image = assets/gui/keycap.png     # the key cap of a ::press prompt (see "Key prompts")
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).

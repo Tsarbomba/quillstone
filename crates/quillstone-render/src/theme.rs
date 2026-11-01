@@ -212,6 +212,8 @@ pub struct Theme {
     pub timing_good_color: Option<[f32; 4]>,
     pub timing_perfect_color: Option<[f32; 4]>,
     pub timing_marker_color: Option<[f32; 4]>,
+    /// The key cap of a `::press` prompt (instead of a `panel_color` box).
+    pub press_key_image: Option<String>,
 }
 
 impl Default for Theme {
@@ -280,6 +282,7 @@ impl Default for Theme {
             timing_good_color: None,
             timing_perfect_color: None,
             timing_marker_color: None,
+            press_key_image: None,
         }
     }
 }
@@ -396,6 +399,7 @@ impl Theme {
                 "input_image" => t.input_image = path(),
                 "timing_bar_image" => t.timing_bar_image = path(),
                 "timing_marker_image" => t.timing_marker_image = path(),
+                "press_key_image" => t.press_key_image = path(),
                 "input_rect" => match parse_rect(value) {
                     Some(r) if r[2] >= MIN_INPUT_RECT[0] && r[3] >= MIN_INPUT_RECT[1] => t.input_rect = Some(r),
                     _ => bad(format!(
@@ -607,6 +611,7 @@ impl Theme {
             &self.options_panel_image,
             &self.timing_bar_image,
             &self.timing_marker_image,
+            &self.press_key_image,
         ]
         .into_iter()
         .filter_map(|p| p.as_deref())
@@ -891,18 +896,18 @@ mod tests {
     }
 
     #[test]
-    fn the_timing_keys_have_defaults_are_read_and_their_pictures_are_assets() {
+    fn the_timing_and_key_prompt_keys_have_defaults_are_read_and_their_pictures_are_assets() {
         let d = Theme::default();
-        assert!(d.timing_bar_image.is_none() && d.timing_marker_image.is_none() && d.timing_good_color.is_none());
+        assert!(d.timing_bar_image.is_none() && d.timing_marker_image.is_none() && d.timing_good_color.is_none() && d.press_key_image.is_none());
         let (t, problems) = Theme::parse(
             "timing_bar_image = g/bar.png\ntiming_marker_image = g/m.png\ntiming_good_color = #00ff00\n\
-             timing_perfect_color = #ff0000\ntiming_marker_color = #0000ff80\n",
+             timing_perfect_color = #ff0000\ntiming_marker_color = #0000ff80\npress_key_image = g/cap.png\n",
         );
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(t.timing_good_color, Some([0.0, 1.0, 0.0, 1.0]));
         assert_eq!(t.timing_perfect_color, Some([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(t.timing_marker_color.map(|c| c[2]), Some(1.0));
-        assert!(t.assets().contains(&"g/bar.png") && t.assets().contains(&"g/m.png"));
+        assert!(t.assets().contains(&"g/bar.png") && t.assets().contains(&"g/m.png") && t.assets().contains(&"g/cap.png"));
         let (t, problems) = Theme::parse("timing_good_color = green\n");
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(t, Theme::default());

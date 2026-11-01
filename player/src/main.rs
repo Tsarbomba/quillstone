@@ -643,8 +643,9 @@ impl App {
 
 /// The game's name for a key, if it uses it. Held-down repeats only count for
 /// keys where repeating makes sense (moving through lists and sliders), and
-/// Backspace while the player is typing text.
-fn map_key(key: &WinitKey, repeat: bool, typing: bool) -> Option<Key> {
+/// Backspace while the player is typing text. With `fresh` (a timing bar or key prompt is up) nothing
+/// repeats: a held key carried onto it must not press it.
+fn map_key(key: &WinitKey, repeat: bool, typing: bool, fresh: bool) -> Option<Key> {
     let k = match key {
         WinitKey::Named(named) => match named {
             NamedKey::Space => Key::Space,
@@ -670,7 +671,7 @@ fn map_key(key: &WinitKey, repeat: bool, typing: bool) -> Option<Key> {
         WinitKey::Character(s) => Key::Char(s.chars().next()?),
         _ => return None,
     };
-    let repeats = matches!(k, Key::Left | Key::Right | Key::Up | Key::Down | Key::PageUp | Key::PageDown)
+    let repeats = (!fresh && matches!(k, Key::Left | Key::Right | Key::Up | Key::Down | Key::PageUp | Key::PageDown))
         || (typing && k == Key::Backspace);
     (!repeat || repeats).then_some(k)
 }
@@ -775,7 +776,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state, repeat, text, .. }, .. } => {
                 let typing = self.game.wants_text();
-                if let Some(key) = map_key(&logical_key, repeat, typing) {
+                if let Some(key) = map_key(&logical_key, repeat, typing, self.game.wants_fresh_keys()) {
                     match state {
                         ElementState::Pressed if !self.holding => self.game.handle(Event::Key(key)),
                         ElementState::Pressed => {} // a line the player hasn't seen must not be skipped
@@ -890,6 +891,14 @@ mod tests {
         let (assets, _) = open_archive(&dir.join("game.qsa"));
         assert_eq!(assets.read_to_string("a.txt").unwrap(), "packed", "a game/ folder no longer overrides");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_arrow_repeats_except_where_a_press_has_to_be_fresh() {
+        let right = WinitKey::Named(NamedKey::ArrowRight);
+        assert_eq!(map_key(&right, false, false, true), Some(Key::Right), "the first press always counts");
+        assert_eq!(map_key(&right, true, false, false), Some(Key::Right), "lists and sliders repeat");
+        assert_eq!(map_key(&right, true, false, true), None, "a held key does not press a bar or key prompt");
     }
 
     #[test]

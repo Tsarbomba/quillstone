@@ -970,10 +970,13 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
         let shopping = matches!(session.state().pending, Some(Cmd::ShowShop { .. }));
         let asking = matches!(session.state().pending, Some(Cmd::AskInput { .. }));
         let timing = matches!(session.state().pending, Some(Cmd::ShowTiming { .. }));
+        let pressing = matches!(session.state().pending, Some(Cmd::ShowPress { .. }));
         let prompt = if asking {
             "type your answer ([enter]=default, !back, !quit)> "
         } else if timing {
             "stop the bar: p=perfect, g=good, m=miss, b=back, q=quit> "
+        } else if pressing {
+            "press the key: h=hit, m=miss, b=back, q=quit> "
         } else if shopping {
             "buy (number), [enter]=leave, b=back, q=quit> "
         } else if choosing {
@@ -1016,6 +1019,8 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
             },
             "p" | "g" | "m" if timing => session.input(Input::Choose(["m", "g", "p"].iter().position(|k| *k == line).unwrap_or(0))),
             _ if timing => Vec::new(),
+            "h" | "m" if pressing => session.input(Input::Choose((line == "h") as usize)),
+            _ if pressing => Vec::new(),
             _ if choosing => match line.parse::<usize>() {
                 Ok(n) if n >= 1 => session.input(Input::Choose(n - 1)),
                 _ => Vec::new(),
@@ -1126,6 +1131,10 @@ fn print_cmds(cmds: &[Cmd]) {
                 let [from, to] = bar.good.map(|v| v * 100.0);
                 let perfect = bar.perfect.map(|[a, b]| format!(", perfect {:.0}%..{:.0}%", a * 100.0, b * 100.0)).unwrap_or_default();
                 println!("\n[timing bar] {} (good {from:.0}%..{to:.0}%{perfect})", plain(prompt));
+            }
+            Cmd::ShowPress { prompt, press } => {
+                let times = if press.count > 1 { format!("{} times, ", press.count) } else { String::new() };
+                println!("\n[key prompt] {} (press {} {times}within {}s)", plain(prompt), press.key.to_uppercase(), press.time);
             }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
@@ -1328,10 +1337,10 @@ mod tests {
     }
 
     #[test]
-    fn the_timing_bar_pictures_are_checked_like_other_theme_pictures() {
-        let keys = "timing_bar_image = assets/tb.png\ntiming_marker_image = assets/tm.png\n";
+    fn the_timing_and_key_prompt_pictures_are_checked_like_other_theme_pictures() {
+        let keys = "timing_bar_image = assets/tb.png\ntiming_marker_image = assets/tm.png\npress_key_image = assets/pk.png\n";
         let missing = themed(keys, &[]);
-        assert!(missing.len() == 2 && missing.iter().all(|m| m.contains("missing theme picture")), "{missing:?}");
+        assert!(missing.len() == 3 && missing.iter().all(|m| m.contains("missing theme picture")), "{missing:?}");
         assert!(themed("timing_bar_image = assets/tb.png\n", &[("assets/tb.png", b"not a picture")]).len() == 1);
     }
 

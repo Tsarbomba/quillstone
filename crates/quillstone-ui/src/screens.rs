@@ -7,7 +7,7 @@ use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_
 use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::{plain, rich};
-use quillstone_script::TimingBar;
+use quillstone_script::{KeyPress, TimingBar};
 
 use crate::settings::*;
 use crate::slots::{thumbnail, Page, SlotInfo};
@@ -378,6 +378,45 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
             align: Align::Center,
             outline: None,
         });
+    }
+}
+
+/// The `::press` prompt in the middle of the screen: the prompt, a key cap with the key's name, a bar
+/// of the time left and, for mashing, a bar of the presses made. The cap is `press_key_image` when it is
+/// loaded, else `panel_color`; the time bar is the timed choice's colour, the presses fill `name_color`.
+pub fn draw_press_prompt(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, press: &KeyPress, presses: u32, elapsed: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
+    let text = |out: &mut Vec<Draw>, text: String, rect: Rect, size: f32| {
+        out.push(Draw::Text { text, runs: Vec::new(), visible_chars: usize::MAX, rect, size, color: theme.text_color, align: Align::Center, outline: None })
+    };
+    if !prompt.is_empty() {
+        let r = rich(prompt);
+        out.push(Draw::Text {
+            text: r.text,
+            runs: r.runs,
+            visible_chars: usize::MAX,
+            rect: Rect::new(460.0, 330.0, 1000.0, 60.0),
+            size: 44.0,
+            color: theme.text_color,
+            align: Align::Center,
+            outline: None,
+        });
+    }
+    let cap = Rect::new(880.0, 410.0, 160.0, 120.0);
+    match theme.press_key_image.as_deref().filter(|s| image_size(s).is_some()) {
+        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: cap, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
+        None => out.push(Draw::Rect { rect: cap, color: theme.panel_color }),
+    }
+    text(out, press.key.to_uppercase(), Rect::new(cap.x, cap.y + 30.0, cap.w, 60.0), 52.0);
+    let mut bar = |y: f32, fraction: f32, color: [f32; 4]| {
+        let track = Rect::new(460.0, y, 1000.0, 24.0);
+        out.push(Draw::Rect { rect: track, color: [0.0, 0.0, 0.0, 0.45] });
+        if fraction > 0.0 {
+            out.push(Draw::Rect { rect: Rect::new(track.x, track.y, track.w * fraction, track.h), color });
+        }
+    };
+    bar(570.0, press.time_left(elapsed), theme.choice_timer_color.unwrap_or(theme.accent_color));
+    if press.count > 1 {
+        bar(606.0, press.progress(presses), theme.timing_perfect_color.unwrap_or(theme.name_color));
     }
 }
 

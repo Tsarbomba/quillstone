@@ -108,6 +108,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
             }
             // Each outcome the bar can have is a branch.
             Some(Cmd::ShowTiming { bar, .. }) => bar.hits().iter().map(|h| (Input::Choose(*h as usize), Some(h.text().to_string()))).collect(),
+            Some(Cmd::ShowPress { .. }) => ["miss", "hit"].iter().enumerate().map(|(i, t)| (Input::Choose(i), Some(t.to_string()))).collect(),
             Some(Cmd::ShowShop { items, .. }) => {
                 if let Some(Op::Shop { stock, .. }) = program.ops.get(state.pc) {
                     x.shop_offered.extend(offered_stock(stock, &state.vars).into_iter().map(|i| (state.pc, i)));
@@ -547,7 +548,7 @@ impl Explorer<'_> {
                         read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     }
                 }
-                Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Notify { text: prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
+                Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Press { prompt, .. } | Op::Notify { text: prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 // A picture named from variables (`assets/{place}.png`).
                 Op::Bg { src, .. } | Op::Image { src, .. } => {
                     read.extend(quillstone_script::pattern_vars(src).into_iter().map(|n| (at, n, false)));

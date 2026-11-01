@@ -1,6 +1,6 @@
 ---
 title: Catch the Lamp
-vars: { pins: 0, slips: 0, hit: "" }
+vars: { pins: 0, slips: 0, hit: "", ok: "" }
 theme: theme.txt
 sprite_size: pixels
 art_scale: 1.5
@@ -12,7 +12,9 @@ art_scale: 1.5
      `default=#too-slow` is the timeout: after 5 seconds the story jumps there.
      The lock at the end uses `::timing`: a marker sweeps back and forth over a bar and the player
      stops it. Where it stops ("perfect", "good" or "miss") is stored in `hit`, and the story goes on
-     with the next line like after any other step, so `::if` can branch on it. -->
+     with the next line like after any other step, so `::if` can branch on it.
+     After the gate: `::press` asks for a key within a time (a quick-time event: "Duck!"), and with
+     `count=` it is button mashing. The result is "hit" or "miss", stored the same way. -->
 
 # start
 
@@ -58,7 +60,23 @@ The pick slips.
 
 # open
 
-The lock springs open. The gate swings wide.
+The lock springs open. The gate swings wide, and a guard dog bounds out.
+
+::press{key=space time=1.2 result=ok prompt="Duck! Press **Space**!"}
+::if{ok == "hit"}
+You duck, and the dog sails over you.
+::else
+The dog knocks you flat, and you scramble up.
+::endif
+
+Only a heavy door stands between you and the road.
+
+::press{key=enter time=4 count=12 result=ok prompt="Force the door! Mash **Enter**!"}
+::if{ok == "hit"}
+The door gives way. You are out.
+::else
+The door will not budge. The dog is coming back.
+::endif
 ::end
 
 # jammed

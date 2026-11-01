@@ -839,7 +839,7 @@ impl Program {
             .ops
             .iter()
             .map(|op| match op {
-                Op::Set(_) | Op::Input { .. } | Op::Timing { .. } => 1,
+                Op::Set(_) | Op::Input { .. } | Op::Timing { .. } | Op::Press { .. } => 1,
                 Op::Choice { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
                 Op::Call { args, .. } => args.len(),
                 _ => 0,
@@ -1316,6 +1316,43 @@ impl TimingBar {
     }
 }
 
+/// What a `::press{key=..}` can ask for: `space`/`enter` (either confirm key counts, so a gamepad's
+/// confirm button works), the arrows, `click`, and the letters `a`..`z`.
+pub const PRESS_KEYS: &[&str] = &[
+    "space", "enter", "left", "right", "up", "down", "click", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o",
+    "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+];
+/// Most presses a `::press{count=..}` can ask for.
+pub const MAX_PRESS_COUNT: u32 = 200;
+
+/// A `::press` prompt: press `key` (`count` times) before `time` seconds are up. The outcome is the
+/// `Input::Choose` index: 0 = miss, 1 = hit; the variable is set to [`KeyPress::outcome_text`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyPress {
+    /// One of [`PRESS_KEYS`].
+    pub key: String,
+    /// 1 for a quick-time event, more for button mashing.
+    pub count: u32,
+    pub time: f32,
+}
+
+impl KeyPress {
+    /// What the prompt's `result=` variable is set to for the `Input::Choose` index `i`.
+    pub fn outcome_text(i: usize) -> Option<&'static str> {
+        ["miss", "hit"].get(i).copied()
+    }
+
+    /// How full the progress bar is after `presses` (0..1).
+    pub fn progress(&self, presses: u32) -> f32 {
+        (presses as f32 / self.count as f32).min(1.0)
+    }
+
+    /// How much of the time bar is left `elapsed` seconds after the prompt appeared (1 = full).
+    pub fn time_left(&self, elapsed: f32) -> f32 {
+        (1.0 - elapsed.max(0.0) / self.time).clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChoiceOption {
     pub text: String,
@@ -1481,6 +1518,9 @@ pub enum Op {
     /// the text variable `var` to "perfect", "good" or "miss". `prompt` is tagged text like `Input`'s
     /// (empty: none).
     Timing { var: String, prompt: String, bar: TimingBar },
+    /// A key prompt: waits for the key to be pressed `press.count` times within `press.time`, then sets
+    /// the text variable `var` to "hit" or "miss". `prompt` is tagged text like `Input`'s (empty: none).
+    Press { var: String, prompt: String, press: KeyPress },
     Jump { target: usize, cond: Option<Cond> },
     /// Jump to a label and come back at the next op after `::return`. `args` are
     /// the label's parameters: each is evaluated (all of them before any is
@@ -1556,7 +1596,7 @@ impl Op {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hit, TimingBar};
+    use super::{Hit, KeyPress, TimingBar};
     use crate::is_inside;
 
     fn bar(speed: f32) -> TimingBar {
@@ -1574,6 +1614,14 @@ mod tests {
         assert!((at(100.0 + 0.125) - 0.25).abs() < 1e-3, "also far on");
         assert_eq!(at(-1.0), 0.0, "before the start it rests at the left end");
         assert!((bar(0.5).marker(1.0) - 0.5).abs() < 1e-6, "half the speed, half the way");
+    }
+
+    #[test]
+    fn key_prompt_progress_and_time_left_are_fractions_that_stop_at_the_ends() {
+        let p = KeyPress { key: "space".into(), count: 4, time: 2.0 };
+        assert_eq!([p.progress(0), p.progress(1), p.progress(4), p.progress(9)], [0.0, 0.25, 1.0, 1.0]);
+        assert_eq!([p.time_left(-1.0), p.time_left(0.0), p.time_left(0.5), p.time_left(2.0), p.time_left(5.0)], [1.0, 1.0, 0.75, 0.0, 0.0]);
+        assert_eq!((KeyPress::outcome_text(0), KeyPress::outcome_text(1), KeyPress::outcome_text(2)), (Some("miss"), Some("hit"), None));
     }
 
     #[test]

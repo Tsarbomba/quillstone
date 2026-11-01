@@ -8,7 +8,7 @@
 use quillstone_audio::{Action, Channel, Mixer};
 use quillstone_render::{hud::HudLook, textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
 use quillstone_runtime::{choice_timer, voice_name, ChoiceTimer, Cmd, Input, Logged, Session, State};
-use quillstone_script::{kind_from_path, AssetKind, Hit, Program, TimingBar, Value};
+use quillstone_script::{kind_from_path, AssetKind, Hit, Program, KeyPress, TimingBar, Value};
 use quillstone_video::Wanted;
 
 use crate::screens::*;
@@ -218,6 +218,8 @@ pub struct Game<'p> {
     /// Seconds a timed `::choice` has been counting down. UI only: it starts again from 0
     /// whenever the options are shown (arrival, rollback, load, reload).
     choice_elapsed: f32,
+    /// Presses so far at a `::press` prompt (its clock is `choice_elapsed`); starts again with it.
+    press_count: u32,
     /// Whether the window has the focus (the countdown waits while it hasn't).
     focused: bool,
     /// The window is minimised (or hidden): the whole game stands still, see [`Game::set_minimized`].
@@ -287,6 +289,7 @@ impl<'p> Game<'p> {
             seed: quillstone_runtime::DEFAULT_SEED,
             replay: None,
             choice_elapsed: 0.0,
+            press_count: 0,
             focused: true,
             minimized: false,
             unlock_all: false,
@@ -577,6 +580,12 @@ impl<'p> Game<'p> {
                 return self.forward(Input::Choose(Hit::Miss as usize)); // no press in time
             }
         }
+        if let Some(press) = self.key_press().filter(|_| self.counting()) {
+            self.choice_elapsed += dt;
+            if self.choice_elapsed >= press.time {
+                return self.forward(Input::Choose(0)); // not pressed in time
+            }
+        }
         if let Some(timer) = self.running_timer() {
             self.choice_elapsed += dt;
             if self.choice_elapsed >= timer.seconds {
@@ -632,6 +641,44 @@ impl<'p> Game<'p> {
         }
     }
 
+    /// The key prompt on screen; `choice_elapsed` is its clock and `press_count` its presses.
+    fn key_press(&self) -> Option<KeyPress> {
+        match &self.session.state().pending {
+            Some(Cmd::ShowPress { press, .. }) if self.in_story && self.screen == Screen::Story => Some(press.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether a held-down key's auto-repeats must not reach the game: at a timing bar or key prompt a
+    /// press has to be a fresh one (the frontend lets the arrow keys repeat otherwise).
+    pub fn wants_fresh_keys(&self) -> bool {
+        self.timing_bar().is_some() || self.key_press().is_some()
+    }
+
+    /// An event at a key prompt: counts a press of its key (the last one is a hit) and swallows the keys
+    /// and clicks that would otherwise advance, go back or open a menu. `false`: not for the prompt.
+    fn press_event(&mut self, press: &KeyPress, event: &Event) -> bool {
+        let hit = match event {
+            Event::Key(Key::Escape) => return false, // Settings, as everywhere
+            Event::Key(k) => match (press.key.as_str(), k) {
+                ("space" | "enter", Key::Space | Key::Enter) | ("left", Key::Left) | ("right", Key::Right) | ("up", Key::Up) | ("down", Key::Down) => true,
+                (n, Key::Char(c)) if n.len() == 1 && n.starts_with(c.to_ascii_lowercase()) => true,
+                (_, Key::Space | Key::Enter | Key::Left | Key::Right | Key::Up | Key::Down | Key::Backspace | Key::PageUp | Key::Char(_)) => false,
+                _ => return false, // F5, F9, Tab, Ctrl: still work
+            },
+            Event::Press(Button::Left) if self.quick_button_under_cursor().is_none() && self.hud_button_under_cursor().is_none() => press.key == "click",
+            _ => return false,
+        };
+        // A press while the line above is still typing only finishes it.
+        if hit && self.view.press_advance() {
+            self.press_count += 1;
+            if self.press_count >= press.count {
+                self.forward(Input::Choose(1));
+            }
+        }
+        true
+    }
+
     /// The window gained or lost the keyboard focus.
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
@@ -668,7 +715,7 @@ impl<'p> Game<'p> {
             || self.auto
             || self.skip.is_some()
             || self.running_timer().is_some()
-            || (self.timing_bar().is_some() && self.counting())
+            || ((self.timing_bar().is_some() || self.key_press().is_some()) && self.counting())
             || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
             || !self.wanted_videos().is_empty()
     }
@@ -707,6 +754,9 @@ impl<'p> Game<'p> {
         };
         if let (Some(bar), Some(Cmd::ShowTiming { prompt, .. })) = (self.timing_bar(), self.pending_shown()) {
             draw_timing_bar(&mut out, theme, &prompt, &bar, bar.marker(self.choice_elapsed), image_size);
+        }
+        if let (Some(press), Some(Cmd::ShowPress { prompt, .. })) = (self.key_press(), self.pending_shown()) {
+            draw_press_prompt(&mut out, theme, &prompt, &press, self.press_count, self.choice_elapsed, image_size);
         }
         if let Some(timer) = self.choice_timer() {
             draw_choice_timer(&mut out, theme, self.view.choices.len(), 1.0 - self.choice_elapsed / timer.seconds);
@@ -896,6 +946,11 @@ impl<'p> Game<'p> {
         let on_quick_menu = self.quick_button_under_cursor().is_some();
         if self.skip.is_some() && interrupts && !(on_quick_menu && event == Event::Press(Button::Left)) {
             return self.stop_skip();
+        }
+        if let Some(press) = self.key_press() {
+            if self.press_event(&press, &event) {
+                return;
+            }
         }
         match event {
             Event::Press(Button::Left) => self.story_click(),
@@ -1130,9 +1185,10 @@ impl<'p> Game<'p> {
         let cmds = localized.as_deref().unwrap_or(cmds);
         let voiced = self.with_auto_voice(cmds);
         let cmds = voiced.as_deref().unwrap_or(cmds);
-        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowTiming { .. })) {
+        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. })) {
             self.choice_focus = None; // new choices: nothing picked out yet
             self.choice_elapsed = 0.0; // and a timed one (or a timing bar) starts counting from full
+            self.press_count = 0;
         }
         if cmds.iter().any(|c| matches!(c, Cmd::PlayVideo { .. })) {
             self.video_generation += 1;
@@ -1234,7 +1290,7 @@ impl<'p> Game<'p> {
         // Arriving at a choice, a shop or a text entry is a checkpoint (a purchase, which shows the shop again, is not).
         let arrived = cmds
             .iter()
-            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. }));
+            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. }));
         if arrived && !purchase && self.replay.is_none() {
             self.autosave();
         }
@@ -1439,6 +1495,8 @@ mod tint_tests;
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod press_tests;
 #[cfg(test)]
 mod timing_tests;
 #[cfg(test)]

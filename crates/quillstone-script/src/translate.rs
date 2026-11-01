@@ -400,7 +400,7 @@ impl Program {
                         }
                     }
                 }
-                Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Notify { text: prompt, .. } => add(prompt, place, None),
+                Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Press { prompt, .. } | Op::Notify { text: prompt, .. } => add(prompt, place, None),
                 Op::Hud { elem, .. } => {
                     if let HudKind::Text { text, .. } = &elem.kind {
                         add(text, place, None);

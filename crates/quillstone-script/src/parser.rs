@@ -96,7 +96,7 @@ struct Files<'a> {
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, journal, shop, input, timing, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
+                        choice, hotspots, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -124,6 +124,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "jump" => &["to", "if"],
         "input" => &["var", "prompt", "default", "max"],
         "timing" => &["result", "speed", "good", "perfect", "time", "prompt"],
+        "press" => &["key", "time", "count", "result", "prompt"],
         _ => &[],
     }
 }
@@ -1608,23 +1609,8 @@ impl Parser {
                 Some((Op::Input { var, prompt, default, max }, None))
             }
             "timing" => {
-                let var = a.value("result").unwrap_or_default();
-                if !matches!(self.program.vars.get(&var), Some(Value::Str(_))) {
-                    self.err(line, "`::timing` needs `result=` naming a text variable declared in the front matter (like `vars: { hit: \"\" }`)");
-                    return None;
-                }
-                let prompt = a.value("prompt").map(|p| p.trim().to_string()).unwrap_or_default();
-                match crate::markup::parse_markup(&prompt) {
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                    Ok(r) if r.no_wait || r.text.contains('\n') => {
-                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::timing` prompt");
-                        return None;
-                    }
-                    Ok(_) => {}
-                }
+                let var = self.result_var(line, a, "timing")?;
+                let prompt = self.prompt_attr(line, a, "timing")?;
                 let speed = match a.value("speed") {
                     None => 1.0,
                     Some(v) => match v.parse::<f32>() {
@@ -1671,6 +1657,37 @@ impl Parser {
                     },
                 };
                 Some((Op::Timing { var, prompt, bar: TimingBar { speed, good, perfect, time } }, None))
+            }
+            "press" => {
+                let var = self.result_var(line, a, "press")?;
+                let prompt = self.prompt_attr(line, a, "press")?;
+                let key = a.value("key").unwrap_or_default().to_lowercase();
+                if !PRESS_KEYS.contains(&key.as_str()) {
+                    self.err(line, format!("`::press` needs `key=` (one of: {})", PRESS_KEYS.join(", ")));
+                    return None;
+                }
+                let Some(t) = a.value("time") else {
+                    self.err(line, "`::press` needs `time=` (seconds to press it in, like `time=1.2`)");
+                    return None;
+                };
+                let time = match parse_choice_time(&t) {
+                    Ok(t) => t,
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                };
+                let count = match a.value("count") {
+                    None => 1,
+                    Some(c) => match c.parse::<u32>() {
+                        Ok(n) if (1..=MAX_PRESS_COUNT).contains(&n) => n,
+                        _ => {
+                            self.err(line, format!("bad `count={c}` (a whole number of presses from 1 to {MAX_PRESS_COUNT})"));
+                            return None;
+                        }
+                    },
+                };
+                Some((Op::Press { var, prompt, press: KeyPress { key, count, time } }, None))
             }
             "end" => Some((Op::End, None)),
             "end_replay" => Some((Op::EndReplay, None)),
@@ -2624,6 +2641,32 @@ impl Parser {
         };
         let alpha = self.number(line, a, "alpha", TINT_ALPHA)?.unwrap_or(DEFAULT_TINT_ALPHA);
         Some(Op::Tint { set: Some(Tint { color, alpha }), fade })
+    }
+
+    /// `result=` of `::timing` / `::press`: a text variable declared in the front matter.
+    fn result_var(&mut self, line: usize, a: &mut Attrs, cmd: &str) -> Option<String> {
+        let var = a.value("result").unwrap_or_default();
+        if !matches!(self.program.vars.get(&var), Some(Value::Str(_))) {
+            self.err(line, format!("`::{cmd}` needs `result=` naming a text variable declared in the front matter (like `vars: {{ hit: \"\" }}`)"));
+            return None;
+        }
+        Some(var)
+    }
+
+    /// The optional `prompt=` of `::timing` / `::press`: tagged text without `{nw}` / `{p}`.
+    fn prompt_attr(&mut self, line: usize, a: &mut Attrs, cmd: &str) -> Option<String> {
+        let prompt = a.value("prompt").map(|p| p.trim().to_string()).unwrap_or_default();
+        match crate::markup::parse_markup(&prompt) {
+            Err(m) => {
+                self.err(line, m);
+                None
+            }
+            Ok(r) if r.no_wait || r.text.contains('\n') => {
+                self.err(line, format!("`{{nw}}` and `{{p}}` only work in dialogue lines, not in a `::{cmd}` prompt"));
+                None
+            }
+            Ok(_) => Some(prompt),
+        }
     }
 
     fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
@@ -4328,6 +4371,44 @@ mod tests {
         // only `result` and `good` are needed; fractions work like percentages
         let p = ok(&format!("{TIMED}::timing{{result=hit good=0.2..0.3}}\n"));
         assert_eq!(p.ops[0], Op::Timing { var: "hit".into(), prompt: String::new(), bar: TimingBar { speed: 1.0, good: [0.2, 0.3], perfect: None, time: None } });
+    }
+
+    #[test]
+    fn a_key_prompt_has_a_key_a_time_a_count_and_a_prompt() {
+        let p = ok(&format!("{TIMED}::press{{key=Space time=1.2 result=hit prompt=\"**Duck**!\"}}\nDone.\n"));
+        assert_eq!(
+            p.ops[0],
+            Op::Press { var: "hit".into(), prompt: "**Duck**!".into(), press: KeyPress { key: "space".into(), count: 1, time: 1.2 } }
+        );
+        assert_eq!(p.lines[0], 5);
+        let p = ok(&format!("{TIMED}::press{{key=click time=4 count=15 result=hit}}\n"));
+        assert_eq!(p.ops[0], Op::Press { var: "hit".into(), prompt: String::new(), press: KeyPress { key: "click".into(), count: 15, time: 4.0 } });
+        for key in PRESS_KEYS {
+            ok(&format!("{TIMED}::press{{key={key} time=0.5 count=200 result=hit}}\n"));
+        }
+    }
+
+    #[test]
+    fn key_prompt_errors_name_the_line() {
+        let e = |body: &str, needle: &str| {
+            let errors = errs(&format!("{TIMED}{body}"));
+            assert!(errors.iter().any(|e| e.line == 5 && e.message.contains(needle)), "{body:?}: {errors:?}");
+        };
+        e("::press{time=1 result=hit}\n", "needs `key=` (one of: space, enter, left");
+        e("::press{key=f5 time=1 result=hit}\n", "needs `key=` (one of: space, enter, left");
+        e("::press{key=ab time=1 result=hit}\n", "needs `key=`");
+        e("::press{key=space result=hit}\n", "needs `time=");
+        e("::press{key=space time=0.2 result=hit}\n", "bad `time=0.2`");
+        e("::press{key=space time=601 result=hit}\n", "bad `time=601`");
+        e("::press{key=space time=n result=hit}\n", "bad `time=n`");
+        e("::press{key=space time=1 count=0 result=hit}\n", "bad `count=0`");
+        e("::press{key=space time=1 count=201 result=hit}\n", "bad `count=201`");
+        e("::press{key=space time=1 count=2.5 result=hit}\n", "bad `count=2.5`");
+        e("::press{key=space time=1}\n", "needs `result=");
+        e("::press{key=space time=1 result=n}\n", "needs `result=");
+        e("::press{key=space time=1 result=nosuch}\n", "needs `result=");
+        e("::press{key=space time=1 result=hit prompt=\"Go{nw}\"}\n", "only work in dialogue");
+        e("::press{key=space time=1 result=hit bogus=1}\n", "unknown attribute `bogus`");
     }
 
     #[test]
