@@ -165,6 +165,10 @@ pub struct Theme {
     /// `quick_buttons = listed`: only buttons with a picture or a position of their own are shown.
     pub quick_listed: bool,
     pub menu_background: Option<String>,
+    /// A picture (a frame, vignette or shading) drawn over `menu_background`, under the main menu's buttons.
+    pub menu_overlay: Option<String>,
+    /// The same behind the Save, Load, Settings and History screens' panels, over their dim or `options_background`.
+    pub game_menu_overlay: Option<String>,
     pub menu_music: Option<String>,
     /// Music and sound loops play at this fraction of their volume while a voice clip does (1 = off).
     pub voice_duck: f32,
@@ -261,6 +265,8 @@ impl Default for Theme {
             quick_icons: Default::default(),
             quick_listed: false,
             menu_background: None,
+            menu_overlay: None,
+            game_menu_overlay: None,
             menu_music: None,
             voice_duck: 1.0,
             input_image: None,
@@ -596,7 +602,7 @@ file_keys! {
     // The font files to load, regular first.
     pub fonts: font, font_bold, font_italic, font_bold_italic;
     // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
-    screen_images: textbox_image, name_plate_image, menu_background, input_image, options_background, options_panel_image,
+    screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, options_panel_image,
         timing_bar_image, timing_marker_image, press_key_image;
     music: menu_music;
     // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).

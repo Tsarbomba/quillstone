@@ -1376,6 +1376,14 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_menu_overlay_picture_is_reported() {
+        let missing = themed("menu_overlay = assets/o.png\ngame_menu_overlay = assets/g.png\n", &[]);
+        assert!(missing.len() == 2 && missing.iter().all(|m| m.contains("missing theme picture")), "{missing:?}");
+        let files: &[(&str, &[u8])] = &[("assets/o.png", KEY), ("assets/g.png", KEY)];
+        assert!(themed("menu_overlay = assets/o.png\ngame_menu_overlay = assets/g.png\n", files).is_empty());
+    }
+
+    #[test]
     fn the_input_and_options_pictures_are_checked_like_other_theme_pictures() {
         let keys = "input_image = assets/in.png\noptions_background = assets/ob.png\noptions_panel_image = assets/op.png\n";
         let missing = themed(keys, &[]);

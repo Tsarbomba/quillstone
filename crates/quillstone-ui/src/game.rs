@@ -818,7 +818,7 @@ impl<'p> Game<'p> {
                 let language = self.has_language_row().then(|| self.language_name());
                 draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover, language, image_size);
             }
-            Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll),
+            Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll, image_size),
             Screen::Save | Screen::Load => {
                 let tabs = self.slot_tabs();
                 let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len()));

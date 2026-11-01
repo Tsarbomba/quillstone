@@ -385,7 +385,15 @@ pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton]) -> Option<MenuButton> {
     (0..buttons.len()).find(|&i| menu_button_rect(i).contains(x, y)).map(|i| buttons[i])
 }
 
-/// The main menu: the theme's background picture (or black), the title, buttons.
+/// A theme picture over the whole screen (nothing if there is none or it isn't loaded).
+fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
+    if let Some((src, size)) = src.and_then(|src| image_size(src).map(|size| (src, size))) {
+        let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
+    }
+}
+
+/// The main menu: the theme's background picture (or black), its overlay picture, the title, buttons.
 /// `focus` is the button the keyboard is on.
 /// An empty `title` and no `buttons` draw just the menu's background (what an overlay opened from the menu leaves).
 pub fn draw_main_menu(
@@ -398,12 +406,8 @@ pub fn draw_main_menu(
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 1.0] });
-    if let Some(src) = theme.menu_background.as_deref() {
-        if let Some(size) = image_size(src) {
-            let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
-        }
-    }
+    draw_full_picture(out, theme.menu_background.as_deref(), image_size);
+    draw_full_picture(out, theme.menu_overlay.as_deref(), image_size);
     if !title.is_empty() {
         text(out, title, Rect::new(0.0, 180.0, VIRTUAL.w, 160.0), 96.0, theme.accent_color, Align::Center);
     }
@@ -695,6 +699,7 @@ pub fn draw_settings(
         }
         None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
     }
+    draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     let (p, k) = (panel(theme), factor(theme));
     if let Some((src, size)) = loaded(&theme.options_panel_image, image_size) {
         nine_slice(out, src, size, p, theme.options_panel_border);
@@ -788,8 +793,15 @@ pub fn backlog_max_scroll(entries: &[Logged]) -> usize {
 }
 
 /// Draw the backlog, newest entry at the bottom, `scroll` entries back from the end.
-pub fn draw_backlog(out: &mut Vec<Draw>, theme: &Theme, entries: &[Logged], scroll: usize) {
+pub fn draw_backlog(
+    out: &mut Vec<Draw>,
+    theme: &Theme,
+    entries: &[Logged],
+    scroll: usize,
+    image_size: &dyn Fn(&str) -> Option<Size>,
+) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     text(out, "History", Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     let hint = "Wheel / Page Up / Page Down to scroll  ·  Esc to close";
     text(out, hint, Rect::new(0.0, 990.0, VIRTUAL.w, 40.0), 24.0, theme.dim_color, Align::Center);
@@ -903,6 +915,7 @@ pub fn draw_slots(
 ) {
     let SlotScreen { title, tabs, page, slots, hover } = *shown;
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     text(out, title, Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, &tab) in tabs.iter().enumerate() {
         let r = tab_rect(i, tabs.len());
@@ -1436,7 +1449,7 @@ mod tests {
     fn backlog_shows_newest_at_the_bottom_and_scrolls() {
         let entries = vec![line("one"), Logged::Choice("Go".into()), line("three")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 0);
+        draw_backlog(&mut out, &Theme::default(), &entries, 0, &|_| None);
         let t = texts(&out);
         let pos = |s: &str| t.iter().position(|x| x == s).unwrap();
         assert!(pos("three") < pos("» Go") && pos("» Go") < pos("one")); // drawn newest first
@@ -1451,7 +1464,7 @@ mod tests {
         assert!(y("one") < y("» Go") && y("» Go") < y("three"));
 
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 1);
+        draw_backlog(&mut out, &Theme::default(), &entries, 1, &|_| None);
         assert!(!texts(&out).contains(&"three".to_string()));
         assert_eq!(backlog_max_scroll(&entries), 0, "all of it fits: nothing to scroll to");
     }
@@ -1460,7 +1473,7 @@ mod tests {
     fn a_paragraph_break_in_the_backlog_is_a_real_line_break_with_room_for_it() {
         let tall = vec![line("a{p}b{p}c")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &tall, 0);
+        draw_backlog(&mut out, &Theme::default(), &tall, 0, &|_| None);
         let h = out.iter().find_map(|d| match d {
             Draw::Text { text, rect, .. } if text == "a\nb\nc" => Some(rect.h),
             _ => None,
@@ -1473,7 +1486,7 @@ mod tests {
     fn a_long_backlog_only_draws_what_fits() {
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 0);
+        draw_backlog(&mut out, &Theme::default(), &entries, 0, &|_| None);
         let shown = texts(&out).iter().filter(|t| t.starts_with("line ")).count();
         assert!(shown > 5 && shown < 30, "{shown}");
         assert!(out.iter().all(|d| match d {
@@ -1489,11 +1502,11 @@ mod tests {
         assert!(max > 50 && max < 99, "{max}: not all the way to a lone entry");
         let shown = |scroll: usize| {
             let mut out = Vec::new();
-            draw_backlog(&mut out, &Theme::default(), &entries, scroll);
+            draw_backlog(&mut out, &Theme::default(), &entries, scroll, &|_| None);
             texts(&out).iter().filter(|t| t.starts_with("line ")).count()
         };
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, max);
+        draw_backlog(&mut out, &Theme::default(), &entries, max, &|_| None);
         assert!(texts(&out).contains(&"line 0".to_string()), "the oldest line is there at the end");
         assert!(shown(max) > 5, "and so is a page of others");
         assert_eq!(backlog_max_scroll(&entries[..3]), 0, "a short history has nothing to scroll");
@@ -1506,7 +1519,7 @@ mod tests {
             l.speaker = Some("Professor Bartholomew Fitzgerald-Montgomery".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &[long], 0);
+        draw_backlog(&mut out, &Theme::default(), &[long], 0, &|_| None);
         let (rect, size) = out
             .iter()
             .find_map(|d| match d {
@@ -1549,7 +1562,7 @@ mod tests {
     #[test]
     fn an_empty_backlog_says_so() {
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &[], 0);
+        draw_backlog(&mut out, &Theme::default(), &[], 0, &|_| None);
         assert!(texts(&out).contains(&"Nothing yet.".to_string()));
     }
 
@@ -1623,6 +1636,42 @@ mod tests {
         assert_eq!((images(&with), images(&without)), (1 + 9, 0));
         assert!(!with.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "the picture is the background");
         assert!(without.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "not loaded: today's look");
+    }
+
+    #[test]
+    fn the_menu_overlays_sit_over_the_background_and_under_what_the_screen_shows() {
+        let t = Theme::parse("menu_background = bg.png\nmenu_overlay = ov.png\ngame_menu_overlay = gm.png\n").0;
+        let sized = |_: &str| Some(Size::new(1920.0, 1080.0));
+        let pos = |out: &[Draw], f: &dyn Fn(&Draw) -> bool| out.iter().position(f).unwrap();
+        let image = |name: &'static str| move |d: &Draw| matches!(d, Draw::Image { src, .. } if src == name);
+        let anything = |d: &Draw| matches!(d, Draw::Text { .. });
+
+        let mut out = Vec::new();
+        draw_main_menu(&mut out, &t, "T", &[MenuButton::Start], None, None, &sized);
+        let button = pos(&out, &|d| matches!(d, Draw::Rect { rect, .. } if *rect == menu_button_rect(0)));
+        assert!(pos(&out, &image("bg.png")) < pos(&out, &image("ov.png")) && pos(&out, &image("ov.png")) < pos(&out, &anything));
+        assert!(pos(&out, &anything) < button);
+        assert!(!out.iter().any(image("gm.png")), "the game menu's overlay is not the main menu's");
+
+        let mut screens = Vec::new();
+        let mut a = Vec::new();
+        draw_settings(&mut a, &t, &Settings::default(), true, 0, None, None, &sized);
+        screens.push(a);
+        let mut b = Vec::new();
+        draw_backlog(&mut b, &t, &[], 0, &sized);
+        screens.push(b);
+        let mut c = Vec::new();
+        let view = SlotScreen { title: "Save", tabs: &[], page: Page::Auto, slots: &[], hover: None };
+        draw_slots(&mut c, &t, &view, &sized);
+        screens.push(c);
+        for out in &screens {
+            let dim = pos(out, &|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color));
+            assert!(dim < pos(out, &image("gm.png")) && pos(out, &image("gm.png")) < pos(out, &anything));
+            assert!(!out.iter().any(image("ov.png")));
+        }
+        let mut none = Vec::new();
+        draw_backlog(&mut none, &t, &[], 0, &|_| None);
+        assert!(!none.iter().any(image("gm.png")), "not loaded: today's look");
     }
 
     #[test]
