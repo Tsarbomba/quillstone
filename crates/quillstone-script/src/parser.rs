@@ -102,6 +102,11 @@ const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, not
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
+        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites"],
+        "item" => &["id", "name", "icon", "price", "text", "count", "use"],
+        "shop" => &["pay", "into"],
+        "choice" => &["time"],
+        "hotspots" => &["time", "default"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through"],
         "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
         "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
@@ -127,6 +132,13 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "press" => &["key", "time", "count", "result", "prompt"],
         _ => &[],
     }
+}
+
+/// The error for an attribute `::name` doesn't take, listing the ones it does.
+fn unknown_attr(name: &str, extra: &str) -> String {
+    let known = known_attrs(name);
+    let hint = if known.is_empty() { String::new() } else { format!(" (it takes: {})", known.join(", ")) };
+    format!("unknown attribute `{extra}` for `::{name}`{hint}")
 }
 
 #[derive(Default)]
@@ -592,17 +604,15 @@ impl Parser {
         }
         // `vars:` may come after it, so the list is checked once everything is read.
         if let Some((line, name)) = inventory {
-            match self.program.vars.get(&name) {
-                Some(Value::List(_)) => self.program.inventory = Some(name),
-                _ => self.err(
-                    line,
-                    format!("`inventory: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"),
-                ),
+            if self.is_list(&name) {
+                self.program.inventory = Some(name);
+            } else {
+                self.err(line, format!("`inventory: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"));
             }
         }
         for (key, found) in [("journal", journal), ("journal_done", journal_done)] {
             let Some((line, name)) = found else { continue };
-            if !matches!(self.program.vars.get(&name), Some(Value::List(_))) {
+            if !self.is_list(&name) {
                 self.err(line, format!("`{key}: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"));
             } else if key == "journal" {
                 self.program.journal = Some(name);
@@ -753,6 +763,19 @@ impl Parser {
 
     // ---- list variables ---------------------------------------------------
 
+    fn is_list(&self, name: &str) -> bool {
+        matches!(self.program.vars.get(name), Some(Value::List(_)))
+    }
+
+    /// `what` (like "`count(x)`") needs `name` to be a list variable declared in the front matter.
+    fn need_list(&self, name: &str, what: &str) -> Result<(), String> {
+        match self.program.vars.get(name) {
+            Some(Value::List(_)) => Ok(()),
+            Some(_) => Err(format!("{what}: `{name}` is not a list")),
+            None => Err(format!("{what}: `{name}` is not a list (declare it in the front matter: `vars: {{ {name}: [] }}`)")),
+        }
+    }
+
     /// `has` and `count()` need a list variable declared in the front matter, and
     /// arithmetic needs numbers: a text or a list operand that is known from the
     /// declarations is an error.
@@ -760,14 +783,7 @@ impl Parser {
         let mut tests = Vec::new();
         e.has_tests(&mut tests);
         for (name, _) in tests {
-            match self.program.vars.get(name) {
-                Some(Value::List(_)) => {}
-                Some(_) => return Err(format!("`{name} has ...`: `{name}` is not a list")),
-                None => {
-                    let msg = format!("`{name} has ...`: `{name}` is not a list (declare it in the front matter: `vars: {{ {name}: [] }}`)");
-                    return Err(msg);
-                }
-            }
+            self.need_list(name, &format!("`{name} has ...`"))?;
         }
         self.check_numbers(e)
     }
@@ -806,13 +822,7 @@ impl Parser {
                 number(a, "`random`")?;
                 number(b, "`random`")?;
             }
-            Expr::Count(name) => match self.program.vars.get(name) {
-                Some(Value::List(_)) => {}
-                Some(_) => return Err(format!("`count({name})`: `{name}` is not a list")),
-                None => {
-                    return Err(format!("`count({name})`: `{name}` is not a list (declare it in the front matter: `vars: {{ {name}: [] }}`)"));
-                }
-            },
+            Expr::Count(name) => self.need_list(name, &format!("`count({name})`"))?,
             _ => {}
         }
         e.children().into_iter().try_for_each(|c| self.check_numbers(c))
@@ -822,7 +832,7 @@ impl Parser {
     /// `copy = inv`, `x += inv` or `::call{... a=inv}`. Use `inv has "item"` to ask about it.
     fn not_a_list_value(&self, e: &Expr, place: &str) -> Result<(), String> {
         match e {
-            Expr::Var(name) if matches!(self.program.vars.get(name), Some(Value::List(_))) => Err(format!(
+            Expr::Var(name) if self.is_list(name) => Err(format!(
                 "`{name}` is a list and can't be {place}: lists change only by `+=`/`-=` of an item, and \
                  `{name} has \"item\"` asks about one"
             )),
@@ -834,7 +844,7 @@ impl Parser {
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
         self.check_expr(&e.value)?;
         self.not_a_list_value(&e.value, "the right side of an assignment")?;
-        if !matches!(self.program.vars.get(&e.var), Some(Value::List(_))) {
+        if !self.is_list(&e.var) {
             return Ok(());
         }
         let var = &e.var;
@@ -901,7 +911,7 @@ impl Parser {
             if names.iter().any(|n| n == part) {
                 return Err(format!("parameter `{part}` is listed twice"));
             }
-            if matches!(self.program.vars.get(part), Some(Value::List(_))) {
+            if self.is_list(part) {
                 return Err(format!("`{part}` is a list variable and can't be a parameter"));
             }
             names.push(part.to_string());
@@ -1053,11 +1063,14 @@ impl Parser {
             }
         };
         let built = self.build_op(line, name, &mut attrs);
+        // An empty error means the attribute check below reports the mistake (see `hud`).
+        if let Some(m) = built.as_ref().err().filter(|m| !m.is_empty()) {
+            self.err(line, m);
+        }
         // When building stopped at an error, attributes after it were never read:
         // only report those that are wrong, not merely unread.
         let known = known_attrs(name);
-        if let Some(extra) = attrs.leftover(if built.is_some() { &[] } else { known }) {
-            let hint = if known.is_empty() { String::new() } else { format!(" (it takes: {})", known.join(", ")) };
+        if let Some(extra) = attrs.leftover(if built.is_ok() { &[] } else { known }) {
             let gone = match (extra, known.contains(&"x")) {
                 ("at", true) => Some("use `x=` (left, center, right or a %) and `y=` (top, center, bottom or a %)"),
                 ("anchor", true) => Some("`x=` and `y=` place the object by its own size (`x=right` puts its right edge at the screen's right edge)"),
@@ -1065,10 +1078,10 @@ impl Parser {
             };
             match gone {
                 Some(g) => self.err(line, format!("`{extra}=` is gone: {g}")),
-                None => self.err(line, format!("unknown attribute `{extra}` for `::{name}`{hint}")),
+                None => self.err(line, unknown_attr(name, extra)),
             }
         }
-        if let Some((op, label)) = built {
+        if let Ok((op, label)) = built {
             if let Some(label) = label {
                 self.fixups.push(Fixup { op: self.here(), option: None, label, line });
             }
@@ -1126,99 +1139,70 @@ impl Parser {
     }
 
     /// Build an op from attributes. The `Option<String>` is a label to resolve later.
-    fn build_op(&mut self, line: usize, name: &str, a: &mut Attrs) -> Option<(Op, Option<String>)> {
+    fn build_op(&mut self, line: usize, name: &str, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
         match name {
             "bg" => {
                 let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
                 if has(a, "anim") && (has(a, "src") || has(a, "color")) {
-                    self.err(line, "`::bg` takes one of `src=`, `color=` or `anim=`");
-                    return None;
+                    return Err("`::bg` takes one of `src=`, `color=` or `anim=`".into());
                 }
                 let src = match (has(a, "src"), has(a, "color")) {
                     _ if has(a, "anim") => {
                         let id = a.value("anim").unwrap_or_default();
-                        self.anim_ref(line, &id)?
+                        self.anim_ref(&id)?
                     }
-                    (true, true) => {
-                        self.err(line, "`::bg` takes `src=` (a picture or video) or `color=` (a solid colour), not both");
-                        return None;
+                    (true, true) => return Err("`::bg` takes `src=` (a picture or video) or `color=` (a solid colour), not both".into()),
+                    (false, true) => {
+                        let c = color_attr(a, "color")?.ok_or("`::bg{color=...}` needs a colour like `color=#102030`")?;
+                        bg_color_src(c)
                     }
-                    (false, true) => match a.value("color").map(|c| parse_color(&c)) {
-                        Some(Ok(c)) => bg_color_src(c),
-                        Some(Err(m)) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                        None => {
-                            self.err(line, "`::bg{color=...}` needs a colour like `color=#102030`");
-                            return None;
-                        }
-                    },
-                    (false, false) => {
-                        self.err(line, "`::bg` needs `src=file`, `color=#rrggbb` or `anim=id`");
-                        return None;
-                    }
-                    (true, false) => self.require(line, name, a, "src")?,
+                    (false, false) => return Err("`::bg` needs `src=file`, `color=#rrggbb` or `anim=id`".into()),
+                    (true, false) => self.require(name, a, "src")?,
                 };
-                let fade = self.fade(line, a)?;
+                let fade = Self::fade(a)?;
                 let wipe = match a.value("wipe") {
                     None => None,
                     Some(v) => match Wipe::parse(&v) {
                         Some(w) => Some(w),
-                        None => {
-                            self.err(line, format!("`wipe={v}` must be `left`, `right`, `up` or `down`"));
-                            return None;
-                        }
+                        None => return Err(format!("`wipe={v}` must be `left`, `right`, `up` or `down`")),
                     },
                 };
                 if wipe.is_some() && fade <= 0.0 {
-                    self.err(line, "a wipe needs a duration: add `fade=` (seconds)");
-                    return None;
+                    return Err("a wipe needs a duration: add `fade=` (seconds)".into());
                 }
                 let through = match a.take("through") {
                     None => None,
                     Some(None) => Some([0.0; 3]),
-                    Some(Some(c)) => match parse_color(&c) {
-                        Ok(c) => Some(c),
-                        Err(m) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                    },
+                    Some(Some(c)) => Some(parse_color(&c)?),
                 };
                 if let Some(color) = through {
                     if fade <= 0.0 {
-                        self.err(line, "`through` needs a duration: add `fade=` (seconds; half to fade out, half to fade in)");
-                        return None;
+                        return Err("`through` needs a duration: add `fade=` (seconds; half to fade out, half to fade in)".into());
                     }
                     if wipe.is_some() {
-                        self.err(line, "`through` and `wipe` can't be combined: a wipe is a transition of its own");
-                        return None;
+                        return Err("`through` and `wipe` can't be combined: a wipe is a transition of its own".into());
                     }
                     // Fade out for half the time, change the picture (no crossfade), fade in.
                     let half = fade / 2.0;
                     self.push(Op::FadeOut { time: half, color }, line);
                     self.trailing.push(Op::FadeIn { time: half });
-                    return Some((Op::Bg { src, fade: 0.0, wipe: None }, None));
+                    return Ok((Op::Bg { src, fade: 0.0, wipe: None }, None));
                 }
-                Some((Op::Bg { src, fade, wipe }, None))
+                Ok((Op::Bg { src, fade, wipe }, None))
             }
-            "show" => self.show(line, a),
+            "show" => self.show(a),
             "hud" => self.hud(line, a),
             "hide" => {
                 let all = a.flag("all");
                 let bare = a.take_bare();
-                self.extra_words(line, "hide", &bare, if all { 0 } else { 1 })?;
-                let fade = self.fade(line, a)?;
+                Self::extra_words("hide", &bare, if all { 0 } else { 1 })?;
+                let fade = Self::fade(a)?;
                 let id = match (all, bare.first()) {
                     (true, _) => None,
                     (false, Some(id)) => Some(self.sprite_id(id)),
-                    (false, None) => {
-                        self.err(line, "`::hide` needs a sprite (`::hide{mika}`) or `all`");
-                        return None;
-                    }
+                    (false, None) => return Err("`::hide` needs a sprite (`::hide{mika}`) or `all`".into()),
                 };
-                Some((Op::Hide { id, fade }, None))
+                Ok((Op::Hide { id, fade }, None))
             }
             "move" => {
                 let flip = opt_flag(a, "flip");
@@ -1228,482 +1212,307 @@ impl Parser {
                     None => None,
                     Some(None) => Some(true),
                     Some(Some(v)) if v == "pingpong" => Some(true),
-                    Some(Some(v)) => {
-                        self.err(line, format!("`loop={v}` must be `pingpong` (or just `loop`: back and forth forever)"));
-                        return None;
-                    }
+                    Some(Some(v)) => return Err(format!("`loop={v}` must be `pingpong` (or just `loop`: back and forth forever)")),
                 };
-                self.extra_words(line, "move", &bare, 1)?;
+                Self::extra_words("move", &bare, 1)?;
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
-                    self.err(line, "`::move` needs a sprite, like `::move{mika x=left time=0.5}`");
-                    return None;
+                    return Err("`::move` needs a sprite, like `::move{mika x=left time=0.5}`".into());
                 };
-                let x = self.place(line, a, "x", POSITION)?;
-                let y = self.place(line, a, "y", POSITION)?;
-                let scale = self.number(line, a, "scale", SPRITE_SCALE)?;
-                let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
-                let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
+                let x = Self::place(a, "x", POSITION)?;
+                let y = Self::place(a, "y", POSITION)?;
+                let scale = Self::number(a, "scale", SPRITE_SCALE)?;
+                let xscale = Self::number(a, "xscale", SPRITE_SCALE)?;
+                let yscale = Self::number(a, "yscale", SPRITE_SCALE)?;
                 if x.is_none() && y.is_none() && scale.is_none() && flip.is_none() && xscale.is_none() && yscale.is_none() {
-                    self.err(line, "`::move` needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`");
-                    return None;
+                    return Err("`::move` needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`".into());
                 }
-                let time = self.seconds(line, a, "time", 0.5)?;
-                let ease = self.ease(line, a)?;
+                let time = Self::seconds(a, "time", 0.5)?;
+                let ease = Self::ease(a)?;
                 let looped = looped.is_some();
                 if looped {
                     if time <= 0.0 {
-                        self.err(line, "a `loop` move needs `time=` above 0 (the seconds one leg takes)");
-                        return None;
+                        return Err("a `loop` move needs `time=` above 0 (the seconds one leg takes)".into());
                     }
                     if x.is_none() && y.is_none() && scale.is_none() && xscale.is_none() && yscale.is_none() {
-                        self.err(line, "a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)");
-                        return None;
+                        return Err("a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)".into());
                     }
                 }
-                Some((Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped }, None))
+                Ok((Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped }, None))
             }
             "shake" => {
-                let time = self.seconds(line, a, "time", 0.4)?;
-                let strength = self.number(line, a, "strength", 0.0..=200.0)?.unwrap_or(20.0);
+                let time = Self::seconds(a, "time", 0.4)?;
+                let strength = Self::number(a, "strength", 0.0..=200.0)?.unwrap_or(20.0);
                 let axis = match a.value("axis") {
                     None => Axis::default(),
                     Some(v) => match Axis::parse(&v) {
                         Some(x) => x,
-                        None => {
-                            self.err(line, format!("`axis={v}` must be `x`, `y` or `both`"));
-                            return None;
-                        }
+                        None => return Err(format!("`axis={v}` must be `x`, `y` or `both`")),
                     },
                 };
-                Some((Op::Shake { time, strength, axis }, None))
+                Ok((Op::Shake { time, strength, axis }, None))
             }
             "flash" => {
-                let time = match a.value("time") {
-                    None => 0.4,
-                    Some(v) => match v.parse::<f32>() {
-                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
-                        _ => {
-                            self.err(line, format!("`time={v}` must be a number of seconds above 0 and at most 10"));
-                            return None;
-                        }
-                    },
-                };
-                let color = match a.value("color") {
-                    None => [1.0; 3],
-                    Some(c) => match parse_color(&c) {
-                        Ok(c) => c,
-                        Err(m) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                    },
-                };
-                Some((Op::Flash { time, color }, None))
+                let time = Self::short_seconds(a, "time", 0.4)?;
+                let color = color_attr(a, "color")?.unwrap_or([1.0; 3]);
+                Ok((Op::Flash { time, color }, None))
             }
             "notify" => {
                 let text = a.value("text").unwrap_or_default();
                 if text.trim().is_empty() {
-                    self.err(line, "`::notify` needs `text=\"...\"` (the message)");
-                    return None;
+                    return Err("`::notify` needs `text=\"...\"` (the message)".into());
                 }
-                match crate::markup::parse_markup(&text) {
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                    Ok(r) if r.no_wait || r.text.contains('\n') => {
-                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::notify` text");
-                        return None;
-                    }
-                    Ok(_) => {}
-                }
+                crate::markup::check_inline_markup(&text, "a `::notify` text")?;
                 let time = match a.value("time") {
                     None => 3.0,
                     Some(v) => match v.parse::<f32>() {
                         Ok(t) if t.is_finite() && (0.5..=30.0).contains(&t) => t,
-                        _ => {
-                            self.err(line, format!("`time={v}` must be a number of seconds from 0.5 to 30"));
-                            return None;
-                        }
+                        _ => return Err(format!("`time={v}` must be a number of seconds from 0.5 to 30")),
                     },
                 };
-                Some((Op::Notify { text, time }, None))
+                Ok((Op::Notify { text, time }, None))
             }
             "unlock" => {
-                let src = self.require(line, name, a, "src")?;
+                let src = self.require(name, a, "src")?;
                 let p = &self.program;
                 if !p.gallery.contains(&src) && !p.music_room.contains(&src) {
-                    self.err(line, format!("`::unlock{{src={src}}}`: `{src}` is not a `gallery:` or `music_room:` entry"));
-                    return None;
+                    return Err(format!("`::unlock{{src={src}}}`: `{src}` is not a `gallery:` or `music_room:` entry"));
                 }
-                Some((Op::Unlock { src }, None))
+                Ok((Op::Unlock { src }, None))
             }
             "fade" => {
                 let (out, into) = (a.flag("out"), a.flag("in"));
-                let time = match a.value("time") {
-                    None => 0.5,
-                    Some(v) => match v.parse::<f32>() {
-                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
-                        _ => {
-                            self.err(line, format!("`time={v}` must be a number of seconds above 0 and at most 10"));
-                            return None;
-                        }
-                    },
-                };
+                let time = Self::short_seconds(a, "time", 0.5)?;
                 match (out, into) {
-                    (true, true) => {
-                        self.err(line, "`::fade` takes `out` or `in`, not both");
-                        None
-                    }
-                    (false, false) => {
-                        self.err(line, "`::fade` needs `out` (fade to a colour and stay covered) or `in` (uncover)");
-                        None
-                    }
+                    (true, true) => Err("`::fade` takes `out` or `in`, not both".into()),
+                    (false, false) => Err("`::fade` needs `out` (fade to a colour and stay covered) or `in` (uncover)".into()),
                     (false, true) => {
                         if a.0.iter().any(|(k, _)| k == "color") {
-                            self.err(line, "`::fade{in}` takes no `color`: it fades away the colour the screen is covered with");
-                            return None;
+                            return Err("`::fade{in}` takes no `color`: it fades away the colour the screen is covered with".into());
                         }
-                        Some((Op::FadeIn { time }, None))
+                        Ok((Op::FadeIn { time }, None))
                     }
                     (true, false) => {
-                        let color = match a.value("color") {
-                            None => [0.0; 3],
-                            Some(c) => match parse_color(&c) {
-                                Ok(c) => c,
-                                Err(m) => {
-                                    self.err(line, m);
-                                    return None;
-                                }
-                            },
-                        };
-                        Some((Op::FadeOut { time, color }, None))
+                        let color = color_attr(a, "color")?.unwrap_or([0.0; 3]);
+                        Ok((Op::FadeOut { time, color }, None))
                     }
                 }
             }
             "camera" => {
                 let reset = a.flag("reset");
-                let zoom = self.number(line, a, "zoom", 1.0..=4.0)?;
-                let x = self.place(line, a, "x", 0.0..=1.0)?;
-                let y = self.place(line, a, "y", 0.0..=1.0)?;
-                let time = self.seconds(line, a, "time", 0.0)?;
-                let ease = self.ease(line, a)?;
+                let zoom = Self::number(a, "zoom", 1.0..=4.0)?;
+                let x = Self::place(a, "x", 0.0..=1.0)?;
+                let y = Self::place(a, "y", 0.0..=1.0)?;
+                let time = Self::seconds(a, "time", 0.0)?;
+                let ease = Self::ease(a)?;
                 let op = if reset {
                     Op::Camera { zoom: Some(1.0), x: Some(0.5), y: Some(0.5), time, ease }
                 } else if zoom.is_none() && x.is_none() && y.is_none() {
-                    self.err(line, "`::camera` needs `zoom=`, `x=` and/or `y=` (or `reset`)");
-                    return None;
+                    return Err("`::camera` needs `zoom=`, `x=` and/or `y=` (or `reset`)".into());
                 } else {
                     Op::Camera { zoom, x, y, time, ease }
                 };
-                Some((op, None))
+                Ok((op, None))
             }
-            "particles" => self.particles(line, a).map(|op| (op, None)),
-            "tint" => self.tint(line, a).map(|op| (op, None)),
+            "particles" => Self::particles(a).map(|op| (op, None)),
+            "tint" => Self::tint(a).map(|op| (op, None)),
             "textbox" => {
                 let (hide, show) = (a.flag("hide"), a.flag("show"));
-                let fade = match a.value("fade") {
-                    None => 0.0,
-                    Some(v) => match v.parse::<f32>() {
-                        Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
-                        _ => {
-                            self.err(line, format!("`fade={v}` must be a number of seconds above 0 and at most 10"));
-                            return None;
-                        }
-                    },
-                };
+                let fade = Self::short_seconds(a, "fade", 0.0)?;
                 match (hide, show) {
-                    (true, false) => Some((Op::Textbox { hidden: true, fade }, None)),
-                    (false, true) => Some((Op::Textbox { hidden: false, fade }, None)),
-                    (true, true) => {
-                        self.err(line, "`::textbox` takes `hide` or `show`, not both");
-                        None
-                    }
-                    (false, false) => {
-                        self.err(line, "`::textbox` needs `hide` or `show` (and optionally `fade=<seconds>`)");
-                        None
-                    }
+                    (true, false) => Ok((Op::Textbox { hidden: true, fade }, None)),
+                    (false, true) => Ok((Op::Textbox { hidden: false, fade }, None)),
+                    (true, true) => Err("`::textbox` takes `hide` or `show`, not both".into()),
+                    (false, false) => Err("`::textbox` needs `hide` or `show` (and optionally `fade=<seconds>`)".into()),
                 }
             }
             "music" => {
                 if a.flag("stop") {
-                    let fade = self.fade(line, a)?;
-                    Some((Op::StopMusic { fade }, None))
+                    let fade = Self::fade(a)?;
+                    Ok((Op::StopMusic { fade }, None))
                 } else {
                     let intro = a.take("intro");
                     if intro.is_some() && !a.0.iter().any(|(k, _)| k == "src") {
-                        self.err(line, "`intro=` needs `src=`: the file that loops after the intro");
-                        return None;
+                        return Err("`intro=` needs `src=`: the file that loops after the intro".into());
                     }
-                    let src = self.require(line, name, a, "src")?;
+                    let src = self.require(name, a, "src")?;
                     let intro = match intro {
                         None => None,
                         Some(Some(i)) if !i.is_empty() => match check_inside("intro", &i) {
-                            Ok(i) if i == src => {
-                                self.err(line, "`intro` and `src` are the same file: `src` is the loop, `intro` plays once before it");
-                                return None;
-                            }
+                            Ok(i) if i == src => return Err("`intro` and `src` are the same file: `src` is the loop, `intro` plays once before it".into()),
                             Ok(i) => Some(i),
-                            Err(m) => {
-                                self.err(line, m);
-                                return None;
-                            }
+                            Err(m) => return Err(m),
                         },
-                        Some(_) => {
-                            self.err(line, "`intro=` needs a file (`::music{src=loop.ogg intro=intro.ogg}`)");
-                            return None;
-                        }
+                        Some(_) => return Err("`intro=` needs a file (`::music{src=loop.ogg intro=intro.ogg}`)".into()),
                     };
-                    let fade = self.fade(line, a)?;
+                    let fade = Self::fade(a)?;
                     let looped = a.flag_or("loop", true);
                     if intro.is_some() && !looped {
-                        self.err(line, "`intro` needs a looping track: it plays once and then `src` loops (drop `loop=false`)");
-                        return None;
+                        return Err("`intro` needs a looping track: it plays once and then `src` loops (drop `loop=false`)".into());
                     }
-                    let volume = self.volume(line, a)?;
-                    Some((Op::Music { src, intro, fade, looped, volume }, None))
+                    let volume = Self::volume(a)?;
+                    Ok((Op::Music { src, intro, fade, looped, volume }, None))
                 }
             }
             "sfx" => {
                 if let Some(target) = a.take("stop") {
                     if let Some(extra) = ["src", "loop", "volume"].into_iter().find(|k| a.0.iter().any(|(key, _)| key == k)) {
-                        self.err(line, format!("`::sfx{{stop}}` stops sounds, so `{extra}` doesn't go with it"));
-                        return None;
+                        return Err(format!("`::sfx{{stop}}` stops sounds, so `{extra}` doesn't go with it"));
                     }
-                    let fade = self.fade(line, a)?;
+                    let fade = Self::fade(a)?;
                     let src = match target {
                         None => None,
-                        Some(v) if v.is_empty() => {
-                            self.err(line, "`stop=` needs a file (`::sfx{stop=rain.ogg}`), or write just `stop` for all sounds");
-                            return None;
-                        }
+                        Some(v) if v.is_empty() => return Err("`stop=` needs a file (`::sfx{stop=rain.ogg}`), or write just `stop` for all sounds".into()),
                         Some(v) => Some(v),
                     };
                     if let Some(src) = &src {
                         self.sfx_stops.push((src.clone(), line));
                     }
-                    return Some((Op::StopSfx { src, fade }, None));
+                    return Ok((Op::StopSfx { src, fade }, None));
                 }
-                let src = self.require(line, name, a, "src")?;
+                let src = self.require(name, a, "src")?;
                 let looped = a.flag("loop");
                 let faded = a.0.iter().any(|(k, _)| k == "fade");
-                let volume = self.volume(line, a)?;
+                let volume = Self::volume(a)?;
                 if looped {
-                    let fade = self.fade(line, a)?;
-                    Some((Op::SfxLoop { src, fade, volume }, None))
+                    let fade = Self::fade(a)?;
+                    Ok((Op::SfxLoop { src, fade, volume }, None))
                 } else if faded {
-                    self.err(line, "`fade` on a sound effect needs `loop` (a one-shot sound is too short to fade) or `stop`");
-                    None
+                    Err("`fade` on a sound effect needs `loop` (a one-shot sound is too short to fade) or `stop`".into())
                 } else {
-                    Some((Op::Sfx { src, volume }, None))
+                    Ok((Op::Sfx { src, volume }, None))
                 }
             }
             "voice" => {
-                let src = self.require(line, name, a, "src")?;
-                Some((Op::Voice { src }, None))
+                let src = self.require(name, a, "src")?;
+                Ok((Op::Voice { src }, None))
             }
             "wait" => {
                 let value = a.value("time").or_else(|| a.take_bare().into_iter().next());
                 let seconds = match value.as_deref().map(str::parse::<f32>) {
                     Some(Ok(s)) if s.is_finite() && s > 0.0 => s,
-                    _ => {
-                        self.err(line, "`::wait` needs a positive number of seconds, like `::wait{time=1.5}`");
-                        return None;
-                    }
+                    _ => return Err("`::wait` needs a positive number of seconds, like `::wait{time=1.5}`".into()),
                 };
-                Some((Op::Wait { seconds }, None))
+                Ok((Op::Wait { seconds }, None))
             }
             "video" => {
-                let src = self.require(line, name, a, "src")?;
+                let src = self.require(name, a, "src")?;
                 let fit = match a.value("fit") {
                     None => Fit::default(),
                     Some(v) => match Fit::parse(&v) {
                         Some(f) => f,
-                        None => {
-                            self.err(line, format!("unknown fit `{v}` (use contain, cover or stretch)"));
-                            return None;
-                        }
+                        None => return Err(format!("unknown fit `{v}` (use contain, cover or stretch)")),
                     },
                 };
                 let looped = a.flag("loop");
                 // A looping video never ends by itself, so the player must be able to skip it.
                 let skippable = a.flag("skippable") || looped;
-                Some((Op::Video { src, fit, looped, skippable }, None))
+                Ok((Op::Video { src, fit, looped, skippable }, None))
             }
             "jump" => {
                 let to = match a.value("to").or_else(|| a.take_bare().into_iter().next()) {
                     Some(t) => t,
-                    None => {
-                        self.err(line, format!("`::{name}` needs a label, like `::{name}{{to=label}}`"));
-                        return None;
-                    }
+                    None => return Err(format!("`::{name}` needs a label, like `::{name}{{to=label}}`")),
                 };
                 let label = Some(slug(&to));
                 let cond = match a.value("if") {
                     None => None,
-                    Some(c) => match parse_expr(&c).and_then(|e| self.check_expr(&e).map(|()| e)) {
-                        Ok(c) => Some(c),
-                        Err(m) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                    },
+                    Some(c) => Some(parse_expr(&c).and_then(|e| self.check_expr(&e).map(|()| e))?),
                 };
-                Some((Op::Jump { target: UNSET, cond }, label))
+                Ok((Op::Jump { target: UNSET, cond }, label))
             }
             "input" => {
                 let var = match a.value("var") {
                     Some(v) if !v.is_empty() => v,
-                    _ => {
-                        self.err(line, "`::input` needs `var=` (the text variable that receives the answer, like `var=hero.name`)");
-                        return None;
-                    }
+                    _ => return Err("`::input` needs `var=` (the text variable that receives the answer, like `var=hero.name`)".into()),
                 };
                 match self.program.vars.get(&var) {
                     Some(Value::Str(_)) => {}
-                    Some(_) => {
-                        self.err(line, format!("`var={var}`: `{var}` must be a text variable (declare it with a text default, like `vars: {{ {var}: \"Alex\" }}`)"));
-                        return None;
-                    }
-                    None => {
-                        self.err(line, format!("`var={var}`: no text variable `{var}` (declare it in the front matter, like `vars: {{ {var}: \"Alex\" }}`)"));
-                        return None;
-                    }
+                    Some(_) => return Err(format!("`var={var}`: `{var}` must be a text variable (declare it with a text default, like `vars: {{ {var}: \"Alex\" }}`)")),
+                    None => return Err(format!("`var={var}`: no text variable `{var}` (declare it in the front matter, like `vars: {{ {var}: \"Alex\" }}`)")),
                 }
                 let prompt = match a.value("prompt") {
                     Some(p) if !p.trim().is_empty() => p.trim().to_string(),
-                    _ => {
-                        self.err(line, "`::input` needs `prompt=\"...\"` (the question shown above the text field)");
-                        return None;
-                    }
+                    _ => return Err("`::input` needs `prompt=\"...\"` (the question shown above the text field)".into()),
                 };
-                match crate::markup::parse_markup(&prompt) {
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                    Ok(r) if r.no_wait || r.text.contains('\n') => {
-                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in an `::input` prompt");
-                        return None;
-                    }
-                    Ok(_) => {}
-                }
+                crate::markup::check_inline_markup(&prompt, "an `::input` prompt")?;
                 let default = a.value("default").map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
                 if let Some(d) = &default {
                     if d.chars().any(char::is_control) {
-                        self.err(line, "`default=` can't hold control characters");
-                        return None;
+                        return Err("`default=` can't hold control characters".into());
                     }
                 }
                 let max = match a.value("max") {
                     None => INPUT_MAX_DEFAULT,
                     Some(v) => match v.parse::<usize>() {
                         Ok(n) if (1..=INPUT_MAX_LIMIT).contains(&n) => n,
-                        _ => {
-                            self.err(line, format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_LIMIT})"));
-                            return None;
-                        }
+                        _ => return Err(format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_LIMIT})")),
                     },
                 };
                 if let Some(d) = &default {
                     if d.chars().count() > max {
-                        self.err(line, format!("`default=` is longer than `max={max}`"));
-                        return None;
+                        return Err(format!("`default=` is longer than `max={max}`"));
                     }
                 }
-                Some((Op::Input { var, prompt, default, max }, None))
+                Ok((Op::Input { var, prompt, default, max }, None))
             }
             "timing" => {
-                let var = self.result_var(line, a, "timing")?;
-                let prompt = self.prompt_attr(line, a, "timing")?;
+                let var = self.result_var(a, "timing")?;
+                let prompt = Self::prompt_attr(a, "timing")?;
                 let speed = match a.value("speed") {
                     None => 1.0,
                     Some(v) => match v.parse::<f32>() {
                         Ok(n) if (MIN_TIMING_SPEED..=MAX_TIMING_SPEED).contains(&n) => n,
-                        _ => {
-                            self.err(line, format!("bad `speed={v}` (sweeps of the bar per second, {MIN_TIMING_SPEED} to {MAX_TIMING_SPEED})"));
-                            return None;
-                        }
+                        _ => return Err(format!("bad `speed={v}` (sweeps of the bar per second, {MIN_TIMING_SPEED} to {MAX_TIMING_SPEED})")),
                     },
                 };
                 let Some(good) = a.value("good") else {
-                    self.err(line, "`::timing` needs `good=` (the zone to stop in, like `good=40%..60%`)");
-                    return None;
+                    return Err("`::timing` needs `good=` (the zone to stop in, like `good=40%..60%`)".into());
                 };
                 let good = match parse_zone(&good) {
                     Ok(z) => z,
-                    Err(m) => {
-                        self.err(line, format!("bad `good={good}` ({m})"));
-                        return None;
-                    }
+                    Err(m) => return Err(format!("bad `good={good}` ({m})")),
                 };
                 let perfect = match a.value("perfect") {
                     None => None,
                     Some(p) => match parse_zone(&p) {
                         Ok(z) if z[0] >= good[0] && z[1] <= good[1] => Some(z),
-                        Ok(_) => {
-                            self.err(line, format!("`perfect={p}` must lie inside `good`"));
-                            return None;
-                        }
-                        Err(m) => {
-                            self.err(line, format!("bad `perfect={p}` ({m})"));
-                            return None;
-                        }
+                        Ok(_) => return Err(format!("`perfect={p}` must lie inside `good`")),
+                        Err(m) => return Err(format!("bad `perfect={p}` ({m})")),
                     },
                 };
                 let time = match a.value("time") {
                     None => None,
-                    Some(t) => match parse_choice_time(&t) {
-                        Ok(t) => Some(t),
-                        Err(m) => {
-                            self.err(line, m);
-                            return None;
-                        }
-                    },
+                    Some(t) => Some(parse_choice_time(&t)?),
                 };
-                Some((Op::Timing { var, prompt, bar: TimingBar { speed, good, perfect, time } }, None))
+                Ok((Op::Timing { var, prompt, bar: TimingBar { speed, good, perfect, time } }, None))
             }
             "press" => {
-                let var = self.result_var(line, a, "press")?;
-                let prompt = self.prompt_attr(line, a, "press")?;
+                let var = self.result_var(a, "press")?;
+                let prompt = Self::prompt_attr(a, "press")?;
                 let key = a.value("key").unwrap_or_default().to_lowercase();
                 if !PRESS_KEYS.contains(&key.as_str()) {
-                    self.err(line, format!("`::press` needs `key=` (one of: {})", PRESS_KEYS.join(", ")));
-                    return None;
+                    return Err(format!("`::press` needs `key=` (one of: {})", PRESS_KEYS.join(", ")));
                 }
                 let Some(t) = a.value("time") else {
-                    self.err(line, "`::press` needs `time=` (seconds to press it in, like `time=1.2`)");
-                    return None;
+                    return Err("`::press` needs `time=` (seconds to press it in, like `time=1.2`)".into());
                 };
-                let time = match parse_choice_time(&t) {
-                    Ok(t) => t,
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                };
+                let time = parse_choice_time(&t)?;
                 let count = match a.value("count") {
                     None => 1,
                     Some(c) => match c.parse::<u32>() {
                         Ok(n) if (1..=MAX_PRESS_COUNT).contains(&n) => n,
-                        _ => {
-                            self.err(line, format!("bad `count={c}` (a whole number of presses from 1 to {MAX_PRESS_COUNT})"));
-                            return None;
-                        }
+                        _ => return Err(format!("bad `count={c}` (a whole number of presses from 1 to {MAX_PRESS_COUNT})")),
                     },
                 };
-                Some((Op::Press { var, prompt, press: KeyPress { key, count, time } }, None))
+                Ok((Op::Press { var, prompt, press: KeyPress { key, count, time } }, None))
             }
-            "end" => Some((Op::End, None)),
-            "end_replay" => Some((Op::EndReplay, None)),
-            other => {
-                self.err(line, format!("unknown command `::{other}` (known: {COMMANDS})"));
-                None
-            }
+            "end" => Ok((Op::End, None)),
+            "end_replay" => Ok((Op::EndReplay, None)),
+            other => Err(format!("unknown command `::{other}` (known: {COMMANDS})")),
         }
     }
 
-    fn show(&mut self, line: usize, a: &mut Attrs) -> Option<(Op, Option<String>)> {
+    fn show(&mut self, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
         let flip = opt_flag(a, "flip");
         let bare = a.take_bare();
         let src_attr = a.value("src");
@@ -1723,55 +1532,48 @@ impl Parser {
             None => Vec::new(),
         };
         if anim_attr.is_some() && src_attr.is_some() {
-            self.err(line, "`::show` takes `src=` (a picture) or `anim=` (an animation), not both");
-            return None;
+            return Err("`::show` takes `src=` (a picture) or `anim=` (an animation), not both".into());
         }
         if let (Some(c), false) = (&layered_char, given.is_empty()) {
             if src_attr.is_some() || anim_attr.is_some() {
-                self.err(line, format!("`::show` can't mix layers ({}) with `src=` or `anim=`", c.layers.join(", ")));
-                return None;
+                return Err(format!("`::show` can't mix layers ({}) with `src=` or `anim=`", c.layers.join(", ")));
             }
             if bare.len() > 1 {
                 let msg = format!("`::show{{{} {}}}`: a pose and layers can't be set together (a pose replaces the whole sprite)", c.id, bare[1]);
-                self.err(line, msg);
-                return None;
+                return Err(msg);
             }
-            return self.show_layers(line, a, c, given, flip);
+            return self.show_layers(a, c, given, flip);
         }
 
-        self.extra_words(line, "show", &bare, if src_attr.is_some() || anim_attr.is_some() { 1 } else { 2 })?;
+        Self::extra_words("show", &bare, if src_attr.is_some() || anim_attr.is_some() { 1 } else { 2 })?;
         let (id, mut src) = match (src_attr, anim_attr) {
             (_, Some(anim)) => {
                 // Like a pose sprite, a character's name addresses the character's sprite.
                 let Some(who) = id_attr.or_else(|| bare.first().cloned()) else {
-                    self.err(line, "`::show{anim=...}` needs a sprite name, like `::show{mika anim=blink}`");
-                    return None;
+                    return Err("`::show{anim=...}` needs a sprite name, like `::show{mika anim=blink}`".into());
                 };
-                (self.sprite_id(&who), self.anim_ref(line, &anim)?)
+                (self.sprite_id(&who), self.anim_ref(&anim)?)
             }
             (Some(src), None) => {
                 let named = id_attr.or_else(|| bare.first().cloned());
                 if named.is_none() && crate::is_pattern(&src) {
-                    self.err(line, "a `src=` with a `{variable}` needs a sprite name, like `::show{mika src=\"assets/{place}.png\"}`");
-                    return None;
+                    return Err("a `src=` with a `{variable}` needs a sprite name, like `::show{mika src=\"assets/{place}.png\"}`".into());
                 }
                 let id = named.unwrap_or_else(|| src.clone());
                 (id, src)
             }
             (None, None) => {
                 let Some(who) = bare.first() else {
-                    self.err(line, "`::show` needs a character (`::show{mika happy}`) or `src=...`");
-                    return None;
+                    return Err("`::show` needs a character (`::show{mika happy}`) or `src=...`".into());
                 };
                 let pose = bare.get(1).cloned().unwrap_or_else(|| "default".to_string());
                 let character = self.program.characters.get(&who.to_lowercase()).cloned();
                 let Some(character) = character else {
-                    self.err(line, format!("unknown character `{who}` (declare it first with `::character`)"));
-                    return None;
+                    return Err(format!("unknown character `{who}` (declare it first with `::character`)"));
                 };
                 if character.sprites.is_none() && !character.layers.is_empty() && bare.len() == 1 {
                     // Layers only: with no layer named, the show changes only where the sprite stands.
-                    return self.show_layers(line, a, &character, Vec::new(), flip);
+                    return self.show_layers(a, &character, Vec::new(), flip);
                 }
                 let Some(template) = character.sprites else {
                     let msg = if character.layers.is_empty() {
@@ -1783,63 +1585,47 @@ impl Parser {
                             character.layers[0]
                         )
                     };
-                    self.err(line, msg);
-                    return None;
+                    return Err(msg);
                 };
                 (character.id, template.replace("{pose}", &pose))
             }
         };
 
         if !is_anim {
-            match self.picture_path("src", &src) {
-                Ok(p) => src = p,
-                Err(m) => {
-                    self.err(line, m);
-                    return None;
-                }
-            }
+            src = self.picture_path("src", &src)?;
         }
-        self.show_rest(line, a, id, src, Vec::new(), flip)
+        self.show_rest(a, id, src, Vec::new(), flip)
     }
 
     /// The position, size and fade attributes of a `::show`, shared by pose and layered sprites.
-    fn show_rest(&mut self, line: usize, a: &mut Attrs, id: String, src: String, layers: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
-        let x = self.place(line, a, "x", POSITION)?;
-        let y = self.place(line, a, "y", POSITION)?;
+    fn show_rest(&mut self, a: &mut Attrs, id: String, src: String, layers: Vec<(String, String)>, flip: Option<bool>) -> Result<(Op, Option<String>), String> {
+        let x = Self::place(a, "x", POSITION)?;
+        let y = Self::place(a, "y", POSITION)?;
         let z = match a.value("z") {
             None => None,
             Some(v) => match v.trim().parse::<i32>() {
                 Ok(z) if (-100..=100).contains(&z) => Some(z),
-                _ => {
-                    self.err(line, format!("`z={v}` must be a whole number from -100 to 100"));
-                    return None;
-                }
+                _ => return Err(format!("`z={v}` must be a whole number from -100 to 100")),
             },
         };
-        let scale = self.number(line, a, "scale", SPRITE_SCALE)?;
-        let xscale = self.number(line, a, "xscale", SPRITE_SCALE)?;
-        let yscale = self.number(line, a, "yscale", SPRITE_SCALE)?;
-        let fade = self.fade(line, a)?;
-        Some((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade }, None))
+        let scale = Self::number(a, "scale", SPRITE_SCALE)?;
+        let xscale = Self::number(a, "xscale", SPRITE_SCALE)?;
+        let yscale = Self::number(a, "yscale", SPRITE_SCALE)?;
+        let fade = Self::fade(a)?;
+        Ok((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade }, None))
     }
 
     /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
-    fn show_layers(&mut self, line: usize, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Option<(Op, Option<String>)> {
+    fn show_layers(&mut self, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Result<(Op, Option<String>), String> {
         let mut layers = Vec::new();
         for (layer, value) in &given {
             let picture = if value == LAYER_NONE {
                 String::new()
             } else if let Some(id) = value.strip_prefix(ANIM_PREFIX) {
-                self.anim_ref(line, id)?
+                self.anim_ref(id)?
             } else {
                 let path = c.layer_path(layer, value).unwrap_or_default();
-                match self.picture_path(layer, &path) {
-                    Ok(p) => p,
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                }
+                self.picture_path(layer, &path)?
             };
             layers.push((layer.clone(), picture));
         }
@@ -1854,18 +1640,17 @@ impl Parser {
                     missing.join(", "),
                     missing[0]
                 );
-                self.err(line, msg);
-                return None;
+                return Err(msg);
             }
         }
         self.layered_seen.insert(c.id.clone());
-        self.show_rest(line, a, c.id.clone(), String::new(), layers, flip)
+        self.show_rest(a, c.id.clone(), String::new(), layers, flip)
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
-    fn extra_words(&mut self, line: usize, command: &str, bare: &[String], allowed: usize) -> Option<()> {
+    fn extra_words(command: &str, bare: &[String], allowed: usize) -> Result<(), String> {
         match bare.get(allowed) {
-            None => Some(()),
+            None => Ok(()),
             Some(extra) => {
                 let what = match (command, allowed) {
                     ("show", 2) => "a character and a pose",
@@ -1873,8 +1658,7 @@ impl Parser {
                     (_, 0) => "no sprite name with `all`",
                     _ => "one sprite name",
                 };
-                self.err(line, format!("unexpected `{extra}`: `::{command}` takes {what}"));
-                None
+                Err(format!("unexpected `{extra}`: `::{command}` takes {what}"))
             }
         }
     }
@@ -1901,8 +1685,7 @@ impl Parser {
         let sprites = a.value("sprites");
         let (layers, layer_sprites) = (a.value("layers"), a.value("layer_sprites"));
         if let Some(extra) = a.leftover(&[]) {
-            let msg = format!("unknown attribute `{extra}` for `::character` (it takes: id, name, color, sprites, layers, layer_sprites)");
-            self.err(line, msg);
+            self.err(line, unknown_attr("character", extra));
         }
         let Some(id) = id else {
             self.err(line, "`::character` needs `id=...`");
@@ -2024,8 +1807,7 @@ impl Parser {
         let (id, frames) = (a.value("id"), a.value("frames"));
         let looped = a.flag("loop");
         if let Some(extra) = a.leftover(&[]) {
-            let msg = format!("unknown attribute `{extra}` for `::anim` (it takes: id, frames, loop)");
-            return self.err(line, msg);
+            return self.err(line, unknown_attr("anim", extra));
         }
         let Some(id) = id else { return self.err(line, "`::anim` needs `id=...`") };
         if !is_plain_ident(&id) {
@@ -2066,14 +1848,13 @@ impl Parser {
     }
 
     /// The picture `src` for `anim=id`: the animation must be declared before this line.
-    fn anim_ref(&mut self, line: usize, id: &str) -> Option<String> {
+    fn anim_ref(&self, id: &str) -> Result<String, String> {
         if !self.program.anims.contains_key(id) {
             let known: Vec<&str> = self.program.anims.keys().map(String::as_str).collect();
             let hint = if known.is_empty() { "declare it first with `::anim`".to_string() } else { format!("declared: {}", known.join(", ")) };
-            self.err(line, format!("unknown animation `{id}` ({hint})"));
-            return None;
+            return Err(format!("unknown animation `{id}` ({hint})"));
         }
-        Some(anim_src(id))
+        Ok(anim_src(id))
     }
 
     /// `::item{id=key name="Brass key" icon=assets/key.png price=15 text="..." count=keys use=#unlock}`
@@ -2086,8 +1867,7 @@ impl Parser {
         let (price, text) = (a.value("price"), a.value("text"));
         let (count, use_label) = (a.value("count"), a.value("use"));
         if let Some(extra) = a.leftover(&[]) {
-            let msg = format!("unknown attribute `{extra}` for `::item` (it takes: id, name, icon, price, text, count, use)");
-            return self.err(line, msg);
+            return self.err(line, unknown_attr("item", extra));
         }
         let Some(id) = id else { return self.err(line, "`::item` needs `id=...`") };
         if id.is_empty() || !id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
@@ -2122,6 +1902,47 @@ impl Parser {
         self.program.items.insert(id, item);
     }
 
+    /// The entry lines of the block `name` (`::choice`, `::hotspots` or `::shop`) that starts at `lines[start]`:
+    /// `entry` gets each one that is not blank or a comment, with its line number. Reports a block that is never
+    /// closed; returns the index of the closing `::` (or of the last line).
+    fn block_lines(&mut self, lines: &[&str], start: usize, name: &str, mut entry: impl FnMut(&mut Self, &str, usize)) -> usize {
+        let mut j = start + 1;
+        let mut closed = false;
+        while j < lines.len() {
+            let t = lines[j].trim();
+            if t == "::" {
+                closed = true;
+                break;
+            }
+            if t.starts_with("<!--") {
+                if !t.ends_with("-->") {
+                    self.err(self.base + j + 1, format!("a comment inside `{name}` must open and close on one line"));
+                }
+            } else if !t.is_empty() {
+                entry(self, t, self.base + j + 1);
+            }
+            j += 1;
+        }
+        if !closed {
+            self.err(self.base + start + 1, format!("`{name}` is never closed with a line containing only `::`"));
+        }
+        j
+    }
+
+    /// The `{...}` after an entry of a block: `after` names the entry and `goes` what its braces hold, for the message.
+    fn entry_braces<'a>(tail: &'a str, after: &str, goes: &str) -> Result<&'a str, String> {
+        tail.strip_prefix('{')
+            .and_then(|x| x.strip_suffix('}'))
+            .ok_or_else(|| format!("unexpected `{tail}` after the {after} ({goes} go in `{{...}}`)"))
+    }
+
+    /// `if <cond>` in an entry's braces (`None` for any other part; a variable merely starting with "if", like
+    /// `iffy+=1`, is not a condition).
+    fn entry_if(&self, part: &str) -> Option<Result<Expr, String>> {
+        let text = part.strip_prefix("if").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))?;
+        Some(parse_expr(text).and_then(|e| self.check_expr(&e).map(|()| e)))
+    }
+
     /// `::shop{pay=gold into=inventory}` and its `- key{price=20, if met}` lines.
     fn shop(&mut self, lines: &[&str], start: usize, inner: &str) -> usize {
         let line = self.base + start + 1;
@@ -2134,7 +1955,7 @@ impl Parser {
         };
         let (pay, into) = (a.value("pay"), a.value("into"));
         if let Some(extra) = a.leftover(&[]) {
-            self.err(line, format!("unknown attribute `{extra}` for `::shop` (it takes: pay, into)"));
+            self.err(line, unknown_attr("shop", extra));
         }
         let pay = match pay {
             Some(p) if is_ident(&p) && !is_keyword(&p) => match self.program.vars.get(&p) {
@@ -2154,7 +1975,7 @@ impl Parser {
             }
         };
         let into = match into {
-            Some(l) if matches!(self.program.vars.get(&l), Some(Value::List(_))) => Some(l),
+            Some(l) if self.is_list(&l) => Some(l),
             Some(l) => {
                 let msg = format!("`into={l}`: `{l}` is not a list (declare it in the front matter: `vars: {{ {l}: [] }}`)");
                 self.err(line, msg);
@@ -2168,33 +1989,14 @@ impl Parser {
 
         let mut stock: Vec<ShopEntry> = Vec::new();
         let mut lines_seen = 0;
-        let mut j = start + 1;
-        let mut closed = false;
-        while j < lines.len() {
-            let t = lines[j].trim();
-            if t == "::" {
-                closed = true;
-                break;
+        let j = self.block_lines(lines, start, "::shop", |p, t, ln| {
+            lines_seen += 1;
+            match p.shop_entry(t) {
+                Ok(e) if stock.iter().any(|s| s.item == e.item) => p.err(ln, format!("`{}` is in this shop twice", e.item)),
+                Ok(e) => stock.push(e),
+                Err(m) => p.err(ln, m),
             }
-            if t.starts_with("<!--") {
-                if !t.ends_with("-->") {
-                    self.err(self.base + j + 1, "a comment inside `::shop` must open and close on one line");
-                }
-            } else if !t.is_empty() {
-                lines_seen += 1;
-                match self.shop_entry(t) {
-                    Ok(e) if stock.iter().any(|s| s.item == e.item) => {
-                        self.err(self.base + j + 1, format!("`{}` is in this shop twice", e.item));
-                    }
-                    Ok(e) => stock.push(e),
-                    Err(m) => self.err(self.base + j + 1, m),
-                }
-            }
-            j += 1;
-        }
-        if !closed {
-            self.err(line, "`::shop` is never closed with a line containing only `::`");
-        }
+        });
         if lines_seen == 0 {
             self.err(line, "`::shop` has no items");
         } else if stock.is_empty() {
@@ -2239,23 +2041,13 @@ impl Parser {
         let mut price = item.price;
         let mut cond = None;
         if !tail.is_empty() {
-            let inner = tail
-                .strip_prefix('{')
-                .and_then(|x| x.strip_suffix('}'))
-                .ok_or_else(|| format!("unexpected `{tail}` after the item (settings go in `{{...}}`)"))?;
-            let mut inner = inner.to_string();
+            let mut inner = Self::entry_braces(tail, "item", "settings")?.to_string();
             if let Some(p) = take_attr(&mut inner, "price") {
                 price = Some(parse_price(&p)?);
             }
             for part in split_top_level(&inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
-                let cond_text =
-                    part.strip_prefix("if").filter(|r| r.is_empty() || r.starts_with(char::is_whitespace));
-                match cond_text {
-                    Some(c) => {
-                        let e = parse_expr(c)?;
-                        self.check_expr(&e)?;
-                        cond = Some(e);
-                    }
+                match self.entry_if(part) {
+                    Some(e) => cond = Some(e?),
                     None => return Err(format!("unexpected `{part}` (a shop line takes `price=` and `if condition`)")),
                 }
             }
@@ -2271,56 +2063,35 @@ impl Parser {
     }
 
     /// `::hud{...}`: create or replace an element, or `hide=id` / `clear`.
-    fn hud(&mut self, line: usize, a: &mut Attrs) -> Option<(Op, Option<String>)> {
+    fn hud(&mut self, line: usize, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
         let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
-        let fade = match a.value("fade") {
-            None => 0.0,
-            Some(v) => match v.parse::<f32>() {
-                Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => t,
-                _ => {
-                    self.err(line, format!("`fade={v}` must be a number of seconds above 0 and at most 10"));
-                    return None;
-                }
-            },
-        };
+        let fade = Self::short_seconds(a, "fade", 0.0)?;
         let (clear, hide) = (a.flag("clear"), has(a, "hide"));
         if clear || hide {
             if clear && hide {
-                self.err(line, "`::hud` takes `clear` or `hide=id`, not both");
-                return None;
+                return Err("`::hud` takes `clear` or `hide=id`, not both".into());
             }
             if let Some(extra) = a.0.iter().map(|(k, _)| k.as_str()).find(|k| *k != "hide") {
                 let extra = extra.to_string();
-                self.err(line, format!("`{extra}` can't be combined with `{}` (only `fade=` can)", if clear { "clear" } else { "hide" }));
-                return None;
+                return Err(format!("`{extra}` can't be combined with `{}` (only `fade=` can)", if clear { "clear" } else { "hide" }));
             }
             if clear {
-                return Some((Op::HudClear { fade }, None));
+                return Ok((Op::HudClear { fade }, None));
             }
             return match a.value("hide") {
-                Some(id) if is_plain_ident(&id) => Some((Op::HudHide { id, fade }, None)),
-                _ => {
-                    self.err(line, "`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`");
-                    None
-                }
+                Some(id) if is_plain_ident(&id) => Ok((Op::HudHide { id, fade }, None)),
+                _ => Err("`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`".into()),
             };
         }
         let id = match a.value("id") {
             Some(id) if is_plain_ident(&id) => id,
-            Some(id) => {
-                self.err(line, format!("bad `id={id}` (an id is letters, digits and underscores, not starting with a digit)"));
-                return None;
-            }
-            None => {
-                self.err(line, "`::hud` needs `id=name` (the key that lets a later `::hud` replace or hide it)");
-                return None;
-            }
+            Some(id) => return Err(format!("bad `id={id}` (an id is letters, digits and underscores, not starting with a digit)")),
+            None => return Err("`::hud` needs `id=name` (the key that lets a later `::hud` replace or hide it)".into()),
         };
         let kinds: Vec<&str> = ["text", "bar", "image"].into_iter().filter(|k| has(a, k)).collect();
         if kinds.len() != 1 {
             let m = if kinds.is_empty() { "`::hud` needs one of `text=`, `bar=` or `image=`" } else { "`::hud` takes only one of `text=`, `bar=` and `image=`" };
-            self.err(line, m);
-            return None;
+            return Err(m.into());
         }
         let kind_name = kinds[0];
         // Attributes that belong to other kinds are mistakes, not silently ignored.
@@ -2334,118 +2105,65 @@ impl Parser {
         if let Some(k) = stray {
             let known = known_attrs("hud");
             if known.contains(&k.as_str()) {
-                self.err(line, format!("`{k}=` isn't used by a `{kind_name}` element (it takes: {}, {})", allowed.join(", "), common.join(", ")));
-                return None;
+                return Err(format!("`{k}=` isn't used by a `{kind_name}` element (it takes: {}, {})", allowed.join(", "), common.join(", ")));
             }
-            return None; // unknown: reported by the caller as an unknown attribute
+            return Err(String::new()); // unknown: the caller reports it as an unknown attribute
         }
-        let x = self.place(line, a, "x", 0.0..=1.0)?.unwrap_or(0.0);
-        let y = self.place(line, a, "y", 0.0..=1.0)?.unwrap_or(0.0);
+        let x = Self::place(a, "x", 0.0..=1.0)?.unwrap_or(0.0);
+        let y = Self::place(a, "y", 0.0..=1.0)?.unwrap_or(0.0);
         let cond = match a.value("if") {
             None => None,
-            Some(c) => match HudExpr::parse(&c).and_then(|e| self.check_expr(&e.expr).map(|()| e)) {
-                Ok(c) => Some(c),
-                Err(m) => {
-                    self.err(line, m);
-                    return None;
-                }
-            },
+            Some(c) => Some(HudExpr::parse(&c).and_then(|e| self.check_expr(&e.expr).map(|()| e))?),
         };
         let action = self.hud_action(line, a, kind_name)?;
         let hover = match a.value("hover") {
             None => None,
-            Some(_) if action.is_none() => {
-                self.err(line, "`hover=` needs `call=#label` or `open=...` (it is the button's picture under the mouse)");
-                return None;
-            }
-            Some(_) if kind_name != "image" => {
-                self.err(line, "`hover=` is a picture for an `image=` button (a text button lights up by itself)");
-                return None;
-            }
-            Some(h) => match check_image_path(&h, "hover", "a HUD hover image") {
-                Ok(h) => Some(h),
-                Err(m) => {
-                    self.err(line, m);
-                    return None;
-                }
-            },
+            Some(_) if action.is_none() => return Err("`hover=` needs `call=#label` or `open=...` (it is the button's picture under the mouse)".into()),
+            Some(_) if kind_name != "image" => return Err("`hover=` is a picture for an `image=` button (a text button lights up by itself)".into()),
+            Some(h) => Some(check_image_path(&h, "hover", "a HUD hover image")?),
         };
-        let colour = |this: &mut Self, a: &mut Attrs, key: &str| -> Option<Option<[f32; 4]>> {
-            match a.value(key) {
-                None => Some(None),
-                Some(v) => match parse_color_alpha(&v) {
-                    Ok(c) => Some(Some(c)),
-                    Err(m) => {
-                        this.err(line, format!("`{key}`: {m}"));
-                        None
-                    }
-                },
-            }
+        let colour = |a: &mut Attrs, key: &str| -> Result<Option<[f32; 4]>, String> {
+            a.value(key).map(|v| parse_color_alpha(&v).map_err(|m| format!("`{key}`: {m}"))).transpose()
         };
         let kind = match kind_name {
             "text" => {
                 let text = a.value("text").unwrap_or_default();
                 if text.trim().is_empty() {
-                    self.err(line, "`::hud{text=...}` needs some text");
-                    return None;
+                    return Err("`::hud{text=...}` needs some text".into());
                 }
-                match crate::markup::parse_markup(&text) {
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                    Ok(r) if r.no_wait || r.text.contains('\n') => {
-                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::hud` text");
-                        return None;
-                    }
-                    Ok(_) => {}
-                }
-                let size = self.number(line, a, "size", 8.0..=300.0)?;
-                let color = colour(self, a, "color")?;
-                let back = colour(self, a, "back")?;
-                let pad = self.number(line, a, "pad", 0.0..=200.0)?.unwrap_or(0.0);
+                crate::markup::check_inline_markup(&text, "a `::hud` text")?;
+                let size = Self::number(a, "size", 8.0..=300.0)?;
+                let color = colour(a, "color")?;
+                let back = colour(a, "back")?;
+                let pad = Self::number(a, "pad", 0.0..=200.0)?.unwrap_or(0.0);
                 HudKind::Text { text, size, color, back, pad }
             }
             "bar" => {
                 let bar_src = a.value("bar").unwrap_or_default();
                 let Some(max_src) = a.value("max") else {
-                    self.err(line, "`::hud{bar=...}` needs `max=` (the value that fills the bar: a number or an expression)");
-                    return None;
+                    return Err("`::hud{bar=...}` needs `max=` (the value that fills the bar: a number or an expression)".into());
                 };
-                let expr = |this: &mut Self, key: &str, v: &str| -> Option<HudExpr> {
-                    match HudExpr::parse(v).and_then(|e| this.check_expr(&e.expr).map(|()| e)) {
-                        Ok(e) => Some(e),
-                        Err(m) => {
-                            this.err(line, format!("`{key}=`: {m}"));
-                            None
-                        }
-                    }
+                let expr = |key: &str, v: &str| -> Result<HudExpr, String> {
+                    HudExpr::parse(v).and_then(|e| self.check_expr(&e.expr).map(|()| e)).map_err(|m| format!("`{key}=`: {m}"))
                 };
-                let value = expr(self, "bar", &bar_src)?;
-                let max = expr(self, "max", &max_src)?;
+                let value = expr("bar", &bar_src)?;
+                let max = expr("max", &max_src)?;
                 let size = match a.value("size") {
-                    None => {
-                        self.err(line, "`::hud{bar=...}` needs `size=width,height` (in pixels of the 1920x1080 screen, like `size=320,26`)");
-                        return None;
-                    }
+                    None => return Err("`::hud{bar=...}` needs `size=width,height` (in pixels of the 1920x1080 screen, like `size=320,26`)".into()),
                     Some(v) => {
                         let parts: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse::<f32>().ok().filter(|f| f.is_finite())).collect();
                         match parts.as_slice() {
                             [w, h] if (1.0..=1920.0).contains(w) && (1.0..=1080.0).contains(h) && v.split(',').count() == 2 => [*w, *h],
-                            _ => {
-                                self.err(line, format!("bad `size={v}` for a bar (width,height in pixels: `size=320,26`, at most 1920,1080)"));
-                                return None;
-                            }
+                            _ => return Err(format!("bad `size={v}` for a bar (width,height in pixels: `size=320,26`, at most 1920,1080)")),
                         }
                     }
                 };
-                let color = colour(self, a, "color")?;
-                let back = colour(self, a, "back")?.unwrap_or([0.2, 0.2, 0.2, 1.0]);
-                let border_color = colour(self, a, "border")?;
-                let width = self.number(line, a, "border_size", 1.0..=3.0)?;
+                let color = colour(a, "color")?;
+                let back = colour(a, "back")?.unwrap_or([0.2, 0.2, 0.2, 1.0]);
+                let border_color = colour(a, "border")?;
+                let width = Self::number(a, "border_size", 1.0..=3.0)?;
                 if width.is_some() && border_color.is_none() {
-                    self.err(line, "`border_size=` needs `border=` (the outline's colour)");
-                    return None;
+                    return Err("`border_size=` needs `border=` (the outline's colour)".into());
                 }
                 let border = border_color.map(|c| (c, width.unwrap_or(2.0)));
                 HudKind::Bar { value, max, size, color, back, border }
@@ -2453,51 +2171,34 @@ impl Parser {
             _ => {
                 let src = a.value("image").unwrap_or_default();
                 if src.is_empty() {
-                    self.err(line, "`::hud{image=...}` needs a picture file");
-                    return None;
+                    return Err("`::hud{image=...}` needs a picture file".into());
                 }
-                let src = match check_image_path(&src, "image", "a HUD image") {
-                    Ok(s) => s,
-                    Err(m) => {
-                        self.err(line, m);
-                        return None;
-                    }
-                };
-                let scale = self.number(line, a, "scale", 0.05..=10.0)?.unwrap_or(1.0);
+                let src = check_image_path(&src, "image", "a HUD image")?;
+                let scale = Self::number(a, "scale", 0.05..=10.0)?.unwrap_or(1.0);
                 HudKind::Image { src, scale }
             }
         };
-        Some((Op::Hud { elem: Box::new(HudElem { id, x, y, cond, kind, action, hover }), fade }, None))
+        Ok((Op::Hud { elem: Box::new(HudElem { id, x, y, cond, kind, action, hover }), fade }, None))
     }
 
     /// `call=#label` or `open=journal`: what a press on the element does (none when neither is given).
-    fn hud_action(&mut self, line: usize, a: &mut Attrs, kind_name: &str) -> Option<Option<HudAction>> {
+    fn hud_action(&mut self, line: usize, a: &mut Attrs, kind_name: &str) -> Result<Option<HudAction>, String> {
         let (call, open) = (a.value("call"), a.value("open"));
         let action = match (call, open) {
-            (None, None) => return Some(None),
-            (Some(_), Some(_)) => {
-                self.err(line, "`::hud` takes `call=` or `open=`, not both");
-                return None;
-            }
-            _ if kind_name == "bar" => {
-                self.err(line, "a bar can't be a button (`call=` and `open=` work on `text=` and `image=` elements)");
-                return None;
-            }
+            (None, None) => return Ok(None),
+            (Some(_), Some(_)) => return Err("`::hud` takes `call=` or `open=`, not both".into()),
+            _ if kind_name == "bar" => return Err("a bar can't be a button (`call=` and `open=` work on `text=` and `image=` elements)".into()),
             (Some(c), None) => match c.strip_prefix('#').filter(|l| !l.is_empty()) {
                 Some(l) => {
                     self.hud_calls.push((l.to_string(), line));
                     HudAction::Call(l.to_string())
                 }
-                None => {
-                    self.err(line, "`call=` names a label, like `call=#phone`");
-                    return None;
-                }
+                None => return Err("`call=` names a label, like `call=#phone`".into()),
             },
             (None, Some(o)) => {
                 let Some(screen) = HudScreen::from_name(&o) else {
                     let names: Vec<&str> = HudScreen::NAMES.iter().map(|(n, _)| *n).collect();
-                    self.err(line, format!("unknown `open={o}` (it can open: {})", names.join(", ")));
-                    return None;
+                    return Err(format!("unknown `open={o}` (it can open: {})", names.join(", ")));
                 };
                 let missing = match screen {
                     HudScreen::Inventory if self.program.inventory.is_none() => Some(("an inventory", "inventory")),
@@ -2505,13 +2206,12 @@ impl Parser {
                     _ => None,
                 };
                 if let Some((what, key)) = missing {
-                    self.err(line, format!("`open={o}` needs {what} to open: add `{key}: <list variable>` to the front matter"));
-                    return None;
+                    return Err(format!("`open={o}` needs {what} to open: add `{key}: <list variable>` to the front matter"));
                 }
                 HudAction::Open(screen)
             }
         };
-        Some(Some(action))
+        Ok(Some(action))
     }
 
     /// A picture name: a plain path inside the game folder, or a pattern whose
@@ -2553,190 +2253,141 @@ impl Parser {
 
     /// `::particles{snow}`, `{rain}`, `{src=file.png}`, with `amount=`, `speed=`, `wind=`, `layer=back`
     /// and `fade=`; `{none}` (or `off`) stops them.
-    fn particles(&mut self, line: usize, a: &mut Attrs) -> Option<Op> {
+    fn particles(a: &mut Attrs) -> Result<Op, String> {
         let kinds = ["snow", "rain", "none", "off"];
         let mut words = a.take_bare();
         if let Some(w) = words.iter().find(|w| !kinds.contains(&w.as_str())) {
-            self.err(line, format!("`{w}` is not a kind of particle: use `snow`, `rain`, `src=<picture>` or `none`"));
-            return None;
+            return Err(format!("`{w}` is not a kind of particle: use `snow`, `rain`, `src=<picture>` or `none`"));
         }
         let src = a.value("src");
         if src.is_some() {
             words.push("src".into());
         }
         if words.len() > 1 {
-            self.err(line, format!("`::particles` takes one of `snow`, `rain`, `src=` or `none`, not {}", words.join(" and ")));
-            return None;
+            return Err(format!("`::particles` takes one of `snow`, `rain`, `src=` or `none`, not {}", words.join(" and ")));
         }
-        let fade = self.seconds(line, a, "fade", 1.0)?;
+        let fade = Self::seconds(a, "fade", 1.0)?;
         if fade > 10.0 {
-            self.err(line, format!("`fade={fade}` must be at most 10 seconds"));
-            return None;
+            return Err(format!("`fade={fade}` must be at most 10 seconds"));
         }
         let kind = match (words.first().map(String::as_str), src) {
             (Some("none" | "off"), _) => {
                 if let Some(extra) = ["amount", "speed", "wind", "layer"].into_iter().find(|k| a.0.iter().any(|(x, _)| x == k)) {
-                    self.err(line, format!("`::particles{{none}}` takes only `fade=`, not `{extra}=`"));
-                    return None;
+                    return Err(format!("`::particles{{none}}` takes only `fade=`, not `{extra}=`"));
                 }
-                return Some(Op::Particles { set: None, fade });
+                return Ok(Op::Particles { set: None, fade });
             }
             (Some("snow"), _) => ParticleKind::Snow,
             (Some("rain"), _) => ParticleKind::Rain,
-            (_, Some(src)) if src.is_empty() => {
-                self.err(line, "`::particles` needs a picture in `src=...`");
-                return None;
-            }
-            (_, Some(src)) if src.contains(['{', '}']) => {
-                self.err(line, format!("`src={src}`: `::particles` can't use a `{{variable}}` in the picture name"));
-                return None;
-            }
-            (_, Some(src)) => match check_image_path(&src, "src", "a particle picture") {
-                Ok(src) => ParticleKind::Image(src),
-                Err(m) => {
-                    self.err(line, m);
-                    return None;
-                }
-            },
-            _ => {
-                self.err(line, "`::particles` needs `snow`, `rain`, `src=<picture>` or `none` (to stop them)");
-                return None;
-            }
+            (_, Some(src)) if src.is_empty() => return Err("`::particles` needs a picture in `src=...`".into()),
+            (_, Some(src)) if src.contains(['{', '}']) => return Err(format!("`src={src}`: `::particles` can't use a `{{variable}}` in the picture name")),
+            (_, Some(src)) => ParticleKind::Image(check_image_path(&src, "src", "a particle picture")?),
+            _ => return Err("`::particles` needs `snow`, `rain`, `src=<picture>` or `none` (to stop them)".into()),
         };
         let amount = match a.value("amount") {
             None => DEFAULT_PARTICLES,
             Some(v) => match v.parse::<u32>() {
                 Ok(n) if (1..=MAX_PARTICLES).contains(&n) => n,
-                _ => {
-                    self.err(line, format!("`amount={v}` must be a whole number from 1 to {MAX_PARTICLES}"));
-                    return None;
-                }
+                _ => return Err(format!("`amount={v}` must be a whole number from 1 to {MAX_PARTICLES}")),
             },
         };
-        let speed = self.number(line, a, "speed", PARTICLE_SPEED)?.unwrap_or(1.0);
-        let wind = self.number(line, a, "wind", PARTICLE_WIND)?.unwrap_or(0.0);
+        let speed = Self::number(a, "speed", PARTICLE_SPEED)?.unwrap_or(1.0);
+        let wind = Self::number(a, "wind", PARTICLE_WIND)?.unwrap_or(0.0);
         let back = match a.value("layer").as_deref() {
             None | Some("front") => false,
             Some("back") => true,
-            Some(v) => {
-                self.err(line, format!("`layer={v}` must be `front` (over the sprites) or `back` (behind them)"));
-                return None;
-            }
+            Some(v) => return Err(format!("`layer={v}` must be `front` (over the sprites) or `back` (behind them)")),
         };
-        Some(Op::Particles { set: Some(Particles { kind, amount, speed, wind, back }), fade })
+        Ok(Op::Particles { set: Some(Particles { kind, amount, speed, wind, back }), fade })
     }
 
     /// `::tint{color=#203060 alpha=0.35 fade=1}` sets the wash; `::tint{none}` (or `off`) removes it.
-    fn tint(&mut self, line: usize, a: &mut Attrs) -> Option<Op> {
+    fn tint(a: &mut Attrs) -> Result<Op, String> {
         let (none, off) = (a.flag("none"), a.flag("off"));
-        let fade = self.seconds(line, a, "fade", 0.0)?;
+        let fade = Self::seconds(a, "fade", 0.0)?;
         if fade > 10.0 {
-            self.err(line, format!("`fade={fade}` must be at most 10 seconds"));
-            return None;
+            return Err(format!("`fade={fade}` must be at most 10 seconds"));
         }
         if none || off {
             if let Some(extra) = ["color", "alpha"].into_iter().find(|k| a.0.iter().any(|(x, _)| x == k)) {
-                self.err(line, format!("`::tint{{none}}` takes only `fade=`, not `{extra}=`"));
-                return None;
+                return Err(format!("`::tint{{none}}` takes only `fade=`, not `{extra}=`"));
             }
-            return Some(Op::Tint { set: None, fade });
+            return Ok(Op::Tint { set: None, fade });
         }
         let Some(c) = a.value("color") else {
-            self.err(line, "`::tint` needs `color=#rrggbb` (or `none` to remove the tint)");
-            return None;
+            return Err("`::tint` needs `color=#rrggbb` (or `none` to remove the tint)".into());
         };
-        let color = match parse_color(&c) {
-            Ok(c) => c,
-            Err(m) => {
-                self.err(line, m);
-                return None;
-            }
-        };
-        let alpha = self.number(line, a, "alpha", TINT_ALPHA)?.unwrap_or(DEFAULT_TINT_ALPHA);
-        Some(Op::Tint { set: Some(Tint { color, alpha }), fade })
+        let color = parse_color(&c)?;
+        let alpha = Self::number(a, "alpha", TINT_ALPHA)?.unwrap_or(DEFAULT_TINT_ALPHA);
+        Ok(Op::Tint { set: Some(Tint { color, alpha }), fade })
     }
 
     /// `result=` of `::timing` / `::press`: a text variable declared in the front matter.
-    fn result_var(&mut self, line: usize, a: &mut Attrs, cmd: &str) -> Option<String> {
+    fn result_var(&self, a: &mut Attrs, cmd: &str) -> Result<String, String> {
         let var = a.value("result").unwrap_or_default();
         if !matches!(self.program.vars.get(&var), Some(Value::Str(_))) {
-            self.err(line, format!("`::{cmd}` needs `result=` naming a text variable declared in the front matter (like `vars: {{ hit: \"\" }}`)"));
-            return None;
+            return Err(format!("`::{cmd}` needs `result=` naming a text variable declared in the front matter (like `vars: {{ hit: \"\" }}`)"));
         }
-        Some(var)
+        Ok(var)
     }
 
     /// The optional `prompt=` of `::timing` / `::press`: tagged text without `{nw}` / `{p}`.
-    fn prompt_attr(&mut self, line: usize, a: &mut Attrs, cmd: &str) -> Option<String> {
+    fn prompt_attr(a: &mut Attrs, cmd: &str) -> Result<String, String> {
         let prompt = a.value("prompt").map(|p| p.trim().to_string()).unwrap_or_default();
-        match crate::markup::parse_markup(&prompt) {
-            Err(m) => {
-                self.err(line, m);
-                None
-            }
-            Ok(r) if r.no_wait || r.text.contains('\n') => {
-                self.err(line, format!("`{{nw}}` and `{{p}}` only work in dialogue lines, not in a `::{cmd}` prompt"));
-                None
-            }
-            Ok(_) => Some(prompt),
-        }
+        crate::markup::check_inline_markup(&prompt, &format!("a `::{cmd}` prompt"))?;
+        Ok(prompt)
     }
 
-    fn require(&mut self, line: usize, cmd: &str, a: &mut Attrs, key: &str) -> Option<String> {
+    fn require(&self, cmd: &str, a: &mut Attrs, key: &str) -> Result<String, String> {
         match a.value(key) {
-            Some(v) if !v.is_empty() => match if cmd == "bg" { self.picture_path(key, &v) } else { check_inside(key, &v) } {
-                Ok(v) => Some(v),
-                Err(m) => {
-                    self.err(line, m);
-                    None
-                }
-            },
-            _ => {
-                self.err(line, format!("`::{cmd}` needs `{key}=...`"));
-                None
-            }
+            Some(v) if !v.is_empty() => if cmd == "bg" { self.picture_path(key, &v) } else { check_inside(key, &v) },
+            _ => Err(format!("`::{cmd}` needs `{key}=...`")),
         }
     }
 
-    fn fade(&mut self, line: usize, a: &mut Attrs) -> Option<f32> {
-        self.seconds(line, a, "fade", 0.0)
+    fn fade(a: &mut Attrs) -> Result<f32, String> {
+        Self::seconds(a, "fade", 0.0)
     }
 
     /// A non-negative number of seconds under `key`, or `default` when absent.
-    fn seconds(&mut self, line: usize, a: &mut Attrs, key: &str, default: f32) -> Option<f32> {
+    fn seconds(a: &mut Attrs, key: &str, default: f32) -> Result<f32, String> {
         match a.value(key) {
-            None => Some(default),
+            None => Ok(default),
             Some(v) => match v.parse::<f32>() {
-                Ok(f) if f.is_finite() && f >= 0.0 => Some(f),
-                _ => {
-                    self.err(line, format!("`{key}={v}` must be a number of seconds, 0 or more"));
-                    None
-                }
+                Ok(f) if f.is_finite() && f >= 0.0 => Ok(f),
+                _ => Err(format!("`{key}={v}` must be a number of seconds, 0 or more")),
             },
         }
     }
 
-    /// An optional number under `key` within `range` (`50%` means 0.5).
-    /// `None` inside means absent; an outer `None` means it was given but wrong.
-    fn number(&mut self, line: usize, a: &mut Attrs, key: &str, range: RangeInclusive<f32>) -> Option<Option<f32>> {
-        let Some(v) = a.value(key) else { return Some(None) };
+    /// Like `seconds`, but above 0 and at most 10 (so an explicit `fade=0` is refused).
+    fn short_seconds(a: &mut Attrs, key: &str, default: f32) -> Result<f32, String> {
+        match a.value(key) {
+            None => Ok(default),
+            Some(v) => match v.parse::<f32>() {
+                Ok(t) if t.is_finite() && t > 0.0 && t <= 10.0 => Ok(t),
+                _ => Err(format!("`{key}={v}` must be a number of seconds above 0 and at most 10")),
+            },
+        }
+    }
+
+    /// An optional number under `key` within `range` (`50%` means 0.5); `None` means absent.
+    fn number(a: &mut Attrs, key: &str, range: RangeInclusive<f32>) -> Result<Option<f32>, String> {
+        let Some(v) = a.value(key) else { return Ok(None) };
         let parsed = match v.strip_suffix('%') {
             Some(pct) => pct.parse::<f32>().map(|p| p / 100.0),
             None => v.parse::<f32>(),
         };
         match parsed {
-            Ok(f) if f.is_finite() && range.contains(&f) => Some(Some(f)),
-            _ => {
-                self.err(line, format!("`{key}={v}` must be a number from {} to {}", range.start(), range.end()));
-                None
-            }
+            Ok(f) if f.is_finite() && range.contains(&f) => Ok(Some(f)),
+            _ => Err(format!("`{key}={v}` must be a number from {} to {}", range.start(), range.end())),
         }
     }
 
     /// `x=` / `y=`: `left` `center` `right` (`top` `center` `bottom`), a number (1 is 100%) or `N%`. The point that
     /// fraction across the object is that fraction across the screen (CSS `background-position`).
-    fn place(&mut self, line: usize, a: &mut Attrs, key: &str, range: RangeInclusive<f32>) -> Option<Option<f32>> {
-        let Some(v) = a.value(key) else { return Some(None) };
+    fn place(a: &mut Attrs, key: &str, range: RangeInclusive<f32>) -> Result<Option<f32>, String> {
+        let Some(v) = a.value(key) else { return Ok(None) };
         let words = if key == "x" { [("left", 0.0), ("center", 0.5), ("right", 1.0)] } else { [("top", 0.0), ("center", 0.5), ("bottom", 1.0)] };
         let named = words.iter().find(|w| w.0 == v || (v == "centre" && w.0 == "center")).map(|w| w.1);
         let number = || match v.strip_suffix('%') {
@@ -2744,37 +2395,28 @@ impl Parser {
             None => v.parse::<f32>().ok(),
         };
         match named.or_else(number).filter(|f| f.is_finite() && range.contains(f)) {
-            Some(f) => Some(Some(f)),
+            Some(f) => Ok(Some(f)),
             None => {
                 let (lo, hi) = (range.start() * 100.0, range.end() * 100.0);
-                self.err(line, format!("bad `{key}={v}` (use {}, {} or {}, a number or a percentage from {lo}% to {hi}%){}", words[0].0, words[1].0, words[2].0, if v.starts_with("far-") { format!("; `far-left` and `far-right` are gone: try `{key}=12%` or `{key}=88%`") } else { String::new() }));
-                None
+                let gone = if v.starts_with("far-") { format!("; `far-left` and `far-right` are gone: try `{key}=12%` or `{key}=88%`") } else { String::new() };
+                Err(format!("bad `{key}={v}` (use {}, {} or {}, a number or a percentage from {lo}% to {hi}%){gone}", words[0].0, words[1].0, words[2].0))
             }
         }
     }
 
-    fn ease(&mut self, line: usize, a: &mut Attrs) -> Option<Ease> {
+    fn ease(a: &mut Attrs) -> Result<Ease, String> {
         match a.value("ease") {
-            None => Some(Ease::default()),
-            Some(v) => match Ease::parse(&v) {
-                Some(e) => Some(e),
-                None => {
-                    self.err(line, format!("`ease={v}` must be `linear`, `in`, `out` or `inout`"));
-                    None
-                }
-            },
+            None => Ok(Ease::default()),
+            Some(v) => Ease::parse(&v).ok_or_else(|| format!("`ease={v}` must be `linear`, `in`, `out` or `inout`")),
         }
     }
 
-    fn volume(&mut self, line: usize, a: &mut Attrs) -> Option<f32> {
+    fn volume(a: &mut Attrs) -> Result<f32, String> {
         match a.value("volume") {
-            None => Some(1.0),
+            None => Ok(1.0),
             Some(v) => match v.parse::<f32>() {
-                Ok(f) if (0.0..=1.0).contains(&f) => Some(f),
-                _ => {
-                    self.err(line, format!("`volume={v}` must be between 0 and 1"));
-                    None
-                }
+                Ok(f) if (0.0..=1.0).contains(&f) => Ok(f),
+                _ => Err(format!("`volume={v}` must be between 0 and 1")),
             },
         }
     }
@@ -2869,9 +2511,8 @@ impl Parser {
             Ok(mut a) => {
                 let value = a.take("time");
                 let jump = if hot { a.take("default") } else { None };
-                let takes = if hot { "time, default" } else { "time" };
                 if let Some(extra) = a.leftover(&[]) {
-                    self.err(line, format!("unknown attribute `{extra}` for `{name}` (it takes: {takes})"));
+                    self.err(line, unknown_attr(name.trim_start_matches("::"), extra));
                 }
                 match value {
                     None => {}
@@ -2891,32 +2532,13 @@ impl Parser {
         }
         let mut options = Vec::new();
         let mut labels = Vec::new();
-        let mut j = start + 1;
-        let mut closed = false;
-        while j < lines.len() {
-            let t = lines[j].trim();
-            if t == "::" {
-                closed = true;
-                break;
+        let j = self.block_lines(lines, start, name, |p, t, ln| match p.option(t, hot, ln) {
+            Ok((opt, label)) => {
+                options.push(opt);
+                labels.push((label, ln));
             }
-            if t.starts_with("<!--") {
-                if !t.ends_with("-->") {
-                    self.err(self.base + j + 1, format!("a comment inside `{name}` must open and close on one line"));
-                }
-            } else if !t.is_empty() {
-                match self.option(t, hot, self.base + j + 1) {
-                    Ok((opt, label)) => {
-                        options.push(opt);
-                        labels.push((label, self.base + j + 1));
-                    }
-                    Err(m) => self.err(self.base + j + 1, m),
-                }
-            }
-            j += 1;
-        }
-        if !closed {
-            self.err(line, format!("`{name}` is never closed with a line containing only `::`"));
-        }
+            Err(m) => p.err(ln, m),
+        });
         if hot && time.is_some() != default_to.is_some() {
             let msg = if time.is_some() {
                 "a timed `::hotspots` needs `default=#label`: where to go when time runs out"
@@ -2988,11 +2610,7 @@ impl Parser {
             return Err("a hotspot needs `{rect=x,y,w,h}` or `{sprite=id}` after its label".into());
         }
         if !tail.is_empty() {
-            let inner = tail
-                .strip_prefix('{')
-                .and_then(|x| x.strip_suffix('}'))
-                .ok_or_else(|| format!("unexpected `{tail}` after the option (effects go in `{{...}}`)"))?;
-            let mut inner = inner.to_string();
+            let mut inner = Self::entry_braces(tail, "option", "effects")?.to_string();
             if hot {
                 let rect = take_attr(&mut inner, "rect");
                 let image = take_attr(&mut inner, "image");
@@ -3016,14 +2634,8 @@ impl Parser {
             }
             let inner = inner.as_str();
             for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
-                // `if <cond>`; a variable merely starting with "if" (`iffy+=1`) is an effect
-                let cond_text = item
-                    .strip_prefix("if")
-                    .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace));
-                if let Some(c) = cond_text {
-                    let e = parse_expr(c)?;
-                    self.check_expr(&e)?;
-                    cond = Some(e);
+                if let Some(e) = self.entry_if(item) {
+                    cond = Some(e?);
                 } else if item == "once" {
                     once = true;
                 } else if item == "default" {
@@ -3393,6 +3005,11 @@ fn unquote(s: &str) -> &str {
         }
     }
     s
+}
+
+/// The colour under `key` (`#rrggbb`), if given.
+fn color_attr(a: &mut Attrs, key: &str) -> Result<Option<[f32; 3]>, String> {
+    a.value(key).map(|c| parse_color(&c)).transpose()
 }
 
 /// `#rrggbb` or `#rgb` -> 0..1 RGB.

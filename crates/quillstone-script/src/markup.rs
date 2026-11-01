@@ -243,6 +243,16 @@ pub fn check_option_markup(src: &str) -> Result<(), String> {
     }
 }
 
+/// Like [`check_markup`] for tagged text shown in one piece (`place` names it for the message), where `{nw}` and `{p}`
+/// make no sense.
+pub fn check_inline_markup(src: &str, place: &str) -> Result<(), String> {
+    match parse_markup(src)? {
+        Rich { no_wait: true, .. } => Err(format!("`{{nw}}` and `{{p}}` only work in dialogue lines, not in {place}")),
+        Rich { text, .. } if text.contains('\n') => Err(format!("`{{nw}}` and `{{p}}` only work in dialogue lines, not in {place}")),
+        _ => Ok(()),
+    }
+}
+
 /// Tagged text for display. Text that isn't well formed (it can't come from a
 /// checked script) is shown as written rather than lost.
 pub fn rich(src: &str) -> Rich {
