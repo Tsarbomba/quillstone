@@ -24,7 +24,7 @@ pub fn read_picture(file: &Path) -> Result<(u32, u32), String> {
     let data = std::fs::read(file).map_err(|e| format!("cannot read it: {e}"))?;
     match quillstone_render::image_probe::unshowable_image(&data, &ext) {
         Some(why) => Err(why),
-        None => Ok(size(&data, &ext).unwrap_or((0, 0))),
+        None => Ok(quillstone_render::image_probe::image_size(&data, &ext).unwrap_or((0, 0))),
     }
 }
 
@@ -41,58 +41,6 @@ pub fn font_problem(file: &Path) -> Option<String> {
         Ok(()) => Some("not a TrueType or OpenType font (or a damaged one), despite its name".into()),
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Some("too short to be a font file".into()),
         Err(e) => Some(format!("cannot read it: {e}")),
-    }
-}
-
-// The header readers mirror `quillstone_render::image_probe` (which keeps them private).
-
-fn be16(d: &[u8], at: usize) -> Option<u32> {
-    Some(u16::from_be_bytes(d.get(at..at + 2)?.try_into().ok()?) as u32)
-}
-
-fn le16(d: &[u8], at: usize) -> Option<u32> {
-    Some(u16::from_le_bytes(d.get(at..at + 2)?.try_into().ok()?) as u32)
-}
-
-fn le24(d: &[u8], at: usize) -> Option<u32> {
-    let b = d.get(at..at + 3)?;
-    Some(b[0] as u32 | (b[1] as u32) << 8 | (b[2] as u32) << 16)
-}
-
-fn size(d: &[u8], ext: &str) -> Option<(u32, u32)> {
-    match ext {
-        "png" => Some((u32::from_be_bytes(d.get(16..20)?.try_into().ok()?), u32::from_be_bytes(d.get(20..24)?.try_into().ok()?))),
-        "jpg" | "jpeg" => jpeg(d),
-        _ => webp(d),
-    }
-}
-
-fn jpeg(d: &[u8]) -> Option<(u32, u32)> {
-    let mut i = 2;
-    loop {
-        if *d.get(i)? != 0xFF {
-            return None;
-        }
-        let marker = *d.get(i + 1)?;
-        match marker {
-            0xFF => i += 1,
-            0x01 | 0xD0..=0xD7 => i += 2,
-            0xC0..=0xCF if !matches!(marker, 0xC4 | 0xC8 | 0xCC) => return Some((be16(d, i + 7)?, be16(d, i + 5)?)),
-            0xD9 | 0xDA => return None,
-            _ => i += 2 + be16(d, i + 2)? as usize,
-        }
-    }
-}
-
-fn webp(d: &[u8]) -> Option<(u32, u32)> {
-    match d.get(12..16)? {
-        b"VP8 " => Some((le16(d, 26)? & 0x3FFF, le16(d, 28)? & 0x3FFF)),
-        b"VP8L" => {
-            let bits = u32::from_le_bytes(d.get(21..25)?.try_into().ok()?);
-            Some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
-        }
-        b"VP8X" => Some((le24(d, 24)? + 1, le24(d, 27)? + 1)),
-        _ => None,
     }
 }
 

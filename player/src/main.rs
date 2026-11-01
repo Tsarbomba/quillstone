@@ -173,7 +173,7 @@ fn main() {
 
     let game_settings_window = (settings.window_size, settings.window_pos);
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
-    game.set_voice_files(voice_files(program, &assets));
+    game.set_voice_files(quillstone_ui::source::voice_files(&assets, program).into_iter().collect());
     game.set_unlock_all(unlock_all);
     game.set_dev(dev);
     game.set_theme(theme);
@@ -224,18 +224,6 @@ fn main() {
 
     let event_loop = EventLoop::new().expect("failed to create the event loop");
     event_loop.run_app(&mut app).expect("event loop error");
-}
-
-/// Auto-voice: the sound files in the script's `voice:` folder, by name without
-/// extension (which is the line's `voice_name`), as paths relative to the script.
-fn voice_files(program: &Program, assets: &Assets) -> HashMap<String, String> {
-    let Some(folder) = &program.voice_folder else { return HashMap::new() };
-    assets
-        .list(folder)
-        .into_iter()
-        .filter(|name| quillstone_script::kind_from_path(name) == AssetKind::Audio)
-        .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
-        .collect()
 }
 
 /// The per-user folder name: the script's `id:`, else the title, else the script's file name.
@@ -333,21 +321,6 @@ fn data_dir(id: &str) -> Option<PathBuf> {
     Some(base.join(id))
 }
 
-/// Write a file so that a crash or power cut midway can't leave it half
-/// written: write a temporary file next to it (flushed to disk), then rename it into place.
-fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
-    use std::io::Write;
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?; // on disk before the rename, so a power cut can't leave an empty file in place
-    drop(file);
-    std::fs::rename(&tmp, path)
-}
-
 /// Saves live in the per-user folder, next to the settings.
 struct FileStorage {
     dir: Option<PathBuf>,
@@ -374,7 +347,7 @@ impl Storage for FileStorage {
 
     fn write(&mut self, name: &str, contents: &str) -> Result<(), String> {
         let dir = self.dir.as_ref().ok_or("no folder to save in")?;
-        write_file(&dir.join(name), contents).map_err(|e| e.to_string())
+        quillstone_ui::write_atomic(&dir.join(name), contents).map_err(|e| e.to_string())
     }
 
     fn now(&self) -> Timestamp {
@@ -421,7 +394,7 @@ impl App {
             Ok(()) => {
                 self.game.set_theme(theme);
                 self.game.set_translations(translations);
-                self.game.set_voice_files(voice_files(program, &self.assets));
+                self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());
                 match problems.first() {
                     Some(first) => self.game.show_notice(format!("Script reloaded; translation not loaded: {first}")),
                     None => self.game.show_notice("Script reloaded"),
@@ -480,7 +453,7 @@ impl App {
         let Some(file) = &self.settings_file else { return };
         let mut settings = self.game.settings().clone();
         (settings.window_size, settings.window_pos) = (self.window_size, self.window_pos);
-        if let Err(e) = write_file(file, &settings.to_text()) {
+        if let Err(e) = quillstone_ui::write_atomic(file, &settings.to_text()) {
             eprintln!("warning: cannot save settings to {}: {e}", file.display());
             self.game.show_notice(format!("Could not save settings: {e}"));
         }

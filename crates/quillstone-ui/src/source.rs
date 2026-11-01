@@ -7,7 +7,9 @@ use crate::assets::Assets;
 
 use std::collections::BTreeMap;
 
-use quillstone_script::{check_translation, language_file, parse_files, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES};
+use quillstone_script::{
+    check_translation, kind_from_path, language_file, parse_files, AssetKind, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES,
+};
 
 /// The text of an included file: `rel` (a game-folder path the parser has already checked) under `root`.
 /// At most [`MAX_INCLUDE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
@@ -57,6 +59,18 @@ pub fn error_lines(script: &Path, errors: &[ParseError]) -> Vec<String> {
 pub fn script_files(script: &Path, program: &Program) -> Vec<std::path::PathBuf> {
     let root = script_dir(script);
     std::iter::once(script.to_path_buf()).chain(program.included_files().map(|f| root.join(f))).collect()
+}
+
+/// Auto-voice: the sound files in the script's `voice:` folder, as (name without extension, which is a line's
+/// `voice_name`; path relative to the game folder). The same name with two extensions is listed twice.
+pub fn voice_files(assets: &Assets, program: &Program) -> Vec<(String, String)> {
+    let Some(folder) = &program.voice_folder else { return Vec::new() };
+    assets
+        .list(folder)
+        .into_iter()
+        .filter(|name| kind_from_path(name) == AssetKind::Audio)
+        .filter_map(|name| Some((name.rsplit_once('.')?.0.to_string(), format!("{folder}/{name}"))))
+        .collect()
 }
 
 /// The text of `lang/<code>.txt` under the game folder `root`: `Ok(None)` when there is no such

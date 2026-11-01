@@ -17,6 +17,7 @@
 //! another textured quad.
 
 pub mod batch;
+mod fade;
 pub mod hud;
 pub mod image_probe;
 pub mod layout;
@@ -27,7 +28,7 @@ pub mod view;
 
 pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
 pub use layout::{
-    clip, estimate_lines, estimate_lines_styled, letterbox, one_row, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
+    clip, estimate_lines, estimate_lines_styled, letterbox, line_height, one_row, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
 };
 pub use theme::{CellStyle, QuickMenu, Theme};
 pub use view::{

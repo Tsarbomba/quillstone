@@ -16,17 +16,22 @@ pub fn unshowable_image(data: &[u8], ext: &str) -> Option<String> {
             return Some(format!("`.{ext}` images aren't supported (use PNG, JPEG or WebP)"));
         }
     };
-    let size = match format {
-        "PNG" => png_size(data),
-        "JPEG" => jpeg_size(data),
-        _ => webp_size(data),
-    };
-    match size {
+    match image_size(data, ext) {
         None => Some(format!("not a {format} file (or a damaged one), despite its name")),
         Some((w, h)) if w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE => {
             Some(format!("it is {w}x{h}; images can be at most {MAX_IMAGE_SIDE} pixels on a side"))
         }
         Some(_) => None,
+    }
+}
+
+/// The pixel size from the file header (`ext` lowercase), or `None` for a file that is not that format.
+pub fn image_size(data: &[u8], ext: &str) -> Option<(u32, u32)> {
+    match ext {
+        "png" => png_size(data),
+        "jpg" | "jpeg" => jpeg_size(data),
+        "webp" => webp_size(data),
+        _ => None,
     }
 }
 

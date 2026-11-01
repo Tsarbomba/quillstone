@@ -100,6 +100,14 @@ fn bottom_row_y(theme: &Theme) -> f32 {
     p.y + p.h - 76.0
 }
 
+/// Where an item's description text goes in the description box: under the name, above the price row when
+/// the item has a price.
+pub fn description_body(theme: &Theme, has_price: bool) -> Rect {
+    let d = description_rect(theme);
+    let below = if has_price { 38.0 } else { 0.0 };
+    Rect::new(d.x + 24.0, d.y + 10.0 + 46.0, d.w - 48.0, (d.h - 20.0 - 46.0 - below).max(20.0))
+}
+
 pub fn description_rect(theme: &Theme) -> Rect {
     match theme.inventory_description_rect {
         Some([x, y, w, h]) => inside(Rect::new(x, y, w, h)),
@@ -310,8 +318,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
     if let Some(detail) = s.detail {
         let inner = Rect::new(d.x + 24.0, d.y + 10.0, d.w - 48.0, d.h - 20.0);
         text(out, detail.name.clone(), Rect::new(inner.x, inner.y, inner.w, 40.0), 32.0, name_color, Align::Left);
-        let below = if detail.price.is_some() { 38.0 } else { 0.0 };
-        let body = Rect::new(inner.x, inner.y + 46.0, inner.w, (inner.h - 46.0 - below).max(20.0));
+        let body = description_body(theme, detail.price.is_some());
         text(out, detail.text.clone(), body, 26.0, text_color, Align::Left);
         if let Some(price) = &detail.price {
             let row = Rect::new(inner.x, inner.y + inner.h - 34.0, inner.w, 34.0);

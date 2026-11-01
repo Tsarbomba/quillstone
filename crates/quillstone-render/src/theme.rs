@@ -306,9 +306,7 @@ impl Theme {
                 continue;
             };
             let (key, value) = (key.trim(), value.trim());
-            // Normalised like the script's own paths, so one file under two spellings is one file.
-            let path = || (!value.is_empty()).then(|| if quillstone_script::is_inside(value) { quillstone_script::normal_path(value) } else { value.to_string() });
-            let size = |v: &str| v.parse::<f32>().ok().filter(|s| (8.0..=200.0).contains(s));
+            let path = || (!value.is_empty()).then(|| normal_path(value));
             let color_slot = match key {
                 "text_color" => Some(&mut t.text_color),
                 "name_color" => Some(&mut t.name_color),
@@ -391,49 +389,52 @@ impl Theme {
                 }
                 continue;
             }
-            let number = |lo: f32, hi: f32| value.parse::<f32>().ok().filter(|n| (lo..=hi).contains(n));
+            if let Some((_, lo, hi, note, slot)) = NUMBER_KEYS.iter().find(|k| k.0 == key) {
+                match value.parse::<f32>().ok().filter(|n| (*lo..=*hi).contains(n)) {
+                    Some(n) => *slot(&mut t) = n,
+                    None => bad(format!("`{key}` must be a number from {lo} to {hi}{note}")),
+                }
+                continue;
+            }
+            if let Some(slot) = t.file_slot(key) {
+                *slot = path();
+                continue;
+            }
+            // `x, y, w, h` inside the screen, at least `min` big (none: any size).
+            let rect = |min: Option<[f32; 2]>| {
+                let [mw, mh] = min.unwrap_or_default();
+                parse_rect(value).filter(|r| r[2] >= mw && r[3] >= mh).ok_or_else(|| match min {
+                    Some([mw, mh]) => format!("`{key}` must be four numbers `x, y, w, h` inside the 1920x1080 screen, at least {mw}x{mh}"),
+                    None => format!("`{key}` must be four numbers `x, y, w, h` that lie inside the 1920x1080 screen"),
+                })
+            };
             match key {
-                "text_outline_size" => match number(0.0, 8.0) {
-                    Some(n) => t.text_outline_size = n,
-                    None => bad("`text_outline_size` must be a number from 0 to 8".into()),
+                "input_rect" => match rect(Some(MIN_INPUT_RECT)) {
+                    Ok(r) => t.input_rect = Some(r),
+                    Err(m) => bad(m),
                 },
-                "input_image" => t.input_image = path(),
-                "timing_bar_image" => t.timing_bar_image = path(),
-                "timing_marker_image" => t.timing_marker_image = path(),
-                "press_key_image" => t.press_key_image = path(),
-                "input_rect" => match parse_rect(value) {
-                    Some(r) if r[2] >= MIN_INPUT_RECT[0] && r[3] >= MIN_INPUT_RECT[1] => t.input_rect = Some(r),
-                    _ => bad(format!(
-                        "`input_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, at least {}x{}",
-                        MIN_INPUT_RECT[0], MIN_INPUT_RECT[1]
-                    )),
+                "options_rect" => match rect(Some(MIN_OPTIONS_RECT)) {
+                    Ok(r) => t.options_rect = r,
+                    Err(m) => bad(m),
                 },
-                "options_rect" => match parse_rect(value) {
-                    Some(r) if r[2] >= MIN_OPTIONS_RECT[0] && r[3] >= MIN_OPTIONS_RECT[1] => t.options_rect = r,
-                    _ => bad(format!(
-                        "`options_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, at least {}x{}",
-                        MIN_OPTIONS_RECT[0], MIN_OPTIONS_RECT[1]
-                    )),
+                "inventory_panel_rect" => match rect(None) {
+                    Ok(r) => t.inventory_panel_rect = r,
+                    Err(m) => bad(m),
                 },
-                "options_text_size" => match size(value) {
-                    Some(n) => t.options_text_size = n,
-                    None => bad("`options_text_size` must be a number from 8 to 200".into()),
+                "inventory_description_rect" => match rect(None) {
+                    Ok(r) => t.inventory_description_rect = Some(r),
+                    Err(m) => bad(m),
                 },
-                "options_background" => t.options_background = path(),
-                "options_panel_image" => t.options_panel_image = path(),
-                "options_panel_border" => match number(0.0, 400.0) {
-                    Some(n) => t.options_panel_border = n,
-                    None => bad("`options_panel_border` must be a number from 0 to 400 (picture pixels)".into()),
+                "name_plate_rect" => match rect(None) {
+                    Ok(r) => t.name_plate_rect = Some(r),
+                    Err(m) => bad(m),
                 },
-                "inventory_background" => t.inventory_background = path(),
-                "shop_background" => t.shop_background = path(),
-                "inventory_panel" => t.inventory_panel = path(),
-                "inventory_panel_rect" | "inventory_description_rect" => match parse_rect(value) {
-                    Some(r) if key == "inventory_panel_rect" => t.inventory_panel_rect = r,
-                    Some(r) => t.inventory_description_rect = Some(r),
-                    None => bad(format!(
-                        "`{key}` must be four numbers `x, y, w, h` that lie inside the 1920x1080 screen"
-                    )),
+                "textbox_rect" => match rect(Some(MIN_TEXTBOX)) {
+                    Ok(r) => {
+                        t.textbox_rect = r;
+                        rect_line = i + 1;
+                    }
+                    Err(m) => bad(m),
                 },
                 "inventory_columns" => match value.parse::<usize>().ok().filter(|n| (1..=12).contains(n)) {
                     Some(n) => t.inventory_columns = n,
@@ -447,39 +448,12 @@ impl Theme {
                          (width from 48, height from {MIN_CELL_HEIGHT}: a cell holds an icon, a name and a price)"
                     )),
                 },
-                "inventory_cell_gap" => match number(0.0, 100.0) {
-                    Some(n) => t.inventory_cell_gap = n,
-                    None => bad("`inventory_cell_gap` must be a number from 0 to 100".into()),
-                },
-                "inventory_icon_size" => match number(16.0, 400.0) {
-                    Some(n) => t.inventory_icon_size = n,
-                    None => bad("`inventory_icon_size` must be a number from 16 to 400".into()),
-                },
-                "voice_duck" => match number(0.0, 1.0) {
-                    Some(n) => t.voice_duck = n,
-                    None => bad("`voice_duck` must be a number from 0 to 1 (1 = no ducking)".into()),
-                },
-                "choice_timer_height" => match number(2.0, 40.0) {
-                    Some(n) => t.choice_timer_height = n,
-                    None => bad("`choice_timer_height` must be a number from 2 to 40".into()),
-                },
                 "inventory_title" | "journal_title" | "shop_title" | "shop_currency" => match unquote(value) {
                     "" => bad(format!("`{key}` needs a text")),
                     text if key == "inventory_title" => t.inventory_title = text.to_string(),
                     text if key == "journal_title" => t.journal_title = text.to_string(),
                     text if key == "shop_title" => t.shop_title = text.to_string(),
                     text => t.shop_currency = Some(text.to_string()),
-                },
-                "textbox_rect" => match parse_rect(value) {
-                    Some([x, y, w, h]) if w >= MIN_TEXTBOX[0] && h >= MIN_TEXTBOX[1] => {
-                        t.textbox_rect = [x, y, w, h];
-                        rect_line = i + 1;
-                    }
-                    _ => bad(format!(
-                        "`textbox_rect` must be four numbers `x, y, w, h` inside the 1920x1080 screen, \
-                         at least {}x{}",
-                        MIN_TEXTBOX[0], MIN_TEXTBOX[1]
-                    )),
                 },
                 "textbox_padding" => match parse_numbers(value, 0.0, 400.0) {
                     Some(v) if v.len() == 1 => {
@@ -491,11 +465,6 @@ impl Theme {
                         padding_line = i + 1;
                     }
                     _ => bad("`textbox_padding` must be one number or `left, top, right, bottom` (each 0 to 400)".into()),
-                },
-                "name_plate_image" => t.name_plate_image = path(),
-                "name_plate_rect" => match parse_rect(value) {
-                    Some(r) => t.name_plate_rect = Some(r),
-                    None => bad("`name_plate_rect` must be four numbers `x, y, w, h` that lie inside the 1920x1080 screen".into()),
                 },
                 "text_align" | "name_align" => {
                     let align = match value {
@@ -517,18 +486,6 @@ impl Theme {
                     "all" => t.quick_listed = false,
                     "listed" => t.quick_listed = true,
                     _ => bad("`quick_buttons` must be `all` or `listed`".into()),
-                },
-                "font" => t.font = path(),
-                "font_bold" => t.font_bold = path(),
-                "font_italic" => t.font_italic = path(),
-                "font_bold_italic" => t.font_bold_italic = path(),
-                "textbox_image" => t.textbox_image = path(),
-                "menu_background" => t.menu_background = path(),
-                "menu_music" => t.menu_music = path(),
-                "text_size" | "name_size" => match size(value) {
-                    Some(s) if key == "text_size" => t.text_size = s,
-                    Some(s) => t.name_size = s,
-                    None => bad(format!("`{key}` must be a number from 8 to 200")),
                 },
                 other => bad(format!("unknown key `{other}`")),
             }
@@ -562,7 +519,7 @@ impl Theme {
     pub fn assets(&self) -> Vec<&str> {
         let mut out = self.fonts();
         out.extend(self.screen_images());
-        out.extend(self.menu_music.as_deref());
+        out.extend(self.music());
         out.extend(self.inventory_images());
         out.extend(self.quick_pictures());
         out
@@ -576,21 +533,12 @@ impl Theme {
     /// The pictures the inventory and shop screens use.
     pub fn inventory_images(&self) -> Vec<&str> {
         let cells = [&self.inventory_cell, &self.inventory_cell_hover, &self.inventory_cell_owned, &self.inventory_cell_disabled];
-        let mut out: Vec<&str> =
-            [&self.inventory_background, &self.shop_background, &self.inventory_panel].into_iter().filter_map(|p| p.as_deref()).collect();
+        let mut out = self.inventory_files();
         out.extend(cells.into_iter().filter_map(|c| match c {
             Some(CellStyle::Image(p)) => Some(p.as_str()),
             _ => None,
         }));
         out
-    }
-
-    /// The font files to load, regular first.
-    pub fn fonts(&self) -> Vec<&str> {
-        [&self.font, &self.font_bold, &self.font_italic, &self.font_bold_italic]
-            .into_iter()
-            .filter_map(|p| p.as_deref())
-            .collect()
     }
 
     /// Images the theme draws (to load along with the script's own).
@@ -600,24 +548,57 @@ impl Theme {
         out.extend(self.quick_pictures());
         out
     }
+}
 
-    /// The pictures of the textbox, name plate, menus, `::input` panel and settings screen.
-    fn screen_images(&self) -> Vec<&str> {
-        [
-            &self.textbox_image,
-            &self.name_plate_image,
-            &self.menu_background,
-            &self.input_image,
-            &self.options_background,
-            &self.options_panel_image,
-            &self.timing_bar_image,
-            &self.timing_marker_image,
-            &self.press_key_image,
-        ]
-        .into_iter()
-        .filter_map(|p| p.as_deref())
-        .collect()
-    }
+/// The theme file's keys that name a file (each is also a field of [`Theme`]), by what the files are for. Parsing
+/// and the file lists (`fonts`, `assets`, `images`) all come from this one list, so a new key can't be left out.
+macro_rules! file_keys {
+    ($($vis:vis $group:ident: $($key:ident),+;)+) => {
+        impl Theme {
+            /// The field of the file key `key`.
+            fn file_slot(&mut self, key: &str) -> Option<&mut Option<String>> {
+                match key {
+                    $($(stringify!($key) => Some(&mut self.$key),)+)+
+                    _ => None,
+                }
+            }
+            $(
+                $vis fn $group(&self) -> Vec<&str> {
+                    [$(&self.$key),+].into_iter().filter_map(|p| p.as_deref()).collect()
+                }
+            )+
+        }
+    };
+}
+
+file_keys! {
+    // The font files to load, regular first.
+    pub fonts: font, font_bold, font_italic, font_bold_italic;
+    // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
+    screen_images: textbox_image, name_plate_image, menu_background, input_image, options_background, options_panel_image,
+        timing_bar_image, timing_marker_image, press_key_image;
+    music: menu_music;
+    // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).
+    inventory_files: inventory_background, shop_background, inventory_panel;
+}
+
+/// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
+type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
+const NUMBER_KEYS: [NumberKey; 9] = [
+    ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
+    ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
+    ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
+    ("text_outline_size", 0.0, 8.0, "", |t| &mut t.text_outline_size),
+    ("options_panel_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.options_panel_border),
+    ("inventory_cell_gap", 0.0, 100.0, "", |t| &mut t.inventory_cell_gap),
+    ("inventory_icon_size", 16.0, 400.0, "", |t| &mut t.inventory_icon_size),
+    ("voice_duck", 0.0, 1.0, " (1 = no ducking)", |t| &mut t.voice_duck),
+    ("choice_timer_height", 2.0, 40.0, "", |t| &mut t.choice_timer_height),
+];
+
+/// A file path of the theme file, normalised like the script's own paths, so one file under two spellings is one file.
+fn normal_path(value: &str) -> String {
+    if quillstone_script::is_inside(value) { quillstone_script::normal_path(value) } else { value.to_string() }
 }
 
 /// `#rrggbb[aa]` is a colour; anything else is an image file name.
@@ -630,7 +611,7 @@ fn parse_cell_style(value: &str) -> Result<CellStyle, String> {
             .map(CellStyle::Color)
             .ok_or_else(|| format!("`{value}` is not a colour like #20283a or #20283acc"));
     }
-    Ok(CellStyle::Image(value.to_string()))
+    Ok(CellStyle::Image(normal_path(value)))
 }
 
 /// Comma-separated numbers, each within `lo..=hi`.
@@ -737,6 +718,9 @@ mod tests {
         assert_eq!(t.inventory_text_color, Some([0.0, 0.0, 1.0, 1.0]));
         assert_eq!(t.inventory_images(), vec!["gui/bag_bg.png", "gui/shop_bg.png", "gui/panel.png", "gui/hover.png"]);
         assert!(t.images().contains(&"gui/hover.png") && t.assets().contains(&"gui/panel.png"));
+        let (spelled, _) = Theme::parse("inventory_cell = ./gui//hover.png\ninventory_panel = ./gui//panel.png\n");
+        assert_eq!(spelled.inventory_cell, Some(CellStyle::Image("gui/hover.png".into())), "like the other paths");
+        assert_eq!(spelled.inventory_panel.as_deref(), Some("gui/panel.png"));
         let (square, _) = Theme::parse("inventory_cell_size = 180");
         assert_eq!(square.inventory_cell_size, [180.0, 180.0]);
     }

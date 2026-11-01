@@ -6,6 +6,8 @@ use std::path::Path;
 use quillstone_script::{check_translation, language_file, Catalog, Program};
 use quillstone_ui::source::read_translation;
 
+use crate::Finding;
+
 /// `quillstone lang export <script> <code>`: create or update `lang/<code>.txt`.
 pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String> {
     let known = program.languages.iter().map(|l| l.code.as_str()).collect::<Vec<_>>().join(", ");
@@ -34,7 +36,7 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
     let text = merged.render(name, &places);
     let path = root.join(&file);
     std::fs::create_dir_all(path.parent().expect("lang/ has a parent")).map_err(|e| format!("cannot create lang/: {e}"))?;
-    write_file(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    quillstone_ui::write_atomic(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     let have: BTreeSet<&str> = old.entries.iter().map(|e| e.source.as_str()).collect();
     let fresh = strings.iter().filter(|s| !have.contains(s.text.as_str())).count();
     let obsolete = merged.entries.iter().filter(|e| e.obsolete).count();
@@ -43,25 +45,11 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
     Ok(())
 }
 
-/// Write `text` to a temp file next to `path`, then rename it over, so a full disk or a kill midway
-/// leaves the translator's file as it was.
-fn write_file(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("tmp");
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?; // on disk before the rename, so a power cut can't leave an empty file in place
-    drop(file);
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
-}
-
-/// What `check` finds in the translation files: errors count as problems (printed here), the
-/// rest are warnings. Returns the number of errors.
-pub fn check(script: &Path, program: &Program) -> usize {
+/// What `check` finds in the translation files: errors count as problems, the
+/// rest are warnings.
+pub fn check(script: &Path, program: &Program) -> Vec<Finding> {
     let root = quillstone_ui::source::script_dir(script);
-    let mut errors = 0;
+    let mut found = Vec::new();
     let strings: BTreeSet<String> = program.translatable().into_iter().map(|s| s.text).collect();
     let spoken = program.spoken();
     for lang in program.languages.iter().skip(1) {
@@ -70,12 +58,12 @@ pub fn check(script: &Path, program: &Program) -> usize {
         let text = match read_translation(root, &lang.code) {
             Ok(Some(t)) => t,
             Ok(None) => {
-                eprintln!("{}: warning: no translation file `{file}` for {} (create it with `quillstone lang export <script> {}`)", script.display(), lang.name, lang.code);
+                let msg = format!("{}: warning: no translation file `{file}` for {} (create it with `quillstone lang export <script> {}`)", script.display(), lang.name, lang.code);
+                found.push((false, msg));
                 continue;
             }
             Err(e) => {
-                errors += 1;
-                eprintln!("{shown}: error: {e}");
+                found.push((true, format!("{shown}: error: {e}")));
                 continue;
             }
         };
@@ -83,8 +71,7 @@ pub fn check(script: &Path, program: &Program) -> usize {
             Ok(c) => c,
             Err(list) => {
                 for e in list {
-                    errors += 1;
-                    eprintln!("{shown}:{}: error: {}", e.line, e.message);
+                    found.push((true, format!("{shown}:{}: error: {}", e.line, e.message)));
                 }
                 continue;
             }
@@ -93,8 +80,7 @@ pub fn check(script: &Path, program: &Program) -> usize {
         for e in &cat.entries {
             let line = e.line;
             if let Err(m) = check_translation(&e.source, &e.target) {
-                errors += 1;
-                eprintln!("{shown}:{line}: error: {m}");
+                found.push((true, format!("{shown}:{line}: error: {m}")));
             }
             let used = strings.contains(&e.source)
                 && e.context.as_ref().is_none_or(|c| spoken.contains(&(c.clone(), e.source.clone())));
@@ -103,19 +89,20 @@ pub fn check(script: &Path, program: &Program) -> usize {
                 (false, true) => obsolete += 1,
                 (false, false) => {
                     let what = if strings.contains(&e.source) { "no line spoken by that character has this text" } else { "the script has no such text (changed or removed?)" };
-                    eprintln!("{shown}:{line}: warning: {what}; run `quillstone lang export` to flag it as obsolete");
+                    found.push((false, format!("{shown}:{line}: warning: {what}; run `quillstone lang export` to flag it as obsolete")));
                 }
             }
         }
         if obsolete > 0 {
-            eprintln!("{shown}: warning: {obsolete} obsolete entr{} kept (not in the script any more)", if obsolete == 1 { "y" } else { "ies" });
+            let ies = if obsolete == 1 { "y" } else { "ies" };
+            found.push((false, format!("{shown}: warning: {obsolete} obsolete entr{ies} kept (not in the script any more)")));
         }
         let missing = strings.iter().filter(|s| cat.get(None, s).is_none()).count();
         if missing > 0 {
-            eprintln!("{shown}: warning: {} is {missing} of {} text(s) short: those show in the script's language", lang.name, strings.len());
+            found.push((false, format!("{shown}: warning: {} is {missing} of {} text(s) short: those show in the script's language", lang.name, strings.len())));
         }
     }
-    errors
+    found
 }
 
 #[cfg(test)]
@@ -134,6 +121,10 @@ mod tests {
             std::fs::write(path, text).unwrap();
         }
         dir
+    }
+
+    fn errors(script: &Path, program: &Program) -> usize {
+        check(script, program).iter().filter(|f| f.0).count()
     }
 
     fn export_to(dir: &Path, script: &str) -> Result<String, String> {
@@ -209,7 +200,7 @@ mod tests {
         let dir = game("check", &[("main.quill.md", SCRIPT), ("lang/sv.txt", ok)]);
         let path = dir.join("main.quill.md");
         let program = crate::load(&path).unwrap();
-        assert_eq!(check(&path, &program), 0, "unknown text and untranslated texts are warnings");
+        assert_eq!(errors(&path, &program), 0, "unknown text and untranslated texts are warnings");
         for (bad, why) in [
             ("> Hello {n}.\n= Hej {m}.\n", "placeholder"),
             ("> Hello {n}.\n= Hej.\n", "placeholder"),
@@ -217,10 +208,10 @@ mod tests {
             ("> Hello {n}.\nx\n", "parse"),
         ] {
             std::fs::write(dir.join("lang/sv.txt"), bad).unwrap();
-            assert!(check(&path, &program) >= 1, "{why}: {bad:?}");
+            assert!(errors(&path, &program) >= 1, "{why}: {bad:?}");
         }
         std::fs::remove_file(dir.join("lang/sv.txt")).unwrap();
-        assert_eq!(check(&path, &program), 0, "no file: a warning");
+        assert_eq!(errors(&path, &program), 0, "no file: a warning");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -229,7 +220,7 @@ mod tests {
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
         let script = examples.join("lang.quill.md");
         let program = crate::load(&script).unwrap();
-        assert_eq!(check(&script, &program), 0);
+        assert_eq!(errors(&script, &program), 0);
         crate::check(&script).unwrap();
         // its translation is up to date: exporting changes nothing and leaves nothing untranslated
         let dir = game("example", &[]);

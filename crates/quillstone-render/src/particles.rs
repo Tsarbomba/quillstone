@@ -9,6 +9,7 @@
 
 use quillstone_script::{ParticleKind, Particles, MAX_PARTICLES};
 
+use crate::fade::Fade;
 use crate::layout::{clip, Rect, Size, VIRTUAL};
 use crate::view::Draw;
 
@@ -38,9 +39,8 @@ fn wrap(v: f64, span: f32) -> f32 {
 #[derive(Debug, Clone)]
 struct Layer {
     set: Particles,
-    /// How visible it is, 0..1, and how fast that changes (per second; 0 = no change).
-    alpha: f32,
-    rate: f32,
+    /// How visible it is (`alpha`, 0..1): fading in, or out when it is the older set of a crossfade.
+    fade: Fade,
     /// Seconds of falling, of swaying, and of being pushed by the wind (the last is
     /// signed, and counts `speed * wind`).
     fall: f64,
@@ -59,10 +59,11 @@ pub struct ParticleLayer {
 impl ParticleLayer {
     /// `::particles`: show these (`Some`) or stop them (`None`), easing over `fade` seconds.
     pub fn apply(&mut self, set: &Option<Particles>, fade: f32) {
-        let rate = if fade > 0.0 { 1.0 / fade } else { 0.0 };
+        let rate = Fade::rate_over(fade);
+        let out = |l: Layer| Layer { fade: Fade { target: 0.0, rate, ..l.fade }, ..l };
         let Some(set) = set else {
             self.old = match self.now.take() {
-                Some(l) if fade > 0.0 => Some(Layer { rate: -rate, ..l }),
+                Some(l) if fade > 0.0 => Some(out(l)),
                 _ => None,
             };
             return;
@@ -72,9 +73,9 @@ impl ParticleLayer {
             l.set = set.clone();
             return;
         }
-        self.old = self.now.take().filter(|_| fade > 0.0).map(|l| Layer { rate: -rate, ..l });
-        let alpha = if fade > 0.0 { 0.0 } else { 1.0 };
-        self.now = Some(Layer { set: set.clone(), alpha, rate, fall: 0.0, sway: 0.0, push: 0.0 });
+        self.old = self.now.take().filter(|_| fade > 0.0).map(out);
+        let fade = Fade { alpha: if fade > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate };
+        self.now = Some(Layer { set: set.clone(), fade, fall: 0.0, sway: 0.0, push: 0.0 });
     }
 
     pub fn clear(&mut self) {
@@ -89,12 +90,7 @@ impl ParticleLayer {
     /// Advance the fades; the clocks only when `animate` (not while skipping).
     pub fn tick(&mut self, dt: f32, animate: bool) {
         for l in [&mut self.now, &mut self.old].into_iter().flatten() {
-            if l.rate != 0.0 {
-                l.alpha = (l.alpha + l.rate * dt).clamp(0.0, 1.0);
-                if l.rate > 0.0 && l.alpha >= 1.0 {
-                    l.rate = 0.0;
-                }
-            }
+            l.fade.tick(dt);
             if animate {
                 let dt = dt as f64 * l.set.speed as f64;
                 l.fall += dt;
@@ -102,7 +98,7 @@ impl ParticleLayer {
                 l.push += dt * l.set.wind as f64;
             }
         }
-        if self.old.as_ref().is_some_and(|l| l.alpha <= 0.0) {
+        if self.old.as_ref().is_some_and(|l| l.fade.alpha <= 0.0) {
             self.old = None;
         }
     }
@@ -110,7 +106,7 @@ impl ParticleLayer {
     /// Add what is drawn behind the sprites (`back`) or over them. The older set of a
     /// crossfade goes first. `image_size` is as for the rest of the view.
     pub fn draw(&self, back: bool, image_size: &dyn Fn(&str) -> Option<Size>, out: &mut Vec<Draw>) {
-        for l in [&self.old, &self.now].into_iter().flatten().filter(|l| l.set.back == back && l.alpha > 0.0) {
+        for l in [&self.old, &self.now].into_iter().flatten().filter(|l| l.set.back == back && l.fade.alpha > 0.0) {
             let n = l.set.amount.min(MAX_PARTICLES);
             match &l.set.kind {
                 ParticleKind::Snow => (0..n).for_each(|i| snowflake(l, i, out)),
@@ -150,7 +146,7 @@ fn snowflake(l: &Layer, i: u32, out: &mut Vec<Draw>) {
     let size = 2.2 + 3.3 * near * near;
     let vy = 45.0 + 75.0 * near + 20.0 * unit(i, 1);
     let (x, y) = place(l, i, vy, 70.0 + 60.0 * near, 15.0 + 35.0 * unit(i, 4), 10.0);
-    let alpha = (0.5 + 0.45 * near) * l.alpha;
+    let alpha = (0.5 + 0.45 * near) * l.fade.alpha;
     // a faint halo around the core makes the flake soft
     let halo = size * 2.6;
     let pad = (halo - size) / 2.0;
@@ -169,7 +165,7 @@ fn raindrop(l: &Layer, i: u32, out: &mut Vec<Draw>) {
     let lean = (l.set.wind * SLANT).clamp(-1.0, 1.0);
     let steps = ((lean.abs() * len / 2.5).ceil() as usize).clamp(1, MAX_STREAK_PIECES);
     let (dx, dy) = (lean * len / steps as f32, len / steps as f32);
-    let color = [0.78, 0.85, 0.95, (0.18 + 0.25 * near) * l.alpha];
+    let color = [0.78, 0.85, 0.95, (0.18 + 0.25 * near) * l.fade.alpha];
     for k in 0..steps {
         // from the tail (up-wind of the head at x, y + len) down to the head
         let (sx, sy) = (x - lean * len + dx * k as f32, y + dy * k as f32);
@@ -185,7 +181,7 @@ fn picture(l: &Layer, i: u32, src: &str, size: Size, out: &mut Vec<Draw>) {
     let vy = 55.0 + 70.0 * unit(i, 1);
     let (x, y) = place(l, i, vy, 60.0 + 60.0 * near, 25.0 + 55.0 * unit(i, 4), w.max(h));
     if let Some((dest, uv)) = clip(Rect::new(x, y, w, h), Rect::new(0.0, 0.0, 1.0, 1.0), SCREEN) {
-        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.alpha });
+        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha });
     }
 }
 

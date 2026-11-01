@@ -132,6 +132,11 @@ pub fn clip(dest: Rect, uv: Rect, to: Rect) -> Option<(Rect, Rect)> {
     Some((Rect::new(x0, y0, x1 - x0, y1 - y0), Rect::new(u(x0), v(y0), u(x1) - u(x0), v(y1) - v(y0))))
 }
 
+/// The height of a line of text at `size` px: what the text renderer lays lines out at.
+pub fn line_height(size: f32) -> f32 {
+    (size * 1.35).round().max(1.0)
+}
+
 /// A cautious guess at how many lines `text` wraps to at `size` px in `width` px.
 ///
 /// The real wrapping happens in the backend's text engine, which this crate can't

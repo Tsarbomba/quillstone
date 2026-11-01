@@ -4,7 +4,7 @@
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
 use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
-use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::{plain, rich};
 use quillstone_script::{KeyPress, TimingBar};
@@ -787,7 +787,7 @@ fn log_body(entry: &Logged) -> String {
 }
 
 fn log_line_height() -> f32 {
-    (LOG_SIZE * 1.35).round() // same line height the text renderer uses
+    line_height(LOG_SIZE)
 }
 
 fn log_entry_height(entry: &Logged) -> f32 {

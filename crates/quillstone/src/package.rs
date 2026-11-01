@@ -106,17 +106,13 @@ fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files
     files.extend(program.extra_assets().map(|(_, a)| a.to_string()));
     files.extend(program.item_icons().map(|(_, a)| a.to_string()));
     // Auto-voice recordings that belong to a line (leftovers stay behind).
-    if let Some(folder) = &program.voice_folder {
+    if program.voice_folder.is_some() {
         let names: BTreeSet<String> =
             (0..program.ops.len()).filter_map(|pc| quillstone_runtime::voice_name(program, pc)).collect();
-        if let Ok(entries) = std::fs::read_dir(root.join(folder)) {
-            let mut found: Vec<String> = entries
-                .filter_map(|e| e.ok()?.file_name().into_string().ok())
-                .filter(|name| name.rsplit_once('.').is_some_and(|(stem, _)| names.contains(stem)))
-                .collect();
-            found.sort();
-            files.extend(found.into_iter().map(|name| format!("{folder}/{name}")));
-        }
+        let recordings = quillstone_ui::source::voice_files(&quillstone_ui::Assets::folder(root), program);
+        let mut found: Vec<String> = recordings.into_iter().filter(|(stem, _)| names.contains(stem)).map(|(_, file)| file).collect();
+        found.sort();
+        files.extend(found);
     }
     Ok(files)
 }

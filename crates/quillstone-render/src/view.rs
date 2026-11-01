@@ -15,9 +15,10 @@ use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 
+use crate::fade::Fade;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
-use crate::layout::{clip, estimate_lines, is_wide, one_row, place, Rect, Size, VIRTUAL};
+use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
@@ -624,11 +625,8 @@ impl Notice {
 #[derive(Debug, Clone, PartialEq)]
 struct Cover {
     color: [f32; 3],
-    alpha: f32,
-    /// 1 while fading out or covered, 0 while fading in.
-    target: f32,
-    /// Opacity change per second (0: at once).
-    rate: f32,
+    /// Target 1 while fading out or covered, 0 while fading in.
+    fade: Fade,
 }
 
 /// The colour wash over the stage (`::tint`), easing from where it was to `color`/`alpha`.
@@ -636,15 +634,13 @@ struct Cover {
 struct TintFade {
     from: ([f32; 3], f32),
     to: ([f32; 3], f32),
-    /// 0 at the start of the ease, 1 when it has arrived.
-    progress: f32,
-    /// Progress per second (0: at once).
-    rate: f32,
+    /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
+    progress: Fade,
 }
 
 impl TintFade {
     fn current(&self) -> ([f32; 3], f32) {
-        let (a, b, t) = (self.from, self.to, self.progress);
+        let (a, b, t) = (self.from, self.to, self.progress.alpha);
         let mix = |x: f32, y: f32| x + (y - x) * t;
         ([mix(a.0[0], b.0[0]), mix(a.0[1], b.0[1]), mix(a.0[2], b.0[2])], mix(a.1, b.1))
     }
@@ -673,11 +669,9 @@ pub struct View {
     hud: HudLayer,
     particles: ParticleLayer,
     tint: Option<TintFade>,
-    /// `::textbox{hide}` is in effect, how visible the box is now (0..1, fading), and
-    /// how fast it fades (per second; 0 = at once).
+    /// `::textbox{hide}` is in effect, and how visible the box is now (0..1, fading).
     box_hidden: bool,
-    box_alpha: f32,
-    box_rate: f32,
+    box_fade: Fade,
     /// The player hid the interface (the `U` key); see [`View::set_hide_ui`].
     hide_ui: bool,
     /// Seconds left of a `::wait`, if one is running.
@@ -724,8 +718,7 @@ impl View {
             particles: ParticleLayer::default(),
             tint: None,
             box_hidden: false,
-            box_alpha: 1.0,
-            box_rate: 0.0,
+            box_fade: Fade::at(1.0),
             hide_ui: false,
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
@@ -871,13 +864,14 @@ impl View {
                     self.particles.clear();
                     self.tint = None;
                     self.box_hidden = false;
-                    self.box_alpha = 1.0;
+                    self.box_fade = Fade::at(1.0);
                 }
                 Cmd::Textbox { hidden, fade } => {
                     self.box_hidden = *hidden;
-                    self.box_rate = if *fade > 0.0 { 1.0 / fade } else { 0.0 };
+                    self.box_fade.target = if *hidden { 0.0 } else { 1.0 };
+                    self.box_fade.rate = Fade::rate_over(*fade);
                     if *fade <= 0.0 {
-                        self.box_alpha = if *hidden { 0.0 } else { 1.0 };
+                        self.box_fade.alpha = self.box_fade.target;
                     }
                 }
                 Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
@@ -921,18 +915,18 @@ impl View {
                     self.shake = Some(Shake { time: *time, strength: *strength, axis: *axis, elapsed: 0.0 });
                 }
                 Cmd::FadeOut { time, color } => {
-                    let cover = self.cover.get_or_insert(Cover { color: *color, alpha: 0.0, target: 1.0, rate: 0.0 });
+                    let cover = self.cover.get_or_insert(Cover { color: *color, fade: Fade { alpha: 0.0, target: 1.0, rate: 0.0 } });
                     cover.color = *color;
-                    cover.target = 1.0;
-                    cover.rate = if *time > 0.0 { 1.0 / time } else { 0.0 };
+                    cover.fade.target = 1.0;
+                    cover.fade.rate = Fade::rate_over(*time);
                     if *time <= 0.0 {
-                        cover.alpha = 1.0;
+                        cover.fade.alpha = 1.0;
                     }
                 }
                 Cmd::FadeIn { time } => {
                     if let Some(cover) = &mut self.cover {
-                        cover.target = 0.0;
-                        cover.rate = if *time > 0.0 { 1.0 / time } else { 0.0 };
+                        cover.fade.target = 0.0;
+                        cover.fade.rate = Fade::rate_over(*time);
                     }
                     if *time <= 0.0 {
                         self.cover = None;
@@ -1022,7 +1016,7 @@ impl View {
         if self.hide_ui {
             0.0
         } else {
-            self.box_alpha
+            self.box_fade.alpha
         }
     }
 
@@ -1058,14 +1052,14 @@ impl View {
     pub fn end_cover_fade(&mut self) {
         self.hud.end_fades();
         self.finish_fade_out();
-        if self.cover.as_ref().is_some_and(|c| c.target == 0.0) {
+        if self.cover.as_ref().is_some_and(|c| c.fade.target == 0.0) {
             self.cover = None;
         }
     }
 
     fn finish_fade_out(&mut self) {
-        if let Some(c) = self.cover.as_mut().filter(|c| c.target == 1.0) {
-            c.alpha = 1.0;
+        if let Some(c) = self.cover.as_mut().filter(|c| c.fade.target == 1.0) {
+            c.fade.alpha = 1.0;
         }
     }
 
@@ -1078,13 +1072,13 @@ impl View {
             (None, None) => return,
         };
         let from = now.unwrap_or((to.0, 0.0));
-        let rate = if fade > 0.0 { 1.0 / fade } else { 0.0 };
-        self.tint = Some(TintFade { from, to, progress: if rate > 0.0 { 0.0 } else { 1.0 }, rate });
+        let rate = Fade::rate_over(fade);
+        self.tint = Some(TintFade { from, to, progress: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } });
         self.drop_cleared_tint();
     }
 
     fn drop_cleared_tint(&mut self) {
-        if self.tint.as_ref().is_some_and(|t| t.progress >= 1.0 && t.to.1 <= 0.0) {
+        if self.tint.as_ref().is_some_and(|t| t.progress.done() && t.to.1 <= 0.0) {
             self.tint = None;
         }
     }
@@ -1096,7 +1090,7 @@ impl View {
 
     /// The colour and opacity the stage is covered with right now, if it is.
     pub fn cover(&self) -> Option<([f32; 3], f32)> {
-        self.cover.as_ref().filter(|c| c.alpha > 0.0).map(|c| (c.color, c.alpha))
+        self.cover.as_ref().filter(|c| c.fade.alpha > 0.0).map(|c| (c.color, c.fade.alpha))
     }
 
     /// Where the camera is right now.
@@ -1208,30 +1202,19 @@ impl View {
             }
         }
         if let Some(c) = &mut self.cover {
-            c.alpha = if c.rate > 0.0 {
-                let step = c.rate * dt;
-                if c.alpha < c.target { (c.alpha + step).min(c.target) } else { (c.alpha - step).max(c.target) }
-            } else {
-                c.target
-            };
-            if c.target == 0.0 && c.alpha <= 0.0 {
+            c.fade.tick(dt);
+            if c.fade.target == 0.0 && c.fade.alpha <= 0.0 {
                 self.cover = None;
             }
         }
         if let Some(t) = &mut self.tint {
-            t.progress = if t.rate > 0.0 { (t.progress + t.rate * dt).min(1.0) } else { 1.0 };
+            t.progress.tick(dt);
         }
         self.drop_cleared_tint();
         self.sprites.retain(|s| !s.is_gone());
         self.hud.tick(dt);
         self.particles.tick(dt, animate);
-        let target = if self.box_hidden { 0.0 } else { 1.0 };
-        if self.box_rate > 0.0 {
-            let step = self.box_rate * dt;
-            self.box_alpha = if self.box_alpha < target { (self.box_alpha + step).min(target) } else { (self.box_alpha - step).max(target) };
-        } else {
-            self.box_alpha = target;
-        }
+        self.box_fade.tick(dt);
         if let Some(left) = &mut self.wait {
             *left -= dt;
         }
@@ -1253,10 +1236,10 @@ impl View {
         self.wait.is_some()
             || self.flash.is_some()
             || self.notice.is_some()
-            || self.cover.as_ref().is_some_and(|c| c.alpha != c.target)
-            || self.tint.as_ref().is_some_and(|t| t.progress < 1.0)
+            || self.cover.as_ref().is_some_and(|c| !c.fade.done())
+            || self.tint.as_ref().is_some_and(|t| !t.progress.done())
             || self.hud.fading()
-            || self.box_alpha != if self.box_hidden { 0.0 } else { 1.0 }
+            || !self.box_fade.done()
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
             || self.animating()
     }
@@ -1611,7 +1594,7 @@ impl View {
                 (false, false) => theme.button_color,
             };
             out.push(Draw::Rect { rect, color });
-            let size = theme.text_size.min(rect.h * 0.5); // fits buttons squeezed by many options
+            let size = choice_text_size(theme, rect);
             // With a reason the label moves up and the reason sits under it, smaller.
             let label_rect = if reason.is_some() { Rect::new(rect.x, rect.y, rect.w, rect.h * 0.62) } else { rect };
             let Rich { text, runs, .. } = rich(label);
@@ -1703,7 +1686,7 @@ const NAME_PLATE_H: f32 = 48.0;
 /// plate's height and width, then cut with an ellipsis if it still doesn't.
 fn fit_name(name: &str, size: f32, width: f32, height: f32) -> (String, f32) {
     let floor = size * 0.6;
-    let fits = |s: f32| (s * 1.35).round() <= height + 1.0 && estimate_lines(name, s, width) <= 1;
+    let fits = |s: f32| line_height(s) <= height + 1.0 && estimate_lines(name, s, width) <= 1;
     let mut s = size;
     while s > floor && !fits(s) {
         s -= 1.0;
@@ -1754,7 +1737,7 @@ pub fn dialogue_lines(theme: &Theme, text: &str, with_speaker: bool, size: f32) 
 /// is counted as wide as it will really be drawn. Plain text works too.
 pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
     let body = dialogue_body(theme, with_speaker);
-    let line_h = (size * 1.35).round().max(1.0); // what the text renderer uses
+    let line_h = line_height(size);
     let Rich { text, runs, .. } = rich(tagged);
     (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
 }
@@ -1773,6 +1756,11 @@ pub fn faded(color: [f32; 4], alpha: f32) -> [f32; 4] {
 pub fn hotspot_rect(spot: &Spot) -> Rect {
     let [x, y, w, h] = spot.rect;
     Rect::new(x * VIRTUAL.w, y * VIRTUAL.h, w * VIRTUAL.w, h * VIRTUAL.h)
+}
+
+/// The text size of a choice button: the theme's, smaller on buttons squeezed by many options.
+pub fn choice_text_size(theme: &Theme, rect: Rect) -> f32 {
+    theme.text_size.min(rect.h * 0.5)
 }
 
 pub fn choice_rects(theme: &Theme, count: usize) -> Vec<Rect> {

@@ -7,6 +7,7 @@ use quillstone_runtime::{interpolate, Cmd};
 use quillstone_script::markup::rich;
 use quillstone_script::{HudElem, HudKind, Vars};
 
+use crate::fade::Fade;
 use crate::layout::{is_wide, Rect, Size, VIRTUAL};
 use crate::theme::Theme;
 use crate::view::{faded, Align, Draw};
@@ -31,11 +32,8 @@ const INERT_ALPHA: f32 = 0.45;
 #[derive(Debug, Clone, PartialEq)]
 struct Item {
     elem: HudElem,
-    alpha: f32,
-    /// 1 while shown or fading in, 0 while fading out (it is dropped at 0).
-    target: f32,
-    /// Opacity change per second (0: at once).
-    rate: f32,
+    /// Target 1 while shown or fading in, 0 while fading out (it is dropped at 0).
+    fade: Fade,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,42 +64,41 @@ impl HudLayer {
 
     /// Whether a fade is running (so the frontend keeps drawing).
     pub fn fading(&self) -> bool {
-        self.items.iter().any(|i| i.alpha != i.target)
+        self.items.iter().any(|i| !i.fade.done())
     }
 
     /// Finish every fade at once (skipping doesn't wait for them).
     pub fn end_fades(&mut self) {
-        self.items.retain(|i| i.target > 0.0);
+        self.items.retain(|i| i.fade.target > 0.0);
         for i in &mut self.items {
-            i.alpha = 1.0;
+            i.fade.alpha = 1.0;
         }
     }
 
     pub fn apply(&mut self, cmd: &Cmd) {
         match cmd {
             Cmd::HudShow { elem, fade } => {
-                let rate = if *fade > 0.0 { 1.0 / fade } else { 0.0 };
+                let rate = Fade::rate_over(*fade);
                 match self.items.iter_mut().find(|i| i.elem.id == elem.id) {
                     Some(item) => {
-                        let was_hiding = item.target == 0.0;
+                        let was_hiding = item.fade.target == 0.0;
                         item.elem = (**elem).clone();
-                        item.target = 1.0;
-                        item.rate = rate;
+                        item.fade.target = 1.0;
+                        item.fade.rate = rate;
                         // Replacing a shown element is seamless unless it is asked to fade in.
                         if rate > 0.0 && (was_hiding || *fade > 0.0) {
-                            item.alpha = if was_hiding { item.alpha } else { 0.0 };
+                            item.fade.alpha = if was_hiding { item.fade.alpha } else { 0.0 };
                         } else {
-                            item.alpha = 1.0;
+                            item.fade.alpha = 1.0;
                         }
                     }
-                    None => self.items.push(Item { elem: (**elem).clone(), alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate }),
+                    None => self.items.push(Item { elem: (**elem).clone(), fade: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } }),
                 }
             }
             Cmd::HudHide { id, fade } => {
                 if *fade > 0.0 {
                     if let Some(item) = self.items.iter_mut().find(|i| i.elem.id == *id) {
-                        item.target = 0.0;
-                        item.rate = 1.0 / fade;
+                        item.fade = Fade { target: 0.0, rate: Fade::rate_over(*fade), ..item.fade };
                     }
                 } else {
                     self.items.retain(|i| i.elem.id != *id);
@@ -110,8 +107,7 @@ impl HudLayer {
             Cmd::HudClear { fade } => {
                 if *fade > 0.0 {
                     for item in &mut self.items {
-                        item.target = 0.0;
-                        item.rate = 1.0 / fade;
+                        item.fade = Fade { target: 0.0, rate: Fade::rate_over(*fade), ..item.fade };
                     }
                 } else {
                     self.items.clear();
@@ -123,19 +119,14 @@ impl HudLayer {
 
     pub fn tick(&mut self, dt: f32) {
         for i in &mut self.items {
-            i.alpha = if i.rate > 0.0 {
-                let step = i.rate * dt;
-                if i.alpha < i.target { (i.alpha + step).min(i.target) } else { (i.alpha - step).max(i.target) }
-            } else {
-                i.target
-            };
+            i.fade.tick(dt);
         }
-        self.items.retain(|i| i.target > 0.0 || i.alpha > 0.0);
+        self.items.retain(|i| i.fade.target > 0.0 || i.fade.alpha > 0.0);
     }
 
     /// Push the draws of every element that is on (its condition true, not faded out).
     pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, out: &mut Vec<Draw>) {
-        for item in self.items.iter().filter(|i| i.alpha > 0.0) {
+        for item in self.items.iter().filter(|i| i.fade.alpha > 0.0) {
             self.draw_item(item, theme, image_size, look, out);
         }
     }
@@ -149,7 +140,7 @@ impl HudLayer {
     /// The button under the point, if any: the topmost one, at the rect it is drawn at.
     pub fn button_at(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, x: f32, y: f32) -> Option<&HudElem> {
         let look = HudLook::default();
-        let mut live = self.items.iter().rev().filter(|i| i.target > 0.0 && i.alpha > 0.0 && i.elem.action.is_some());
+        let mut live = self.items.iter().rev().filter(|i| i.fade.target > 0.0 && i.fade.alpha > 0.0 && i.elem.action.is_some());
         live.find(|i| self.draw_item(i, theme, image_size, look, &mut Vec::new()).is_some_and(|r| r.contains(x, y))).map(|i| &i.elem)
     }
 
@@ -160,7 +151,7 @@ impl HudLayer {
             return None;
         }
         let button = e.action.is_some();
-        let alpha = if button && !look.active { item.alpha * INERT_ALPHA } else { item.alpha };
+        let alpha = if button && !look.active { item.fade.alpha * INERT_ALPHA } else { item.fade.alpha };
         let under_mouse = |r: Rect| button && look.active && look.pointer.is_some_and(|(x, y)| r.contains(x, y));
         match &e.kind {
             HudKind::Text { text, size, color, back, pad } => {
@@ -179,7 +170,7 @@ impl HudLayer {
                 let frac = if m <= 0 { 0.0 } else { (v as f64 / m as f64).clamp(0.0, 1.0) as f32 };
                 let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
                 if let Some((c, t)) = border {
-                    let c = faded(*c, item.alpha);
+                    let c = faded(*c, item.fade.alpha);
                     for bar in [
                         Rect::new(r.x - t, r.y - t, r.w + 2.0 * t, *t),
                         Rect::new(r.x - t, r.y + r.h, r.w + 2.0 * t, *t),
@@ -189,9 +180,9 @@ impl HudLayer {
                         out.push(Draw::Rect { rect: bar, color: c });
                     }
                 }
-                out.push(Draw::Rect { rect: r, color: faded(*back, item.alpha) });
+                out.push(Draw::Rect { rect: r, color: faded(*back, item.fade.alpha) });
                 if frac > 0.0 {
-                    let fill = faded(color.unwrap_or(theme.accent_color), item.alpha);
+                    let fill = faded(color.unwrap_or(theme.accent_color), item.fade.alpha);
                     out.push(Draw::Rect { rect: Rect::new(r.x, r.y, r.w * frac, r.h), color: fill });
                 }
                 Some(r)

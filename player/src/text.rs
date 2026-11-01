@@ -176,7 +176,7 @@ mod real {
         fn shape_to_fit(&mut self, job: &TextJob, width: u32, height: u32, size_px: f32) -> Buffer {
             let mut size = size_px;
             loop {
-                let line_height = (size * 1.35).round().max(1.0);
+                let line_height = quillstone_render::line_height(size);
                 let buffer = self.shape(job, width, Metrics::new(size, line_height));
                 let tall: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
                 if tall <= height as f32 || size <= size_px * 0.6 {
@@ -217,7 +217,7 @@ mod real {
                         }
                         if sized {
                             let px = (job.run_size_px(run) * shrink).max(1.0);
-                            a = a.metrics(Metrics::new(px, (px * 1.35).round().max(1.0)));
+                            a = a.metrics(Metrics::new(px, quillstone_render::line_height(px)));
                         }
                         (&job.text[run.start..run.end], a)
                     });
