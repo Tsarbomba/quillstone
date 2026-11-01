@@ -29,7 +29,7 @@
 //! Every sound plays on one of three [`Channel`]s, each with its own volume, so
 //! the player can offer music / sound / voice sliders.
 
-use quillstone_runtime::Cmd;
+use quillstone_runtime::{Cmd, MusicState, SfxLoopState};
 
 /// The mixer channels a sound can play on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,21 +71,6 @@ pub enum Action {
     SetChannelVolume { channel: Channel, volume: f32 },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Track {
-    src: String,
-    intro: Option<String>,
-    looped: bool,
-    volume: f32,
-}
-
-/// A looping sound effect that is playing.
-#[derive(Debug, Clone, PartialEq)]
-struct SfxLoop {
-    src: String,
-    volume: f32,
-}
-
 /// Seconds to duck down when a voice starts, and to come back after it.
 const DUCK_DOWN: f32 = 0.3;
 const DUCK_UP: f32 = 0.6;
@@ -93,8 +78,8 @@ const DUCK_UP: f32 = 0.6;
 /// What is playing, as far as the story is concerned.
 #[derive(Debug, Clone)]
 pub struct Mixer {
-    music: Option<Track>,
-    loops: Vec<SfxLoop>,
+    music: Option<MusicState>,
+    loops: Vec<SfxLoopState>,
     voice: bool,
     /// Multiplier on music and loops while a voice plays (1 = no ducking).
     duck: f32,
@@ -219,7 +204,7 @@ impl Mixer {
             out.push(Action::StopMusic { fade });
         }
         let intro = intro.map(str::to_string);
-        self.music = Some(Track { src: src.to_string(), intro: intro.clone(), looped, volume });
+        self.music = Some(MusicState { src: src.to_string(), intro: intro.clone(), looped, volume });
         out.push(Action::PlayMusic { src: src.to_string(), intro, fade, looped, volume: volume * self.gain() });
     }
 
@@ -232,7 +217,7 @@ impl Mixer {
                 }
             }
             None => {
-                self.loops.push(SfxLoop { src: src.to_string(), volume });
+                self.loops.push(SfxLoopState { src: src.to_string(), volume });
                 out.push(Action::PlaySfxLoop { src: src.to_string(), fade, volume: volume * self.gain() });
             }
         }

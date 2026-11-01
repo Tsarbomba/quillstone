@@ -162,14 +162,7 @@ mod real {
                 warned: HashSet::new(),
             };
             for src in sfx {
-                if !audio.sfx.contains_key(src) {
-                    match load(&audio.assets, src) {
-                        Ok(data) => {
-                            audio.sfx.insert(src.to_string(), data);
-                        }
-                        Err(e) => audio.warn(src, e),
-                    }
-                }
+                audio.sfx_data(src); // loads it now (or warns)
             }
             Some(audio)
         }

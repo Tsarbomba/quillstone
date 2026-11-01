@@ -17,7 +17,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-use quillstone_script::{is_ident, Cmp, Expr, HudAction, Op, Program, Value, Vars, ONCE, SEEN};
+use quillstone_script::{is_ident, Cmp, Expr, HudAction, KeyPress, Op, Program, Value, Vars, ONCE, SEEN};
 
 use crate::{can_press, can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
 
@@ -108,7 +108,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
             }
             // Each outcome the bar can have is a branch.
             Some(Cmd::ShowTiming { bar, .. }) => bar.hits().iter().map(|h| (Input::Choose(*h as usize), Some(h.text().to_string()))).collect(),
-            Some(Cmd::ShowPress { .. }) => ["miss", "hit"].iter().enumerate().map(|(i, t)| (Input::Choose(i), Some(t.to_string()))).collect(),
+            Some(Cmd::ShowPress { .. }) => (0..).map_while(|i| Some((Input::Choose(i), Some(KeyPress::outcome_text(i)?.to_string())))).collect(),
             Some(Cmd::ShowShop { items, .. }) => {
                 if let Some(Op::Shop { stock, .. }) = program.ops.get(state.pc) {
                     x.shop_offered.extend(offered_stock(stock, &state.vars).into_iter().map(|i| (state.pc, i)));
@@ -146,14 +146,17 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 // Using an item runs its label and comes back to this line: each item is tried once,
                 // the first time it can be used (every use at every line would multiply the situations).
                 let mut inputs = vec![(Input::Advance, None)];
-                for id in program.items.keys().filter(|id| can_use(program, &state, id)) {
-                    if x.used.insert(id.clone()) {
+                for id in program.items.keys() {
+                    if !x.used.contains(id) && can_use(program, &state, id) {
+                        x.used.insert(id.clone());
                         inputs.push((Input::Use(id.clone()), Some(format!("use {}", program.items[id].name))));
                     }
                 }
                 // The same for each HUD button that calls a label (`open=` buttons need nothing).
-                for h in state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_))) && can_press(program, &state, &h.id)) {
-                    if x.used.insert(format!("hud:{}", h.id)) {
+                for h in state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_)))) {
+                    let key = format!("hud:{}", h.id);
+                    if !x.used.contains(&key) && can_press(program, &state, &h.id) {
+                        x.used.insert(key);
                         inputs.push((Input::Hud(h.id.clone()), Some(format!("press {}", h.id))));
                     }
                 }
@@ -519,21 +522,15 @@ impl Explorer<'_> {
         let mut set: HashSet<&str> = program.vars.keys().map(String::as_str).collect();
         let mut read: Vec<(usize, &str, bool)> = Vec::new(); // (op, name, in text)
         for (at, op) in program.ops.iter().enumerate() {
+            for e in op.exprs() {
+                read.extend(names(|out| e.vars_read(out)).into_iter().map(|n| (at, n, false)));
+            }
             match op {
                 Op::Set(effect) => {
                     set.insert(&effect.var);
-                    read.extend(names(|out| effect.value.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                }
-                Op::Jump { cond: Some(cond), .. } => {
-                    read.extend(names(|out| cond.vars_read(out)).into_iter().map(|n| (at, n, false)));
                 }
                 // A call sets its label's parameters, from the values it passes.
-                Op::Call { args, .. } => {
-                    for (param, value) in args {
-                        set.insert(param);
-                        read.extend(names(|out| value.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                    }
-                }
+                Op::Call { args, .. } => set.extend(args.iter().map(|(param, _)| param.as_str())),
                 Op::Say { speaker, text, .. } => {
                     read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     // a character's name may hold `{variable}`s too
@@ -541,9 +538,6 @@ impl Explorer<'_> {
                 }
                 // A HUD element reads its variables every time it is drawn.
                 Op::Hud { elem, .. } => {
-                    for e in elem.exprs() {
-                        read.extend(names(|out| e.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                    }
                     if let quillstone_script::HudKind::Text { text, .. } = &elem.kind {
                         read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     }
@@ -558,22 +552,13 @@ impl Explorer<'_> {
                     let names = std::iter::once(src).chain(layers.iter().map(|(_, p)| p));
                     read.extend(names.flat_map(|p| quillstone_script::pattern_vars(p)).map(|n| (at, n, false)));
                 }
-                Op::Shop { pay, into, stock } => {
+                Op::Shop { pay, into, .. } => {
                     set.insert(into);
                     read.push((at, pay, false));
-                    for c in stock.iter().filter_map(|s| s.cond.as_ref()) {
-                        read.extend(names(|out| c.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                    }
                 }
                 Op::Choice { options, .. } => {
                     for o in options {
                         set.extend(o.effects.iter().map(|e| e.var.as_str()));
-                        for e in &o.effects {
-                            read.extend(names(|out| e.value.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                        }
-                        if let Some(cond) = &o.cond {
-                            read.extend(names(|out| cond.vars_read(out)).into_iter().map(|n| (at, n, false)));
-                        }
                         read.extend(braces(&o.text).into_iter().map(|n| (at, n, true)));
                     }
                 }
@@ -770,6 +755,7 @@ fn all_effects(program: &Program) -> impl Iterator<Item = &quillstone_script::Ef
 /// left them), described for messages. At most 64 in all.
 fn playthroughs(program: &Program) -> Vec<(Option<String>, Vars)> {
     let mut choices: Vec<(&str, Vec<Value>)> = Vec::new();
+    let mut added = added_items(program);
     for name in &program.persistent {
         let mut values: Vec<Value> = program.vars.get(name).cloned().into_iter().collect();
         let assigned = program.ops.iter().flat_map(|op| match op {
@@ -785,7 +771,7 @@ fn playthroughs(program: &Program) -> Vec<(Option<String>, Vars)> {
             }
         }
         // a later playthrough may have collected every item the script ever adds
-        if let Some(Some(all)) = added_items(program).remove(name.as_str()) {
+        if let Some(Some(all)) = added.remove(name.as_str()) {
             let full = Value::List(all);
             if !values.contains(&full) {
                 values.push(full);

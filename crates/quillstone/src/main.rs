@@ -1304,7 +1304,7 @@ mod tests {
     #[test]
     fn a_paragraph_break_counts_as_a_line_in_the_long_line_estimate() {
         let words = plain("one{p}two{p}three{p}four{p}five{p}six");
-        let (lines, fit) = quillstone_render::view::dialogue_lines(&quillstone_render::Theme::default(), &words, true, 38.0);
+        let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(&quillstone_render::Theme::default(), &words, true, 38.0);
         assert_eq!(lines, 6);
         assert!(lines > fit + 1, "six short paragraphs don't fit the textbox: {fit}");
     }

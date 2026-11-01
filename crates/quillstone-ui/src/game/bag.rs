@@ -212,8 +212,7 @@ impl Game<'_> {
     }
 
     /// The Use button or Enter: close the inventory and call the item's label.
-    fn use_selected(&mut self) {
-        let shelf = self.shelf();
+    fn use_selected(&mut self, shelf: &Shelf) {
         let Some(id) = self.bag.focus.and_then(|f| shelf.uses.get(f)).cloned().flatten() else { return };
         if self.can_use_now(&id) {
             self.screen = Screen::Story;
@@ -268,21 +267,22 @@ impl Game<'_> {
     }
 
     pub(super) fn bag_event(&mut self, event: Event) {
-        let shelf_len = self.shelf().cells.len();
+        let shelf = self.shelf(); // built once for the whole event
+        let shelf_len = shelf.cells.len();
         let theme = self.view.theme();
         let (per, cols) = (bag::per_page(theme), bag::columns(theme));
         let pages = bag::pages(theme, shelf_len);
         let on_page = shelf_len.saturating_sub(self.bag.page * per).min(per);
         match event {
             Event::Press(Button::Left) => {
-                let use_clicked = self.use_button(&self.shelf()).is_some() && self.cursor.is_some_and(|(x, y)| bag::use_rect(theme).contains(x, y));
+                let use_clicked = self.use_button(&shelf).is_some() && self.cursor.is_some_and(|(x, y)| bag::use_rect(theme).contains(x, y));
                 if use_clicked {
-                    return self.use_selected();
+                    return self.use_selected(&shelf);
                 }
                 match self.cursor.and_then(|(x, y)| bag::hit(theme, x, y, on_page, pages)) {
-                    Some(Hit::Cell(i)) => self.bag_activate(self.bag.page * per + i, false),
-                    Some(Hit::Prev) => self.turn_bag_page(-1, per, pages),
-                    Some(Hit::Next) => self.turn_bag_page(1, per, pages),
+                    Some(Hit::Cell(i)) => self.bag_activate(self.bag.page * per + i, false, shelf),
+                    Some(Hit::Prev) => self.turn_bag_page(-1, per, pages, shelf_len),
+                    Some(Hit::Next) => self.turn_bag_page(1, per, pages, shelf_len),
                     Some(Hit::Close) => self.close_bag(),
                     Some(Hit::Use) | None => {}
                 }
@@ -303,12 +303,12 @@ impl Game<'_> {
             Event::Key(Key::Char('j' | 'J')) if self.screen == Screen::Inventory && self.bag.journal => self.close_bag(),
             // Backspace (the gamepad's X) leaves too: a pad has no other way to press Leave.
             Event::Key(Key::Backspace) => self.close_bag(),
-            Event::Wheel(dy) => self.turn_bag_page(if dy > 0.0 { -1 } else { 1 }, per, pages),
-            Event::Key(Key::PageUp) => self.turn_bag_page(-1, per, pages),
-            Event::Key(Key::PageDown) => self.turn_bag_page(1, per, pages),
+            Event::Wheel(dy) => self.turn_bag_page(if dy > 0.0 { -1 } else { 1 }, per, pages, shelf_len),
+            Event::Key(Key::PageUp) => self.turn_bag_page(-1, per, pages, shelf_len),
+            Event::Key(Key::PageDown) => self.turn_bag_page(1, per, pages, shelf_len),
             Event::Key(Key::Enter | Key::Space) => {
                 if let Some(f) = self.bag.focus {
-                    self.bag_activate(f, true);
+                    self.bag_activate(f, true, shelf);
                 }
             }
             Event::Key(key @ (Key::Up | Key::Down | Key::Left | Key::Right)) if shelf_len > 0 => {
@@ -331,28 +331,26 @@ impl Game<'_> {
         }
     }
 
-    fn turn_bag_page(&mut self, by: isize, per: usize, pages: usize) {
+    fn turn_bag_page(&mut self, by: isize, per: usize, pages: usize, n: usize) {
         let page = (self.bag.page as isize + by).clamp(0, pages as isize - 1) as usize;
         if page == self.bag.page {
             return;
         }
         self.bag.page = page;
         // Keep the keyboard on the same place of the new page.
-        let n = self.shelf().cells.len();
         self.bag.focus = self.bag.focus.map(|f| (page * per + f % per).min(n.saturating_sub(1)));
     }
 
     /// Click or Enter on the cell `i`: look at it in the inventory (Enter also uses it), buy it in a shop.
-    fn bag_activate(&mut self, i: usize, by_key: bool) {
+    fn bag_activate(&mut self, i: usize, by_key: bool, shelf: Shelf) {
         self.bag.focus = Some(i);
         if self.screen != Screen::Shop {
             // Enter on an item with a Use action uses it; a click only selects it (the Use button is for that).
-            if by_key && self.use_button(&self.shelf()).is_some() {
-                self.use_selected();
+            if by_key && self.use_button(&shelf).is_some() {
+                self.use_selected(&shelf);
             }
             return;
         }
-        let shelf = self.shelf();
         let Some(cell) = shelf.cells.get(i) else { return };
         match cell.state {
             CellState::Owned => self.notify("Already owned"),

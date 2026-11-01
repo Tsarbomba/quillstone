@@ -8,7 +8,7 @@ use quillstone_script::markup::rich;
 use quillstone_script::{HudElem, HudKind, Vars};
 
 use crate::fade::Fade;
-use crate::layout::{is_wide, Rect, Size, VIRTUAL};
+use crate::layout::{is_wide, Rect, Size, FULL_UV, VIRTUAL};
 use crate::theme::Theme;
 use crate::view::{faded, Align, Draw};
 
@@ -45,11 +45,6 @@ pub struct HudLayer {
 impl HudLayer {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
-    }
-
-    /// The ids of the elements, in drawing order (including ones that are fading out).
-    pub fn ids(&self) -> Vec<&str> {
-        self.items.iter().map(|i| i.elem.id.as_str()).collect()
     }
 
     pub fn set_vars(&mut self, vars: &Vars) {
@@ -195,7 +190,7 @@ impl HudLayer {
                 // the place of the normal one under the mouse once it is.
                 let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
                 let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
-                out.push(Draw::Image { src: shown.clone(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha });
+                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha });
                 Some(dest)
             }
         }
@@ -493,7 +488,7 @@ mod tests {
         let size = |_: &str| Some(Size { w: 100.0, h: 60.0 });
         let list = v.draw_list(&size, None);
         let Some(Draw::Image { dest, alpha, uv, .. }) = list.first() else { panic!("{list:?}") };
-        assert_eq!((*dest, *alpha, *uv), (Rect::new(935.0, 525.0, 50.0, 30.0), 1.0, Rect::new(0.0, 0.0, 1.0, 1.0)));
+        assert_eq!((*dest, *alpha, *uv), (Rect::new(935.0, 525.0, 50.0, 30.0), 1.0, FULL_UV));
         assert!(v.draw_list(&no_images, None).is_empty(), "a picture that isn't loaded draws nothing");
     }
 
@@ -566,7 +561,7 @@ mod tests {
         v.tick(0.6);
         assert!(v.hud().is_empty() && !v.busy());
         v.apply(&[Cmd::HudClear { fade: 0.0 }]);
-        assert!(v.hud().ids().is_empty());
+        assert!(v.hud().is_empty());
     }
 
     #[test]

@@ -79,6 +79,17 @@ pub enum Cmp {
 }
 
 impl Cmp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Cmp::Eq => "==",
+            Cmp::Ne => "!=",
+            Cmp::Lt => "<",
+            Cmp::Le => "<=",
+            Cmp::Gt => ">",
+            Cmp::Ge => ">=",
+        }
+    }
+
     fn holds(self, ord: Ordering) -> bool {
         match self {
             Cmp::Eq => ord == Ordering::Equal,
@@ -154,15 +165,7 @@ impl fmt::Display for Expr {
             }
             Expr::Cmp(a, c, b) => {
                 arg(f, a)?;
-                let op = match c {
-                    Cmp::Eq => "==",
-                    Cmp::Ne => "!=",
-                    Cmp::Lt => "<",
-                    Cmp::Le => "<=",
-                    Cmp::Gt => ">",
-                    Cmp::Ge => ">=",
-                };
-                write!(f, " {op} ")?;
+                write!(f, " {} ", c.symbol())?;
                 arg(f, b)
             }
             Expr::Has(l, e) => {
@@ -711,15 +714,6 @@ impl Program {
         match self.sources.iter().find(|s| line > s.base && line <= s.base + s.len) {
             Some(s) => (Some(s.file.as_str()), line - s.base),
             None => (None, line),
-        }
-    }
-
-    /// `path:line` for a program line number, where `main` is how the caller names the
-    /// main script and included files keep their game-folder paths.
-    pub fn place(&self, main: &str, line: usize) -> String {
-        match self.locate(line) {
-            (Some(file), n) => format!("{file}:{n}"),
-            (None, n) => format!("{main}:{n}"),
         }
     }
 

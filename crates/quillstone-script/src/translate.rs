@@ -231,6 +231,11 @@ impl Catalog {
     pub fn merged(&self, strings: &[Source]) -> Catalog {
         let mut out = Catalog::default();
         let mut used = BTreeSet::new();
+        // The context-specific entries by their source text, in file order.
+        let mut by_source: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, e) in self.entries.iter().enumerate().filter(|(_, e)| e.context.is_some()) {
+            by_source.entry(e.source.as_str()).or_default().push(i);
+        }
         for s in strings {
             let key = (None, s.text.clone());
             let old = self.index.get(&key).map(|&i| &self.entries[i]);
@@ -249,16 +254,15 @@ impl Catalog {
             entry.line = 0;
             out.push_unique(entry);
             // The translator's context-specific versions of this text go right after it.
-            for (i, e) in self.entries.iter().enumerate().filter(|(_, e)| e.context.is_some() && e.source == s.text) {
+            for &i in by_source.get(s.text.as_str()).into_iter().flatten() {
                 used.insert(i);
-                let mut e = e.clone();
+                let mut e = self.entries[i].clone();
                 e.obsolete = !s.speakers.contains(e.context.as_deref().unwrap_or(""));
                 e.line = 0;
                 out.push_unique(e);
             }
         }
-        for (i, e) in self.entries.iter().enumerate().filter(|(i, _)| !used.contains(i)) {
-            let _ = i;
+        for e in self.entries.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, e)| e) {
             let mut e = e.clone();
             e.obsolete = true;
             e.line = 0;

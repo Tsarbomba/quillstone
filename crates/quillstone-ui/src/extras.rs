@@ -5,6 +5,7 @@
 use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::{kind_from_path, AssetKind, Fit};
 
+use crate::input::{screen, text};
 use crate::screens::slots_back_rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +37,6 @@ pub enum Hit {
 }
 
 /// The tabs there are: only kinds the game has entries for.
-pub fn tabs(gallery: usize, music: usize) -> Vec<Tab> {
-    tabs_for(gallery, music, 0)
-}
-
-/// [`tabs`] with the replayable scenes too.
 pub fn tabs_for(gallery: usize, music: usize, scenes: usize) -> Vec<Tab> {
     let mut out = Vec::new();
     if gallery > 0 {
@@ -144,14 +140,6 @@ pub struct ExtrasScreen<'a> {
     pub hover: Option<Hit>,
 }
 
-fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
-    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
-}
-
-fn screen() -> Rect {
-    Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h)
-}
-
 pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
@@ -245,9 +233,9 @@ mod tests {
 
     #[test]
     fn only_tabs_with_entries_are_shown() {
-        assert_eq!(tabs(3, 0), [Tab::Gallery]);
-        assert_eq!(tabs(0, 2), [Tab::Music]);
-        assert_eq!(tabs(1, 1), [Tab::Gallery, Tab::Music]);
+        assert_eq!(tabs_for(3, 0, 0), [Tab::Gallery]);
+        assert_eq!(tabs_for(0, 2, 0), [Tab::Music]);
+        assert_eq!(tabs_for(1, 1, 0), [Tab::Gallery, Tab::Music]);
         assert_eq!(tabs_for(1, 1, 2), [Tab::Gallery, Tab::Music, Tab::Scenes]);
         assert_eq!(tabs_for(0, 0, 2), [Tab::Scenes]);
         assert_eq!(pages(Tab::Scenes, 9), 2);
@@ -260,7 +248,7 @@ mod tests {
         let last = cell_rect(GALLERY_PAGE - 1);
         assert!(last.y + last.h < slots_back_rect().y - 20.0 && last.x + last.w < VIRTUAL.w);
         assert!(track_rect(MUSIC_PAGE - 1).y + 72.0 < 912.0, "tracks clear the page label");
-        let tabs = tabs(1, 1);
+        let tabs = tabs_for(1, 1, 0);
         let c = cell_rect(5);
         assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 12, 0, 1), Some(Hit::Item(5)));
         assert_eq!(hit(c.x + 5.0, c.y + 5.0, &tabs, Tab::Gallery, 3, 0, 1), None, "past the last entry");
@@ -277,7 +265,7 @@ mod tests {
     fn an_arrow_with_no_page_beyond_it_is_drawn_dim() {
         let theme = Theme::default();
         let arrow_color = |page: usize, glyph: &str| {
-            let tabs = tabs(1, 0);
+            let tabs = tabs_for(1, 0, 0);
             let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Gallery, page, pages: 3, entries: &[], thumbs: &[], focus: None, playing: None, hover: None };
             let mut out = Vec::new();
             draw_extras(&mut out, &theme, &screen, &|_| None);

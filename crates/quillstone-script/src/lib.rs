@@ -21,12 +21,12 @@ mod particles_tests;
 #[cfg(test)]
 mod tint_tests;
 
-pub use dynpath::{is_pattern, pattern_matches, pattern_vars, pieces, resolve, unsafe_reason, Piece, MAX_FRAGMENT, MAX_PATTERN_VARS, MISSING_PICTURE};
-pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value};
+pub use dynpath::{is_pattern, pattern_matches, pattern_vars, pieces, resolve, unsafe_reason, Piece, MISSING_PICTURE, PICTURE_EXTENSIONS};
+pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr};
 pub use ops::{
-    is_inside, normal_path, kind_from_path, anim_id, anim_src, bg_color, bg_color_src, Anim, AnimFrame, AssetKind, ANIM_FRAME_SECONDS, ANIM_PREFIX, AssignOp, Area, BinOp, Character, ChoiceOption, Lock, Cmp, LAYER_NONE, MAX_LAYERS, Cond, Ease, Effect, Expr,
-    Axis, Fit, Func, Heading, HudAction, HudScreen, HudElem, HudExpr, HudKind, Item, Op, Program, Language, MAX_LANGUAGES, Replay, SourceSpan, ShopEntry, Value, Vars, Wipe, BG_COLOR_PREFIX, MAX_CHOICE_TIME, MIN_CHOICE_TIME, Hit, KeyPress, MAX_PRESS_COUNT, PRESS_KEYS, TimingBar, MAX_TIMING_SPEED, MIN_TIMING_SPEED, DEFAULT_SEED, FUNCTIONS, INPUT_MAX_DEFAULT, INPUT_MAX_LIMIT, MAX_LIST_ITEMS, MAX_REPLAYS, ONCE, SEEN, POSITION,
-    roll, splitmix64, ParticleKind, Particles, DEFAULT_PARTICLES, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, Tint, DEFAULT_TINT_ALPHA, TINT_ALPHA,
+    is_inside, normal_path, kind_from_path, anim_id, bg_color, Anim, AnimFrame, AssetKind, ANIM_PREFIX, AssignOp, Area, BinOp, Character, ChoiceOption, Lock, Cmp, Cond, Ease, Effect, Expr,
+    Axis, Fit, Func, Heading, HudAction, HudScreen, HudElem, HudExpr, HudKind, Item, Op, Program, Language, Replay, SourceSpan, ShopEntry, Value, Vars, Wipe, Hit, KeyPress, TimingBar, DEFAULT_SEED, INPUT_MAX_LIMIT, MAX_LIST_ITEMS, ONCE, SEEN, POSITION,
+    roll, splitmix64, ParticleKind, Particles, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, Tint, TINT_ALPHA,
 };
 pub use parser::{parse, parse_files, slug, Loader, ParseError, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH};
-pub use translate::{check_translation, language_file, placeholders, Catalog, Entry, Source, TranslationError, MAX_ENTRIES, MAX_FILE_BYTES, MAX_TEXT_BYTES};
+pub use translate::{check_translation, language_file, Catalog, Entry, Source, TranslationError, MAX_ENTRIES, MAX_FILE_BYTES};

@@ -202,8 +202,6 @@ pub struct Game<'p> {
     /// is open over (or that is waiting for one to close after a reload): closing
     /// that screen goes back to it instead of to the story.
     under: Option<Screen>,
-    /// The player hid the interface with `U`; the next key press or click brings it back.
-    ui_hidden: bool,
     /// How visible the quick menu is in its `hover` mode (0..1); the other modes ignore it.
     quick_alpha: f32,
     /// Sizes of the theme's quick menu pictures, noted by every draw (hit-testing needs them
@@ -289,7 +287,6 @@ impl<'p> Game<'p> {
             input: InputField::default(),
             dev: false,
             console: None,
-            ui_hidden: false,
             quick_alpha: 0.0,
             quick_sizes: Default::default(),
             quick_saved: std::cell::Cell::new(None),
@@ -363,7 +360,6 @@ impl<'p> Game<'p> {
     /// A view with nothing in it yet (same speed and theme).
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
-        self.ui_hidden = false;
         self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme).with_anims(&self.program.anims).with_art_scale(self.program.art_scale);
     }
 
@@ -432,11 +428,6 @@ impl<'p> Game<'p> {
             _ => {}
         }
         Ok(())
-    }
-
-    /// Show a short message over the game (like "Saved").
-    pub fn show_notice(&mut self, message: impl Into<String>) {
-        self.notify(message);
     }
 
     /// Draw everything with this theme (see `quillstone_render::Theme`). At the
@@ -561,8 +552,8 @@ impl<'p> Game<'p> {
         if self.minimized {
             return; // waits, typing, fades, timers, skip and auto all stand still
         }
-        if self.screen != Screen::Story && self.ui_hidden {
-            self.set_ui_hidden(false); // hiding the interface is for the story screen only
+        if self.screen != Screen::Story && self.view.hide_ui() {
+            self.view.set_hide_ui(false); // hiding the interface is for the story screen only
         }
         if let Some((_, left)) = &mut self.notice {
             *left -= dt;
@@ -770,11 +761,19 @@ impl<'p> Game<'p> {
             }
             out
         };
-        if let (Some(bar), Some(Cmd::ShowTiming { prompt, .. })) = (self.timing_bar(), self.pending_shown()) {
-            draw_timing_bar(&mut out, theme, &prompt, &bar, bar.marker(self.choice_elapsed), image_size);
-        }
-        if let (Some(press), Some(Cmd::ShowPress { prompt, .. })) = (self.key_press(), self.pending_shown()) {
-            draw_press_prompt(&mut out, theme, &prompt, &press, self.press_count, self.choice_elapsed, image_size);
+        // Only a timing bar or key prompt needs the translated pending command.
+        match (self.timing_bar(), self.key_press()) {
+            (Some(bar), _) => {
+                if let Some(Cmd::ShowTiming { prompt, .. }) = self.pending_shown() {
+                    draw_timing_bar(&mut out, theme, &prompt, &bar, bar.marker(self.choice_elapsed), image_size);
+                }
+            }
+            (_, Some(press)) => {
+                if let Some(Cmd::ShowPress { prompt, .. }) = self.pending_shown() {
+                    draw_press_prompt(&mut out, theme, &prompt, &press, self.press_count, self.choice_elapsed, image_size);
+                }
+            }
+            _ => {}
         }
         if let Some(timer) = self.choice_timer() {
             draw_choice_timer(&mut out, theme, self.view.choices.len(), 1.0 - self.choice_elapsed / timer.seconds);
@@ -805,7 +804,7 @@ impl<'p> Game<'p> {
             let sizes = self.quick_sizes.borrow();
             draw_quick(&mut out, theme, &layout, &look, &|s| sizes.get(s).copied(), alpha);
         }
-        if self.in_story && story && !self.ui_hidden {
+        if self.in_story && story && !self.view.hide_ui() {
             draw_mode_badge(&mut out, theme, self.auto, self.skip.is_some());
         }
         match self.screen {
@@ -954,8 +953,8 @@ impl<'p> Game<'p> {
 
     fn story_event(&mut self, event: Event) {
         // With the interface hidden, the next key press or click only brings it back.
-        if self.ui_hidden && matches!(event, Event::Key(_) | Event::Press(_)) {
-            return self.set_ui_hidden(false);
+        if self.view.hide_ui() && matches!(event, Event::Key(_) | Event::Press(_)) {
+            return self.view.set_hide_ui(false);
         }
         // While skipping, a click or an advance key just stops it.
         let interrupts = matches!(
@@ -1028,7 +1027,7 @@ impl<'p> Game<'p> {
                 Key::Char('l' | 'L') => self.open_slots(Screen::Load),
                 Key::Char('i' | 'I') => self.open_inventory_overlay(),
                 Key::Char('j' | 'J') => self.open_journal_overlay(),
-                Key::Char('u' | 'U') => self.set_ui_hidden(true),
+                Key::Char('u' | 'U') => self.view.set_hide_ui(true),
                 Key::F5 => self.quick_save(),
                 Key::F9 => self.quick_load(),
                 Key::Tab => self.start_skip(SkipMode::Toggled),
@@ -1111,13 +1110,6 @@ impl<'p> Game<'p> {
         textbox_rect(self.theme())
     }
 
-    /// Hide (or bring back) the textbox, line, quick menu and mode badge. The stage,
-    /// choices and hotspots stay.
-    fn set_ui_hidden(&mut self, hidden: bool) {
-        self.ui_hidden = hidden;
-        self.view.set_hide_ui(hidden);
-    }
-
     /// The quick menu's mode: the player's choice, else the theme's.
     pub fn quick_menu_mode(&self) -> QuickMenu {
         self.settings.quick_menu.resolve(self.theme().quick_menu)
@@ -1154,7 +1146,7 @@ impl<'p> Game<'p> {
     fn quick_menu_clickable(&self) -> bool {
         self.quick_menu_possible()
             && !self.view.textbox_hidden()
-            && !self.ui_hidden
+            && !self.view.hide_ui()
             && self.quick_menu_alpha() >= 0.5
             && (self.quick_menu_mode() != QuickMenu::Hover || self.cursor_in_quick_zone())
     }

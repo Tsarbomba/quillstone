@@ -10,7 +10,7 @@
 use quillstone_script::{ParticleKind, Particles, MAX_PARTICLES};
 
 use crate::fade::Fade;
-use crate::layout::{clip, Rect, Size, VIRTUAL};
+use crate::layout::{clip, Rect, Size, FULL_UV, VIRTUAL};
 use crate::view::Draw;
 
 /// A slanted raindrop is drawn as at most this many rectangles.
@@ -123,7 +123,7 @@ impl ParticleLayer {
 
 /// A rectangle cut to the screen; nothing when it is all outside.
 fn push_rect(out: &mut Vec<Draw>, rect: Rect, color: [f32; 4]) {
-    if let Some((rect, _)) = clip(rect, Rect::new(0.0, 0.0, 1.0, 1.0), SCREEN) {
+    if let Some((rect, _)) = clip(rect, FULL_UV, SCREEN) {
         out.push(Draw::Rect { rect, color });
     }
 }
@@ -180,7 +180,7 @@ fn picture(l: &Layer, i: u32, src: &str, size: Size, out: &mut Vec<Draw>) {
     let (w, h) = (size.w * scale, size.h * scale);
     let vy = 55.0 + 70.0 * unit(i, 1);
     let (x, y) = place(l, i, vy, 60.0 + 60.0 * near, 25.0 + 55.0 * unit(i, 4), w.max(h));
-    if let Some((dest, uv)) = clip(Rect::new(x, y, w, h), Rect::new(0.0, 0.0, 1.0, 1.0), SCREEN) {
+    if let Some((dest, uv)) = clip(Rect::new(x, y, w, h), FULL_UV, SCREEN) {
         out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha });
     }
 }

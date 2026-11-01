@@ -126,7 +126,7 @@ fn the_keys_that_advance_go_back_or_open_menus_are_swallowed_but_escape_still_op
     }
     for c in ['h', 'a', 's', 'l', 'i', 'j', 'u', '1'] {
         key(&mut g, Key::Char(c));
-        assert!(on_prompt(&g) && g.screen == Screen::Story && !g.auto() && !g.ui_hidden, "{c}");
+        assert!(on_prompt(&g) && g.screen == Screen::Story && !g.auto() && !g.view().hide_ui(), "{c}");
     }
     g.handle(Event::Wheel(1.0)); // the wheel is not a key: it still rolls back (to the line before)
     assert!(!on_prompt(&g));

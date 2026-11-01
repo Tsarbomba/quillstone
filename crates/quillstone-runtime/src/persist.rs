@@ -13,7 +13,7 @@
 use quillstone_script::{Program, Value, Vars};
 
 use crate::save::{read_var, tokens, var_record};
-use crate::{step, Cmd, Session, State};
+use crate::{step, Cmd, Session};
 
 /// Persistent entries `unlocked:<file>` mark gallery pictures and music room
 /// tracks the player has seen or heard.
@@ -35,16 +35,7 @@ impl<'p> Session<'p> {
     /// `seed`: the same seed and the same choices give the same game. The host
     /// picks it (the player uses the clock; tests and the command line use a fixed one).
     pub fn start_seeded(program: &'p Program, persistent: Vars, seed: u64) -> (Session<'p>, Vec<Cmd>) {
-        let mut session = Session {
-            program,
-            state: State::with_seed(program, seed),
-            history: Vec::new(),
-            redo: Vec::new(),
-            redo_tip: None,
-            persistent,
-            persistent_changed: false,
-        };
-        session.overlay();
+        let mut session = Session::fresh(program, persistent, seed);
         let cmds = step(&mut session.state, program, None);
         session.note(&cmds);
         (session, cmds)
@@ -55,17 +46,8 @@ impl<'p> Session<'p> {
     /// there is no such label. The host decides what to keep of what happens in it.
     pub fn start_replay(program: &'p Program, persistent: Vars, seed: u64, label: &str) -> Option<(Session<'p>, Vec<Cmd>)> {
         let pc = *program.labels.get(label)?;
-        let mut session = Session {
-            program,
-            state: State::with_seed(program, seed),
-            history: Vec::new(),
-            redo: Vec::new(),
-            redo_tip: None,
-            persistent,
-            persistent_changed: false,
-        };
+        let mut session = Session::fresh(program, persistent, seed);
         session.state.pc = pc;
-        session.overlay();
         let mut cmds = vec![Cmd::ClearScene];
         cmds.extend(step(&mut session.state, program, None));
         session.note(&cmds);
@@ -125,7 +107,8 @@ impl<'p> Session<'p> {
 
     /// Keep what the story just did that lasts: persistent variables, extras shown.
     pub(crate) fn note(&mut self, cmds: &[Cmd]) {
-        for name in &self.program.persistent {
+        let program = self.program;
+        for name in &program.persistent {
             if let Some(value) = self.state.vars.get(name) {
                 if self.persistent.get(name) != Some(value) {
                     self.persistent.insert(name.clone(), value.clone());
@@ -135,19 +118,15 @@ impl<'p> Session<'p> {
         }
         for cmd in cmds {
             if let Cmd::ReplayReached { label } = cmd {
-                if self.persistent.insert(format!("{REPLAY}{label}"), Value::Bool(true)).is_none() {
-                    self.persistent_changed = true;
-                }
+                self.keep(format!("{REPLAY}{label}"));
                 continue;
             }
             // An animation as the background shows each of its frames: the ones the gallery
             // lists unlock (a sprite animation doesn't count, only backgrounds).
             if let Cmd::SetBackground { src, .. } = cmd {
-                if let Some(anim) = quillstone_script::anim_id(src).and_then(|id| self.program.anims.get(id)) {
-                    for frame in anim.frames.iter().filter(|f| self.program.gallery.contains(&f.file)) {
-                        if self.persistent.insert(format!("{UNLOCKED}{}", frame.file), Value::Bool(true)).is_none() {
-                            self.persistent_changed = true;
-                        }
+                if let Some(anim) = quillstone_script::anim_id(src).and_then(|id| program.anims.get(id)) {
+                    for frame in anim.frames.iter().filter(|f| program.gallery.contains(&f.file)) {
+                        self.keep(format!("{UNLOCKED}{}", frame.file));
                     }
                     continue;
                 }
@@ -155,20 +134,24 @@ impl<'p> Session<'p> {
             let (src, list) = match cmd {
                 // a video entry unlocks as a looped background (or as a `::video`)
                 Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } | Cmd::PlayVideo { src, .. } => {
-                    (src, &self.program.gallery)
+                    (src, &program.gallery)
                 }
-                Cmd::PlayMusic { src, .. } => (src, &self.program.music_room),
+                Cmd::PlayMusic { src, .. } => (src, &program.music_room),
                 // listed in either (the parser only lets `::unlock` name an entry)
-                Cmd::Unlock { src } if self.program.gallery.contains(src) => (src, &self.program.gallery),
-                Cmd::Unlock { src } => (src, &self.program.music_room),
+                Cmd::Unlock { src } if program.gallery.contains(src) => (src, &program.gallery),
+                Cmd::Unlock { src } => (src, &program.music_room),
                 _ => continue,
             };
             if list.contains(src) {
-                let key = format!("{UNLOCKED}{src}");
-                if self.persistent.insert(key, Value::Bool(true)).is_none() {
-                    self.persistent_changed = true;
-                }
+                self.keep(format!("{UNLOCKED}{src}"));
             }
+        }
+    }
+
+    /// Mark the entry `key` as reached or seen.
+    fn keep(&mut self, key: String) {
+        if self.persistent.insert(key, Value::Bool(true)).is_none() {
+            self.persistent_changed = true;
         }
     }
 

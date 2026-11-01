@@ -15,7 +15,7 @@ use crate::{is_inside, is_ident, normal_path, Value, Vars};
 /// file can have, because a fragment never starts with a dot: the picture
 /// simply isn't there, like a missing file.
 pub const MISSING_PICTURE: &str = ".missing.png";
-
+/// The picture file types the player loads, and what a name with `{variable}` parts may end in.
 /// The picture file types a name with `{variable}` parts may end in.
 pub const PICTURE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 

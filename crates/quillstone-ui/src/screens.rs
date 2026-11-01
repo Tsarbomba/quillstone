@@ -4,24 +4,17 @@
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
 use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
-use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
-use quillstone_script::markup::{plain, rich};
+use quillstone_script::markup::plain;
 use quillstone_script::{KeyPress, TimingBar};
 
+use crate::input::{picture_or_rect, rich_text, screen, text};
 use crate::settings::*;
 use crate::slots::{thumbnail, Page, SlotInfo};
 
 const FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.06];
 const TRACK: [f32; 4] = [0.35, 0.35, 0.42, 1.0];
-
-fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
-    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
-}
-
-fn screen() -> Rect {
-    Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h)
-}
 
 // ---- quick menu (under the textbox) -------------------------------------------
 
@@ -220,7 +213,7 @@ pub fn draw_quick(
                 _ if on || hovered || spec.hover.is_some() => (idle, 1.0),
                 _ => (idle, ICON_IDLE_ALPHA),
             };
-            let uv = Rect::new(0.0, 0.0, 1.0, 1.0);
+            let uv = FULL_UV;
             out.push(Draw::Image { src: src.to_string(), dest: rect, uv, alpha: a * alpha });
             if on && loaded(&spec.on).is_none() {
                 let bar = Rect::new(rect.x, rect.y + rect.h - 3.0, rect.w, 3.0);
@@ -298,10 +291,7 @@ pub fn draw_choice_timer(out: &mut Vec<Draw>, theme: &Theme, buttons: usize, lef
 /// not loaded yet is skipped, so the bar is never missing.
 pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &TimingBar, pos: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
     let track = Rect::new(460.0, 520.0, 1000.0, 56.0);
-    match theme.timing_bar_image.as_deref().filter(|s| image_size(s).is_some()) {
-        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: track, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
-        None => out.push(Draw::Rect { rect: track, color: theme.panel_color }),
-    }
+    picture_or_rect(out, theme.timing_bar_image.as_deref(), track, theme.panel_color, image_size);
     let zone = |z: &[f32; 2], color: [f32; 4]| Draw::Rect { rect: Rect::new(track.x + track.w * z[0], track.y, track.w * (z[1] - z[0]), track.h), color };
     let [gr, gg, gb, ga] = theme.timing_good_color.unwrap_or(theme.accent_color);
     out.push(zone(&bar.good, [gr, gg, gb, ga * 0.6]));
@@ -314,22 +304,12 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
         Some((src, size)) => {
             let w = marker.h * size.w / size.h.max(1.0);
             let dest = Rect::new(x - w / 2.0, marker.y, w, marker.h);
-            out.push(Draw::Image { src: src.to_string(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 });
+            out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0 });
         }
         None => out.push(Draw::Rect { rect: marker, color: theme.timing_marker_color.unwrap_or(theme.text_color) }),
     }
     if !prompt.is_empty() {
-        let r = rich(prompt);
-        out.push(Draw::Text {
-            text: r.text,
-            runs: r.runs,
-            visible_chars: usize::MAX,
-            rect: Rect::new(track.x, track.y - 100.0, track.w, 60.0),
-            size: 44.0,
-            color: theme.text_color,
-            align: Align::Center,
-            outline: None,
-        });
+        rich_text(out, prompt, Rect::new(track.x, track.y - 100.0, track.w, 60.0), 44.0, theme.text_color);
     }
 }
 
@@ -337,28 +317,12 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
 /// of the time left and, for mashing, a bar of the presses made. The cap is `press_key_image` when it is
 /// loaded, else `panel_color`; the time bar is the timed choice's colour, the presses fill `name_color`.
 pub fn draw_press_prompt(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, press: &KeyPress, presses: u32, elapsed: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
-    let text = |out: &mut Vec<Draw>, text: String, rect: Rect, size: f32| {
-        out.push(Draw::Text { text, runs: Vec::new(), visible_chars: usize::MAX, rect, size, color: theme.text_color, align: Align::Center, outline: None })
-    };
     if !prompt.is_empty() {
-        let r = rich(prompt);
-        out.push(Draw::Text {
-            text: r.text,
-            runs: r.runs,
-            visible_chars: usize::MAX,
-            rect: Rect::new(460.0, 330.0, 1000.0, 60.0),
-            size: 44.0,
-            color: theme.text_color,
-            align: Align::Center,
-            outline: None,
-        });
+        rich_text(out, prompt, Rect::new(460.0, 330.0, 1000.0, 60.0), 44.0, theme.text_color);
     }
     let cap = Rect::new(880.0, 410.0, 160.0, 120.0);
-    match theme.press_key_image.as_deref().filter(|s| image_size(s).is_some()) {
-        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: cap, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
-        None => out.push(Draw::Rect { rect: cap, color: theme.panel_color }),
-    }
-    text(out, press.key.to_uppercase(), Rect::new(cap.x, cap.y + 30.0, cap.w, 60.0), 52.0);
+    picture_or_rect(out, theme.press_key_image.as_deref(), cap, theme.panel_color, image_size);
+    text(out, press.key.to_uppercase(), Rect::new(cap.x, cap.y + 30.0, cap.w, 60.0), 52.0, theme.text_color, Align::Center);
     let mut bar = |y: f32, fraction: f32, color: [f32; 4]| {
         let track = Rect::new(460.0, y, 1000.0, 24.0);
         out.push(Draw::Rect { rect: track, color: [0.0, 0.0, 0.0, 0.45] });
@@ -1203,7 +1167,7 @@ mod tests {
             Draw::Image { dest, uv, .. } => Some((*dest, *uv)),
             _ => None,
         });
-        assert_eq!(dest, Some((Rect::new(dest.unwrap().0.x, dest.unwrap().0.y, 48.0, 48.0), Rect::new(0.0, 0.0, 1.0, 1.0))));
+        assert_eq!(dest, Some((Rect::new(dest.unwrap().0.x, dest.unwrap().0.y, 48.0, 48.0), FULL_UV)));
         let look = QuickLook { hover: Some(QuickButton::Back), ..QuickLook::default() };
         assert_eq!(images_of(&drawn_quick(&t, false, look, 1.0))[0], ("h.png", 1.0));
         let look = QuickLook { hover: Some(QuickButton::Skip), ..QuickLook::default() };

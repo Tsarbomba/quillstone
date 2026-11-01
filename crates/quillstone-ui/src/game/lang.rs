@@ -40,7 +40,7 @@ impl<'p> Game<'p> {
     /// The window title in the language in use.
     pub fn title(&self) -> String {
         let title = self.program.title.as_deref().unwrap_or("Quillstone");
-        plain(self.tr(title))
+        quillstone_script::markup::plain(self.tr(title))
     }
 
     pub(super) fn has_language_row(&self) -> bool {
@@ -109,8 +109,4 @@ impl<'p> Game<'p> {
             self.view.set_vars(&self.session.state().vars);
         }
     }
-}
-
-fn plain(text: &str) -> String {
-    quillstone_script::markup::plain(text)
 }

@@ -183,7 +183,7 @@ fn main() {
     }
     game.set_translations(translations);
     if let Some(first) = problems.first() {
-        game.show_notice(format!("Translation not loaded: {first}"));
+        game.notify(format!("Translation not loaded: {first}"));
     }
     // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
     game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
@@ -381,7 +381,7 @@ impl App {
         });
         let program = match parsed {
             Ok(program) => program,
-            Err(e) => return self.game.show_notice(format!("Not reloaded: {e}")),
+            Err(e) => return self.game.notify(format!("Not reloaded: {e}")),
         };
         // Each version lives as long as the app (a few kilobytes per edit, while developing).
         let program: &'static Program = Box::leak(Box::new(program));
@@ -396,11 +396,11 @@ impl App {
                 self.game.set_translations(translations);
                 self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());
                 match problems.first() {
-                    Some(first) => self.game.show_notice(format!("Script reloaded; translation not loaded: {first}")),
-                    None => self.game.show_notice("Script reloaded"),
+                    Some(first) => self.game.notify(format!("Script reloaded; translation not loaded: {first}")),
+                    None => self.game.notify("Script reloaded"),
                 }
             }
-            Err(e) => self.game.show_notice(format!("Not reloaded: {e}")),
+            Err(e) => self.game.notify(format!("Not reloaded: {e}")),
         }
         self.videos.retry_failed();
         self.images.retry_failed();
@@ -455,7 +455,7 @@ impl App {
         (settings.window_size, settings.window_pos) = (self.window_size, self.window_pos);
         if let Err(e) = quillstone_ui::write_atomic(file, &settings.to_text()) {
             eprintln!("warning: cannot save settings to {}: {e}", file.display());
-            self.game.show_notice(format!("Could not save settings: {e}"));
+            self.game.notify(format!("Could not save settings: {e}"));
         }
     }
 

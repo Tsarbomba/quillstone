@@ -6,7 +6,7 @@
 //! theme's colours and font apply; `input_rect` moves and widens the panel, `input_image` dresses it).
 
 use quillstone_render::theme::DEFAULT_INPUT_RECT;
-use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_script::markup::rich;
 
 /// The panel's default placement and the height its parts are stacked in (a taller panel centres them).
@@ -124,27 +124,33 @@ pub(crate) fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: 
     out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
-pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
-    out.push(Draw::Rect { rect: Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h), color: theme.overlay_color });
-    let panel = panel_rect(theme);
-    match theme.input_image.as_deref().filter(|src| image_size(src).is_some()) {
-        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: panel, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
-        None => out.push(Draw::Rect { rect: panel, color: theme.panel_color }),
-    }
+/// [`text`] for a prompt written with `{b}`/`{i}`/colour tags.
+pub(crate) fn rich_text(out: &mut Vec<Draw>, prompt: &str, rect: Rect, size: f32, color: [f32; 4]) {
+    let r = rich(prompt);
+    out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align: Align::Center, outline: None });
+}
 
-    let prompt = rich(s.prompt);
+/// The whole virtual screen.
+pub(crate) fn screen() -> Rect {
+    Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h)
+}
+
+/// `dest` filled with the theme picture `pic` when it is loaded, else with `color`.
+pub(crate) fn picture_or_rect(out: &mut Vec<Draw>, pic: Option<&str>, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
+    match pic.filter(|src| image_size(src).is_some()) {
+        Some(src) => out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0 }),
+        None => out.push(Draw::Rect { rect: dest, color }),
+    }
+}
+
+pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
+    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    let panel = panel_rect(theme);
+    picture_or_rect(out, theme.input_image.as_deref(), panel, theme.panel_color, image_size);
+
     let pr = prompt_rect(theme);
-    let size = if estimate_lines(&prompt.text, PROMPT_SIZE, pr.w) > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
-    out.push(Draw::Text {
-        text: prompt.text,
-        runs: prompt.runs,
-        visible_chars: usize::MAX,
-        rect: pr,
-        size,
-        color: theme.text_color,
-        align: Align::Center,
-        outline: None,
-    });
+    let size = if estimate_lines(&rich(s.prompt).text, PROMPT_SIZE, pr.w) > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
+    rich_text(out, s.prompt, pr, size, theme.text_color);
 
     // The field: a dark well with a thin accent outline.
     let f = field_rect(theme);

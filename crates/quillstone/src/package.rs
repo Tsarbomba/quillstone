@@ -123,7 +123,7 @@ const NOT_ASSETS: [&str; 4] = ["lang", "mods", "target", "node_modules"];
 /// Pictures, audio, video and fonts: the files `package` can ship and a game can use.
 fn is_asset_file(name: &str) -> bool {
     let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
-    crate::picture::PICTURE_EXTENSIONS.contains(&ext.as_str()) || matches!(ext.as_str(), "ttf" | "otf") || kind_from_path(name) != AssetKind::Image
+    quillstone_script::PICTURE_EXTENSIONS.contains(&ext.as_str()) || matches!(ext.as_str(), "ttf" | "otf") || kind_from_path(name) != AssetKind::Image
 }
 
 /// Asset files under the game folder that `package` would leave out, sorted, as game-folder paths with `/`.

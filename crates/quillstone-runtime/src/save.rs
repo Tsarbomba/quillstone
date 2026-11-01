@@ -8,7 +8,7 @@
 //! matches what the save was waiting for, the story re-runs from there instead
 //! of getting stuck.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
@@ -82,8 +82,10 @@ impl Session<'_> {
     /// [`MAX_SAVE_BYTES`] less [`HEADER_ROOM`] (the reader refuses more); the present state is always written.
     pub fn save(&self) -> String {
         let start = self.history.len().saturating_sub(SAVE_HISTORY);
-        let mut parts: Vec<String> = self.history[start..]
+        let mut parts: Vec<String> = self
+            .history
             .iter()
+            .skip(start)
             .map(|(state, input)| {
                 let mut out = String::new();
                 write_state(&mut out, state, self.program);
@@ -161,9 +163,9 @@ impl<'p> Session<'p> {
             }
         }
         let (mut state, _) = states.pop().ok_or("the save has no state")?;
-        let mut history = Vec::with_capacity(states.len());
+        let mut history = VecDeque::with_capacity(states.len());
         for (s, input) in states {
-            history.push((s, input.ok_or("a history entry is missing its input")?));
+            history.push_back((s, input.ok_or("a history entry is missing its input")?));
         }
 
         // If the script changed so much that a saved spot is no longer what the
@@ -185,7 +187,7 @@ impl<'p> Session<'p> {
             }
         }
         let cmds = cmds.unwrap_or_else(|| state.redraw());
-        let session = Session { program, state, history, redo: Vec::new(), redo_tip: None, persistent: Vars::new(), persistent_changed: false };
+        let session = Session { program, state, history, redo: Vec::new(), persistent: Vars::new(), persistent_changed: false };
         Ok((session, cmds))
     }
 }
@@ -385,6 +387,12 @@ fn hud_source_bytes(h: &HudElem) -> usize {
             _ => 0,
         }
         + h.hover.as_ref().map_or(0, String::len)
+}
+
+fn parse_rgb(s: &str, n: usize) -> Result<[f32; 3], String> {
+    let parts: Vec<f32> = s.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
+    let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{s}`")) };
+    Ok([r, g, b].map(|c| sane(c, 0.0, 1.0, 0.0)))
 }
 
 fn parse_rgba(s: &str, n: usize) -> Result<[f32; 4], String> {
@@ -849,10 +857,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 });
             }
             "tint" => {
-                let parts: Vec<f32> = arg(1)?.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
-                let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{}`", arg(1)?)) };
+                let color = parse_rgb(arg(1)?, n)?;
                 let alpha = sane(f(2)?, *TINT_ALPHA.start(), *TINT_ALPHA.end(), 0.0);
-                let color = [sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)];
                 s.tint = Some(Tint { color, alpha });
             }
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
@@ -861,9 +867,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.music = Some(MusicState { src: path(1)?, intro, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) });
             }
             "cover" => {
-                let parts: Vec<f32> = arg(1)?.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
-                let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{}`", arg(1)?)) };
-                s.cover = Some([sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)]);
+                s.cover = Some(parse_rgb(arg(1)?, n)?);
             }
             "sfxloop" if s.sfx_loops.len() >= MAX_SFX_LOOPS => {
                 return Err(format!("line {n}: more than {MAX_SFX_LOOPS} `sfxloop` records in a state"));
@@ -887,11 +891,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 };
                 let color = match arg(2)? {
                     "-" => None,
-                    c => {
-                        let parts: Vec<f32> = c.split(',').map(|p| num(p, n)).collect::<Result<_, _>>()?;
-                        let [r, g, b] = parts[..] else { return Err(format!("line {n}: bad colour `{c}`")) };
-                        Some([sane(r, 0.0, 1.0, 0.0), sane(g, 0.0, 1.0, 0.0), sane(b, 0.0, 1.0, 0.0)])
-                    }
+                    c => Some(parse_rgb(c, n)?),
                 };
                 s.line = Some(Line { speaker, color, text: arg(3)?.to_string() });
             }

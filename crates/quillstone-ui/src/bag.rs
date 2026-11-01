@@ -9,6 +9,8 @@
 use quillstone_render::{place, Align, CellStyle, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
+use crate::input::{screen, text};
+
 const MARGIN: f32 = 40.0;
 const GRID_TOP: f32 = 150.0;
 const DESC_H: f32 = 170.0;
@@ -74,14 +76,6 @@ pub struct BagScreen<'a> {
     pub close_label: &'a str,
     /// Shown instead of the grid when there are no cells.
     pub empty: &'a str,
-}
-
-fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: f32, color: [f32; 4], align: Align) {
-    out.push(Draw::Text { text: s.into(), runs: Vec::new(), visible_chars: usize::MAX, rect, size, color, align, outline: None });
-}
-
-fn screen() -> Rect {
-    Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h)
 }
 
 /// Move `r` (without resizing) so it lies inside the screen.

@@ -10,7 +10,7 @@ fn load(main: &str, files: &[(&str, &str)]) -> Result<Program, Vec<ParseError>> 
 }
 
 fn errors(main: &str, files: &[(&str, &str)]) -> Vec<String> {
-    load(main, files).expect_err("expected errors").iter().map(|e| e.place("main.quill.md") + ": " + &e.message).collect()
+    load(main, files).expect_err("expected errors").iter().map(|e| format!("{}:{}: {}", e.file.as_deref().unwrap_or("main.quill.md"), e.line, e.message)).collect()
 }
 
 fn says(p: &Program) -> Vec<&str> {
@@ -83,7 +83,10 @@ fn lines_map_back_to_their_file() {
     let p = load("Main one.\n::include{a.quill.md}\nMain three.\n", &[("a.quill.md", "\n\nIn a, line 3.\nAnd 4.\n")]).unwrap();
     let at = |text: &str| {
         let pc = p.ops.iter().position(|op| matches!(op, Op::Say { text: t, .. } if t == text)).unwrap();
-        p.place("main.quill.md", p.lines[pc])
+        match p.locate(p.lines[pc]) {
+            (Some(file), n) => format!("{file}:{n}"),
+            (None, n) => format!("main.quill.md:{n}"),
+        }
     };
     assert_eq!(at("Main one."), "main.quill.md:1");
     assert_eq!(at("In a, line 3. And 4."), "a.quill.md:3");

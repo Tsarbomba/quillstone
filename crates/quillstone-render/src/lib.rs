@@ -28,11 +28,11 @@ pub mod view;
 
 pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
 pub use layout::{
-    clip, estimate_lines, estimate_lines_styled, letterbox, line_height, one_row, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, VIRTUAL,
+    clip, estimate_lines, estimate_lines_styled, letterbox, line_height, one_row, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, FULL_UV, VIRTUAL,
 };
 pub use theme::{CellStyle, QuickMenu, Theme};
 pub use view::{
     Align, Background, Dialogue, Draw, InlineImage, Outline, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,
 };
-pub use view::{choice_rects, dialogue_body, dialogue_lines, dialogue_lines_tagged, faded, name_plate_rect, textbox_rect};
+pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, name_plate_rect, textbox_rect};

@@ -78,7 +78,8 @@ pub struct Placement {
     pub uv: Rect,
 }
 
-const FULL_UV: Rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+/// The whole of a texture.
+pub const FULL_UV: Rect = Rect::new(0.0, 0.0, 1.0, 1.0);
 
 /// Fit `content` (an image or video frame size) into `container`.
 ///

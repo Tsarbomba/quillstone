@@ -29,13 +29,6 @@ pub struct ParseError {
     pub message: String,
 }
 
-impl ParseError {
-    /// `path:line` with `main` naming the main script.
-    pub fn place(&self, main: &str) -> String {
-        format!("{}:{}", self.file.as_deref().unwrap_or(main), self.line)
-    }
-}
-
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.file {
@@ -2780,7 +2773,7 @@ fn include_path(inner: &str) -> Option<String> {
 fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String> {
     let path = check_inside(key, path)?;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if !path.contains('.') || !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
+    if !path.contains('.') || !crate::dynpath::PICTURE_EXTENSIONS.contains(&ext.as_str()) {
         return Err(format!("bad `{key}={path}` ({what} must be a .png, .jpg or .webp file)"));
     }
     Ok(path)

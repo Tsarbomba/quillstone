@@ -7,6 +7,8 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
+use std::collections::VecDeque;
+
 use quillstone_script::{roll, Area, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
@@ -1444,12 +1446,10 @@ pub struct Session<'p> {
     program: &'p Program,
     state: State,
     /// The state before each accepted input, and that input.
-    history: Vec<(State, Input)>,
-    /// What rollback popped, newest rollback on top: each entry is a state the
-    /// player was rolled back to and the input that left it. Not saved.
+    history: VecDeque<(State, Input)>,
+    /// What rollback popped, newest rollback on top: each entry is the state the player was
+    /// rolled back from (the one after the input) and that input. Not saved.
     redo: Vec<(State, Input)>,
-    /// The state the first rollback of this run started from (where redo ends).
-    redo_tip: Option<State>,
     /// Data kept across playthroughs (see `persist.rs`), and whether it changed.
     persistent: Vars,
     persistent_changed: bool,
@@ -1459,6 +1459,20 @@ impl<'p> Session<'p> {
     /// Start the script; returns the session and the commands to show first.
     pub fn start(program: &'p Program) -> (Session<'p>, Vec<Cmd>) {
         Session::start_with(program, Vars::new())
+    }
+
+    /// A new game: the script's starting variables, `persistent` applied, an empty scene and history.
+    fn fresh(program: &'p Program, persistent: Vars, seed: u64) -> Session<'p> {
+        let mut session = Session {
+            program,
+            state: State::with_seed(program, seed),
+            history: VecDeque::new(),
+            redo: Vec::new(),
+            persistent,
+            persistent_changed: false,
+        };
+        session.overlay();
+        session
     }
 
     pub fn state(&self) -> &State {
@@ -1477,12 +1491,8 @@ impl<'p> Session<'p> {
         let before = self.state.clone();
         let cmds = step(&mut self.state, self.program, Some(input.clone()));
         if !cmds.is_empty() {
-            self.history.push((before, input));
-            if self.history.len() > MAX_HISTORY {
-                self.history.remove(0);
-            }
+            self.push_history(before, input);
             self.redo.clear(); // a new path: what was rolled back is gone
-            self.redo_tip = None;
         }
         self.note(&cmds);
         cmds
@@ -1494,18 +1504,11 @@ impl<'p> Session<'p> {
     /// would run out and carry the story forward again. So rollback goes past them to the
     /// screen before them (unless the very first screen is one).
     pub fn rollback(&mut self) -> Option<Vec<Cmd>> {
-        let (first, input) = self.history.pop()?;
-        if self.redo_tip.is_none() {
-            self.redo_tip = Some(self.state.clone());
-        }
-        self.redo.push((first.clone(), input));
-        self.state = first;
+        let (first, input) = self.history.pop_back()?;
+        self.redo.push((std::mem::replace(&mut self.state, first), input));
         while moves_on_by_itself(&self.state.pending) {
-            match self.history.pop() {
-                Some((earlier, input)) => {
-                    self.redo.push((earlier.clone(), input));
-                    self.state = earlier;
-                }
+            match self.history.pop_back() {
+                Some((earlier, input)) => self.redo.push((std::mem::replace(&mut self.state, earlier), input)),
                 None => break,
             }
         }
@@ -1514,33 +1517,22 @@ impl<'p> Session<'p> {
     }
 
     fn push_history(&mut self, state: State, input: Input) {
-        self.history.push((state, input));
+        self.history.push_back((state, input));
         if self.history.len() > MAX_HISTORY {
-            self.history.remove(0);
+            self.history.pop_front();
         }
     }
 
     /// Undo a rollback: go on to the screen the player rolled back from. Waits and
     /// videos rollback went past are gone past again. `None` with nothing to redo.
     pub fn roll_forward(&mut self) -> Option<Vec<Cmd>> {
-        let (state, input) = self.redo.pop()?;
-        self.push_history(state, input);
-        loop {
-            match self.redo.last() {
-                Some((next, _)) => self.state = next.clone(),
-                None => {
-                    self.state = self.redo_tip.take()?;
-                    break;
-                }
-            }
-            if !moves_on_by_itself(&self.state.pending) {
-                break;
-            }
-            let (state, input) = self.redo.pop()?;
-            self.push_history(state, input);
-        }
-        if self.redo.is_empty() {
-            self.redo_tip = None;
+        let (after, input) = self.redo.pop()?;
+        let before = std::mem::replace(&mut self.state, after);
+        self.push_history(before, input);
+        while moves_on_by_itself(&self.state.pending) {
+            let Some((after, input)) = self.redo.pop() else { break };
+            let before = std::mem::replace(&mut self.state, after);
+            self.push_history(before, input);
         }
         self.overlay();
         Some(self.state.redraw())

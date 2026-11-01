@@ -18,7 +18,7 @@ use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Wipe};
 use crate::fade::Fade;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
-use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, VIRTUAL};
+use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, FULL_UV, VIRTUAL};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
@@ -201,11 +201,8 @@ pub struct SpriteView {
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
-    from_x: f32,
-    from_y: f32,
-    from_scale: f32,
-    from_xscale: f32,
-    from_yscale: f32,
+    /// Where the current leg of a move started: x, y, scale, xscale, yscale.
+    from: [f32; 5],
     move_time: f32,
     move_elapsed: f32,
     move_ease: Ease,
@@ -237,11 +234,7 @@ impl SpriteView {
             hiding: false,
             fade,
             elapsed: 0.0,
-            from_x: x,
-            from_y: y,
-            from_scale: look.scale,
-            from_xscale: look.xscale,
-            from_yscale: look.yscale,
+            from: [x, y, look.scale, look.xscale, look.yscale],
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
@@ -287,17 +280,13 @@ impl SpriteView {
     fn target(&self) -> [f32; 5] {
         match (&self.loop_far, self.out) {
             (Some(far), true) => *far,
-            _ => [self.x, self.y, self.scale, self.xscale, self.yscale],
+            _ => self.rest(),
         }
     }
 
-    /// Where the current leg started.
-    fn from(&self) -> [f32; 5] {
-        [self.from_x, self.from_y, self.from_scale, self.from_xscale, self.from_yscale]
-    }
-
-    fn set_from(&mut self, v: [f32; 5]) {
-        [self.from_x, self.from_y, self.from_scale, self.from_xscale, self.from_yscale] = v;
+    /// The resting pose: x, y, scale, xscale, yscale.
+    fn rest(&self) -> [f32; 5] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale]
     }
 
     /// Whether the sprite oscillates (a looping move is running).
@@ -307,7 +296,7 @@ impl SpriteView {
 
     /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale) right now.
     fn now(&self, k: usize) -> f32 {
-        let (from, to) = (self.from()[k], self.target()[k]);
+        let (from, to) = (self.from[k], self.target()[k]);
         from + (to - from) * self.move_progress()
     }
 
@@ -384,19 +373,14 @@ impl SpriteView {
                     if legs % 2.0 == 1.0 {
                         self.out = !self.out;
                     }
-                    let start = if self.out { [self.x, self.y, self.scale, self.xscale, self.yscale] } else { self.loop_far.unwrap_or_default() };
-                    self.set_from(start);
+                    self.from = if self.out { self.rest() } else { self.loop_far.unwrap_or_default() };
                 }
             }
         } else if self.move_time > 0.0 {
             self.move_elapsed += dt;
             if self.move_elapsed >= self.move_time {
                 self.move_time = 0.0;
-                self.from_x = self.x;
-                self.from_y = self.y;
-                self.from_scale = self.scale;
-                self.from_xscale = self.xscale;
-                self.from_yscale = self.yscale;
+                self.from = self.rest();
             }
         }
         if !self.hiding && self.elapsed >= self.fade {
@@ -740,12 +724,8 @@ impl View {
     /// Know the script's frame animations (`anim:<id>` pictures play them). Clocks
     /// are visual state: every animation starts at its first frame when it appears.
     pub fn with_anims(mut self, anims: &BTreeMap<String, Anim>) -> View {
-        self.set_anims(anims);
-        self
-    }
-
-    pub fn set_anims(&mut self, anims: &BTreeMap<String, Anim>) {
         self.anims = anims.clone();
+        self
     }
 
     /// The picture file to draw for `src` at `t` seconds into it: the file itself, or
@@ -885,7 +865,7 @@ impl View {
                         // The first leg glides from wherever the sprite is to the far values; the
                         // resting values (x, y, ...) stay where they are.
                         let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
-                        s.set_from(here);
+                        s.from = here;
                         s.loop_far = Some([*x, *y, *scale, *xscale, *yscale]);
                         s.out = true;
                         s.flip = *flip;
@@ -897,7 +877,7 @@ impl View {
                 Cmd::MoveSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
                         let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
-                        s.set_from(here);
+                        s.from = here;
                         s.loop_far = None; // a plain move ends a loop
                         s.out = false;
                         s.y = *y;
@@ -1116,27 +1096,22 @@ impl View {
                     s.fade = fade;
                 }
                 // A new pose that leaves the resting values alone does not disturb a loop.
-                let rest = [s.x, s.y, s.scale, s.xscale, s.yscale];
-                if s.loop_far.is_some() && rest == [x, y, look.scale, look.xscale, look.yscale] {
+                if s.loop_far.is_some() && s.rest() == [x, y, look.scale, look.xscale, look.yscale] {
                     s.z = z;
                     s.flip = look.flip;
                     return;
                 }
                 s.loop_far = None;
                 s.out = false;
-                s.from_x = here;
-                s.from_y = here_y;
+                s.from = [here, here_y, look.scale, look.xscale, look.yscale];
                 s.x = x;
                 s.y = y;
                 s.z = z;
                 s.move_time = 0.0;
                 s.scale = look.scale;
-                s.from_scale = look.scale;
                 s.flip = look.flip;
                 s.xscale = look.xscale;
-                s.from_xscale = look.xscale;
                 s.yscale = look.yscale;
-                s.from_yscale = look.yscale;
             }
             None => self.sprites.push(SpriteView::new(id, (src, layers), x, y, z, look, fade)),
         }
@@ -1342,21 +1317,11 @@ impl View {
     /// know are skipped. `hover` is the choice (or hotspot) under the mouse or
     /// the keyboard focus, if any.
     pub fn draw_list(&self, image_size: &dyn Fn(&str) -> Option<Size>, hover: Option<usize>) -> Vec<Draw> {
-        self.draw_list_at(image_size, hover, None)
+        self.draw_list_hud(image_size, hover, None, HudLook::default())
     }
 
-    /// [`View::draw_list`] that also knows where the mouse is (virtual
-    /// coordinates), so a hovered hotspot's label can float next to it.
-    pub fn draw_list_at(
-        &self,
-        image_size: &dyn Fn(&str) -> Option<Size>,
-        hover: Option<usize>,
-        pointer: Option<(f32, f32)>,
-    ) -> Vec<Draw> {
-        self.draw_list_ui(image_size, hover, pointer, true, HudLook::default())
-    }
-
-    /// [`View::draw_list_at`] with the HUD buttons' look: where the mouse is and whether they work now.
+    /// [`View::draw_list`] that also knows where the mouse is (virtual coordinates, so a hovered
+    /// hotspot's label can float next to it) and the HUD buttons' look: whether they work now.
     pub fn draw_list_hud(
         &self,
         image_size: &dyn Fn(&str) -> Option<Size>,
@@ -1414,7 +1379,7 @@ impl View {
                         }
                     }
                     (Draw::Rect { rect, color }, Some(part)) => {
-                        if let Some((rect, _)) = clip(rect, Rect::new(0.0, 0.0, 1.0, 1.0), part) {
+                        if let Some((rect, _)) = clip(rect, FULL_UV, part) {
                             stage.push(Draw::Rect { rect, color });
                         }
                     }
@@ -1565,20 +1530,22 @@ impl View {
 
         // A hovered region's tint and outline are over the textbox, so one that
         // reaches under it can be seen (hit-testing gives it the click, too).
-        for (i, spot) in self.hotspots.iter().enumerate() {
-            let Some(rect) = self.spot_rect(spot) else { continue };
-            if ui && hover == Some(i) && !spot.hidden {
-                let [r, g, b, _] = theme.accent_color;
-                out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
-                let t = HOTSPOT_OUTLINE;
-                for bar in [
-                    Rect::new(rect.x, rect.y, rect.w, t),
-                    Rect::new(rect.x, rect.y + rect.h - t, rect.w, t),
-                    Rect::new(rect.x, rect.y, t, rect.h),
-                    Rect::new(rect.x + rect.w - t, rect.y, t, rect.h),
-                ] {
-                    out.push(Draw::Rect { rect: bar, color: theme.accent_color });
-                }
+        let hovered_spot = hover
+            .filter(|_| ui)
+            .and_then(|i| self.hotspots.get(i))
+            .filter(|s| !s.hidden)
+            .and_then(|s| Some((s, self.spot_rect(s)?)));
+        if let Some((_, rect)) = hovered_spot {
+            let [r, g, b, _] = theme.accent_color;
+            out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
+            let t = HOTSPOT_OUTLINE;
+            for bar in [
+                Rect::new(rect.x, rect.y, rect.w, t),
+                Rect::new(rect.x, rect.y + rect.h - t, rect.w, t),
+                Rect::new(rect.x, rect.y, t, rect.h),
+                Rect::new(rect.x + rect.w - t, rect.y, t, rect.h),
+            ] {
+                out.push(Draw::Rect { rect: bar, color: theme.accent_color });
             }
         }
 
@@ -1624,12 +1591,7 @@ impl View {
         }
 
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
-        if let Some((spot, r)) = hover
-            .filter(|_| ui)
-            .and_then(|i| self.hotspots.get(i))
-            .filter(|s| !s.hidden)
-            .and_then(|s| Some((s, self.spot_rect(s)?)))
-        {
+        if let Some((spot, r)) = hovered_spot {
             let Rich { text, runs, .. } = rich(&spot.label);
             let size = (theme.text_size * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
@@ -1727,14 +1689,9 @@ pub fn dialogue_body(theme: &Theme, with_speaker: bool) -> Rect {
     Rect::new(tb.x + l, top, tb.w - l - r, (tb.y + tb.h - top - b).max(0.0))
 }
 
-/// About how many textbox lines `text` (tags removed) takes at `size` px, and how
-/// many fit. A line that doesn't fit is drawn smaller by the player.
-pub fn dialogue_lines(theme: &Theme, text: &str, with_speaker: bool, size: f32) -> (usize, usize) {
-    dialogue_lines_tagged(theme, text, with_speaker, size)
-}
-
-/// [`dialogue_lines`] for a line as written (with its `{size}` tags): a bigger run
-/// is counted as wide as it will really be drawn. Plain text works too.
+/// About how many textbox lines `tagged` (a line as written, with its `{size}` tags) takes at
+/// `size` px, and how many fit: a bigger run is counted as wide as it will really be drawn. A
+/// line that doesn't fit is drawn smaller by the player. Plain text works too.
 pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
     let body = dialogue_body(theme, with_speaker);
     let line_h = line_height(size);
@@ -1837,7 +1794,7 @@ fn push_sprite(
     let w = base_w * look.scale * look.xscale;
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
-    let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { Rect::new(0.0, 0.0, 1.0, 1.0) };
+    let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { FULL_UV };
     out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha });
 }
 
@@ -2179,7 +2136,7 @@ mod tests {
         assert!(close(dest.h, SPRITE_HEIGHT * 0.5) && close(dest.w, SPRITE_HEIGHT * 0.25));
         assert!(close(dest.y + dest.h, VIRTUAL.h)); // bottom edge
         assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w))); // a quarter of the free room
-        assert_eq!((*uv, *alpha), (Rect::new(0.0, 0.0, 1.0, 1.0), 1.0));
+        assert_eq!((*uv, *alpha), (FULL_UV, 1.0));
         // 0 is flush left, 1 flush right, 0.5 centred
         v.apply(&[Cmd::ClearScene, sprite("a", 0.0, 1.0, 0), sprite("b", 1.0, 1.0, 0), sprite("c", 0.5, 1.0, 0)]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
@@ -2552,8 +2509,8 @@ mod tests {
         });
         assert_eq!(body, Some(("Hi.\nHo.".to_string(), 2, 7)));
         // the long-line estimate sees two lines where there is one short paragraph each
-        assert_eq!(dialogue_lines(&theme(), "Hi.\nHo.", true, 38.0).0, 2);
-        assert_eq!(dialogue_lines(&theme(), "Hi. Ho.", true, 38.0).0, 1);
+        assert_eq!(dialogue_lines_tagged(&theme(), "Hi.\nHo.", true, 38.0).0, 2);
+        assert_eq!(dialogue_lines_tagged(&theme(), "Hi. Ho.", true, 38.0).0, 1);
     }
 
     #[test]
@@ -2735,7 +2692,7 @@ mod tests {
         assert!(matches!(&idle[1], Draw::Image { src, dest, .. } if src == "key.png" && *dest == key), "stretched into the rect");
         assert_eq!(idle.len(), 2, "nothing else while idle: unimage'd regions are invisible");
 
-        let hot = v.draw_list_at(&known, Some(0), Some((970.0, 560.0)));
+        let hot = v.draw_list_hud(&known, Some(0), Some((970.0, 560.0)), HudLook::default());
         let outline = hot.iter().filter(|d| matches!(d, Draw::Rect { color, .. } if *color == theme().accent_color)).count();
         assert_eq!(outline, 4, "four outline bars");
         let tip = hot.iter().find_map(|d| match d {
@@ -2747,7 +2704,7 @@ mod tests {
 
         // at the bottom right corner the tooltip is pushed back on screen
         v.apply(&[Cmd::ShowHotspots { spots: vec![spot("A rather long place name", [0.9, 0.9, 0.1, 0.1], None)] }]);
-        let hot = v.draw_list_at(&all_1080p, Some(0), Some((1915.0, 1075.0)));
+        let hot = v.draw_list_hud(&all_1080p, Some(0), Some((1915.0, 1075.0)), HudLook::default());
         let tip = hot.iter().find_map(|d| match d {
             Draw::Text { rect, .. } => Some(*rect),
             _ => None,
@@ -2755,7 +2712,7 @@ mod tests {
         let tip = tip.unwrap();
         assert!(tip.x >= 0.0 && tip.y >= 0.0 && tip.x + tip.w <= VIRTUAL.w && tip.y + tip.h <= VIRTUAL.h, "{tip:?}");
         // keyboard focus (no pointer): under the region, still on screen
-        let hot = v.draw_list_at(&all_1080p, Some(0), None);
+        let hot = v.draw_list_hud(&all_1080p, Some(0), None, HudLook::default());
         assert!(hot.iter().any(|d| matches!(d, Draw::Text { rect, .. } if rect.y + rect.h <= VIRTUAL.h)));
     }
 
@@ -2769,11 +2726,11 @@ mod tests {
         v.apply(&[Cmd::ShowHotspots { spots: vec![s, plain] }]);
         let known = |s: &str| (s == "key.png").then_some(Size::new(1920.0, 1080.0));
         for hover in [Some(0), Some(1)] {
-            let d = v.draw_list_at(&known, hover, Some((970.0, 560.0)));
+            let d = v.draw_list_hud(&known, hover, Some((970.0, 560.0)), HudLook::default());
             assert!(!d.iter().any(|d| matches!(d, Draw::Text { .. })), "no tooltip");
             assert!(!d.iter().any(|d| matches!(d, Draw::Rect { .. })), "no tint or outline");
         }
-        let d = v.draw_list_at(&known, Some(1), None);
+        let d = v.draw_list_hud(&known, Some(1), None, HudLook::default());
         assert!(d.iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "key.png")), "image still drawn");
         assert_eq!(v.hotspot_at(970.0, 560.0), Some(0));
         assert_eq!(v.hotspot_at(20.0, 20.0), Some(1));
@@ -3131,9 +3088,9 @@ mod tests {
         assert_eq!(dialogue_body(&t, false), Rect::new(410.0, 630.0, 1080.0, 330.0));
         assert_eq!(dialogue_body(&t, true).y, 680.0, "below the plate (622 + 48 + 10)");
         // the long-line estimate uses the real width and height
-        let (_, fit) = dialogue_lines(&t, "x", true, 40.0);
+        let (_, fit) = dialogue_lines_tagged(&t, "x", true, 40.0);
         assert_eq!(fit, (dialogue_body(&t, true).h / 54.0).floor() as usize);
-        assert!(dialogue_lines(&t, &"word ".repeat(60), false, 38.0).0 > dialogue_lines(&theme(), &"word ".repeat(60), false, 38.0).0 - 1);
+        assert!(dialogue_lines_tagged(&t, &"word ".repeat(60), false, 38.0).0 > dialogue_lines_tagged(&theme(), &"word ".repeat(60), false, 38.0).0 - 1);
         // choices stack above the textbox top
         let rects = choice_rects(&t, 3);
         assert!(rects.iter().all(|r| r.y + r.h <= 600.0 - CHOICE_MARGIN + 0.01));

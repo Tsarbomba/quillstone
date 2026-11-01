@@ -40,7 +40,8 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn notify(&mut self, message: impl Into<String>) {
+    /// Show a short message over the game (like "Saved").
+    pub fn notify(&mut self, message: impl Into<String>) {
         self.notice = Some((message.into(), NOTICE_SECONDS));
     }
 

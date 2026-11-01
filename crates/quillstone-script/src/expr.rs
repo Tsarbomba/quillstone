@@ -40,15 +40,7 @@ fn describe(t: &Tok) -> String {
         Tok::Ident(s) => s.clone(),
         Tok::Int(n) => n.to_string(),
         Tok::Str(s) => format!("\"{s}\""),
-        Tok::Cmp(c) => match c {
-            Cmp::Eq => "==",
-            Cmp::Ne => "!=",
-            Cmp::Lt => "<",
-            Cmp::Le => "<=",
-            Cmp::Gt => ">",
-            Cmp::Ge => ">=",
-        }
-        .to_string(),
+        Tok::Cmp(c) => c.symbol().to_string(),
         Tok::And => "and".into(),
         Tok::Or => "or".into(),
         Tok::Not => "not".into(),

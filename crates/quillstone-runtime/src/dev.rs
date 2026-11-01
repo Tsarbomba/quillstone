@@ -52,19 +52,14 @@ fn label_pc(program: &Program, label: &str) -> Result<usize, String> {
     })
 }
 
-/// The value of `--set` text: by the variable's declared type, else guessed (number, true/false, quoted or bare text).
-fn typed(declared: Option<&Value>, raw: &str) -> Result<Value, String> {
+/// The value of `--set` text, by the variable's declared type.
+fn typed(declared: &Value, raw: &str) -> Result<Value, String> {
     let unquoted = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(raw);
     Ok(match declared {
-        Some(Value::Str(_)) => Value::Str(unquoted.to_string()),
-        Some(Value::Int(_)) => Value::Int(raw.parse().map_err(|_| format!("`{raw}` is not a whole number"))?),
-        Some(Value::Bool(_)) => Value::Bool(raw.parse().map_err(|_| format!("`{raw}` is not true or false"))?),
-        Some(Value::List(_)) => return Err("a list changes only with `set name += \"item\"`".into()),
-        None => match raw {
-            "true" => Value::Bool(true),
-            "false" => Value::Bool(false),
-            _ => raw.parse().map_or_else(|_| Value::Str(unquoted.to_string()), Value::Int),
-        },
+        Value::Str(_) => Value::Str(unquoted.to_string()),
+        Value::Int(_) => Value::Int(raw.parse().map_err(|_| format!("`{raw}` is not a whole number"))?),
+        Value::Bool(_) => Value::Bool(raw.parse().map_err(|_| format!("`{raw}` is not true or false"))?),
+        Value::List(_) => return Err("a list changes only with `set name += \"item\"`".into()),
     })
 }
 
@@ -97,19 +92,10 @@ impl<'p> Session<'p> {
     /// bad value, or a variable the script doesn't declare (a typo would otherwise do nothing).
     pub fn start_at(program: &'p Program, persistent: quillstone_script::Vars, seed: u64, at: &StartAt) -> Result<(Session<'p>, Vec<Cmd>), String> {
         let pc = at.label.as_deref().map_or(Ok(0), |l| label_pc(program, l))?;
-        let mut session = Session {
-            program,
-            state: State::with_seed(program, seed),
-            history: Vec::new(),
-            redo: Vec::new(),
-            redo_tip: None,
-            persistent,
-            persistent_changed: false,
-        };
-        session.overlay();
+        let mut session = Session::fresh(program, persistent, seed);
         for (name, raw) in &at.sets {
             let declared = program.vars.get(name).ok_or(format!("--set {name}: the script declares no variable `{name}`"))?;
-            let value = typed(Some(declared), raw).map_err(|m| format!("--set {name}: {m}"))?;
+            let value = typed(declared, raw).map_err(|m| format!("--set {name}: {m}"))?;
             session.state.vars.insert(name.clone(), value);
         }
         session.state.pc = pc;
@@ -142,7 +128,6 @@ impl<'p> Session<'p> {
         let cmds = step(&mut self.state, self.program, None);
         self.push_history(before, Input::Advance);
         self.redo.clear();
-        self.redo_tip = None;
         self.note(&cmds);
         Ok(self.state.redraw())
     }
