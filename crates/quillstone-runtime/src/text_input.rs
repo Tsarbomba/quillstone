@@ -4,6 +4,7 @@
 use quillstone_script::markup::rich;
 use quillstone_script::{parse, Program, Value};
 
+use crate::test_util::says;
 use crate::{explore::explore, finish_input, interpolate, read_persistent, write_persistent, Cmd, Input, Session};
 
 const STORY: &str = "---\nvars: { hero.name: \"nobody\" }\n---\n# start\n**A:** Before.\n::input{var=hero.name prompt=\"Your name, {hero.name}?\" default=\"Alex\" max=8}\n**A:** Hello {hero.name}!\n";
@@ -13,10 +14,6 @@ fn ask(cmds: &[Cmd]) -> Option<(String, Option<String>, usize)> {
         Cmd::AskInput { prompt, default, max } => Some((prompt.clone(), default.clone(), *max)),
         _ => None,
     })
-}
-
-fn says(cmds: &[Cmd], text: &str) -> bool {
-    cmds.iter().any(|c| matches!(c, Cmd::Say { text: t, .. } if t == text))
 }
 
 fn name(s: &Session) -> Value {

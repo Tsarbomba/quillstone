@@ -1,6 +1,7 @@
 //! Locked choice options in the game shell: nothing but a pickable option can be hovered,
 //! focused, clicked or chosen by number, and the timer never picks a locked one.
 
+use super::test_util::{line};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -34,10 +35,6 @@ fn at_choice<'p>(p: &'p Program) -> Game<'p> {
     g.handle(Event::Key(Key::Space));
     assert_eq!(g.view().choices.len(), 4);
     g
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 fn none(_: &str) -> Option<Size> {

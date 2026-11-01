@@ -15,6 +15,8 @@ mod explore;
 #[cfg(test)]
 mod hardening;
 #[cfg(test)]
+mod test_util;
+#[cfg(test)]
 mod review3_tests;
 #[cfg(test)]
 mod anim_tests;

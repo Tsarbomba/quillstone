@@ -1,6 +1,7 @@
 //! Timed `::hotspots{time=.. default=#label}` and hotspots that follow a sprite, in the game shell:
 //! the same countdown as a timed choice, and clicks on a sprite where it is now.
 
+use super::test_util::{key, line};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -40,14 +41,6 @@ fn new_game<'p>(p: &'p Program) -> Game<'p> {
     g.start_story();
     g.draw_list(&picture); // a frame notes the picture sizes, as the player always draws before the next click
     g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 /// Tick in small steps like frames, drawing each time.

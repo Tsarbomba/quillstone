@@ -1,9 +1,9 @@
 //! Scene replays in the game shell: unlocking, the Scenes tab, what a replay
 //! changes (nothing that lasts), and the ways it ends.
 
+use super::test_util::{click, instant, key, line};
 use super::*;
 use crate::extras::{cell_rect, tab_rect, track_rect, Tab};
-use crate::settings::Settings;
 use quillstone_script::{parse, Vars};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -38,24 +38,6 @@ impl Shared {
 }
 
 const SRC: &str = "---\nvars: { trust: 0 }\npersistent: { roof_visits: 0 }\ngallery: [cg.png]\nreplays: { roof: \"The roof\", walk: \"Night walk\" }\n---\n# start\n**A:** intro\n::choice\n- [Roof](#roof)\n- [Walk](#walk)\n::\n# roof\n::set{roof_visits += 1}\n::bg{src=cg.png}\n**A:** on the roof\n::choice\n- [Kind](#kind){trust+=1}\n- [Cold](#cold)\n::\n# kind\n**A:** kind\n::end_replay\n::jump{to=finale}\n# cold\n**A:** cold\n::end_replay\n::jump{to=finale}\n# walk\n**A:** walking\n::end_replay\n::jump{to=finale}\n# finale\n**A:** finale {trust}\n";
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
-fn click(g: &mut Game, r: Rect) {
-    g.handle(Event::CursorMoved(Some((r.x + r.w / 2.0, r.y + r.h / 2.0))));
-    g.handle(Event::Press(Button::Left));
-    g.handle(Event::Release(Button::Left));
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
-}
 
 fn notice(g: &Game) -> Option<String> {
     g.notice.as_ref().map(|(m, _)| m.clone())

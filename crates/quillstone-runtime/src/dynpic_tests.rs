@@ -3,6 +3,7 @@
 
 use quillstone_script::{parse, Program, MISSING_PICTURE};
 
+use crate::test_util::next;
 use crate::{Cmd, Input, Session};
 
 const SRC: &str = "\
@@ -26,10 +27,6 @@ Three.
 
 fn program() -> Program {
     parse(SRC).unwrap()
-}
-
-fn next(game: &mut Session) -> Vec<Cmd> {
-    game.input(Input::Advance)
 }
 
 fn warnings(cmds: &[Cmd]) -> Vec<&str> {

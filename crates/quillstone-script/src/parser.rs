@@ -3133,12 +3133,9 @@ impl Attrs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::ok;
 
     const DEMO: &str = include_str!("../../../examples/demo.quill.md");
-
-    fn ok(src: &str) -> Program {
-        parse(src).unwrap_or_else(|e| panic!("unexpected errors: {e:?}"))
-    }
 
     fn errs(src: &str) -> Vec<ParseError> {
         parse(src).expect_err("expected parse errors")

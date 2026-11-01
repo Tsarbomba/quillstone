@@ -3,7 +3,8 @@
 
 use quillstone_script::{parse, Program};
 
-use crate::{explore, Cmd, Input, Session, SpriteState};
+use crate::test_util::next;
+use crate::{explore, Cmd, Session, SpriteState};
 
 const SRC: &str = "\
 ---
@@ -37,10 +38,6 @@ Nine.
 
 fn program() -> Program {
     parse(SRC).unwrap()
-}
-
-fn next(game: &mut Session) -> Vec<Cmd> {
-    game.input(Input::Advance)
 }
 
 fn layers(game: &Session, id: &str) -> Vec<(String, String)> {

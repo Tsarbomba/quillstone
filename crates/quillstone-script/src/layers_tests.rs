@@ -1,5 +1,6 @@
 //! Layered sprites in the parser: `::character{layers=... layer_sprites=...}` and `::show{mika eyes=open}`.
 
+use crate::test_util::errors;
 use crate::{parse, AssetKind, Op, Program};
 
 const HEAD: &str = "---\nvars: { mood: \"smile\", n: 3 }\n---\n\
@@ -8,11 +9,6 @@ const HEAD: &str = "---\nvars: { mood: \"smile\", n: 3 }\n---\n\
 
 fn ok(body: &str) -> Program {
     parse(&format!("{HEAD}{body}")).unwrap_or_else(|e| panic!("unexpected errors: {e:?}"))
-}
-
-/// The messages of the errors with their lines (none when the script parses).
-fn errors(src: &str) -> Vec<String> {
-    parse(src).err().unwrap_or_default().into_iter().map(|e| format!("{}: {}", e.line, e.message)).collect()
 }
 
 fn bad(body: &str, needle: &str) {

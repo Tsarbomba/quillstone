@@ -2,6 +2,7 @@
 
 use quillstone_script::{parse, Program, Tint};
 
+use crate::test_util::replace_records;
 use crate::{Cmd, Input, Session};
 
 const SRC: &str = "\
@@ -91,30 +92,12 @@ fn a_save_from_before_tints_loads_none() {
     assert_eq!(loaded.state().tint, None);
 }
 
-/// The first state's `tint` records, replaced by `lines`.
-fn with_records(save: &str, lines: &[&str]) -> String {
-    let mut out = String::new();
-    let mut done = false;
-    for l in save.lines().filter(|l| !l.starts_with("tint ")) {
-        out.push_str(l);
-        out.push('\n');
-        if l.starts_with("rng ") && !done {
-            done = true;
-            for r in lines {
-                out.push_str(r);
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
 #[test]
 fn hostile_records_are_refused_or_made_safe() {
     let p = program();
     let (game, _) = Session::start(&p);
     let save = game.save();
-    let refused = |rec: &str| Session::load(&p, &with_records(&save, &[rec])).is_err();
+    let refused = |rec: &str| Session::load(&p, &replace_records(&save, "tint ", &[rec])).is_err();
     assert!(refused("tint"), "nothing");
     assert!(refused("tint 1,0,0"), "no alpha");
     assert!(refused("tint 1,0 0.5"), "two components");
@@ -122,7 +105,7 @@ fn hostile_records_are_refused_or_made_safe() {
     assert!(refused("tint red 0.5"));
     assert!(refused("tint 1,0,0 heavy"));
     assert!(refused("tint - 0.5"), "no colour");
-    let loaded = |rec: &str| Session::load(&p, &with_records(&save, &[rec])).unwrap().0.state().tint.unwrap();
+    let loaded = |rec: &str| Session::load(&p, &replace_records(&save, "tint ", &[rec])).unwrap().0.state().tint.unwrap();
     // Numbers are clamped, NaN falls back.
     let big = loaded("tint 9,-4,0.5 5");
     assert_eq!((big.color, big.alpha), ([1.0, 0.0, 0.5], 0.9));
@@ -131,7 +114,7 @@ fn hostile_records_are_refused_or_made_safe() {
     let nan = loaded("tint NaN,inf,0.2 NaN");
     assert_eq!((nan.color, nan.alpha), ([0.0, 0.0, 0.2], 0.0));
     // Two records are one setting: the last wins.
-    let (twice, _) = Session::load(&p, &with_records(&save, &["tint 1,0,0 0.5", "tint 0,1,0 0.6"])).unwrap();
+    let (twice, _) = Session::load(&p, &replace_records(&save, "tint ", &["tint 1,0,0 0.5", "tint 0,1,0 0.6"])).unwrap();
     assert_eq!(twice.state().tint, Some(Tint { color: [0.0, 1.0, 0.0], alpha: 0.6 }));
 }
 

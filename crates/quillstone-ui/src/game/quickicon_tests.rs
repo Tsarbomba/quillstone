@@ -1,14 +1,11 @@
 //! Quick menu buttons drawn as pictures at the places a theme gives them.
 
+use super::test_util::{instant, key, line};
 use super::*;
 use crate::settings::Settings;
 use quillstone_script::parse;
 
 const THREE: &str = "**A:** one\n**A:** two\n**A:** three\n";
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
 
 fn sized(_: &str) -> Option<Size> {
     Some(Size::new(60.0, 50.0))
@@ -26,10 +23,6 @@ fn game_with<'p>(p: &'p Program, settings: Settings, theme: &str) -> Game<'p> {
     g.set_theme(theme);
     g.draw_list(&sized); // the first frame teaches the game the pictures' sizes
     g
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 fn images(g: &Game) -> Vec<(String, f32)> {
@@ -103,10 +96,6 @@ fn hover_mode_fades_picture_buttons_in_over_a_placed_button_too() {
     g.handle(Event::CursorMoved(Some((900.0, 300.0))));
     g.tick(1.0, false);
     assert!(images(&g).is_empty(), "faded out again");
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
 }
 
 #[test]

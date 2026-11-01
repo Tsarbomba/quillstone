@@ -1487,6 +1487,8 @@ impl<'p> Game<'p> {
 }
 
 #[cfg(test)]
+mod test_util;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod input_tests;

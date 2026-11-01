@@ -2,6 +2,7 @@
 
 use quillstone_script::{parse, ParticleKind, Particles, Program};
 
+use crate::test_util::replace_records;
 use crate::{Cmd, Input, Session};
 
 const SRC: &str = "\
@@ -93,30 +94,12 @@ fn a_save_from_before_particles_loads_none() {
     assert_eq!(loaded.state().particles, None);
 }
 
-/// The first state's `particles` records, replaced by `lines`.
-fn with_records(save: &str, lines: &[&str]) -> String {
-    let mut out = String::new();
-    let mut done = false;
-    for l in save.lines().filter(|l| !l.starts_with("particles ")) {
-        out.push_str(l);
-        out.push('\n');
-        if l.starts_with("rng ") && !done {
-            done = true;
-            for r in lines {
-                out.push_str(r);
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
 #[test]
 fn hostile_records_are_refused_or_made_safe() {
     let p = program();
     let (game, _) = Session::start(&p);
     let save = game.save();
-    let refused = |rec: &str| Session::load(&p, &with_records(&save, &[rec])).is_err();
+    let refused = |rec: &str| Session::load(&p, &replace_records(&save, "particles ", &[rec])).is_err();
     assert!(refused("particles image 10 1 0 false \"../../secret.png\""));
     assert!(refused("particles image 10 1 0 false \"/etc/passwd\""));
     assert!(refused("particles image 10 1 0 false \"C:x.png\""));
@@ -129,7 +112,7 @@ fn hostile_records_are_refused_or_made_safe() {
     assert!(refused("particles snow 10 1 0 maybe"));
     assert!(refused("particles snow 10 1 0"), "too short");
     assert!(refused("particles snow 99999999999999999999 1 0 false"));
-    let loaded = |rec: &str| Session::load(&p, &with_records(&save, &[rec])).unwrap().0.state().particles.clone().unwrap();
+    let loaded = |rec: &str| Session::load(&p, &replace_records(&save, "particles ", &[rec])).unwrap().0.state().particles.clone().unwrap();
     // Numbers are clamped, NaN falls back.
     let big = loaded("particles rain 1000000 100 -100 true");
     assert_eq!((big.amount, big.speed, big.wind, big.back), (200, 5.0, -2.0, true));
@@ -138,7 +121,7 @@ fn hostile_records_are_refused_or_made_safe() {
     let nan = loaded("particles snow 0 NaN inf false");
     assert_eq!((nan.amount, nan.speed, nan.wind), (1, 1.0, 0.0));
     // Two records are one setting: the last wins.
-    let (twice, _) = Session::load(&p, &with_records(&save, &["particles rain 5 1 0 false", "particles snow 6 1 0 false"])).unwrap();
+    let (twice, _) = Session::load(&p, &replace_records(&save, "particles ", &["particles rain 5 1 0 false", "particles snow 6 1 0 false"])).unwrap();
     assert_eq!(twice.state().particles.as_ref().map(|p| (p.kind.clone(), p.amount)), Some((ParticleKind::Snow, 6)));
 }
 

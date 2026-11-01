@@ -1,18 +1,9 @@
 //! The HUD in the game shell: live text, where it is drawn and where it is not, and the demo.
 
+use super::test_util::{instant_game, key};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
-
-fn new_game<'p>(p: &'p Program) -> Game<'p> {
-    let mut g = Game::new(p, Settings { text_speed: 0.0, ..Settings::default() }, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
 
 fn has_text(list: &[Draw], what: &str) -> bool {
     list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == what))
@@ -53,7 +44,7 @@ fn fill(list: &[Draw]) -> Option<f32> {
 #[test]
 fn the_draw_list_follows_the_variables() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     let list = g.draw_list(&none);
     assert!(has_text(&list, "Gold 1") && !has_text(&list, "LOW"));
     assert_eq!(fill(&list), Some(160.0));
@@ -77,7 +68,7 @@ fn the_draw_list_follows_the_variables() {
 #[test]
 fn the_hud_is_under_a_confirm_but_not_under_full_screen_screens() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     g.ask("Sure?", Then::Quit);
     let list = g.draw_list(&none);
     assert!(has_text(&list, "Sure?") && has_text(&list, "Gold 1"), "the story, HUD included, stays under a confirm");
@@ -89,7 +80,7 @@ fn the_hud_is_under_a_confirm_but_not_under_full_screen_screens() {
         ("load", |g| key(g, Key::Char('l'))),
     ];
     for (name, open) in opens {
-        let mut g = new_game(&p);
+        let mut g = instant_game(&p);
         assert!(has_text(&g.draw_list(&none), "Gold 1"));
         open(&mut g);
         assert_ne!(g.screen(), Screen::Story, "{name}");
@@ -106,7 +97,7 @@ fn the_hud_is_under_a_confirm_but_not_under_full_screen_screens() {
 #[test]
 fn the_input_and_inventory_screens_have_no_hud() {
     let p = parse("---\nvars: { name: \"A\", gold: 3, bag: [] }\ninventory: bag\n---\n::hud{id=g text=\"Gold {gold}\"}\n::input{var=name prompt=\"Name?\"}\n::inventory\nDone.\n").unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert_eq!(g.screen(), Screen::Input);
     assert!(!has_text(&g.draw_list(&none), "Gold 3"));
     g.handle(Event::Text("Bo".into()));
@@ -118,7 +109,7 @@ fn the_input_and_inventory_screens_have_no_hud() {
 #[test]
 fn the_u_key_hides_the_hud_with_the_rest_of_the_ui_and_the_next_key_brings_it_back() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Char('u'));
     let list = g.draw_list(&none);
     assert!(!has_text(&list, "Gold 1") && fill(&list).is_none() && !has_text(&list, "Start."));
@@ -131,7 +122,7 @@ fn the_u_key_hides_the_hud_with_the_rest_of_the_ui_and_the_next_key_brings_it_ba
 #[test]
 fn textbox_hide_does_not_hide_the_hud() {
     let p = parse("::hud{id=g text=Gold}\n::textbox{hide}\n::wait{time=5}\n").unwrap();
-    let g = new_game(&p);
+    let g = instant_game(&p);
     assert!(g.view().textbox_hidden());
     assert!(has_text(&g.draw_list(&none), "Gold"));
 }
@@ -156,7 +147,7 @@ fn the_main_menu_has_no_hud_and_continuing_brings_it_back() {
 #[test]
 fn a_hot_reload_keeps_the_elements_and_picks_up_the_edited_ones() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     let edited = parse(&STORY.replace("Gold {gold}", "Coins {gold}")).unwrap();
     g.reload(&edited).unwrap();
@@ -166,7 +157,7 @@ fn a_hot_reload_keeps_the_elements_and_picks_up_the_edited_ones() {
 #[test]
 fn skipping_does_not_wait_for_a_fade() {
     let p = parse("::hud{id=g text=Gold fade=5}\nOne.\nTwo.\n").unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert!(!has_text(&g.draw_list(&none), "Gold"), "fading in");
     g.tick(1.0, false);
     let list = g.draw_list(&none);
@@ -177,7 +168,7 @@ fn skipping_does_not_wait_for_a_fade() {
 #[test]
 fn the_hud_demo_plays_to_the_end_with_live_numbers() {
     let p = parse(include_str!("../../../../examples/hud.quill.md")).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     // the title card sits on black: the text over the cover colour, before the textbox
     for _ in 0..10 {
         g.tick(0.5, false);
@@ -293,7 +284,7 @@ fn phone(g: &Game) -> (String, f32) {
 #[test]
 fn a_click_on_a_hud_button_calls_the_label_and_the_line_comes_back_without_advancing() {
     let p = parse(PHONE).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert_eq!(said(&g), "one");
     click(&mut g, ON_PHONE);
     assert_eq!((said(&g).as_str(), calls(&g)), ("Ring.", 1));
@@ -306,7 +297,7 @@ fn a_click_on_a_hud_button_calls_the_label_and_the_line_comes_back_without_advan
 #[test]
 fn a_hud_button_is_hit_where_it_is_drawn_and_shows_its_hover_picture_under_the_mouse() {
     let p = parse(PHONE).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert_eq!(phone(&g).0, "assets/phone.png");
     g.draw_list(&sized);
     g.handle(Event::CursorMoved(ON_PHONE));
@@ -329,7 +320,7 @@ fn a_hud_button_is_hit_where_it_is_drawn_and_shows_its_hover_picture_under_the_m
 #[test]
 fn a_hud_button_is_dimmed_and_does_nothing_over_a_choice_or_a_wait() {
     let p = parse(PHONE).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert_eq!(phone(&g).1, 1.0);
     key(&mut g, Key::Space);
     key(&mut g, Key::Space);
@@ -350,13 +341,13 @@ fn a_hud_button_is_dimmed_and_does_nothing_over_a_choice_or_a_wait() {
 #[test]
 fn an_open_button_opens_the_screen_like_its_key_and_does_not_advance() {
     let p = parse(PHONE).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     click(&mut g, ON_LOG);
     assert!(g.screen() == Screen::Inventory && g.bag.journal, "the journal");
     key(&mut g, Key::Char('j'));
     assert_eq!((g.screen(), said(&g).as_str()), (Screen::Story, "one"));
     let p = parse(&PHONE.replace("open=journal", "open=settings")).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     click(&mut g, ON_LOG);
     assert_eq!(g.screen(), Screen::Settings);
 }

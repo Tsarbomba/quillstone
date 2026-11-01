@@ -3,6 +3,7 @@
 
 use quillstone_script::{parse, Ease, Program};
 
+use crate::test_util::next;
 use crate::{Cmd, Input, Session, SpriteLoop};
 
 const SRC: &str = "\
@@ -34,10 +35,6 @@ Nine.
 
 fn program() -> Program {
     parse(SRC).unwrap()
-}
-
-fn next(game: &mut Session) -> Vec<Cmd> {
-    game.input(Input::Advance)
 }
 
 fn sprite<'a>(game: &'a Session) -> &'a crate::SpriteState {

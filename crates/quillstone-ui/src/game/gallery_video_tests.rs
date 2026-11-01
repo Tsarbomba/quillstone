@@ -1,6 +1,7 @@
 //! Video entries in the extras gallery: a placeholder tile, a looping full-screen viewer that
 //! plays only while it is open, and arrows through pictures and clips alike.
 
+use super::test_util::{key};
 use super::*;
 use crate::extras::{cell_rect, Tab};
 use quillstone_runtime::write_persistent;
@@ -19,10 +20,6 @@ fn game<'p>(p: &'p Program) -> Game<'p> {
     let mut g = Game::new(p, Settings::default(), Box::new(storage));
     g.open_extras();
     g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
 }
 
 fn click_cell(g: &mut Game, i: usize) {

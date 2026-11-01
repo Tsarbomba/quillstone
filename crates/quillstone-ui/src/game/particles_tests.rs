@@ -1,19 +1,10 @@
 //! Ambient particles in the game shell: they keep the screen moving, freeze under menus,
 //! and come back with a loaded save.
 
+use super::test_util::{instant_game, key};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
-
-fn new_game<'p>(p: &'p Program) -> Game<'p> {
-    let mut g = Game::new(p, Settings { text_speed: 0.0, ..Settings::default() }, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
 
 fn flakes(g: &Game) -> Vec<Draw> {
     let any = |_: &str| Some(Size::new(100.0, 100.0));
@@ -31,7 +22,7 @@ const STORY: &str = "One.\n::particles{snow}\nTwo.\n::particles{none fade=0}\nTh
 #[test]
 fn they_move_while_the_story_runs_and_freeze_under_the_settings() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert!(flakes(&g).is_empty());
     key(&mut g, Key::Space);
     run(&mut g, 1.5);
@@ -53,7 +44,7 @@ fn they_move_while_the_story_runs_and_freeze_under_the_settings() {
 #[test]
 fn a_stop_ends_them_and_a_loaded_save_brings_them_back() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     run(&mut g, 2.0);
     key(&mut g, Key::F5);

@@ -1,19 +1,7 @@
 //! `::tint` in the parser.
 
-use crate::{parse, Op, Program, Tint};
-
-fn ok(src: &str) -> Program {
-    parse(src).unwrap_or_else(|e| panic!("unexpected errors: {e:?}"))
-}
-
-fn errors(src: &str) -> Vec<String> {
-    parse(src).err().unwrap_or_default().into_iter().map(|e| format!("{}: {}", e.line, e.message)).collect()
-}
-
-fn bad(src: &str, needle: &str) {
-    let e = errors(src);
-    assert!(e.iter().any(|m| m.contains(needle)), "wanted `{needle}` in {e:?}");
-}
+use crate::test_util::{bad, ok};
+use crate::{Op, Program, Tint};
 
 fn set(p: &Program, at: usize) -> (Option<Tint>, f32) {
     match &p.ops[at] {

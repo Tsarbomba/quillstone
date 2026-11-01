@@ -209,14 +209,11 @@ pub fn read_persistent(text: &str) -> Vars {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::says;
     use crate::Input;
     use quillstone_script::parse;
 
     const STORY: &str = "---\npersistent: { good_end: false }\ngallery: [cg.png]\nmusic_room: [song.ogg]\n---\n# start\n::if{good_end}\nWelcome back.\n::endif\n::choice\n- [Be kind](#kind)\n- [Leave](#leave)\n::\n# kind\n::bg{src=cg.png}\n::music{src=song.ogg}\n::set{good_end=true}\nA warm ending.\n::end\n# leave\nYou leave.\n";
-
-    fn says(cmds: &[Cmd], text: &str) -> bool {
-        cmds.iter().any(|c| matches!(c, Cmd::Say { text: t, .. } if t == text))
-    }
 
     #[test]
     fn a_dot_slash_gallery_entry_unlocks_from_the_plain_spelling() {

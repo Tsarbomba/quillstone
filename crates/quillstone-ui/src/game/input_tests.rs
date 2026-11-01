@@ -1,5 +1,6 @@
 //! Tests for the `::input` screen (see `input.rs`).
 
+use super::test_util::{click, instant, key, line, new_game};
 use super::*;
 use crate::settings::Settings;
 use quillstone_render::Rect;
@@ -8,20 +9,6 @@ use quillstone_script::parse;
 
 const ASK: &str = "---\nvars: { hero.name: \"nobody\" }\n---\n**A:** First.\n::input{var=hero.name prompt=\"Your name?\" default=\"Alex\" max=8}\n**A:** Hi {hero.name}!\n**A:** Last.\n";
 const NO_DEFAULT: &str = "---\nvars: { n: \"-\" }\n---\n**A:** First.\n::input{var=n prompt=\"Your name?\" max=5}\n**A:** Hi {n}!\n";
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
-
-fn new_game<'p>(p: &'p Program, settings: Settings) -> Game<'p> {
-    let mut g = Game::new(p, settings, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
 
 fn type_in(g: &mut Game, s: &str) {
     g.handle(Event::Text(s.to_string()));
@@ -35,18 +22,8 @@ fn at_input<'p>(p: &'p Program) -> Game<'p> {
     g
 }
 
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default() // already without tags
-}
-
 fn texts(g: &Game) -> Vec<String> {
     g.draw_list(&|_| None).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.clone()) } else { None }).collect()
-}
-
-fn click(g: &mut Game, r: Rect) {
-    g.handle(Event::CursorMoved(Some((r.x + r.w / 2.0, r.y + r.h / 2.0))));
-    g.handle(Event::Press(Button::Left));
-    g.handle(Event::Release(Button::Left));
 }
 
 fn field(g: &Game) -> String {

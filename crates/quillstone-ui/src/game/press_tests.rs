@@ -1,6 +1,7 @@
 //! `::press` in the game shell: presses of the asked key count, other keys are swallowed, the clock stops,
 //! restarts and is drawn like a timed choice's, and the result goes to the story.
 
+use super::test_util::{key, line};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -20,16 +21,8 @@ fn at_prompt(p: &Program) -> Game<'_> {
     g
 }
 
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
 fn on_prompt(g: &Game) -> bool {
     matches!(g.session.state().pending, Some(Cmd::ShowPress { .. }))
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 fn ok(g: &Game) -> Value {

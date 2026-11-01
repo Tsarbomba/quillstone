@@ -1,6 +1,7 @@
 //! `::timing` in the game shell: a press stops the marker where the clock has put it, the result goes to
 //! the story, and the clock stops, restarts and is drawn like a timed choice's.
 
+use super::test_util::{key, line};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -27,14 +28,6 @@ fn new_game<'p>(p: &'p Program, settings: Settings) -> Game<'p> {
     let mut g = Game::new(p, Settings { text_speed: 0.0, ..settings }, Box::new(crate::MemoryStorage::default()));
     g.start_story();
     g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 fn at_bar(p: &Program) -> Game<'_> {

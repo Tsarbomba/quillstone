@@ -3,6 +3,7 @@
 
 use quillstone_script::{parse, Catalog, Program, Value};
 
+use crate::test_util::says;
 use crate::explore::explore;
 use crate::{Cmd, Input, Session};
 
@@ -20,10 +21,6 @@ fn at_bar(p: &Program) -> Session<'_> {
     let cmds = s.input(Input::Advance);
     assert!(matches!(cmds.last(), Some(Cmd::ShowTiming { .. })), "{cmds:?}");
     s
-}
-
-fn says(cmds: &[Cmd], text: &str) -> bool {
-    cmds.iter().any(|c| matches!(c, Cmd::Say { text: t, .. } if t == text))
 }
 
 fn hit(s: &Session) -> Value {

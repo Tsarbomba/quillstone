@@ -1,5 +1,6 @@
 //! Tests for the developer console (see `console.rs`).
 
+use super::test_util::{key, line};
 use super::*;
 use crate::settings::Settings;
 use quillstone_script::parse;
@@ -14,10 +15,6 @@ fn dev_game<'p>(p: &'p Program, dev: bool) -> Game<'p> {
     g
 }
 
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
 /// Type `s` and press Enter.
 fn run(g: &mut Game, s: &str) {
     g.handle(Event::Text(s.to_string()));
@@ -26,10 +23,6 @@ fn run(g: &mut Game, s: &str) {
 
 fn answer(g: &Game) -> Vec<String> {
     g.console.as_ref().map(|c| c.lines.clone()).unwrap_or_default()
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 #[test]

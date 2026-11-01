@@ -2,6 +2,7 @@
 
 use quillstone_script::{bg_color, parse, HudKind, Program};
 
+use crate::test_util::replace_records;
 use crate::{Cmd, Input, Session, State};
 
 const SRC: &str = "\
@@ -126,30 +127,12 @@ fn a_save_from_before_hud_loads_none() {
     assert!(loaded.state().hud.is_empty());
 }
 
-/// The first state's `hud` records, replaced by `lines`.
-fn with_hud_records(save: &str, lines: &[&str]) -> String {
-    let mut out = String::new();
-    let mut done = false;
-    for l in save.lines().filter(|l| !l.starts_with("hud ")) {
-        out.push_str(l);
-        out.push('\n');
-        if l.starts_with("rng ") && !done {
-            done = true;
-            for h in lines {
-                out.push_str(h);
-                out.push('\n');
-            }
-        }
-    }
-    out
-}
-
 #[test]
 fn hostile_hud_records_are_refused_or_made_safe() {
     let p = program();
     let (game, _) = Session::start(&p);
     let save = game.save();
-    let refused = |rec: &str| Session::load(&p, &with_hud_records(&save, &[rec])).is_err();
+    let refused = |rec: &str| Session::load(&p, &replace_records(&save, "hud ", &[rec])).is_err();
     assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"../../secret.png\" 1"));
     assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"/etc/passwd\" 1"));
     assert!(refused("hud image \"icon\" 0.5 0.5 \"\" \"C:x.png\" 1"));
@@ -165,10 +148,10 @@ fn hostile_hud_records_are_refused_or_made_safe() {
     assert!(refused(&format!("hud text \"a\" 0 0 \"\" \"{long}\" - - - 0")));
     let many: Vec<String> = (0..300).map(|i| format!("hud text \"e{i}\" 0 0 \"\" \"x\" - - - 0")).collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
-    assert!(Session::load(&p, &with_hud_records(&save, &many)).is_err());
+    assert!(Session::load(&p, &replace_records(&save, "hud ", &many)).is_err());
     // Numbers are clamped, NaN falls back.
     let (loaded, _) =
-        Session::load(&p, &with_hud_records(&save, &["hud text \"a\" 7 -3 \"\" \"x\" 99999 2,2,2,NaN - -1"])).unwrap();
+        Session::load(&p, &replace_records(&save, "hud ", &["hud text \"a\" 7 -3 \"\" \"x\" 99999 2,2,2,NaN - -1"])).unwrap();
     let h = &loaded.state().hud[0];
     assert_eq!((h.x, h.y), (1.0, 0.0));
     let HudKind::Text { size, color, pad, .. } = &h.kind else { panic!() };
@@ -176,7 +159,7 @@ fn hostile_hud_records_are_refused_or_made_safe() {
     assert_eq!(*color, Some([1.0, 1.0, 1.0, 0.0]));
     // The same id twice is one element.
     let twice = ["hud text \"a\" 0 0 \"\" \"x\" - - - 0", "hud text \"a\" 0.5 0 \"\" \"y\" - - - 0"];
-    let (loaded, _) = Session::load(&p, &with_hud_records(&save, &twice)).unwrap();
+    let (loaded, _) = Session::load(&p, &replace_records(&save, "hud ", &twice)).unwrap();
     assert_eq!(loaded.state().hud.len(), 1);
 }
 

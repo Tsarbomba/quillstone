@@ -3,28 +3,11 @@
 
 use quillstone_script::{parse, HudExpr, Program, Value};
 
+use crate::test_util::replace_records;
 use crate::{Input, Session, MAX_LIST_ITEMS, MAX_SAVE_BYTES};
 
 fn program() -> Program {
     parse("---\nvars: { gold: 2 }\n---\n# start\nHello.\n::hud{id=g text=\"Gold {gold}\"}\nBye.\n").unwrap()
-}
-
-/// The first state's `hud` records replaced by `lines` (as in `hud_tests`).
-fn with_hud_records(save: &str, lines: &[String]) -> String {
-    let mut out = String::new();
-    let mut done = false;
-    for l in save.lines().filter(|l| !l.starts_with("hud ")) {
-        out.push_str(l);
-        out.push('\n');
-        if l.starts_with("rng ") && !done {
-            done = true;
-            for h in lines {
-                out.push_str(h);
-                out.push('\n');
-            }
-        }
-    }
-    out
 }
 
 /// A thread with a 512 KB stack: smaller than a Windows main thread (1 MB).
@@ -59,7 +42,7 @@ fn deeply_nested_hud_expressions_are_errors_not_stack_overflows() {
                 format!("hud text \"a\" 0 0 \"{src}\" \"x\" - - - 0"),
                 format!("hud bar \"a\" 0 0 \"\" \"{src}\" \"2\" 10 10 - 0,0,0,1 - 0"),
             ] {
-                assert!(Session::load(&p, &with_hud_records(&save, &[rec])).is_err(), "{}", &src[..20]);
+                assert!(Session::load(&p, &replace_records(&save, "hud ", &[rec])).is_err(), "{}", &src[..20]);
             }
         }
     });
@@ -88,11 +71,11 @@ fn hud_text_in_one_state_is_capped_in_total() {
     // 100 records of 1,500 bytes each: every record is fine alone and under the record count
     let text = "x".repeat(1500);
     let many: Vec<String> = (0..100).map(|i| format!("hud text \"e{i}\" 0 0 \"\" \"{text}\" - - - 0")).collect();
-    let e = Session::load(&p, &with_hud_records(&save, &many)).err().expect("refused");
+    let e = Session::load(&p, &replace_records(&save, "hud ", &many)).err().expect("refused");
     assert!(e.contains("bytes of text"), "{e}");
     // a normal handful is fine
     let few = &many[..10];
-    assert!(Session::load(&p, &with_hud_records(&save, few)).is_ok());
+    assert!(Session::load(&p, &replace_records(&save, "hud ", few)).is_ok());
 }
 
 /// A story whose list holds `items` entries from the start, then says `lines` lines.

@@ -1,14 +1,9 @@
 //! A tint in the game shell: it eases in by itself, stays under menus' clock rules, and comes back with a loaded save.
 
+use super::test_util::{instant_game};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
-
-fn new_game<'p>(p: &'p Program) -> Game<'p> {
-    let mut g = Game::new(p, Settings { text_speed: 0.0, ..Settings::default() }, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
 
 fn washes(g: &Game) -> Vec<[f32; 4]> {
     let any = |_: &str| Some(Size::new(100.0, 100.0));
@@ -32,7 +27,7 @@ const STORY: &str = "One.\n::tint{color=#0000ff alpha=0.5 fade=2}\nTwo.\n::tint{
 #[test]
 fn it_eases_in_while_the_story_runs_and_clears() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert!(washes(&g).is_empty());
     g.handle(Event::Key(Key::Space));
     assert!(g.needs_ticks(), "the fade changes the screen by itself");
@@ -49,7 +44,7 @@ fn it_eases_in_while_the_story_runs_and_clears() {
 #[test]
 fn a_loaded_save_has_it_at_once() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     g.handle(Event::Key(Key::Space));
     run(&mut g, 3.0);
     g.handle(Event::Key(Key::F5));

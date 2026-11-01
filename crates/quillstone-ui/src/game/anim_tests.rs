@@ -1,19 +1,10 @@
 //! Frame animations and looping moves in the game shell: ticking, freezing under menus,
 //! loading ahead, hot reload, and the demo.
 
+use super::test_util::{instant_game, key};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
-
-fn new_game<'p>(p: &'p Program) -> Game<'p> {
-    let mut g = Game::new(p, Settings { text_speed: 0.0, ..Settings::default() }, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
 
 fn big(_: &str) -> Option<Size> {
     Some(Size::new(500.0, 1000.0))
@@ -75,7 +66,7 @@ Done.
 #[test]
 fn nothing_ticks_while_nothing_is_animated() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     g.tick(0.1, false);
     assert!(!g.needs_ticks());
     assert_eq!(pics(&g), ["plain.png", "still.png"]);
@@ -84,7 +75,7 @@ fn nothing_ticks_while_nothing_is_animated() {
 #[test]
 fn a_talking_sprite_changes_picture_and_keeps_the_frontend_ticking() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space); // Talking
     assert!(g.needs_ticks(), "a multi-frame animation is visible");
     let mut seen = Vec::new();
@@ -102,7 +93,7 @@ fn a_talking_sprite_changes_picture_and_keeps_the_frontend_ticking() {
 #[test]
 fn a_one_shot_animation_holds_and_then_stops_asking_for_ticks() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     key(&mut g, Key::Space); // One shot
     assert_eq!(pics(&g).last().unwrap(), "one.png");
@@ -119,7 +110,7 @@ fn a_one_shot_animation_holds_and_then_stops_asking_for_ticks() {
 #[test]
 fn a_background_animation_ticks_and_a_single_frame_one_does_not() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     for _ in 0..3 {
         key(&mut g, Key::Space);
     }
@@ -138,7 +129,7 @@ fn a_background_animation_ticks_and_a_single_frame_one_does_not() {
 #[test]
 fn a_looping_move_moves_the_sprite_up_and_down_for_ever() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     for _ in 0..4 {
         key(&mut g, Key::Space);
     }
@@ -165,7 +156,7 @@ fn a_looping_move_moves_the_sprite_up_and_down_for_ever() {
 #[test]
 fn menus_freeze_animations_and_loops_like_other_timers() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space); // talking
     run(&mut g, 0.3);
     let frozen = g.draw_list(&big);
@@ -186,7 +177,7 @@ fn menus_freeze_animations_and_loops_like_other_timers() {
     assert_eq!(pics(&g).last().unwrap(), "a.png");
 
     // A bobbing sprite too.
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     for _ in 0..4 {
         key(&mut g, Key::Space);
     }
@@ -220,7 +211,7 @@ fn skipping_does_not_speed_an_animation_up() {
 #[test]
 fn every_frame_of_an_animation_on_stage_is_wanted_before_it_is_needed() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert!(g.upcoming_images().contains(&"a.png"), "an animation shown within a few lines is loaded ahead");
     key(&mut g, Key::Space); // Talking: on stage now, and the lines ahead never name `b.png`
     let up = g.upcoming_images();
@@ -234,7 +225,7 @@ fn every_frame_of_an_animation_on_stage_is_wanted_before_it_is_needed() {
 #[test]
 fn a_hot_reload_keeps_playing_from_the_first_frame_and_survives_a_removed_animation() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space); // talking
     run(&mut g, 0.25);
     assert_eq!(pics(&g).last().unwrap(), "b.png");
@@ -252,7 +243,7 @@ fn a_hot_reload_keeps_playing_from_the_first_frame_and_survives_a_removed_animat
 #[test]
 fn a_saved_game_comes_back_playing_from_the_first_frame() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     run(&mut g, 0.3);
     key(&mut g, Key::F5);
@@ -266,7 +257,7 @@ fn a_saved_game_comes_back_playing_from_the_first_frame() {
 #[test]
 fn the_demo_plays_through_and_the_picture_changes_over_time() {
     let p = parse(include_str!("../../../../examples/anim.quill.md")).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     // Mika talks: her two poses swap every 0.2 s.
     let mut lines = 0;
     let mut talked = std::collections::BTreeSet::new();

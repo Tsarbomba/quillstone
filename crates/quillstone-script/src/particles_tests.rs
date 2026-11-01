@@ -1,20 +1,7 @@
 //! `::particles` in the parser.
 
-use crate::{parse, AssetKind, Op, ParticleKind, Particles, Program};
-
-fn ok(src: &str) -> Program {
-    parse(src).unwrap_or_else(|e| panic!("unexpected errors: {e:?}"))
-}
-
-/// The messages of the errors with their lines (none when the script parses).
-fn errors(src: &str) -> Vec<String> {
-    parse(src).err().unwrap_or_default().into_iter().map(|e| format!("{}: {}", e.line, e.message)).collect()
-}
-
-fn bad(src: &str, needle: &str) {
-    let e = errors(src);
-    assert!(e.iter().any(|m| m.contains(needle)), "wanted `{needle}` in {e:?}");
-}
+use crate::test_util::{bad, ok};
+use crate::{AssetKind, Op, ParticleKind, Particles, Program};
 
 fn set(p: &Program, at: usize) -> (Option<Particles>, f32) {
     match &p.ops[at] {

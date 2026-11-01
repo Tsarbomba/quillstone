@@ -1,6 +1,7 @@
 //! Languages in the game shell: the Settings row, switching mid-story, and that only the
 //! presentation changes (rollback, saves, hot reload and settings all keep working).
 
+use super::test_util::{instant, key, line};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::{parse, Catalog};
@@ -36,18 +37,6 @@ fn game<'p>(p: &'p Program, settings: Settings) -> Game<'p> {
     g.set_translations([("sv".to_string(), Catalog::parse(SV).unwrap())].into());
     g.start_story();
     g
-}
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
 }
 
 fn texts(g: &Game) -> Vec<String> {

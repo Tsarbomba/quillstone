@@ -1,23 +1,10 @@
+use super::test_util::{instant, key, line, new_game};
 use super::*;
 use quillstone_render::{Rect, TEXTBOX};
 use crate::settings::QuickMenuSetting;
 use quillstone_script::parse;
 
 /// A game past its main menu, at the start of the story.
-fn new_game<'p>(p: &'p Program, settings: Settings) -> Game<'p> {
-    let mut g = Game::new(p, settings, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
-
-fn line(g: &Game) -> String {
-    g.view().dialogue.as_ref().map(|d| d.text.clone()).unwrap_or_default()
-}
-
 fn centre(r: Rect) -> Option<(f32, f32)> {
     Some((r.x + r.w / 2.0, r.y + r.h / 2.0))
 }
@@ -31,10 +18,6 @@ fn click_at(g: &mut Game, at: Option<(f32, f32)>) {
     g.handle(Event::CursorMoved(at));
     g.handle(Event::Press(Button::Left));
     g.handle(Event::Release(Button::Left));
-}
-
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
 }
 
 const THREE: &str = "**A:** one\n**A:** two\n**A:** three\n";

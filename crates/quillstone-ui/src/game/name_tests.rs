@@ -1,16 +1,12 @@
 //! A character's name template on the name plate, the History screen and a save slot preview.
 
+use super::test_util::{instant};
 use super::*;
-use crate::settings::Settings;
 use quillstone_script::parse;
 
 const SRC: &str = "---\nvars: { hero.name: \"Alex\", hname: \"Zed\" }\n---\n::character{id=h name=\"{hero.name}\" color=#ffd98c}\n\
 ::character{id=z name=\"{hname}\"}\n**z:** Before.\n::input{var=hero.name prompt=\"Name?\" max=12}\n**{hero.name}:** Hello.\n\
 **{hname}:** Second.\n**{hero.name}:** Third.\n";
-
-fn instant() -> Settings {
-    Settings { text_speed: 0.0, ..Settings::default() }
-}
 
 fn speaker(g: &Game) -> Option<String> {
     g.view().dialogue.as_ref().and_then(|d| d.speaker.clone())

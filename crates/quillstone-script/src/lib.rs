@@ -13,6 +13,8 @@ mod parser;
 mod translate;
 
 #[cfg(test)]
+mod test_util;
+#[cfg(test)]
 mod include_tests;
 #[cfg(test)]
 mod layers_tests;

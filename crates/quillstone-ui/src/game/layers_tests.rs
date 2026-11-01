@@ -1,6 +1,7 @@
 //! Layered sprites in the game shell: what is drawn, what is loaded ahead, saving and loading, a
 //! hot reload and the demo.
 
+use super::test_util::{instant_game, key};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -15,12 +16,6 @@ Two.
 ::show{mika body=formal eyes=none}
 Three.
 ";
-
-fn new_game<'p>(p: &'p Program) -> Game<'p> {
-    let mut g = Game::new(p, Settings { text_speed: 0.0, ..Settings::default() }, Box::new(crate::MemoryStorage::default()));
-    g.start_story();
-    g
-}
 
 fn big(_: &str) -> Option<Size> {
     Some(Size::new(280.0, 500.0))
@@ -49,7 +44,7 @@ fn run(g: &mut Game, seconds: f32) {
 #[test]
 fn the_layers_are_drawn_and_every_file_is_asked_for_by_its_own_name() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     assert_eq!(pics(&g), ["a/body_casual.png", "e/open.png", "a/mouth_smile.png"]);
     assert!(asked(&g).iter().all(|s| !s.is_empty()), "the player would try to load an empty name: {:?}", asked(&g));
     run(&mut g, 3.05);
@@ -60,7 +55,7 @@ fn the_layers_are_drawn_and_every_file_is_asked_for_by_its_own_name() {
 #[test]
 fn the_files_of_the_layers_ahead_and_every_blink_frame_are_loaded_before_they_are_needed() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     let up = g.upcoming_images();
     for f in ["a/body_formal.png", "a/mouth_open.png", "e/open.png", "e/closed.png"] {
         assert!(up.contains(&f), "{f} in {up:?}");
@@ -72,14 +67,10 @@ fn the_files_of_the_layers_ahead_and_every_blink_frame_are_loaded_before_they_ar
     assert!(g.view().shown_animations().is_empty());
 }
 
-fn key(g: &mut Game, k: Key) {
-    g.handle(Event::Key(k));
-}
-
 #[test]
 fn a_saved_and_loaded_game_shows_the_same_layers() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     let before = pics(&g);
     assert_eq!(before, ["a/body_casual.png", "e/open.png", "a/mouth_open.png"]);
@@ -95,7 +86,7 @@ fn a_saved_and_loaded_game_shows_the_same_layers() {
 #[test]
 fn a_hot_reload_keeps_the_layers_and_drops_what_the_edit_removed() {
     let p = parse(STORY).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     key(&mut g, Key::Space);
     let same = parse(STORY).unwrap();
     g.reload(&same).unwrap();
@@ -109,7 +100,7 @@ fn a_hot_reload_keeps_the_layers_and_drops_what_the_edit_removed() {
 #[test]
 fn the_layers_demo_plays_and_never_asks_for_a_pattern_or_an_empty_name() {
     let p = parse(include_str!("../../../../examples/layers.quill.md")).unwrap();
-    let mut g = new_game(&p);
+    let mut g = instant_game(&p);
     for _ in 0..30 {
         let asked = asked(&g);
         assert!(asked.iter().all(|s| !s.is_empty() && !s.contains('{') && !s.starts_with("anim:")), "{asked:?}");
