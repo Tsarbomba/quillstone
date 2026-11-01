@@ -71,8 +71,8 @@ pub enum CellStyle {
 /// The quick menu buttons a theme can give a picture, in the order they are drawn
 /// (and in which a later one is on top where two overlap): the ids of the keys
 /// `quick_<id>_icon`, `_hover`, `_on`, `_pos` and `_size`.
-pub const QUICK_IDS: [&str; 10] =
-    ["back", "history", "skip", "auto", "save", "load", "qsave", "qload", "settings", "items"];
+pub const QUICK_IDS: [&str; 11] =
+    ["back", "history", "skip", "auto", "save", "load", "qsave", "qload", "settings", "items", "journal"];
 
 /// The smallest and largest side of a picture button.
 pub const QUICK_ICON_SIDE: (f32, f32) = (16.0, 512.0);
@@ -147,7 +147,7 @@ pub struct Theme {
     /// When the quick menu is shown (the player may override it in Settings).
     pub quick_menu: QuickMenu,
     /// Picture buttons and positions for the quick menu, indexed like [`QUICK_IDS`].
-    pub quick_icons: [QuickIcon; 10],
+    pub quick_icons: [QuickIcon; 11],
     /// `quick_buttons = listed`: only buttons with a picture or a position of their own are shown.
     pub quick_listed: bool,
     pub menu_background: Option<String>,
@@ -187,6 +187,8 @@ pub struct Theme {
     pub inventory_cell_owned: Option<CellStyle>,
     pub inventory_cell_disabled: Option<CellStyle>,
     pub inventory_title: String,
+    /// The title of the journal screen (`journal_title`, default "Journal").
+    pub journal_title: String,
     pub shop_title: String,
     /// What the shop calls its money ("Gold"); the pay variable's name if unset.
     pub shop_currency: Option<String>,
@@ -256,6 +258,7 @@ impl Default for Theme {
             inventory_cell_owned: None,
             inventory_cell_disabled: None,
             inventory_title: "Items".into(),
+            journal_title: "Journal".into(),
             shop_title: "Shop".into(),
             shop_currency: None,
             inventory_description_rect: None,
@@ -275,7 +278,7 @@ impl Theme {
         let mut t = Theme::default();
         let mut problems = Vec::new();
         let (mut rect_line, mut padding_line) = (0, 0);
-        let mut quick_lines = [[0usize; 2]; 10]; // the last `_hover` / `_on` line of each button
+        let mut quick_lines = [[0usize; 2]; 11]; // the last `_hover` / `_on` line of each button
         for (i, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -437,9 +440,10 @@ impl Theme {
                     Some(n) => t.choice_timer_height = n,
                     None => bad("`choice_timer_height` must be a number from 2 to 40".into()),
                 },
-                "inventory_title" | "shop_title" | "shop_currency" => match unquote(value) {
+                "inventory_title" | "journal_title" | "shop_title" | "shop_currency" => match unquote(value) {
                     "" => bad(format!("`{key}` needs a text")),
                     text if key == "inventory_title" => t.inventory_title = text.to_string(),
+                    text if key == "journal_title" => t.journal_title = text.to_string(),
                     text if key == "shop_title" => t.shop_title = text.to_string(),
                     text => t.shop_currency = Some(text.to_string()),
                 },
@@ -675,7 +679,7 @@ mod tests {
     fn the_inventory_keys_have_defaults_that_need_no_theme_file() {
         let t = Theme::default();
         assert_eq!((t.inventory_columns, t.inventory_cell_size, t.inventory_cell_gap), (5, [240.0, 200.0], 24.0));
-        assert_eq!((t.inventory_title.as_str(), t.shop_title.as_str()), ("Items", "Shop"));
+        assert_eq!((t.inventory_title.as_str(), t.shop_title.as_str(), t.journal_title.as_str()), ("Items", "Shop", "Journal"));
         assert!(t.inventory_cell.is_none() && t.inventory_background.is_none() && t.inventory_panel.is_none());
         assert!(t.inventory_images().is_empty());
         let [x, y, w, h] = t.inventory_panel_rect;
@@ -689,7 +693,7 @@ mod tests {
              inventory_panel_rect = 100, 80, 1700, 900\ninventory_columns = 4\ninventory_cell_size = 200, 220\n\
              inventory_cell_gap = 10\ninventory_icon_size = 120\ninventory_cell = #20283a\n\
              inventory_cell_hover = gui/hover.png\ninventory_cell_owned = #20283a80\ninventory_cell_disabled = #101010\n\
-             inventory_title = \"Your bag\"\nshop_title = Market\nshop_currency = Coins\n\
+             inventory_title = \"Your bag\"\njournal_title = Quests\nshop_title = Market\nshop_currency = Coins\n\
              inventory_description_rect = 300,700,1300,160\ninventory_name_color = #ff0000\n\
              inventory_price_color = #00ff00\ninventory_text_color = #0000ff\n",
         );
@@ -700,6 +704,7 @@ mod tests {
         assert_eq!(t.inventory_cell_hover, Some(CellStyle::Image("gui/hover.png".into())));
         assert!(matches!(t.inventory_cell_owned, Some(CellStyle::Color(c)) if (c[3] - 128.0 / 255.0).abs() < 1e-6));
         assert_eq!((t.inventory_title.as_str(), t.shop_title.as_str(), t.shop_currency.as_deref()), ("Your bag", "Market", Some("Coins")));
+        assert_eq!(t.journal_title, "Quests");
         assert_eq!(t.inventory_description_rect, Some([300.0, 700.0, 1300.0, 160.0]));
         assert_eq!(t.inventory_name_color, Some([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(t.inventory_price_color, Some([0.0, 1.0, 0.0, 1.0]));
@@ -803,7 +808,7 @@ mod tests {
         for id in QUICK_IDS {
             text += &format!("quick_{id}_icon = g/{id}.png\nquick_{id}_hover = g/{id}_h.png\nquick_{id}_on = g/{id}_o.png\n");
         }
-        text += "quick_back_pos = 10, 20.5\nquick_back_size = 64,48\nquick_items_pos = 1900, 1080\nquick_items_size = 16, 512\n";
+        text += "quick_back_pos = 10, 20.5\nquick_back_size = 64,48\nquick_items_pos = 1900, 1080\nquick_items_size = 16, 512\nquick_journal_pos = 5, 6\n";
         let (t, problems) = Theme::parse(&text);
         assert!(problems.is_empty(), "{problems:?}");
         let back = &t.quick_icons[0];
@@ -812,7 +817,9 @@ mod tests {
         assert_eq!((back.pos, back.size), (Some([10.0, 20.5]), Some([64.0, 48.0])));
         assert_eq!(t.quick_icons[9].pos, Some([1900.0, 1080.0]));
         assert_eq!(t.quick_icons[1].pos, None);
-        assert_eq!(t.quick_pictures().len(), 30);
+        assert_eq!(t.quick_icons[10].icon.as_deref(), Some("g/journal.png"), "`journal` is the 11th button id");
+        assert_eq!((t.quick_icons[10].hover.as_deref(), t.quick_icons[10].pos), (Some("g/journal_h.png"), Some([5.0, 6.0])));
+        assert_eq!(t.quick_pictures().len(), 33);
         assert!(t.assets().contains(&"g/qload_h.png") && t.images().contains(&"g/settings_o.png"));
         // only a position and a size: a text button moved
         let (t, problems) = Theme::parse("quick_skip_pos = 5, 6\nquick_skip_size = 100, 40\n");

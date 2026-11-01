@@ -212,7 +212,7 @@ fn skip_and_auto_show_their_on_picture_while_they_run() {
     assert!(list.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == g.theme().accent_color)), "bar under Auto");
     click(&mut g, 70.0, 70.0); // the placed Auto toggles it off
     assert!(!g.auto());
-    let r = crate::screens::quick_layout(g.textbox(), g.theme(), false, &sized).rect(crate::screens::QuickButton::Skip).unwrap();
+    let r = crate::screens::quick_layout(g.textbox(), g.theme(), false, false, &sized).rect(crate::screens::QuickButton::Skip).unwrap();
     click(&mut g, r.x + 5.0, r.y + 5.0);
     assert!(g.skip.is_some());
     assert!(names(&g).contains(&"btn_so.png".to_string()), "{:?}", names(&g));

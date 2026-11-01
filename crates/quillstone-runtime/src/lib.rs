@@ -155,6 +155,9 @@ pub enum Cmd {
     /// Show the inventory screen (from `::inventory`) and wait for [`Input::Advance`]
     /// when the player closes it. What it lists is [`inventory_items`].
     ShowInventory,
+    /// Show the journal (from `::journal`) and wait for [`Input::Advance`] when the player
+    /// closes it. What it lists is [`journal_items`].
+    ShowJournal,
     /// Show a shop and wait. [`Input::Buy`] buys the item at that index of
     /// `items` (the list now on offer) and shows the shop again with the new
     /// money and what is owned; [`Input::Advance`] leaves.
@@ -590,6 +593,23 @@ pub fn inventory_items(program: &Program, vars: &Vars) -> Vec<ItemInfo> {
     out
 }
 
+/// What the journal lists: the entries of its list in the order they were added, then those of the
+/// `journal_done` list (`true`), each with its `::item` text. Counts, prices and Use do not apply.
+/// Empty when the game has no journal.
+pub fn journal_items(program: &Program, vars: &Vars) -> Vec<(ItemInfo, bool)> {
+    let held = |name: &Option<String>| match name.as_ref().and_then(|n| vars.get(n)) {
+        Some(Value::List(l)) => l.clone(),
+        _ => Vec::new(),
+    };
+    let open = held(&program.journal);
+    let done = held(&program.journal_done);
+    let entry = |id: &String, done| {
+        let info = item_info(program, id);
+        (ItemInfo { price: None, count: None, has_use: false, ..info }, done)
+    };
+    open.iter().filter(|id| !done.contains(id)).map(|id| entry(id, false)).chain(done.iter().map(|id| entry(id, true))).collect()
+}
+
 /// Whether the player may use the item `id` now: the inventory shows it, it has a `use=` label, and
 /// the story waits at a line the player advances (not a choice, `::wait`, `::input`, shop, `{nw}`
 /// line or video), with room on the call stack.
@@ -710,6 +730,7 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option
     match op {
         Op::Choice { options, .. } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
         Op::Inventory => Some(Cmd::ShowInventory),
+        Op::Journal => Some(Cmd::ShowJournal),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
         Op::Input { prompt, default, max, .. } => {
             Some(Cmd::AskInput { prompt: interpolate(prompt, vars), default: default.clone(), max: *max })
@@ -893,6 +914,7 @@ pub(crate) fn step_traced(
                 | Cmd::PlayVideo { .. }
                 | Cmd::Wait { .. }
                 | Cmd::ShowInventory
+                | Cmd::ShowJournal
                 | Cmd::ShowShop { .. },
                 Some(Input::Advance),
             ) => {
@@ -994,6 +1016,7 @@ pub(crate) fn step_traced(
                 return block(state, &mut out, choice_cmd(options, &visible, &state.vars));
             }
             Op::Inventory => return block(state, &mut out, Cmd::ShowInventory),
+            Op::Journal => return block(state, &mut out, Cmd::ShowJournal),
             Op::Shop { pay, into, stock } => {
                 if offered_stock(stock, &state.vars).is_empty() {
                     state.pc += 1; // nothing on offer: carry on past the block
@@ -2293,6 +2316,41 @@ vars: { trust: 0 }
         let (back, cmds) = Session::load(&p, &loaded.save()).unwrap();
         assert_eq!(cmds.last(), Some(&Cmd::ShowInventory));
         assert!(loaded.save().contains("pending inventory") && back.state().pending == Some(Cmd::ShowInventory));
+    }
+
+    const QUESTS: &str = "---\njournal: quests\njournal_done: done\nvars: { quests: [cat, key, ghost], done: [], n: 2 }\n---\n\
+        ::item{id=cat name=\"Find the cat\" text=\"Last seen on the roof.\" price=9 count=n use=#x}\n\
+        ::item{id=key name=\"Get the key\" icon=key.png}\n# a\nHi.\n::journal\nBye.\n# x\nHi.\n::return\n";
+
+    #[test]
+    fn the_journal_lists_open_entries_then_done_ones_without_prices_counts_or_use() {
+        let p = parse(QUESTS).unwrap();
+        let mut vars = p.vars.clone();
+        let shown = |vars: &Vars| journal_items(&p, vars);
+        let plain = |(i, _): &(ItemInfo, bool)| i.price.is_none() && i.count.is_none() && !i.has_use;
+        assert!(shown(&vars).iter().all(plain), "the cat has a price, a count and a use label, none of which show");
+        assert_eq!(shown(&vars).into_iter().map(|(i, d)| (i.name, d)).collect::<Vec<_>>(), [("Find the cat".into(), false), ("Get the key".into(), false), ("ghost".into(), false)]);
+        assert_eq!(journal_items(&p, &vars)[0].0.text, "Last seen on the roof.");
+        // marking one done moves it to the end, even while it is still in the first list
+        vars.insert("done".into(), Value::List(vec!["cat".into()]));
+        let names: Vec<_> = shown(&vars).into_iter().map(|(i, d)| (i.name, d)).collect();
+        assert_eq!(names, [("Get the key".into(), false), ("ghost".into(), false), ("Find the cat".into(), true)]);
+        assert!(inventory_items(&p, &vars).is_empty(), "the inventory never shows the journal's list");
+        let none = parse("---\nvars: { quests: [x] }\n---\n").unwrap();
+        assert!(journal_items(&none, &none.vars).is_empty());
+    }
+
+    #[test]
+    fn the_journal_command_waits_for_advance_and_survives_a_save_and_load() {
+        let p = parse(QUESTS).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert_eq!(game.input(Input::Advance), vec![Cmd::ShowJournal]);
+        let text = game.save();
+        assert!(text.contains("pending journal"));
+        let (mut back, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!((cmds.last(), back.state().pending.clone()), (Some(&Cmd::ShowJournal), Some(Cmd::ShowJournal)));
+        assert!(back.input(Input::Choose(0)).is_empty());
+        assert_eq!(lines(&back.input(Input::Advance)), vec!["Bye."]);
     }
 
     #[test]

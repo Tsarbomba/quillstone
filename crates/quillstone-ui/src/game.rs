@@ -106,7 +106,8 @@ pub enum Screen {
     /// The main menu's Extras: gallery and music room.
     Extras,
     /// The items the game's inventory list holds (the quick menu's Items, the `I`
-    /// key, or `::inventory`, which keeps the story waiting).
+    /// key, or `::inventory`, which keeps the story waiting). The journal (Journal, `J`,
+    /// `::journal`) is this screen too, fed by its own list.
     Inventory,
     /// A `::shop`: the story waits here, buying changes it, leaving moves on.
     Shop,
@@ -766,14 +767,14 @@ impl<'p> Game<'p> {
         }
         // Item pictures: only those of a shop or inventory the story is about to open
         // (the ones a screen is showing come from its draw list), never the whole game's.
-        let (inventory, shops) = self.program.bag_icons_ahead(pc, AHEAD);
+        let (inventory, journal, shops) = self.program.bag_icons_ahead(pc, AHEAD);
         out.extend(shops);
-        if inventory {
-            let vars = &self.session.state().vars;
-            out.extend(self.program.inventory.iter().filter_map(|name| match vars.get(name) {
-                Some(Value::List(held)) => Some(held),
-                _ => None,
-            }).flatten().filter_map(|id| self.program.items.get(id)?.icon.as_deref()));
+        let vars = &self.session.state().vars;
+        let lists = [(inventory, &self.program.inventory), (journal, &self.program.journal), (journal, &self.program.journal_done)];
+        for name in lists.into_iter().filter_map(|(on, name)| name.as_ref().filter(|_| on)) {
+            if let Some(Value::List(held)) = vars.get(name) {
+                out.extend(held.iter().filter_map(|id| self.program.items.get(id)?.icon.as_deref()));
+            }
         }
         out
     }
@@ -924,6 +925,7 @@ impl<'p> Game<'p> {
                 Key::Char('s' | 'S') => self.open_slots(Screen::Save),
                 Key::Char('l' | 'L') => self.open_slots(Screen::Load),
                 Key::Char('i' | 'I') => self.open_inventory_overlay(),
+                Key::Char('j' | 'J') => self.open_journal_overlay(),
                 Key::Char('u' | 'U') => self.set_ui_hidden(true),
                 Key::F5 => self.quick_save(),
                 Key::F9 => self.quick_load(),
@@ -959,6 +961,7 @@ impl<'p> Game<'p> {
             QuickButton::QuickLoad => self.quick_load(),
             QuickButton::Settings => self.open_settings(),
             QuickButton::Items => self.open_inventory_overlay(),
+            QuickButton::Journal => self.open_journal_overlay(),
         }
     }
 
@@ -982,7 +985,7 @@ impl<'p> Game<'p> {
     /// Where the quick menu's buttons are now (the theme's, with the pictures' known sizes).
     fn quick_layout(&self) -> QuickLayout {
         let sizes = self.quick_sizes.borrow();
-        quick_layout(self.textbox(), self.theme(), self.has_inventory(), &|s| sizes.get(s).copied())
+        quick_layout(self.textbox(), self.theme(), self.has_inventory(), self.has_journal(), &|s| sizes.get(s).copied())
     }
 
     /// There is no quick save for Q.Load to load (only worked out when Q.Load is a picture).

@@ -213,6 +213,7 @@ fn consistent(state: &State, program: &Program) -> bool {
         Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
         Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
         Some(Cmd::ShowInventory) => matches!(op, Some(Op::Inventory)),
+        Some(Cmd::ShowJournal) => matches!(op, Some(Op::Journal)),
         Some(Cmd::ShowShop { .. }) => matches!(op, Some(Op::Shop { .. })),
         Some(Cmd::AskInput { .. }) => matches!(op, Some(Op::Input { .. })),
         Some(_) => false,
@@ -548,6 +549,7 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         Some(Cmd::ShowHotspots { .. }) => w("pending hotspots".into()),
         // Likewise the inventory and the shop (prices, what is owned) are read from the script.
         Some(Cmd::ShowInventory) => w("pending inventory".into()),
+        Some(Cmd::ShowJournal) => w("pending journal".into()),
         Some(Cmd::ShowShop { .. }) => w("pending shop".into()),
         // The prompt comes from the script (with the variables as they are); what was typed so far is not saved.
         Some(Cmd::AskInput { .. }) => w("pending input".into()),
@@ -871,6 +873,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
                     "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },
                     "inventory" => Cmd::ShowInventory,
+                    "journal" => Cmd::ShowJournal,
                     "input" => Cmd::AskInput { prompt: String::new(), default: None, max: 1 },
                     other => return Err(format!("line {n}: unknown pending `{other}`")),
                 });

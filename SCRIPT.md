@@ -37,7 +37,7 @@ She looks away.
   main menu), `id:` (the name of the folder the player keeps saves in, e.g. `id: my-story`: 1 to 64 lowercase
   letters, digits and `-`; set it once and the saves survive a new title; without it the folder is named after the
   title, or the script file), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
-  `inventory:` (see [Inventory](#inventory)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
+  `inventory:` (see [Inventory](#inventory)), `journal:` and `journal_done:` (see [Journal](#journal)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
   and [Scene replays](#scene-replays)). `sprite_size:` and `art_scale:` set how big sprites are drawn (see
   [Sprites at their picture's size](#sprites-at-their-pictures-size)).
@@ -1037,6 +1037,50 @@ You pick up a brass key.
   settings instead, which return to the inventory, and S, L, H, F5 and F9 work there too. Rollback, saves and hot reload work with it like with
   any other waiting step, and `quillstone test` treats it as one click.
 
+## Journal
+
+The journal is the inventory screen fed by a second list: a quest log with no new
+machinery. A quest is an [`::item`](#items) (its `name`, `text` and `icon` are the title,
+description and picture), and the quest's state is just which list holds its id.
+
+````markdown
+---
+journal: quests
+journal_done: quests_done
+vars: { quests: [], quests_done: [] }
+---
+::item{id=find-cat name="Find the cat" text="She was last seen on the roof." icon=assets/gui/cat.png}
+
+::set{quests += "find-cat"}
+The baker asks you to find her cat.
+::journal
+
+::set{quests_done += "find-cat"}
+You carry the cat home.
+````
+
+- `journal: quests` names the list variable the journal shows; it must be declared as a
+  list in `vars:` (or `persistent:`), or the error names the front matter line. The game then
+  has a **Journal** button in the quick menu, the **J** key opens it, and `::journal` opens it
+  from the script (an error in a game without `journal:`). Theme picture buttons use the id `journal`
+  (`quick_journal_icon`, `_hover`, `_pos`, `_size`), and `quick_buttons = listed` handles it like the others.
+- Entries are declared like items, in the same `::item` lines (a quest id and an item id share one
+  namespace). Only `name`, `text` and `icon` matter here: the journal has no Use button, prices or counts,
+  even if the item has them. An id with no declaration is shown under its id; `quillstone check`
+  warns about a literal `+= "x"` or `has "x"` on the journal lists that names nothing declared.
+- `journal_done: quests_done` (optional, needs `journal:`) names a second list of finished quests.
+  They are shown after the open ones, greyed, with "Done" under the name, so marking one done is
+  one line, `::set{quests_done += "find-cat"}`; you may also take it out of the first list with
+  `::set{quests -= "find-cat"}`, which changes nothing on screen. Without `journal_done:` a quest is
+  finished by removing it from the list. Nothing else is tracked: there is no state machine, only plain
+  list variables, so saves, rollback and `quillstone test` treat them like any other.
+- The screen is otherwise the inventory's (the same grid, descriptions, pages, theme keys and close keys;
+  only J, not I, closes the journal, and `journal_title` sets its title, default "Journal").
+  The look of a done quest is `inventory_cell_disabled`. Opened by the player it sits over the story;
+  `::journal` leaves the story waiting until it is closed, and `quillstone test` treats it as one click.
+- The title and the "Done" label are not translated; the quest names and descriptions are, like any
+  item's (see [Translating a game](#translating-a-game)).
+
 ## Shop
 
 ````markdown
@@ -1442,8 +1486,8 @@ options_panel_border = 40             # the 9-slice corner size in the picture's
   The border is cut back if it is more than half of the picture or of the panel.
 - `check` reports a missing or unreadable picture; `package` includes the pictures.
 
-**The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items
-in a game with an inventory) sits in a row directly below the textbox, aligned with its right
+**The quick menu** (Back, History, Skip, Auto, Save, Load, Q.Save, Q.Load, Settings, and Items and Journal
+in a game with an inventory or a journal) sits in a row directly below the textbox, aligned with its right
 edge. When there is no room below (the textbox ends less than 36 px above the bottom of the screen)
 the row is drawn just inside the bottom edge of the textbox instead; a textbox narrower than the
 row moves the row right so that every button stays on the screen. `quick_menu` says when it shows:
@@ -1459,7 +1503,7 @@ Settings (Quick menu: Game default, Always, On hover, Hidden).
 
 **Picture buttons.** A theme can replace the text labels with pictures and put buttons where it
 likes. Every key is optional and names a button by its id: `back`, `history`, `skip`, `auto`, `save`,
-`load`, `qsave`, `qload`, `settings` or `items` (Q.Save and Q.Load are `qsave` and `qload`).
+`load`, `qsave`, `qload`, `settings`, `items` or `journal` (Q.Save and Q.Load are `qsave` and `qload`).
 
 ```text
 quick_back_icon = assets/gui/back.png        # idle picture: drawn instead of the text label
@@ -1486,7 +1530,7 @@ quick_back_size = 56, 56                     # width, height (16 to 512 each)
   hides the other built-in ones (their keyboard and gamepad shortcuts still work); the default
   `quick_buttons = all` keeps every button.
 - Where placed buttons overlap, the one later in the list `back, history, skip, auto, save, load,
-  qsave, qload, settings, items` is on top and gets the click.
+  qsave, qload, settings, items, journal` is on top and gets the click.
 - Everything else is unchanged: `quick_menu` (`hover` mode fades pictures too, and the menu also
   shows while the cursor is on a placed button), the keyboard and gamepad shortcuts,
   `::textbox{hide}`, hiding the interface with U, and the screens that have no quick menu.
@@ -1497,7 +1541,7 @@ quick_back_size = 56, 56                     # width, height (16 to 512 each)
 
 ### The inventory and shop screens
 
-One grid layout serves both screens, so they share the `inventory_` keys. Without
+One grid layout serves both screens (and the [journal](#journal)), so they share the `inventory_` keys. Without
 any of them the screens look like the other built-in ones. Positions and sizes are in
 the 1920x1080 virtual screen.
 
@@ -1515,6 +1559,7 @@ inventory_cell_hover = assets/gui/hover.png # ... or a picture, stretched over t
 inventory_cell_owned = #2f4a2f              # an owned item in a shop
 inventory_cell_disabled = #2a221cb0         # an item the player can't afford
 inventory_title = Your pack                 # default "Items"
+journal_title = Quests                      # the journal's title (default "Journal")
 shop_title = Night market                   # default "Shop"
 shop_currency = Gold                        # what the shop calls its money (default: the pay variable's name)
 inventory_description_rect = 300, 760, 1300, 170   # where the hovered item is described

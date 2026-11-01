@@ -2256,6 +2256,11 @@ fn the_market_demo_can_be_played_through_the_screens() {
     assert!(problems.is_empty(), "{problems:?}");
     let mut g = new_game(&p, instant());
     g.set_theme(theme);
+    key(&mut g, Key::Char('j'));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Journal".to_string()) && texts.contains(&"Open the tower gate".to_string()), "{texts:?}");
+    assert!(texts.contains(&"Climb the clock tower".to_string()) && !texts.contains(&"Done".to_string()), "{texts:?}");
+    key(&mut g, Key::Char('j'));
     key(&mut g, Key::Char('i'));
     let texts = drawn_texts(&g);
     assert!(texts.contains(&"Tonic".to_string()) && texts.contains(&"x1".to_string()), "one tonic to start with: {texts:?}");
@@ -2297,6 +2302,11 @@ fn the_market_demo_can_be_played_through_the_screens() {
     key(&mut g, Key::Char('1')); // climb the tower: only offered with the key
     key(&mut g, Key::Space);
     assert!(line(&g).contains("worth the gold"));
+    key(&mut g, Key::Space); // the script's own ::journal: both quests are done now
+    assert_eq!(g.screen(), Screen::Inventory);
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Journal".to_string()) && texts.iter().filter(|t| *t == "Done").count() == 2, "{texts:?}");
+    assert!(!texts.contains(&"Brass key".to_string()), "the pack is not the journal");
 }
 
 // ---- ::flash, looping sounds ------------------------------------------------------------------
@@ -3185,4 +3195,113 @@ fn a_counted_item_in_a_shop_is_bought_again_and_again_and_shows_in_the_inventory
     click_bag(&mut g, crate::bag::close_rect);
     key(&mut g, Key::Char('i'));
     assert!(drawn_texts(&g).contains(&"x2".to_string()));
+}
+
+// ---- the journal: the inventory screen fed by a second list --------------------------------------------
+
+const JOURNAL: &str = "---\ninventory: bag\njournal: q\njournal_done: d\nvars: { bag: [key], q: [cat, bone], d: [] }\n---\n\
+    ::item{id=key name=\"Brass key\" price=15}\n::item{id=cat name=\"Find the cat\" text=\"On the roof.\" price=9 use=#x}\n\
+    ::item{id=bone name=\"Get a bone\"}\n**A:** one\n::set{d += \"cat\"}\n**A:** two\n::journal\n**A:** three\n# x\nHi.\n::return\n";
+
+fn journal_button(g: &Game) -> Rect {
+    g.quick_layout().rect(QuickButton::Journal).unwrap()
+}
+
+#[test]
+fn the_journal_button_and_the_j_key_exist_only_in_games_with_a_journal() {
+    let without = parse(BAG).unwrap();
+    let mut g = new_game(&without, instant());
+    assert!(!g.has_journal() && !drawn_texts(&g).iter().any(|t| t == "Journal"));
+    assert_eq!(g.quick_layout().rect(QuickButton::Journal), None);
+    key(&mut g, Key::Char('j'));
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "one"), "J does nothing without a journal");
+    let p = parse(JOURNAL).unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(g.has_journal() && drawn_texts(&g).iter().any(|t| t == "Journal") && drawn_texts(&g).iter().any(|t| t == "Items"));
+    let at = centre(journal_button(&g));
+    click_at(&mut g, at);
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Inventory, "one"), "the button opens it without advancing");
+    assert!(drawn_texts(&g).contains(&"Journal".to_string()), "the title");
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story);
+    for closer in 0..3 {
+        key(&mut g, Key::Char('J'));
+        assert_eq!(g.screen(), Screen::Inventory, "J opens it");
+        match closer {
+            0 => key(&mut g, Key::Char('j')),
+            1 => g.handle(Event::Press(Button::Right)),
+            _ => click_bag(&mut g, crate::bag::close_rect),
+        }
+        assert_eq!(g.screen(), Screen::Story, "closer {closer}");
+    }
+    // only the journal's own key closes it: I leaves it open
+    key(&mut g, Key::Char('j'));
+    key(&mut g, Key::Char('i'));
+    assert!(g.screen() == Screen::Inventory && drawn_texts(&g).contains(&"Journal".to_string()));
+}
+
+#[test]
+fn the_journal_lists_open_entries_then_done_ones_and_the_inventory_still_lists_items() {
+    let p = parse(JOURNAL).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Char('j'));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Find the cat".to_string()) && texts.contains(&"Get a bone".to_string()), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Brass key" || t == "Done"), "{texts:?}");
+    key(&mut g, Key::Char('j'));
+    key(&mut g, Key::Space); // "one" -> sets d += cat, shows "two"
+    key(&mut g, Key::Char('j'));
+    let texts = drawn_texts(&g);
+    let at = |s: &str| texts.iter().position(|t| t == s).unwrap();
+    assert!(at("Get a bone") < at("Find the cat") && texts.contains(&"Done".to_string()), "done ones come last: {texts:?}");
+    // the description, without the price the item has; nothing to buy, use or count
+    g.handle(Event::CursorMoved(cell(&g, 1)));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"On the roof.".to_string()) && !texts.iter().any(|t| t.starts_with("Price") || t == "Use"), "{texts:?}");
+    click_cell(&mut g, 1);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.screen(), Screen::Inventory, "view-only");
+    assert_eq!(g.state().vars["d"], quillstone_script::Value::List(vec!["cat".into()]));
+    key(&mut g, Key::Char('j'));
+    key(&mut g, Key::Char('i'));
+    let texts = drawn_texts(&g);
+    assert!(texts.contains(&"Brass key".to_string()) && !texts.contains(&"Find the cat".to_string()), "{texts:?}");
+}
+
+#[test]
+fn the_journal_command_waits_until_it_is_closed_and_a_save_comes_back_to_it() {
+    let p = parse(JOURNAL).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    assert_eq!(g.screen(), Screen::Inventory, "the script opened it");
+    assert!(matches!(g.state().pending, Some(Cmd::ShowJournal)));
+    assert!(drawn_texts(&g).contains(&"Journal".to_string()) && drawn_texts(&g).contains(&"Get a bone".to_string()));
+    key(&mut g, Key::Char('i'));
+    assert_eq!(g.screen(), Screen::Inventory, "I does not close the journal");
+    g.quick_save();
+    click_bag(&mut g, crate::bag::close_rect);
+    assert_eq!(line(&g), "three");
+    g.quick_load();
+    key(&mut g, Key::Char('y'));
+    assert_eq!(g.screen(), Screen::Inventory, "the save was made at the journal");
+    assert!(drawn_texts(&g).contains(&"Journal".to_string()), "and it is the journal, not the inventory");
+    key(&mut g, Key::Char('j'));
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "three"));
+}
+
+#[test]
+fn a_theme_can_place_the_journal_button_and_list_it() {
+    let (theme, problems) = quillstone_render::Theme::parse("quick_journal_pos = 100, 900\nquick_journal_size = 120, 40\n");
+    assert!(problems.is_empty(), "{problems:?}");
+    let p = parse(JOURNAL).unwrap();
+    let mut g = new_game(&p, instant());
+    g.set_theme(theme);
+    assert_eq!(journal_button(&g), Rect::new(100.0, 900.0, 120.0, 40.0));
+    let at = centre(journal_button(&g));
+    click_at(&mut g, at);
+    assert_eq!(g.screen(), Screen::Inventory);
+    let (listed, _) = quillstone_render::Theme::parse("quick_buttons = listed\nquick_journal_pos = 100, 900\n");
+    g.set_theme(listed);
+    assert_eq!(g.quick_layout().buttons.iter().map(|b| b.0).collect::<Vec<_>>(), [QuickButton::Journal]);
 }

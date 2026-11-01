@@ -1,9 +1,9 @@
-//! The inventory and shop screens' input: what a click, a key or the wheel does
+//! The inventory, journal and shop screens' input: what a click, a key or the wheel does
 //! on the grid (see `crate::bag` for the layout). The inventory is view-only; in a
 //! shop a click on an item buys it. An item with a `use=` label has a Use button
 //! (or Enter) while the story waits at a line.
 
-use quillstone_runtime::{can_use, inventory_items, ItemInfo};
+use quillstone_runtime::{can_use, inventory_items, journal_items, ItemInfo};
 
 use super::*;
 use crate::bag::{self, BagCell, BagScreen, CellState, Detail, Hit};
@@ -14,6 +14,8 @@ pub(super) struct Bag {
     /// The inventory was opened by the player (quick menu, `I`) over the story, as
     /// opposed to by `::inventory`, which leaves the story waiting for it.
     pub overlay: bool,
+    /// The screen shows the journal's list (no Use, prices or counts) instead of the inventory's.
+    pub journal: bool,
     pub page: usize,
     /// The cell the keyboard (or a click, in the inventory) is on: an index into all cells.
     pub focus: Option<usize>,
@@ -40,17 +42,29 @@ impl Game<'_> {
         self.program.inventory.is_some()
     }
 
+    /// Whether the game has a journal (a `journal:` list in the front matter).
+    pub fn has_journal(&self) -> bool {
+        self.program.journal.is_some()
+    }
+
     /// Open the inventory over the story (the quick menu's Items, the `I` key).
     pub(super) fn open_inventory_overlay(&mut self) {
         if self.has_inventory() && self.in_story && !self.view.finished {
-            self.open_bag(Screen::Inventory, true);
+            self.open_bag(Screen::Inventory, true, false);
         }
     }
 
-    fn open_bag(&mut self, screen: Screen, overlay: bool) {
+    /// Open the journal over the story (the quick menu's Journal, the `J` key).
+    pub(super) fn open_journal_overlay(&mut self) {
+        if self.has_journal() && self.in_story && !self.view.finished {
+            self.open_bag(Screen::Inventory, true, true);
+        }
+    }
+
+    fn open_bag(&mut self, screen: Screen, overlay: bool, journal: bool) {
         self.stop_skip();
         self.screen = screen;
-        self.bag = Bag { overlay, page: 0, focus: None };
+        self.bag = Bag { overlay, journal, page: 0, focus: None };
     }
 
     /// The shop or inventory this game is at: the screen showing, or the one
@@ -76,20 +90,21 @@ impl Game<'_> {
             return;
         }
         for cmd in cmds {
-            let want = match cmd {
-                Cmd::ShowInventory => Screen::Inventory,
-                Cmd::ShowShop { .. } => Screen::Shop,
+            let (want, journal) = match cmd {
+                Cmd::ShowInventory => (Screen::Inventory, false),
+                Cmd::ShowJournal => (Screen::Inventory, true),
+                Cmd::ShowShop { .. } => (Screen::Shop, false),
                 _ => continue,
             };
             match self.screen {
                 // A purchase shows the shop again: stay on the page and item.
                 Screen::Shop if want == Screen::Shop => self.clamp_bag(),
-                Screen::Story | Screen::Inventory | Screen::Shop => self.open_bag(want, false),
+                Screen::Story | Screen::Inventory | Screen::Shop => self.open_bag(want, false, journal),
                 // Settings, the history or a save screen is open (a reload, say):
                 // leave it be, and show the screen when it closes.
                 _ if self.under == Some(Screen::Shop) && want == Screen::Shop => self.clamp_bag(),
                 _ => {
-                    self.bag = Bag { overlay: false, page: 0, focus: None };
+                    self.bag = Bag { overlay: false, journal, page: 0, focus: None };
                     self.under = Some(want);
                 }
             }
@@ -110,7 +125,8 @@ impl Game<'_> {
         let waiting = &self.session.state().pending;
         let stale = match kind {
             Screen::Shop => !matches!(waiting, Some(Cmd::ShowShop { .. })),
-            _ if self.bag.overlay => !self.has_inventory(),
+            _ if self.bag.overlay => !if self.bag.journal { self.has_journal() } else { self.has_inventory() },
+            _ if self.bag.journal => !matches!(waiting, Some(Cmd::ShowJournal)),
             _ => !matches!(waiting, Some(Cmd::ShowInventory)),
         };
         if !stale {
@@ -154,6 +170,22 @@ impl Game<'_> {
                 Shelf { cells, details, uses: Vec::new(), shop: Some((format!("{}: {money}", capitalise(&label)), label)) }
             }
             (Screen::Shop, _) => Shelf { cells: Vec::new(), details: Vec::new(), uses: Vec::new(), shop: None },
+            _ if self.bag.journal => {
+                let entries: Vec<(ItemInfo, bool)> =
+                    journal_items(self.program, &self.session.state().vars).into_iter().map(|(i, done)| (localize(i), done)).collect();
+                // A finished entry is greyed and says Done; the screen is view-only.
+                let cells = entries
+                    .iter()
+                    .map(|(i, done)| BagCell {
+                        name: i.name.clone(),
+                        icon: i.icon.clone(),
+                        price: done.then(|| "Done".to_string()),
+                        state: if *done { CellState::Disabled } else { CellState::Normal },
+                    })
+                    .collect();
+                let details = entries.iter().map(|(i, _)| info_detail(i, None)).collect();
+                Shelf { cells, details, uses: Vec::new(), shop: None }
+            }
             _ => {
                 let items: Vec<ItemInfo> = inventory_items(self.program, &self.session.state().vars).into_iter().map(localize).collect();
                 let cells = items
@@ -215,7 +247,11 @@ impl Game<'_> {
         let money = shelf.shop.as_ref().map(|(line, _)| line.as_str());
         let background = if shop { theme.shop_background.as_deref().or(theme.inventory_background.as_deref()) } else { theme.inventory_background.as_deref() };
         let screen = BagScreen {
-            title: if shop { &theme.shop_title } else { &theme.inventory_title },
+            title: match (shop, self.bag.journal) {
+                (true, _) => &theme.shop_title,
+                (_, true) => &theme.journal_title,
+                _ => &theme.inventory_title,
+            },
             background,
             money,
             cells: shown,
@@ -263,7 +299,8 @@ impl Game<'_> {
             Event::Key(Key::Char('h' | 'H')) => self.open_backlog(),
             Event::Key(Key::F5) => self.quick_save(),
             Event::Key(Key::F9) => self.quick_load(),
-            Event::Key(Key::Char('i' | 'I')) if self.screen == Screen::Inventory => self.close_bag(),
+            Event::Key(Key::Char('i' | 'I')) if self.screen == Screen::Inventory && !self.bag.journal => self.close_bag(),
+            Event::Key(Key::Char('j' | 'J')) if self.screen == Screen::Inventory && self.bag.journal => self.close_bag(),
             // Backspace (the gamepad's X) leaves too: a pad has no other way to press Leave.
             Event::Key(Key::Backspace) => self.close_bag(),
             Event::Wheel(dy) => self.turn_bag_page(if dy > 0.0 { -1 } else { 1 }, per, pages),
@@ -333,7 +370,7 @@ impl Game<'_> {
         }
     }
 
-    /// The Leave / Close button, or `I` in the inventory (and Esc over the story: the
+    /// The Leave / Close button, or `I` in the inventory (`J` in the journal) (and Esc over the story: the
     /// overlay). Over the story that just closes it;
     /// where the script opened it, the story carries on.
     fn close_bag(&mut self) {

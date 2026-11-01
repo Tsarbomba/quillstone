@@ -1011,6 +1011,13 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_screen_is_one_advance_and_needs_no_coverage_of_its_own() {
+        let src = "---\njournal: q\njournal_done: d\nvars: { q: [a], d: [] }\n---\n::item{id=a}\n::journal\n::set{d += \"a\"}\n::journal\n::if{d has \"a\"}\nDone.\n::endif\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && r.warnings.is_empty() && !r.partial && r.endings.len() == 1, "{r:?}");
+    }
+
+    #[test]
     fn empty_choices_and_stray_returns_are_warned_about() {
         let src = "# a\n::choice\n- [Only if](#a){if never}\n::\n::return\n";
         let w = messages(&test(src).warnings);

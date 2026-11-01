@@ -96,7 +96,7 @@ struct Files<'a> {
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
+                        choice, hotspots, item, inventory, journal, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -500,6 +500,8 @@ impl Parser {
 
     fn front_matter(&mut self, lines: &[&str]) {
         let mut inventory: Option<(usize, String)> = None;
+        let mut journal: Option<(usize, String)> = None;
+        let mut journal_done: Option<(usize, String)> = None;
         let (mut pixels, mut art): (Option<usize>, Option<(usize, f32)>) = (None, None);
         for (idx, raw) in lines.iter().enumerate() {
             let line = idx + 2; // line 1 is the opening `---`
@@ -532,6 +534,14 @@ impl Parser {
                     name if is_ident(name) => inventory = Some((line, name.to_string())),
                     _ => self.err(line, "`inventory` names a list variable, like `inventory: bag`"),
                 },
+                "journal" => match unquote(val) {
+                    name if is_ident(name) => journal = Some((line, name.to_string())),
+                    _ => self.err(line, "`journal` names a list variable, like `journal: quests`"),
+                },
+                "journal_done" => match unquote(val) {
+                    name if is_ident(name) => journal_done = Some((line, name.to_string())),
+                    _ => self.err(line, "`journal_done` names a list variable, like `journal_done: quests_done`"),
+                },
                 "voice" => match unquote(val).trim_end_matches(['/', '\\']) {
                     "" => self.err(line, "`voice` needs a folder, like `voice: voice`"),
                     folder => self.program.voice_folder = Some(folder.to_string()),
@@ -561,6 +571,18 @@ impl Parser {
                     line,
                     format!("`inventory: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"),
                 ),
+            }
+        }
+        for (key, found) in [("journal", journal), ("journal_done", journal_done)] {
+            let Some((line, name)) = found else { continue };
+            if !matches!(self.program.vars.get(&name), Some(Value::List(_))) {
+                self.err(line, format!("`{key}: {name}` must name a list declared in `vars:` (like `vars: {{ {name}: [] }}`)"));
+            } else if key == "journal" {
+                self.program.journal = Some(name);
+            } else if self.program.journal.is_some() {
+                self.program.journal_done = Some(name);
+            } else {
+                self.err(line, "`journal_done` needs a `journal:` list to go with");
             }
         }
     }
@@ -966,7 +988,7 @@ impl Parser {
                 self.elif(line, inner);
                 return i;
             }
-            "else" | "endif" | "return" | "inventory" => {
+            "else" | "endif" | "return" | "inventory" | "journal" => {
                 if !inner.is_empty() {
                     self.err(line, format!("`::{name}` takes no attributes"));
                 }
@@ -978,6 +1000,11 @@ impl Parser {
                         "`::inventory` needs a list to show: add `inventory: <list variable>` to the front matter",
                     ),
                     "inventory" => self.push(Op::Inventory, line),
+                    "journal" if self.program.journal.is_none() => self.err(
+                        line,
+                        "`::journal` needs a list to show: add `journal: <list variable>` to the front matter",
+                    ),
+                    "journal" => self.push(Op::Journal, line),
                     _ => self.push(Op::Return, line),
                 }
                 return i;
@@ -3908,11 +3935,11 @@ mod tests {
     #[test]
     fn the_market_demo_parses_with_items_a_shop_and_an_inventory_call() {
         let p = ok(include_str!("../../../examples/market.quill.md"));
-        assert_eq!(p.items.len(), 5);
-        assert_eq!(p.inventory.as_deref(), Some("pack"));
+        assert_eq!(p.items.len(), 7);
+        assert_eq!((p.inventory.as_deref(), p.journal.as_deref(), p.journal_done.as_deref()), (Some("pack"), Some("quests"), Some("quests_done")));
         assert_eq!(p.items["tonic"].use_label.as_deref(), Some("drink-tonic"));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Shop { stock, .. } if stock.len() == 5 && stock[3].cond.is_some() && stock[3].price == 18)));
-        assert!(p.ops.contains(&Op::Inventory));
+        assert!(p.ops.contains(&Op::Inventory) && p.ops.contains(&Op::Journal));
         assert_eq!(p.item_icons().count(), 4);
         assert!(p.unknown_items().is_empty());
     }
@@ -3937,6 +3964,39 @@ mod tests {
         assert!(errors.iter().any(|e| e.line == 1 && e.message.contains("`inventory: <list variable>`")), "{errors:?}");
         let errors = errs("---\ninventory: bag\nvars: { bag: [] }\n---\n::inventory{x}\n");
         assert!(errors.iter().any(|e| e.line == 5 && e.message.contains("takes no attributes")), "{errors:?}");
+    }
+
+    #[test]
+    fn the_journal_front_matter_names_lists_and_done_needs_a_journal() {
+        let p = ok("---\njournal_done: done\njournal: quests\nvars: { quests: [], done: [] }\n---\n");
+        assert_eq!((p.journal.as_deref(), p.journal_done.as_deref(), p.inventory.as_deref()), (Some("quests"), Some("done"), None));
+        let e = |src: &str, line: usize, needle: &str| {
+            let errors = errs(src);
+            assert!(errors.iter().any(|e| e.line == line && e.message.contains(needle)), "{src:?}: {errors:?}");
+        };
+        e("---\njournal: quests\n---\n", 2, "`journal: quests` must name a list");
+        e("---\njournal: quests\nvars: { quests: 3 }\n---\n", 2, "must name a list");
+        e("---\njournal: two words\n---\n", 2, "names a list variable");
+        e("---\nvars: { d: [] }\njournal_done: d\n---\n", 3, "needs a `journal:`");
+        e("---\njournal: q\njournal_done: d\nvars: { q: [] }\n---\n", 3, "`journal_done: d` must name a list");
+    }
+
+    #[test]
+    fn the_journal_command_needs_a_journal() {
+        let p = ok("---\njournal: q\nvars: { q: [] }\n---\n::journal\n");
+        assert_eq!(p.ops[0], Op::Journal);
+        let errors = errs("---\ninventory: bag\nvars: { bag: [] }\n---\n::journal\n");
+        assert!(errors.iter().any(|e| e.line == 5 && e.message.contains("`journal: <list variable>`")), "{errors:?}");
+        let errors = errs("---\njournal: q\nvars: { q: [] }\n---\n::journal{x}\n");
+        assert!(errors.iter().any(|e| e.line == 5 && e.message.contains("takes no attributes")), "{errors:?}");
+    }
+
+    #[test]
+    fn journal_entries_that_nothing_declares_are_found_like_items() {
+        let head = "---\njournal: q\njournal_done: d\nvars: { q: [find-cat], d: [] }\n---\n::item{id=find-cat}\n";
+        let p = ok(&format!("{head}# a\n::set{{q += \"find-cta\"}}\n::set{{d += \"find-cat\", d += \"lost\"}}\n::if{{q has \"nope\"}}\nx\n::endif\n"));
+        let found: Vec<String> = p.unknown_items().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(found, ["find-cta", "lost", "nope"]);
     }
 
     #[test]

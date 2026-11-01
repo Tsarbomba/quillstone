@@ -542,6 +542,12 @@ pub struct Program {
     pub items: BTreeMap<String, Item>,
     /// The list variable the inventory screen shows (front matter `inventory:`).
     pub inventory: Option<String>,
+    /// The list variable the journal shows (front matter `journal:`): the same screen as the
+    /// inventory, fed by a second list of `::item` entries (quests), without Use, prices or counts.
+    pub journal: Option<String>,
+    /// Front matter `journal_done:`: a list whose entries the journal shows after the open ones, greyed
+    /// and marked Done. Only with a `journal:`.
+    pub journal_done: Option<String>,
     /// Front matter `sprite_size: pixels`: sprites are drawn at their picture's pixel size times this
     /// (`art_scale:`, default 1). `None`: every sprite is the same fixed height.
     pub art_scale: Option<f32>,
@@ -687,13 +693,14 @@ impl Program {
         out
     }
 
-    /// Whether the story may open the inventory, and which item icons the shops
+    /// Whether the story may open the inventory or the journal, and which item icons the shops
     /// it may open sell, within `steps` ops of `pc` (see [`Program::ops_ahead`]).
-    pub fn bag_icons_ahead(&self, pc: usize, steps: usize) -> (bool, Vec<&str>) {
-        let (mut inventory, mut icons) = (false, Vec::new());
+    pub fn bag_icons_ahead(&self, pc: usize, steps: usize) -> (bool, bool, Vec<&str>) {
+        let (mut inventory, mut journal, mut icons) = (false, false, Vec::new());
         for at in self.ops_ahead(pc, steps) {
             match &self.ops[at] {
                 Op::Inventory => inventory = true,
+                Op::Journal => journal = true,
                 Op::Shop { stock, .. } => {
                     for icon in stock.iter().filter_map(|s| self.items.get(&s.item)?.icon.as_deref()) {
                         if !icons.contains(&icon) {
@@ -704,7 +711,7 @@ impl Program {
                 _ => {}
             }
         }
-        (inventory, icons)
+        (inventory, journal, icons)
     }
 
     /// The icon of every declared item, as `(source line, path)`, in the order the
@@ -749,11 +756,14 @@ impl Program {
         from_ops + self.counted.values().map(Vec::len).sum::<usize>()
     }
 
-    /// Literal item texts that name no `::item`, where the inventory list is
+    /// Literal item texts that name no `::item`, where the inventory or journal lists are
     /// changed with `+=` or tested with `has`: `(op index, text)`. Empty when the
-    /// game has no inventory or declares no items.
+    /// game has no such list or declares no items.
     pub fn unknown_items(&self) -> Vec<(usize, String)> {
-        let (Some(list), false) = (&self.inventory, self.items.is_empty()) else { return Vec::new() };
+        let lists: Vec<&String> = [&self.inventory, &self.journal, &self.journal_done].into_iter().flatten().collect();
+        if self.items.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for (at, op) in self.ops.iter().enumerate() {
             let effects: Vec<&Effect> = match op {
@@ -763,7 +773,7 @@ impl Program {
             };
             let mut texts: Vec<&str> = effects
                 .into_iter()
-                .filter(|e| e.var == *list && e.op != AssignOp::Set)
+                .filter(|e| lists.contains(&&e.var) && e.op != AssignOp::Set)
                 .filter_map(|e| match &e.value {
                     Expr::Lit(Value::Str(s)) => Some(s.as_str()),
                     _ => None,
@@ -774,7 +784,7 @@ impl Program {
                 e.has_tests(&mut tests);
             }
             for (name, item) in tests {
-                if let (true, Expr::Lit(Value::Str(s))) = (name == list, item) {
+                if let (true, Expr::Lit(Value::Str(s))) = (lists.iter().any(|l| l.as_str() == name), item) {
                     texts.push(s);
                 }
             }
@@ -1241,6 +1251,8 @@ pub enum Op {
     Choice { options: Vec<ChoiceOption>, time: Option<f32> },
     /// The inventory screen; waits until the player closes it.
     Inventory,
+    /// The journal screen (`::journal`); waits until the player closes it.
+    Journal,
     /// A shop: items for sale, paid with the int variable `pay`, bought into the
     /// list `into`. Waits until the player leaves.
     Shop { pay: String, into: String, stock: Vec<ShopEntry> },

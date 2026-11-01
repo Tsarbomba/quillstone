@@ -172,7 +172,7 @@ fn check(path: &Path) -> Result<(), String> {
     }
     for (pc, text) in program.unknown_items() {
         eprintln!(
-            "{}: warning: \"{text}\" is not a declared `::item` (it will show in the inventory under that name, with no picture; a typo?)",
+            "{}: warning: \"{text}\" is not a declared `::item` (it will show under that name, with no picture; a typo?)",
             at(&program, path, program.lines[pc])
         );
     }
@@ -726,7 +726,7 @@ fn quick_menu_warnings(file: &Path, root: &Path) -> Vec<String> {
             ));
         }
     }
-    let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, true, &size_of);
+    let layout = quick_layout(quillstone_render::textbox_rect(&theme), &theme, true, true, &size_of);
     let overlap = |a: &quillstone_render::Rect, b: &quillstone_render::Rect| {
         a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
     };
@@ -993,6 +993,12 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
                 println!("  - {}{}", item.name, if item.text.is_empty() { String::new() } else { format!(": {}", item.text) });
             }
         }
+        if cmds.contains(&Cmd::ShowJournal) {
+            println!("\n  Journal:");
+            for (item, done) in quillstone_runtime::journal_items(&program, &session.state().vars) {
+                println!("  - {}{}", item.name, if done { " (done)" } else { "" });
+            }
+        }
     }
     Ok(())
 }
@@ -1065,6 +1071,7 @@ fn print_cmds(cmds: &[Cmd]) {
                 }
             }
             Cmd::ShowInventory => println!("\n[inventory]"),
+            Cmd::ShowJournal => println!("\n[journal]"),
             Cmd::ShowShop { pay, money, items } => {
                 println!("\n[shop] you have {money} {pay}");
                 for (i, s) in items.iter().enumerate() {
