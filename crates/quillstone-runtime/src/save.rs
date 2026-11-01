@@ -14,7 +14,7 @@ use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetK
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_LIMIT};
 use quillstone_script::{Ease, ANIM_PREFIX};
-use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
+use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
@@ -208,19 +208,10 @@ fn consistent(state: &State, program: &Program) -> bool {
     if crate::waits_on_nothing(state, program) {
         return false;
     }
-    match &state.pending {
-        None => state.finished,
-        Some(Cmd::Say { .. }) => matches!(op, Some(Op::Say { .. })),
-        Some(Cmd::Wait { .. }) => matches!(op, Some(Op::Wait { .. } | Op::FadeOut { .. })),
-        Some(Cmd::PlayVideo { .. }) => matches!(op, Some(Op::Video { .. })),
-        Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }) => matches!(op, Some(Op::Choice { .. })),
-        Some(Cmd::ShowInventory) => matches!(op, Some(Op::Inventory)),
-        Some(Cmd::ShowJournal) => matches!(op, Some(Op::Journal)),
-        Some(Cmd::ShowShop { .. }) => matches!(op, Some(Op::Shop { .. })),
-        Some(Cmd::AskInput { .. }) => matches!(op, Some(Op::Input { .. })),
-        Some(Cmd::ShowTiming { .. }) => matches!(op, Some(Op::Timing { .. })),
-        Some(Cmd::ShowPress { .. }) => matches!(op, Some(Op::Press { .. })),
-        Some(_) => false,
+    match (&state.pending, op) {
+        (None, _) => state.finished,
+        (Some(pending), Some(op)) => screen_matches(pending, op),
+        _ => false,
     }
 }
 
@@ -724,16 +715,11 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 // A save whose script changed so the op is gone is dealt with by the caller
                 // (`consistent`): the placeholder stays and the story re-runs from the spot.
                 // Choices and hotspots are rebuilt from the script too, never from saved text.
-                let rebuilt = match (&s.pending, program.ops.get(s.pc)) {
-                    (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
-                    (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => rebuild_pending(program, op, &s.vars),
-                    (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. })) => rebuild_pending(program, op, &s.vars),
-                    (Some(Cmd::ShowTiming { .. }), Some(op @ Op::Timing { .. })) => rebuild_pending(program, op, &s.vars),
-                    (Some(Cmd::ShowPress { .. }), Some(op @ Op::Press { .. })) => rebuild_pending(program, op, &s.vars),
-                    _ => None,
-                };
-                if rebuilt.is_some() {
-                    s.pending = rebuilt;
+                // A line keeps the text it was saved with.
+                if let (Some(pending), Some(op)) = (&s.pending, program.ops.get(s.pc)) {
+                    if screen_matches(pending, op) && !matches!(op, Op::Say { .. }) {
+                        s.pending = rebuild_pending(program, op, &s.vars, &|t| t.to_string()).or(s.pending.take());
+                    }
                 }
                 return Ok(s);
             }

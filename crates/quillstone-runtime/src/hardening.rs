@@ -16,7 +16,7 @@ fn screen_matches_state(s: &Session) {
     let st = s.state();
     if let Some(op) = s.program.ops.get(st.pc) {
         if let (Some(pending @ (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. })), Some(want)) =
-            (&st.pending, rebuild_pending(s.program, op, &st.vars))
+            (&st.pending, rebuild_pending(s.program, op, &st.vars, &|t| t.to_string()))
         {
             assert_eq!(*pending, want, "the waiting screen is out of step with the variables");
         }

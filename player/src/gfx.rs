@@ -309,6 +309,7 @@ impl Gfx {
                 }
                 None => self.make_texture(width, height, &bitmap.rgba),
             };
+            self.text_renderer.recycle(bitmap);
             self.texts.insert(key.clone(), tex);
         }
 

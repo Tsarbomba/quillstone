@@ -56,8 +56,9 @@ impl Game<'_> {
         line_id(self.program, self.session.state().pc).is_some_and(|id| self.read.contains(&id))
     }
 
-    fn waiting_on_a_line(&self) -> bool {
-        matches!(self.session.state().pending, Some(Cmd::Say { .. }))
+    /// The story waits at a line (not under choices).
+    pub(super) fn waiting_on_a_line(&self) -> bool {
+        matches!(self.session.state().pending, Some(Cmd::Say { .. })) && self.view.choices.is_empty()
     }
 
     /// The player is leaving the line on screen: it has been read.
@@ -135,9 +136,8 @@ impl Game<'_> {
     pub(super) fn skip_arrived(&mut self) {
         let stop = match &self.session.state().pending {
             Some(Cmd::Say { .. }) => !self.settings.skip_unread && !self.current_line_read(),
-            Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::ShowInventory | Cmd::ShowJournal | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. })
-            | None => true,
-            Some(_) => false,
+            Some(c) => c.is_prompt() || matches!(c, Cmd::ShowInventory | Cmd::ShowJournal),
+            None => true,
         };
         if stop {
             self.stop_skip();

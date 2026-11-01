@@ -31,6 +31,8 @@ mod stub {
         pub fn rasterize(&mut self, _job: &TextJob) -> Option<Bitmap> {
             None
         }
+
+        pub fn recycle(&mut self, _bitmap: Bitmap) {}
     }
 }
 
@@ -116,6 +118,11 @@ mod real {
         /// Shaped text by [`TextJob::layout_key`], so a line typing out is shaped
         /// once rather than once per character.
         layouts: HashMap<String, Buffer>,
+        /// The coverage buffer of [`TextRenderer::draw`], kept so a line typing out does not allocate
+        /// megabytes per character.
+        acc: Vec<[f32; 4]>,
+        /// A pixel buffer handed back by [`TextRenderer::recycle`], for the next bitmap.
+        spare: Vec<u8>,
     }
 
     /// Layouts kept before the cache starts afresh (a screen shows a few dozen texts).
@@ -138,7 +145,7 @@ mod real {
                     None => eprintln!("warning: one of the theme's font files isn't a font cosmic-text can read"),
                 }
             }
-            TextRenderer { fonts, swash: SwashCache::new(), family, layouts: HashMap::new() }
+            TextRenderer { fonts, swash: SwashCache::new(), family, layouts: HashMap::new(), acc: Vec::new(), spare: Vec::new() }
         }
 
         pub fn rasterize(&mut self, job: &TextJob) -> Option<Bitmap> {
@@ -157,6 +164,11 @@ mod real {
             }
             self.layouts.insert(layout_key, buffer);
             Some(bitmap)
+        }
+
+        /// Give a bitmap's pixel buffer back once it is uploaded, to be drawn into again.
+        pub fn recycle(&mut self, bitmap: Bitmap) {
+            self.spare = bitmap.rgba;
         }
 
         /// Shape at `size_px`, or smaller if the text is too tall for its box
@@ -251,7 +263,9 @@ mod real {
             }
 
             // Premultiplied colour and coverage per pixel (coloured runs differ).
-            let mut acc = vec![[0.0f32; 4]; (width * height) as usize];
+            let mut acc = std::mem::take(&mut self.acc);
+            acc.clear();
+            acc.resize((width * height) as usize, [0.0; 4]);
             for run in buffer.layout_runs() {
                 let x_off = match job.align {
                     Align::Center | Align::CenterX => ((width as f32 - run.line_w) / 2.0).max(0.0),
@@ -288,7 +302,9 @@ mod real {
 
             // Back to straight alpha; `a` scales the whole text's opacity.
             let opacity = a as f32 / 255.0;
-            let mut rgba = vec![0u8; (width * height * 4) as usize];
+            let mut rgba = std::mem::take(&mut self.spare);
+            rgba.clear();
+            rgba.resize((width * height * 4) as usize, 0);
             for (i, [pr, pg, pb, cover]) in acc.iter().enumerate() {
                 if *cover > 0.0 {
                     let straight = |c: f32| ((c / cover).clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -298,6 +314,7 @@ mod real {
                     rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
                 }
             }
+            self.acc = acc;
             Bitmap { width, height, rgba }
         }
     }

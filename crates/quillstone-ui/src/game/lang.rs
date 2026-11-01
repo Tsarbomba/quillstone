@@ -60,12 +60,7 @@ impl<'p> Game<'p> {
     /// `cmds` with their texts in the language in use (`None`: nothing to translate).
     pub(super) fn localized(&self, cmds: &[Cmd]) -> Option<Vec<Cmd>> {
         let cat = self.catalog()?;
-        let texty = |c: &Cmd| {
-            matches!(
-                c,
-                Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. } | Cmd::HudShow { .. }
-            )
-        };
+        let texty = |c: &Cmd| c.is_prompt() || matches!(c, Cmd::Say { .. } | Cmd::HudShow { .. });
         cmds.iter().any(texty).then(|| self.session.localize(cmds.to_vec(), cat))
     }
 

@@ -8,7 +8,7 @@
 use quillstone_audio::{Action, Channel, Mixer};
 use quillstone_render::{hud::HudLook, textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
 use quillstone_runtime::{choice_timer, voice_name, ChoiceTimer, Cmd, Input, Logged, Session, State};
-use quillstone_script::{kind_from_path, AssetKind, Hit, Program, KeyPress, TimingBar, Value};
+use quillstone_script::{kind_from_path, AssetKind, Hit, Program, KeyPress, TimingBar, Value, Vars};
 use quillstone_video::Wanted;
 
 use crate::screens::*;
@@ -228,12 +228,19 @@ pub struct Game<'p> {
     unlock_all: bool,
 }
 
+/// The session the game holds while no story runs: only the persistent values matter, and Start,
+/// Continue or Load replaces it.
+pub(super) fn idle_session(program: &Program, persistent: Vars) -> Session<'_> {
+    let (mut session, _) = Session::start(program);
+    session.set_persistent(persistent);
+    session
+}
+
 impl<'p> Game<'p> {
     /// Open the game at its main menu. Saves are read from and written to `storage`.
     pub fn new(program: &'p Program, settings: Settings, storage: Box<dyn Storage>) -> Game<'p> {
-        let (mut session, _) = Session::start(program); // replaced by Start, Continue or Load
         let (persistent, persistent_locked) = extras::load_persistent(&*storage);
-        session.set_persistent(persistent);
+        let session = idle_session(program, persistent);
         let (read, read_locked) = skip::load_read(&*storage);
         let mut game = Game {
             program,
@@ -317,13 +324,19 @@ impl<'p> Game<'p> {
     pub fn start_story(&mut self) {
         let seed = quillstone_runtime::next_seed(&mut self.seed);
         let (session, first) = Session::start_seeded(self.program, self.session.persistent().clone(), seed);
+        self.enter_story(session, &first);
+    }
+
+    /// Make `session` the story on screen: a fresh view, the menu's music stopped, `first` (what its
+    /// start showed) put up. (A loaded save does the same without stopping the music: see `load_from`.)
+    pub(super) fn enter_story(&mut self, session: Session<'p>, first: &[Cmd]) {
         self.session = session;
         self.fresh_view();
-        self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }])); // the menu's music
+        self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }]));
         self.in_story = true;
         self.under = None;
         self.screen = Screen::Story;
-        self.show(&first);
+        self.show(first);
     }
 
     /// Leave the story (or start up) at the main menu.
@@ -407,9 +420,7 @@ impl<'p> Game<'p> {
             }
         } else {
             self.program = program;
-            let (mut session, _) = Session::start(program); // replaced by Start, Continue or Load
-            session.set_persistent(persistent);
-            self.session = session;
+            self.session = idle_session(program, persistent);
         }
         self.choice_focus = None;
         self.bag_resync();
@@ -574,22 +585,19 @@ impl<'p> Game<'p> {
         if self.view.take_wait_finished() {
             self.forward(Input::Advance);
         }
-        if let Some(bar) = self.timing_bar().filter(|_| self.counting()) {
+        if let Some(limit) = self.prompt_deadline() {
             self.choice_elapsed += dt;
-            if bar.time.is_some_and(|t| self.choice_elapsed >= t) {
-                return self.forward(Input::Choose(Hit::Miss as usize)); // no press in time
-            }
-        }
-        if let Some(press) = self.key_press().filter(|_| self.counting()) {
-            self.choice_elapsed += dt;
-            if self.choice_elapsed >= press.time {
-                return self.forward(Input::Choose(0)); // not pressed in time
-            }
-        }
-        if let Some(timer) = self.running_timer() {
-            self.choice_elapsed += dt;
-            if self.choice_elapsed >= timer.seconds {
-                return self.pick(timer.default); // time is up: as if the default had been clicked
+            if self.choice_elapsed >= limit {
+                return match self.session.state().pending {
+                    Some(Cmd::ShowTiming { .. }) => self.forward(Input::Choose(Hit::Miss as usize)), // no press in time
+                    Some(Cmd::ShowPress { .. }) => self.forward(Input::Choose(0)), // not pressed in time
+                    // time is up: as if the default had been clicked
+                    _ => {
+                        if let Some(timer) = self.running_timer() {
+                            self.pick(timer.default);
+                        }
+                    }
+                };
             }
         }
         // A line ending in `{nw}` moves the story on once it is typed (no click, no auto delay).
@@ -600,8 +608,7 @@ impl<'p> Game<'p> {
             return self.skip_tick(dt);
         }
 
-        let line_ready = matches!(self.session.state().pending, Some(Cmd::Say { .. }))
-            && self.view.choices.is_empty()
+        let line_ready = self.waiting_on_a_line()
             && self.view.dialogue.as_ref().is_some_and(|d| d.is_complete());
         if !(self.auto && line_ready && !voice_playing) {
             self.auto_elapsed = 0.0;
@@ -631,6 +638,20 @@ impl<'p> Game<'p> {
     /// line above is still being typed (Settings, History and confirms pause the whole tick).
     fn counting(&self) -> bool {
         self.focused && self.view.dialogue.as_ref().is_none_or(|d| d.is_complete())
+    }
+
+    /// How long the prompt on screen runs before it times out, while its clock counts (`choice_elapsed`):
+    /// a timed choice, a timing bar (no limit: infinite, the clock still moves its marker) or a key prompt.
+    fn prompt_deadline(&self) -> Option<f32> {
+        if !self.counting() {
+            return None;
+        }
+        let in_story = self.in_story && self.screen == Screen::Story;
+        match &self.session.state().pending {
+            Some(Cmd::ShowTiming { bar, .. }) if in_story => Some(bar.time.unwrap_or(f32::INFINITY)),
+            Some(Cmd::ShowPress { press, .. }) if in_story => Some(press.time),
+            _ => self.running_timer().map(|t| t.seconds),
+        }
     }
 
     /// The timing bar on screen. `choice_elapsed` is its clock, as for a timed choice.
@@ -699,9 +720,7 @@ impl<'p> Game<'p> {
 
     /// Whether the line waiting is one that ends in `{nw}`.
     fn no_wait_line(&self) -> bool {
-        matches!(self.session.state().pending, Some(Cmd::Say { .. }))
-            && self.view.choices.is_empty()
-            && self.view.dialogue.as_ref().is_some_and(|d| d.auto_advance)
+        self.waiting_on_a_line() && self.view.dialogue.as_ref().is_some_and(|d| d.auto_advance)
     }
 
     /// Whether [`Game::tick`] must keep being called even if the screen looks
@@ -714,8 +733,7 @@ impl<'p> Game<'p> {
             || self.console.is_some()
             || self.auto
             || self.skip.is_some()
-            || self.running_timer().is_some()
-            || ((self.timing_bar().is_some() || self.key_press().is_some()) && self.counting())
+            || self.prompt_deadline().is_some()
             || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
             || !self.wanted_videos().is_empty()
     }
@@ -1291,7 +1309,7 @@ impl<'p> Game<'p> {
         // Arriving at a choice, a shop or a text entry is a checkpoint (a purchase, which shows the shop again, is not).
         let arrived = cmds
             .iter()
-            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. }));
+            .any(Cmd::is_prompt);
         if arrived && !purchase && self.replay.is_none() {
             self.autosave();
         }

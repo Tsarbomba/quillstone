@@ -7,7 +7,7 @@
 
 use quillstone_script::{HudKind, Op, Catalog, Vars};
 
-use crate::{fill_name, interpolate, speaker_name, visible_options, Cmd, ItemInfo, Logged, Session};
+use crate::{fill_name, interpolate, rebuild_pending, screen_matches, speaker_name, visible_options, Cmd, ItemInfo, Logged, Session};
 
 /// The item with its name and description translated.
 pub fn localize_item(info: &mut ItemInfo, cat: &Catalog) {
@@ -62,56 +62,17 @@ impl Session<'_> {
                         None => Cmd::Say { speaker, color, text },
                     }
                 }
-                Cmd::ShowChoices { options, mut locked } if i == last => match self.program.ops.get(self.state.pc) {
-                    Some(Op::Choice { options: src, .. }) => {
-                        let visible = visible_options(src, vars);
-                        if visible.len() == options.len() && src.iter().all(|o| o.area.is_none()) {
-                            let texts = visible.iter().map(|&k| interpolate(cat.text(None, &src[k].text), vars));
-                            for (slot, &k) in locked.iter_mut().zip(&visible) {
-                                if let (Some(reason), Some(l)) = (slot.as_mut(), &src[k].lock) {
-                                    *reason = interpolate(cat.text(None, &l.reason), vars);
-                                }
-                            }
-                            Cmd::ShowChoices { options: texts.collect(), locked }
-                        } else {
-                            Cmd::ShowChoices { options, locked }
-                        }
-                    }
-                    _ => Cmd::ShowChoices { options, locked },
-                },
-                Cmd::ShowHotspots { mut spots } if i == last => {
-                    if let Some(Op::Choice { options: src, .. }) = self.program.ops.get(self.state.pc) {
-                        let visible = visible_options(src, vars);
-                        if visible.len() == spots.len() {
-                            for (spot, &k) in spots.iter_mut().zip(&visible) {
-                                spot.label = interpolate(cat.text(None, &src[k].text), vars);
-                            }
-                        }
-                    }
-                    Cmd::ShowHotspots { spots }
+                // The screen the story waits at is built again from the script, in `cat`'s language.
+                Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. }
+                    if i == last =>
+                {
+                    let rebuilt = self.program.ops.get(self.state.pc).filter(|op| screen_matches(&cmd, op));
+                    rebuilt.and_then(|op| rebuild_pending(self.program, op, vars, &|s| cat.text(None, s).to_string())).unwrap_or(cmd)
                 }
                 Cmd::ShowShop { pay, money, mut items } => {
                     items.iter_mut().for_each(|s| localize_item(&mut s.item, cat));
                     Cmd::ShowShop { pay, money, items }
                 }
-                Cmd::ShowTiming { prompt, bar } => match self.program.ops.get(self.state.pc) {
-                    Some(Op::Timing { prompt: src, .. }) if i == last => {
-                        Cmd::ShowTiming { prompt: interpolate(cat.text(None, src), vars), bar }
-                    }
-                    _ => Cmd::ShowTiming { prompt, bar },
-                },
-                Cmd::ShowPress { prompt, press } => match self.program.ops.get(self.state.pc) {
-                    Some(Op::Press { prompt: src, .. }) if i == last => {
-                        Cmd::ShowPress { prompt: interpolate(cat.text(None, src), vars), press }
-                    }
-                    _ => Cmd::ShowPress { prompt, press },
-                },
-                Cmd::AskInput { prompt, default, max } => match self.program.ops.get(self.state.pc) {
-                    Some(Op::Input { prompt: src, .. }) if i == last => {
-                        Cmd::AskInput { prompt: interpolate(cat.text(None, src), vars), default, max }
-                    }
-                    _ => Cmd::AskInput { prompt, default, max },
-                },
                 // The script's text is looked up before the values go in (like a line with `{var}`).
                 Cmd::Notify { text, time, source } => {
                     let text = if source.is_empty() { text } else { interpolate(cat.text(None, &source), vars) };

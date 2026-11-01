@@ -37,15 +37,9 @@ impl Game<'_> {
         let seed = quillstone_runtime::next_seed(&mut self.seed);
         let Some((session, first)) = Session::start_replay(self.program, persistent.clone(), seed, label) else { return false };
         self.replay = Some(ReplayRun { label: label.to_string(), persistent });
-        self.session = session;
         self.extras.playing = None;
         self.extras.viewing = None;
-        self.fresh_view();
-        self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }])); // the menu's music
-        self.in_story = true;
-        self.under = None;
-        self.screen = Screen::Story;
-        self.show(&first);
+        self.enter_story(session, &first);
         self.replay_check(&first);
         true
     }
@@ -62,9 +56,7 @@ impl Game<'_> {
     pub(super) fn end_replay(&mut self) {
         let Some(run) = self.replay.take() else { return };
         self.confirm = None;
-        let (mut session, _) = Session::start(self.program); // replaced by Start, Continue or Load
-        session.set_persistent(run.persistent);
-        self.session = session;
+        self.session = idle_session(self.program, run.persistent);
         self.go_to_menu();
         let at = self.program.replays.iter().position(|r| r.label == run.label).unwrap_or(0);
         let per = ex::per_page(Tab::Scenes);

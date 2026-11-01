@@ -199,6 +199,16 @@ pub enum Cmd {
     Finished,
 }
 
+impl Cmd {
+    /// A screen the story stops at for the player to answer (not a line, a wait or a video).
+    pub fn is_prompt(&self) -> bool {
+        matches!(
+            self,
+            Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. }
+        )
+    }
+}
+
 /// One clickable region (see [`Cmd::ShowHotspots`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spot {
@@ -794,56 +804,83 @@ pub(crate) fn waits_on_nothing(state: &State, program: &Program) -> bool {
 /// If that leaves a choice or shop with nothing on offer, the story goes on past it,
 /// as it would have had the variables been so when it got there.
 pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
-    match (&state.pending, program.ops.get(state.pc)) {
-        (Some(Cmd::Say { .. }), Some(Op::Say { speaker, color, text })) => {
-            let text = interpolate(text, &state.vars);
-            let speaker = speaker_name(program, speaker, &state.vars);
-            state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
-            state.pending = Some(Cmd::Say { speaker, color: *color, text });
-        }
-        (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. }))
-        | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. }))
-        | (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. }))
-        | (Some(Cmd::ShowTiming { .. }), Some(op @ Op::Timing { .. }))
-        | (Some(Cmd::ShowPress { .. }), Some(op @ Op::Press { .. })) => {
-            if let Some(cmd) = rebuild_pending(program, op, &state.vars) {
-                state.pending = Some(cmd);
-            }
-            if waits_on_nothing(state, program) {
-                state.pending = None;
-                step(state, program, None);
-            }
-        }
-        _ => {}
+    let (Some(pending), Some(op)) = (&state.pending, program.ops.get(state.pc)) else { return };
+    if !screen_matches(pending, op) {
+        return;
+    }
+    if let Some(cmd) = rebuild_pending(program, op, &state.vars, &|s| s.to_string()) {
+        remember_line(state, &cmd);
+        state.pending = Some(cmd);
+    }
+    if waits_on_nothing(state, program) {
+        state.pending = None;
+        step(state, program, None);
+    }
+}
+
+/// Whether `pending` is the screen the op `op` shows (the one table of which waiting command goes
+/// with which op; a fade-out waits as a `Wait`).
+pub(crate) fn screen_matches(pending: &Cmd, op: &Op) -> bool {
+    matches!(
+        (pending, op),
+        (Cmd::Say { .. }, Op::Say { .. })
+            | (Cmd::Wait { .. }, Op::Wait { .. } | Op::FadeOut { .. })
+            | (Cmd::PlayVideo { .. }, Op::Video { .. })
+            | (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Op::Choice { .. })
+            | (Cmd::ShowInventory, Op::Inventory)
+            | (Cmd::ShowJournal, Op::Journal)
+            | (Cmd::ShowShop { .. }, Op::Shop { .. })
+            | (Cmd::AskInput { .. }, Op::Input { .. })
+            | (Cmd::ShowTiming { .. }, Op::Timing { .. })
+            | (Cmd::ShowPress { .. }, Op::Press { .. })
+    )
+}
+
+/// A line that is shown is also the current line (what the backlog and the textbox read).
+fn remember_line(state: &mut State, cmd: &Cmd) {
+    if let Cmd::Say { speaker, color, text } = cmd {
+        state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
     }
 }
 
 /// The command a waiting op shows, for ops whose screen is built from the script
-/// and the variables (used to rebuild it when a save is read).
-pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option<Cmd> {
+/// and the variables (`text` maps the script's text to what is shown, the identity unless the
+/// game is translated; the one place that builds them: `step` shows them, a save read or a
+/// changed variable rebuilds them).
+pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dyn Fn(&str) -> String) -> Option<Cmd> {
     match op {
-        Op::Choice { options, .. } => Some(choice_cmd(options, &visible_options(options, vars), vars)),
+        Op::Say { speaker, color, text } => {
+            Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars) })
+        }
+        Op::Choice { options, .. } => Some(choice_cmd(options, &visible_options(options, vars), vars, text)),
         Op::Inventory => Some(Cmd::ShowInventory),
         Op::Journal => Some(Cmd::ShowJournal),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
         Op::Input { prompt, default, max, .. } => {
-            Some(Cmd::AskInput { prompt: interpolate(prompt, vars), default: default.clone(), max: *max })
+            Some(Cmd::AskInput { prompt: interpolate(&text(prompt), vars), default: default.clone(), max: *max })
         }
-        Op::Timing { prompt, bar, .. } => Some(Cmd::ShowTiming { prompt: interpolate(prompt, vars), bar: bar.clone() }),
-        Op::Press { prompt, press, .. } => Some(Cmd::ShowPress { prompt: interpolate(prompt, vars), press: press.clone() }),
+        Op::Timing { prompt, bar, .. } => Some(Cmd::ShowTiming { prompt: interpolate(&text(prompt), vars), bar: bar.clone() }),
+        Op::Press { prompt, press, .. } => Some(Cmd::ShowPress { prompt: interpolate(&text(prompt), vars), press: press.clone() }),
         _ => None,
     }
 }
 
+/// Show the screen the waiting op `op` stands for and wait at it.
+fn show_screen(state: &mut State, program: &Program, op: &Op, out: &mut Vec<Cmd>) -> Vec<Cmd> {
+    let cmd = rebuild_pending(program, op, &state.vars, &|s| s.to_string()).expect("a waiting op has a screen");
+    remember_line(state, &cmd);
+    block(state, out, cmd)
+}
+
 /// What a choice op shows for the options at `visible`: buttons, or regions for a `::hotspots` block.
-fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
+fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars, text: &dyn Fn(&str) -> String) -> Cmd {
     if options.iter().any(|o| o.area.is_some()) {
         let spots = visible
             .iter()
             .filter_map(|&i| {
                 let o = &options[i];
                 let area = o.area.as_ref()?;
-                Some(Spot { label: interpolate(&o.text, vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hidden: area.hidden })
+                Some(Spot { label: interpolate(&text(&o.text), vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hidden: area.hidden })
             })
             .collect();
         Cmd::ShowHotspots { spots }
@@ -851,11 +888,11 @@ fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars) -> Cmd {
         let locked = visible
             .iter()
             .map(|&i| match &options[i].lock {
-                Some(l) if !pickable(&options[i], vars) => Some(interpolate(&l.reason, vars)),
+                Some(l) if !pickable(&options[i], vars) => Some(interpolate(&text(&l.reason), vars)),
                 _ => None,
             })
             .collect();
-        Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&options[i].text, vars)).collect(), locked }
+        Cmd::ShowChoices { options: visible.iter().map(|&i| interpolate(&text(&options[i].text), vars)).collect(), locked }
     }
 }
 
@@ -1021,9 +1058,8 @@ pub(crate) fn step_traced(
                 if !buy(state, program, i) {
                     return Vec::new();
                 }
-                let Some(Op::Shop { pay, into, stock }) = program.ops.get(state.pc) else { return Vec::new() };
-                let cmd = shop_cmd(program, pay, into, stock, &state.vars);
-                return block(state, &mut Vec::new(), cmd);
+                let Some(op @ Op::Shop { .. }) = program.ops.get(state.pc) else { return Vec::new() };
+                return show_screen(state, program, op, &mut Vec::new());
             }
             (Cmd::Say { .. }, Some(Input::Use(id))) => {
                 if !can_use(program, state, &id) {
@@ -1090,12 +1126,9 @@ pub(crate) fn step_traced(
         // Passing a label that some `seen(label)` asks about.
         count_visits(state, program, state.pc, 0, 1);
         match op {
-            Op::Say { speaker, color, text } => {
+            Op::Say { .. } => {
                 show_textbox(state, &mut out);
-                let text = interpolate(text, &state.vars);
-                let speaker = speaker_name(program, speaker, &state.vars);
-                state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
-                return block(state, &mut out, Cmd::Say { speaker, color: *color, text });
+                return show_screen(state, program, op, &mut out);
             }
             Op::Video { src, fit, looped, skippable } => {
                 state.line = None;
@@ -1115,29 +1148,13 @@ pub(crate) fn step_traced(
                 if options.iter().all(|o| o.area.is_none()) {
                     show_textbox(state, &mut out);
                 }
-                return block(state, &mut out, choice_cmd(options, &visible, &state.vars));
+                return show_screen(state, program, op, &mut out);
             }
-            Op::Inventory => return block(state, &mut out, Cmd::ShowInventory),
-            Op::Journal => return block(state, &mut out, Cmd::ShowJournal),
-            Op::Shop { pay, into, stock } => {
-                if offered_stock(stock, &state.vars).is_empty() {
-                    state.pc += 1; // nothing on offer: carry on past the block
-                    continue;
-                }
-                let cmd = shop_cmd(program, pay, into, stock, &state.vars);
-                return block(state, &mut out, cmd);
+            Op::Shop { stock, .. } if offered_stock(stock, &state.vars).is_empty() => {
+                state.pc += 1; // nothing on offer: carry on past the block
             }
-            Op::Input { prompt, default, max, .. } => {
-                let cmd = Cmd::AskInput { prompt: interpolate(prompt, &state.vars), default: default.clone(), max: *max };
-                return block(state, &mut out, cmd);
-            }
-            Op::Timing { prompt, bar, .. } => {
-                let cmd = Cmd::ShowTiming { prompt: interpolate(prompt, &state.vars), bar: bar.clone() };
-                return block(state, &mut out, cmd);
-            }
-            Op::Press { prompt, press, .. } => {
-                let cmd = Cmd::ShowPress { prompt: interpolate(prompt, &state.vars), press: press.clone() };
-                return block(state, &mut out, cmd);
+            Op::Shop { .. } | Op::Inventory | Op::Journal | Op::Input { .. } | Op::Timing { .. } | Op::Press { .. } => {
+                return show_screen(state, program, op, &mut out);
             }
             Op::Image { src, alt } => {
                 let src = picture_path(src, &state.vars, &mut out);

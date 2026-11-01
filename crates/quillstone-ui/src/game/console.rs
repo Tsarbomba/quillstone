@@ -20,13 +20,7 @@ impl Game<'_> {
     pub fn start_dev(&mut self, at: &quillstone_runtime::StartAt) -> Result<(), String> {
         let seed = quillstone_runtime::next_seed(&mut self.seed);
         let (session, first) = Session::start_at(self.program, self.session.persistent().clone(), seed, at)?;
-        self.session = session;
-        self.fresh_view();
-        self.audio.extend(self.mixer.apply(&[Cmd::StopMusic { fade: 0.5 }]));
-        self.in_story = true;
-        self.under = None;
-        self.screen = Screen::Story;
-        self.show(&first);
+        self.enter_story(session, &first);
         Ok(())
     }
 

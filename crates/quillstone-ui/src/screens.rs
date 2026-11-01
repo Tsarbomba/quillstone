@@ -42,39 +42,13 @@ pub enum QuickButton {
     Journal,
 }
 
-/// The buttons every game has. A game with an inventory also gets [`QuickButton::Items`], one with a
-/// journal [`QuickButton::Journal`].
-pub const QUICK_BUTTONS: [QuickButton; 9] = [
-    QuickButton::Back,
-    QuickButton::History,
-    QuickButton::Skip,
-    QuickButton::Auto,
-    QuickButton::Save,
-    QuickButton::Load,
-    QuickButton::QuickSave,
-    QuickButton::QuickLoad,
-    QuickButton::Settings,
-];
-
 const QUICK_W: f32 = 150.0;
 const QUICK_GAP: f32 = 8.0;
 const QUICK_H: f32 = 32.0;
 /// Space between the textbox and the row below it.
 const QUICK_MARGIN: f32 = 4.0;
-/// Slots in the row: the buttons every game has, and Items to the left of them.
-const QUICK_SLOTS: usize = QUICK_BUTTONS.len() + 1;
-
-fn quick_total() -> f32 {
-    QUICK_SLOTS as f32 * QUICK_W + (QUICK_SLOTS - 1) as f32 * QUICK_GAP
-}
-
-/// Where the row's top edge is: directly below the textbox, or, when there is no
+/// Where a row `h` tall has its top edge: directly below the textbox, or, when there is no
 /// room for it below, just inside the textbox's bottom edge.
-fn quick_y(tb: Rect) -> f32 {
-    quick_y_for(tb, QUICK_H)
-}
-
-/// [`quick_y`] for a row `h` tall.
 fn quick_y_for(tb: Rect, h: f32) -> f32 {
     let below = tb.y + tb.h + QUICK_MARGIN;
     if below + h <= VIRTUAL.h {
@@ -84,32 +58,10 @@ fn quick_y_for(tb: Rect, h: f32) -> f32 {
     }
 }
 
-/// The row's right edge: the textbox's, or further right when the textbox is too
+/// The right edge of a row `total` wide: the textbox's, or further right when the textbox is too
 /// narrow for the whole row (so no button leaves the screen).
-fn quick_right(tb: Rect) -> f32 {
-    quick_right_for(tb, quick_total())
-}
-
-/// [`quick_right`] for a row `total` wide.
 fn quick_right_for(tb: Rect, total: f32) -> f32 {
     (tb.x + tb.w).max(total + QUICK_GAP)
-}
-
-/// Right-aligned with the textbox `tb`, in the strip below it (see [`quick_y`]).
-pub fn quick_rect(tb: Rect, i: usize) -> Rect {
-    let n = QUICK_BUTTONS.len();
-    let x = quick_right(tb) - (n - i) as f32 * QUICK_W - (n - 1 - i) as f32 * QUICK_GAP;
-    Rect::new(x, quick_y(tb), QUICK_W, QUICK_H)
-}
-
-pub fn quick_button_rect(tb: Rect, b: QuickButton) -> Rect {
-    quick_rect(tb, QUICK_BUTTONS.iter().position(|q| *q == b).unwrap_or(0))
-}
-
-/// The Items button: one place left of the first button, so no other button moves.
-pub fn quick_items_rect(tb: Rect) -> Rect {
-    let first = quick_rect(tb, 0);
-    Rect::new(first.x - QUICK_GAP - QUICK_W, first.y, QUICK_W, first.h)
 }
 
 /// Every button, in the order of the theme's ids ([`quillstone_render::theme::QUICK_IDS`]).
@@ -1062,46 +1014,35 @@ mod tests {
 
     #[test]
     fn quick_menu_sits_under_the_textbox_and_is_hit_testable() {
-        for (i, b) in QUICK_BUTTONS.iter().enumerate() {
-            let r = quick_rect(TEXTBOX, i);
+        assert_eq!(plain(false).buttons.len(), 9);
+        for (b, r) in &plain(false).buttons {
             assert!(r.y >= TEXTBOX.y + TEXTBOX.h && r.y + r.h <= VIRTUAL.h);
-            let (x, y) = centre(r);
+            let (x, y) = centre(*r);
             assert_eq!(plain(false).at(x, y), Some(*b));
             assert_eq!(plain(true).at(x, y), Some(*b), "Items doesn't move the others");
         }
-        let items = quick_items_rect(TEXTBOX);
+        let items = plain(true).rect(QuickButton::Items).unwrap();
         let (x, y) = centre(items);
         assert_eq!(plain(true).at(x, y), Some(QuickButton::Items));
         assert_eq!(plain(false).at(x, y), None, "only games with an inventory have the button");
-        assert!(items.x >= TEXTBOX.x && items.x + items.w <= quick_rect(TEXTBOX, 0).x, "Items fits under the textbox, left of Back");
-        let last = quick_rect(TEXTBOX, QUICK_BUTTONS.len() - 1);
+        assert!(items.x >= TEXTBOX.x && items.x + items.w <= plain(true).rect(QuickButton::Back).unwrap().x, "Items fits under the textbox, left of Back");
+        let last = plain(true).rect(QuickButton::Settings).unwrap();
         assert!((last.x + QUICK_W - (TEXTBOX.x + TEXTBOX.w)).abs() < 1e-3);
-        assert!(quick_rect(TEXTBOX, 0).x >= TEXTBOX.x, "all buttons fit under the textbox");
+        assert!(items.x >= TEXTBOX.x, "all buttons fit under the textbox");
         assert_eq!(plain(true).at(10.0, 10.0), None);
     }
 
     #[test]
-    fn without_picture_keys_the_layout_is_the_old_row() {
+    fn without_picture_keys_the_layout_is_one_row_under_the_textbox() {
         let l = plain(true);
         assert_eq!(l.buttons.len(), 10);
-        for (b, r) in &l.buttons {
-            let old = if *b == QuickButton::Items { quick_items_rect(TEXTBOX) } else { quick_button_rect(TEXTBOX, *b) };
-            assert_eq!(*r, old, "{b:?}");
-        }
         assert_eq!(l.zone.len(), 1);
         for tb in [Rect::new(100.0, 200.0, 500.0, 300.0), Rect::new(160.0, 800.0, 1600.0, 280.0), Rect::new(200.0, 200.0, 1500.0, 300.0)] {
             let l = quick_layout(tb, &Theme::default(), false, false, &|_| None);
-            for (b, r) in &l.buttons {
-                assert_eq!(*r, quick_button_rect(tb, *b));
-            }
-            for (x, y) in [(tb.x + 5.0, tb.y + tb.h + 2.0), (tb.x + 5.0, tb.y + 5.0), (5.0, 5.0)] {
-                let old = {
-                    let right = quick_right(tb);
-                    let top = quick_y(tb).min(tb.y + tb.h);
-                    Rect::new(right - quick_total(), top, quick_total(), quick_y(tb) + QUICK_H - top).contains(x, y) || tb.contains(x, y)
-                };
-                assert_eq!(l.in_zone(tb, x, y), old);
-            }
+            assert_eq!(l.buttons.len(), 9);
+            assert!(l.buttons.iter().all(|(_, r)| r.x >= 0.0 && r.x + r.w <= VIRTUAL.w && r.y + r.h <= VIRTUAL.h));
+            assert!(l.in_zone(tb, tb.x + 5.0, tb.y + 5.0) && l.in_zone(tb, centre(l.zone[0]).0, centre(l.zone[0]).1));
+            assert!(!l.in_zone(tb, 5.0, 5.0));
         }
     }
 
@@ -1180,7 +1121,7 @@ mod tests {
         assert_eq!(l.rect(QuickButton::Save), plain.rect(QuickButton::Save).map(|r| Rect::new(r.x + 158.0, r.y, r.w, r.h)));
         // hit-testing follows
         assert_eq!(l.at(30.0, 40.0), Some(QuickButton::Back));
-        let old = quick_button_rect(TEXTBOX, QuickButton::Back);
+        let old = plain.rect(QuickButton::Back).unwrap();
         assert_eq!(l.at(old.x + 1.0, old.y + 1.0), None, "its old place in the row is empty now... ");
     }
 

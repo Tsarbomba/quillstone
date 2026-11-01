@@ -22,6 +22,11 @@ fn centre(r: Rect) -> Option<(f32, f32)> {
     Some((r.x + r.w / 2.0, r.y + r.h / 2.0))
 }
 
+/// Where a quick-menu button is in a game with an inventory and the default theme.
+fn quick_button_rect(tb: Rect, b: QuickButton) -> Rect {
+    quick_layout(tb, &Theme::default(), true, false, &|_| None).rect(b).unwrap()
+}
+
 fn click_at(g: &mut Game, at: Option<(f32, f32)>) {
     g.handle(Event::CursorMoved(at));
     g.handle(Event::Press(Button::Left));
@@ -1762,7 +1767,7 @@ fn the_items_button_and_the_i_key_exist_only_in_games_with_an_inventory() {
     assert_eq!(g.screen(), Screen::Story, "I does nothing without an inventory");
     assert_eq!(line(&g), "one");
     // where the button would be, a click is an ordinary click on the story
-    click_at(&mut g, centre(crate::screens::quick_items_rect(TEXTBOX)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Items)));
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "two");
 }
@@ -1771,7 +1776,7 @@ fn the_items_button_and_the_i_key_exist_only_in_games_with_an_inventory() {
 fn the_quick_menu_button_and_i_open_the_inventory_and_four_things_close_it() {
     let p = parse(BAG).unwrap();
     let mut g = new_game(&p, instant());
-    click_at(&mut g, centre(crate::screens::quick_items_rect(TEXTBOX)));
+    click_at(&mut g, centre(quick_button_rect(TEXTBOX, QuickButton::Items)));
     assert_eq!(g.screen(), Screen::Inventory);
     assert_eq!(line(&g), "one", "opening it doesn't advance the story");
     key(&mut g, Key::Escape);
@@ -2942,7 +2947,7 @@ fn a_custom_textbox_moves_the_quick_menu_and_its_clicks() {
     assert_eq!(quick_button_rect(tb, QuickButton::Settings).x + back.w, 1700.0);
     // a textbox too narrow for the row: it moves right so that no button leaves the screen
     let narrow = quillstone_render::Rect::new(100.0, 200.0, 500.0, 300.0);
-    assert!(crate::screens::quick_items_rect(narrow).x >= 0.0);
+    assert!(quick_button_rect(narrow, QuickButton::Items).x >= 0.0);
     assert!(quick_button_rect(narrow, QuickButton::Settings).x + back.w <= 1920.0);
     // no room below the textbox: the row sits just inside its bottom edge
     let low = quillstone_render::Rect::new(160.0, 800.0, 1600.0, 280.0);
