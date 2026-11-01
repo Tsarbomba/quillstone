@@ -96,7 +96,7 @@ struct Files<'a> {
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, journal, shop, input, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
+                        choice, hotspots, item, inventory, journal, shop, input, timing, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -123,6 +123,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "video" => &["src", "fit", "loop", "skippable"],
         "jump" => &["to", "if"],
         "input" => &["var", "prompt", "default", "max"],
+        "timing" => &["result", "speed", "good", "perfect", "time", "prompt"],
         _ => &[],
     }
 }
@@ -1606,6 +1607,71 @@ impl Parser {
                 }
                 Some((Op::Input { var, prompt, default, max }, None))
             }
+            "timing" => {
+                let var = a.value("result").unwrap_or_default();
+                if !matches!(self.program.vars.get(&var), Some(Value::Str(_))) {
+                    self.err(line, "`::timing` needs `result=` naming a text variable declared in the front matter (like `vars: { hit: \"\" }`)");
+                    return None;
+                }
+                let prompt = a.value("prompt").map(|p| p.trim().to_string()).unwrap_or_default();
+                match crate::markup::parse_markup(&prompt) {
+                    Err(m) => {
+                        self.err(line, m);
+                        return None;
+                    }
+                    Ok(r) if r.no_wait || r.text.contains('\n') => {
+                        self.err(line, "`{nw}` and `{p}` only work in dialogue lines, not in a `::timing` prompt");
+                        return None;
+                    }
+                    Ok(_) => {}
+                }
+                let speed = match a.value("speed") {
+                    None => 1.0,
+                    Some(v) => match v.parse::<f32>() {
+                        Ok(n) if (MIN_TIMING_SPEED..=MAX_TIMING_SPEED).contains(&n) => n,
+                        _ => {
+                            self.err(line, format!("bad `speed={v}` (sweeps of the bar per second, {MIN_TIMING_SPEED} to {MAX_TIMING_SPEED})"));
+                            return None;
+                        }
+                    },
+                };
+                let Some(good) = a.value("good") else {
+                    self.err(line, "`::timing` needs `good=` (the zone to stop in, like `good=40%..60%`)");
+                    return None;
+                };
+                let good = match parse_zone(&good) {
+                    Ok(z) => z,
+                    Err(m) => {
+                        self.err(line, format!("bad `good={good}` ({m})"));
+                        return None;
+                    }
+                };
+                let perfect = match a.value("perfect") {
+                    None => None,
+                    Some(p) => match parse_zone(&p) {
+                        Ok(z) if z[0] >= good[0] && z[1] <= good[1] => Some(z),
+                        Ok(_) => {
+                            self.err(line, format!("`perfect={p}` must lie inside `good`"));
+                            return None;
+                        }
+                        Err(m) => {
+                            self.err(line, format!("bad `perfect={p}` ({m})"));
+                            return None;
+                        }
+                    },
+                };
+                let time = match a.value("time") {
+                    None => None,
+                    Some(t) => match parse_choice_time(&t) {
+                        Ok(t) => Some(t),
+                        Err(m) => {
+                            self.err(line, m);
+                            return None;
+                        }
+                    },
+                };
+                Some((Op::Timing { var, prompt, bar: TimingBar { speed, good, perfect, time } }, None))
+            }
             "end" => Some((Op::End, None)),
             "end_replay" => Some((Op::EndReplay, None)),
             other => {
@@ -2995,6 +3061,12 @@ fn parse_choice_time(s: &str) -> Result<f32, String> {
         })
 }
 
+/// `40%..60%` (or `0.4..0.6`): a zone of the timing bar, `from` below `to`.
+fn parse_zone(s: &str) -> Result<[f32; 2], &'static str> {
+    let both = s.split_once("..").and_then(|(a, b)| Some([parse_fraction(a.trim())?, parse_fraction(b.trim())?]));
+    both.filter(|z| z[0] < z[1]).ok_or("a zone like `40%..60%`, from 0% to 100%, the first end below the second")
+}
+
 /// `x,y,w,h`, each 0..1 or a percentage; the region must lie inside the screen.
 fn parse_rect(s: &str) -> Result<[f32; 4], String> {
     let parts: Vec<&str> = s.split(',').collect();
@@ -4242,6 +4314,45 @@ mod tests {
         e("::input{var=hero.name prompt=\"**Name?\"}\n", "");
         e("::input\n", "needs `var=");
         ok(&format!("{ASK}::input{{var=hero.name prompt=\"ok\" max=64}}\n"));
+    }
+
+    const TIMED: &str = "---\nvars: { hit: \"\", n: 0 }\n---\n# a\n";
+
+    #[test]
+    fn a_timing_bar_has_zones_a_speed_a_limit_and_a_prompt() {
+        let p = ok(&format!("{TIMED}::timing{{result=hit speed=1.5 good=40%..60% perfect=48%..52% time=5 prompt=\"Pick the **lock**!\"}}\nDone.\n"));
+        let Op::Timing { var, prompt, bar } = &p.ops[0] else { panic!("{:?}", p.ops[0]) };
+        assert_eq!((var.as_str(), prompt.as_str()), ("hit", "Pick the **lock**!"));
+        assert_eq!((bar.speed, bar.good, bar.perfect, bar.time), (1.5, [0.4, 0.6], Some([0.48, 0.52]), Some(5.0)));
+        assert_eq!(p.lines[0], 5);
+        // only `result` and `good` are needed; fractions work like percentages
+        let p = ok(&format!("{TIMED}::timing{{result=hit good=0.2..0.3}}\n"));
+        assert_eq!(p.ops[0], Op::Timing { var: "hit".into(), prompt: String::new(), bar: TimingBar { speed: 1.0, good: [0.2, 0.3], perfect: None, time: None } });
+    }
+
+    #[test]
+    fn timing_errors_name_the_line() {
+        let e = |body: &str, needle: &str| {
+            let errors = errs(&format!("{TIMED}{body}"));
+            assert!(errors.iter().any(|e| e.line == 5 && e.message.contains(needle)), "{body:?}: {errors:?}");
+        };
+        e("::timing{good=40%..60%}\n", "needs `result=");
+        e("::timing{result=nosuch good=40%..60%}\n", "needs `result=");
+        e("::timing{result=n good=40%..60%}\n", "needs `result=");
+        e("::timing{result=hit}\n", "needs `good=");
+        e("::timing{result=hit good=40%}\n", "bad `good=40%`");
+        e("::timing{result=hit good=60%..40%}\n", "bad `good=60%..40%`");
+        e("::timing{result=hit good=50%..50%}\n", "bad `good=50%..50%`");
+        e("::timing{result=hit good=40%..120%}\n", "bad `good=40%..120%`");
+        e("::timing{result=hit good=40%..60% perfect=30%..50%}\n", "must lie inside `good`");
+        e("::timing{result=hit good=40%..60% perfect=45%..65%}\n", "must lie inside `good`");
+        e("::timing{result=hit good=40%..60% perfect=x}\n", "bad `perfect=x`");
+        e("::timing{result=hit good=40%..60% speed=0.1}\n", "bad `speed=0.1`");
+        e("::timing{result=hit good=40%..60% speed=9}\n", "bad `speed=9`");
+        e("::timing{result=hit good=40%..60% time=0}\n", "bad `time=0`");
+        e("::timing{result=hit good=40%..60% bogus=1}\n", "unknown attribute `bogus`");
+        e("::timing{result=hit good=40%..60% prompt=\"Go{nw}\"}\n", "only work in dialogue");
+        ok(&format!("{TIMED}::timing{{result=hit good=40%..60% perfect=40%..60% speed=5 time=600}}\n"));
     }
 
     const SHOP: &str = "---\nvars: { gold: 40, bag: [], met: false, name: \"x\" }\n---\n::item{id=key price=15}\n::item{id=lamp price=8}\n::item{id=free}\n# a\n";

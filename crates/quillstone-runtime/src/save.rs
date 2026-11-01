@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use quillstone_script::{bg_color, is_inside, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
-use quillstone_script::INPUT_MAX_LIMIT;
+use quillstone_script::{TimingBar, INPUT_MAX_LIMIT};
 use quillstone_script::{Ease, ANIM_PREFIX};
 use crate::{filter_typed, rebuild_pending, step, Camera, Cmd, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
 
@@ -218,6 +218,7 @@ fn consistent(state: &State, program: &Program) -> bool {
         Some(Cmd::ShowJournal) => matches!(op, Some(Op::Journal)),
         Some(Cmd::ShowShop { .. }) => matches!(op, Some(Op::Shop { .. })),
         Some(Cmd::AskInput { .. }) => matches!(op, Some(Op::Input { .. })),
+        Some(Cmd::ShowTiming { .. }) => matches!(op, Some(Op::Timing { .. })),
         Some(_) => false,
     }
 }
@@ -604,6 +605,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         Some(Cmd::ShowShop { .. }) => w("pending shop".into()),
         // The prompt comes from the script (with the variables as they are); what was typed so far is not saved.
         Some(Cmd::AskInput { .. }) => w("pending input".into()),
+        // The bar and prompt come from the script; the marker starts afresh when the save is loaded.
+        Some(Cmd::ShowTiming { .. }) => w("pending timing".into()),
         _ => {}
     }
     if s.finished {
@@ -722,6 +725,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. })) => rebuild_pending(program, op, &s.vars),
                     (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. })) => rebuild_pending(program, op, &s.vars),
                     (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. })) => rebuild_pending(program, op, &s.vars),
+                    (Some(Cmd::ShowTiming { .. }), Some(op @ Op::Timing { .. })) => rebuild_pending(program, op, &s.vars),
                     _ => None,
                 };
                 if rebuilt.is_some() {
@@ -926,6 +930,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "inventory" => Cmd::ShowInventory,
                     "journal" => Cmd::ShowJournal,
                     "input" => Cmd::AskInput { prompt: String::new(), default: None, max: 1 },
+                    // Rebuilt from the script at `end`.
+                    "timing" => Cmd::ShowTiming { prompt: String::new(), bar: TimingBar { speed: 1.0, good: [0.0, 1.0], perfect: None, time: None } },
                     other => return Err(format!("line {n}: unknown pending `{other}`")),
                 });
             }

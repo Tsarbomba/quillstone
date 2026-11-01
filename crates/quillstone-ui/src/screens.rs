@@ -6,7 +6,8 @@
 use quillstone_render::theme::{QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_runtime::Logged;
-use quillstone_script::markup::plain;
+use quillstone_script::markup::{plain, rich};
+use quillstone_script::TimingBar;
 
 use crate::settings::*;
 use crate::slots::{thumbnail, Page, SlotInfo};
@@ -337,6 +338,46 @@ pub fn draw_choice_timer(out: &mut Vec<Draw>, theme: &Theme, buttons: usize, lef
     if left > 0.0 {
         let color = theme.choice_timer_color.unwrap_or(theme.accent_color);
         out.push(Draw::Rect { rect: Rect::new(track.x, track.y, track.w * left, h), color });
+    }
+}
+
+/// The `::timing` bar in the middle of the screen: a track (the theme's picture or `panel_color`), the
+/// good and perfect zones over it, the marker at `pos` (0..1) and the prompt above. A picture that is
+/// not loaded yet is skipped, so the bar is never missing.
+pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &TimingBar, pos: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
+    let track = Rect::new(460.0, 520.0, 1000.0, 56.0);
+    match theme.timing_bar_image.as_deref().filter(|s| image_size(s).is_some()) {
+        Some(src) => out.push(Draw::Image { src: src.to_string(), dest: track, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 }),
+        None => out.push(Draw::Rect { rect: track, color: theme.panel_color }),
+    }
+    let zone = |z: &[f32; 2], color: [f32; 4]| Draw::Rect { rect: Rect::new(track.x + track.w * z[0], track.y, track.w * (z[1] - z[0]), track.h), color };
+    let [gr, gg, gb, ga] = theme.timing_good_color.unwrap_or(theme.accent_color);
+    out.push(zone(&bar.good, [gr, gg, gb, ga * 0.6]));
+    if let Some(p) = &bar.perfect {
+        out.push(zone(p, theme.timing_perfect_color.unwrap_or(theme.name_color)));
+    }
+    let x = track.x + track.w * pos.clamp(0.0, 1.0);
+    let marker = Rect::new(x - 5.0, track.y - 12.0, 10.0, track.h + 24.0);
+    match theme.timing_marker_image.as_deref().and_then(|s| Some((s, image_size(s)?))) {
+        Some((src, size)) => {
+            let w = marker.h * size.w / size.h.max(1.0);
+            let dest = Rect::new(x - w / 2.0, marker.y, w, marker.h);
+            out.push(Draw::Image { src: src.to_string(), dest, uv: Rect::new(0.0, 0.0, 1.0, 1.0), alpha: 1.0 });
+        }
+        None => out.push(Draw::Rect { rect: marker, color: theme.timing_marker_color.unwrap_or(theme.text_color) }),
+    }
+    if !prompt.is_empty() {
+        let r = rich(prompt);
+        out.push(Draw::Text {
+            text: r.text,
+            runs: r.runs,
+            visible_chars: usize::MAX,
+            rect: Rect::new(track.x, track.y - 100.0, track.w, 60.0),
+            size: 44.0,
+            color: theme.text_color,
+            align: Align::Center,
+            outline: None,
+        });
     }
 }
 

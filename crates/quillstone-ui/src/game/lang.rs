@@ -63,7 +63,7 @@ impl<'p> Game<'p> {
         let texty = |c: &Cmd| {
             matches!(
                 c,
-                Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::HudShow { .. }
+                Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::HudShow { .. }
             )
         };
         cmds.iter().any(texty).then(|| self.session.localize(cmds.to_vec(), cat))

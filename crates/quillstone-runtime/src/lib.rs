@@ -7,7 +7,7 @@
 //! one snapshot per player action gives rollback and save slots (see [`Session`]),
 //! and [`State::redraw`] rebuilds the whole scene from a snapshot.
 
-use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, Value, Vars, Wipe};
+use quillstone_script::{roll, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -30,6 +30,8 @@ mod particles_tests;
 mod tint_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod timing_tests;
 #[cfg(test)]
 mod locked_tests;
 #[cfg(test)]
@@ -169,6 +171,11 @@ pub enum Cmd {
     /// [`interpolate`]); `max` counts characters. With a `default`, an empty answer
     /// stores it instead; the frontend may show it as a placeholder.
     AskInput { prompt: String, default: Option<String>, max: usize },
+    /// Show a timing bar (from `::timing`) and wait for [`Input::Choose`]: 0 = miss, 1 = good, 2 = perfect
+    /// (only with a perfect zone). The frontend works out where the marker was from the time since the
+    /// bar appeared ([`TimingBar::hit`]) and sends `Choose(0)` when `bar.time` runs out. `prompt` is
+    /// tagged text with its `{name}` values already put in; empty: none.
+    ShowTiming { prompt: String, bar: TimingBar },
     /// The story was stopped by a safety valve (a mistake in the script), and
     /// [`Cmd::Finished`] follows. Says what happened, for the author.
     Stopped { reason: String },
@@ -760,7 +767,8 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
         }
         (Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }), Some(op @ Op::Choice { .. }))
         | (Some(Cmd::ShowShop { .. }), Some(op @ Op::Shop { .. }))
-        | (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. })) => {
+        | (Some(Cmd::AskInput { .. }), Some(op @ Op::Input { .. }))
+        | (Some(Cmd::ShowTiming { .. }), Some(op @ Op::Timing { .. })) => {
             if let Some(cmd) = rebuild_pending(program, op, &state.vars) {
                 state.pending = Some(cmd);
             }
@@ -784,6 +792,7 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars) -> Option
         Op::Input { prompt, default, max, .. } => {
             Some(Cmd::AskInput { prompt: interpolate(prompt, vars), default: default.clone(), max: *max })
         }
+        Op::Timing { prompt, bar, .. } => Some(Cmd::ShowTiming { prompt: interpolate(prompt, vars), bar: bar.clone() }),
         _ => None,
     }
 }
@@ -994,6 +1003,12 @@ pub(crate) fn step_traced(
                 state.vars.insert(var.clone(), Value::Str(answer));
                 state.pc += 1;
             }
+            (Cmd::ShowTiming { .. }, Some(Input::Choose(i))) => {
+                let Some(Op::Timing { var, bar, .. }) = program.ops.get(state.pc) else { return Vec::new() };
+                let Some(hit) = Hit::from_index(i).filter(|h| bar.hits().contains(h)) else { return Vec::new() };
+                state.vars.insert(var.clone(), Value::Str(hit.text().into()));
+                state.pc += 1;
+            }
             (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
                 let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) else {
                     return Vec::new();
@@ -1073,6 +1088,10 @@ pub(crate) fn step_traced(
             }
             Op::Input { prompt, default, max, .. } => {
                 let cmd = Cmd::AskInput { prompt: interpolate(prompt, &state.vars), default: default.clone(), max: *max };
+                return block(state, &mut out, cmd);
+            }
+            Op::Timing { prompt, bar, .. } => {
+                let cmd = Cmd::ShowTiming { prompt: interpolate(prompt, &state.vars), bar: bar.clone() };
                 return block(state, &mut out, cmd);
             }
             Op::Image { src, alt } => {

@@ -94,6 +94,12 @@ impl Session<'_> {
                     items.iter_mut().for_each(|s| localize_item(&mut s.item, cat));
                     Cmd::ShowShop { pay, money, items }
                 }
+                Cmd::ShowTiming { prompt, bar } => match self.program.ops.get(self.state.pc) {
+                    Some(Op::Timing { prompt: src, .. }) if i == last => {
+                        Cmd::ShowTiming { prompt: interpolate(cat.text(None, src), vars), bar }
+                    }
+                    _ => Cmd::ShowTiming { prompt, bar },
+                },
                 Cmd::AskInput { prompt, default, max } => match self.program.ops.get(self.state.pc) {
                     Some(Op::Input { prompt: src, .. }) if i == last => {
                         Cmd::AskInput { prompt: interpolate(cat.text(None, src), vars), default, max }

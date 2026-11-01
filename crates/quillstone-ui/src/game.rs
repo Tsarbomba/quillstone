@@ -8,7 +8,7 @@
 use quillstone_audio::{Action, Channel, Mixer};
 use quillstone_render::{hud::HudLook, textbox_rect, Draw, QuickMenu, Rect, Size, Theme, View};
 use quillstone_runtime::{choice_timer, voice_name, ChoiceTimer, Cmd, Input, Logged, Session, State};
-use quillstone_script::{kind_from_path, AssetKind, Program, Value};
+use quillstone_script::{kind_from_path, AssetKind, Hit, Program, TimingBar, Value};
 use quillstone_video::Wanted;
 
 use crate::screens::*;
@@ -571,6 +571,12 @@ impl<'p> Game<'p> {
         if self.view.take_wait_finished() {
             self.forward(Input::Advance);
         }
+        if let Some(bar) = self.timing_bar().filter(|_| self.counting()) {
+            self.choice_elapsed += dt;
+            if bar.time.is_some_and(|t| self.choice_elapsed >= t) {
+                return self.forward(Input::Choose(Hit::Miss as usize)); // no press in time
+            }
+        }
         if let Some(timer) = self.running_timer() {
             self.choice_elapsed += dt;
             if self.choice_elapsed >= timer.seconds {
@@ -607,11 +613,23 @@ impl<'p> Game<'p> {
         choice_timer(self.session.state(), self.program)
     }
 
-    /// The timer, while it counts: not while the window is unfocused or the line above the
-    /// options is still being typed (Settings, History and confirms pause the whole tick).
+    /// The timer, while it counts (see [`Game::counting`]).
     fn running_timer(&self) -> Option<ChoiceTimer> {
-        let typed = self.view.dialogue.as_ref().is_none_or(|d| d.is_complete());
-        self.choice_timer().filter(|_| self.focused && typed)
+        self.choice_timer().filter(|_| self.counting())
+    }
+
+    /// Whether the clocks of a timed choice or a timing bar run: not while the window is unfocused or the
+    /// line above is still being typed (Settings, History and confirms pause the whole tick).
+    fn counting(&self) -> bool {
+        self.focused && self.view.dialogue.as_ref().is_none_or(|d| d.is_complete())
+    }
+
+    /// The timing bar on screen. `choice_elapsed` is its clock, as for a timed choice.
+    fn timing_bar(&self) -> Option<TimingBar> {
+        match &self.session.state().pending {
+            Some(Cmd::ShowTiming { bar, .. }) if self.in_story && self.screen == Screen::Story => Some(bar.clone()),
+            _ => None,
+        }
     }
 
     /// The window gained or lost the keyboard focus.
@@ -650,6 +668,7 @@ impl<'p> Game<'p> {
             || self.auto
             || self.skip.is_some()
             || self.running_timer().is_some()
+            || (self.timing_bar().is_some() && self.counting())
             || (self.screen == Screen::Story && (self.view.busy() || self.no_wait_line() || self.quick_fading()))
             || !self.wanted_videos().is_empty()
     }
@@ -686,6 +705,9 @@ impl<'p> Game<'p> {
             }
             out
         };
+        if let (Some(bar), Some(Cmd::ShowTiming { prompt, .. })) = (self.timing_bar(), self.pending_shown()) {
+            draw_timing_bar(&mut out, theme, &prompt, &bar, bar.marker(self.choice_elapsed), image_size);
+        }
         if let Some(timer) = self.choice_timer() {
             draw_choice_timer(&mut out, theme, self.view.choices.len(), 1.0 - self.choice_elapsed / timer.seconds);
         }
@@ -1108,9 +1130,9 @@ impl<'p> Game<'p> {
         let cmds = localized.as_deref().unwrap_or(cmds);
         let voiced = self.with_auto_voice(cmds);
         let cmds = voiced.as_deref().unwrap_or(cmds);
-        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
+        if cmds.iter().any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowTiming { .. })) {
             self.choice_focus = None; // new choices: nothing picked out yet
-            self.choice_elapsed = 0.0; // and a timed one starts counting from full
+            self.choice_elapsed = 0.0; // and a timed one (or a timing bar) starts counting from full
         }
         if cmds.iter().any(|c| matches!(c, Cmd::PlayVideo { .. })) {
             self.video_generation += 1;
@@ -1161,6 +1183,13 @@ impl<'p> Game<'p> {
         if unskippable && self.cutscene_playing {
             return; // it advances by itself when it ends
         }
+        if let Some(bar) = self.timing_bar() {
+            // Like any press it first finishes the line being typed; then it stops the marker where it is.
+            if self.view.press_advance() {
+                self.forward(Input::Choose(bar.hit(self.choice_elapsed) as usize));
+            }
+            return;
+        }
         if self.view.press_advance() {
             self.forward(Input::Advance);
         }
@@ -1205,7 +1234,7 @@ impl<'p> Game<'p> {
         // Arriving at a choice, a shop or a text entry is a checkpoint (a purchase, which shows the shop again, is not).
         let arrived = cmds
             .iter()
-            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. }));
+            .any(|c| matches!(c, Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. }));
         if arrived && !purchase && self.replay.is_none() {
             self.autosave();
         }
@@ -1410,6 +1439,8 @@ mod tint_tests;
 mod replay_tests;
 #[cfg(test)]
 mod timed_tests;
+#[cfg(test)]
+mod timing_tests;
 #[cfg(test)]
 mod hotspot_timed_tests;
 #[cfg(test)]

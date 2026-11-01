@@ -969,8 +969,11 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
         let choosing = matches!(session.state().pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }));
         let shopping = matches!(session.state().pending, Some(Cmd::ShowShop { .. }));
         let asking = matches!(session.state().pending, Some(Cmd::AskInput { .. }));
+        let timing = matches!(session.state().pending, Some(Cmd::ShowTiming { .. }));
         let prompt = if asking {
             "type your answer ([enter]=default, !back, !quit)> "
+        } else if timing {
+            "stop the bar: p=perfect, g=good, m=miss, b=back, q=quit> "
         } else if shopping {
             "buy (number), [enter]=leave, b=back, q=quit> "
         } else if choosing {
@@ -1011,6 +1014,8 @@ fn run(path: &Path, at: &quillstone_runtime::StartAt) -> Result<(), String> {
                 Ok(n) if n >= 1 => session.input(Input::Buy(n - 1)),
                 _ => Vec::new(),
             },
+            "p" | "g" | "m" if timing => session.input(Input::Choose(["m", "g", "p"].iter().position(|k| *k == line).unwrap_or(0))),
+            _ if timing => Vec::new(),
             _ if choosing => match line.parse::<usize>() {
                 Ok(n) if n >= 1 => session.input(Input::Choose(n - 1)),
                 _ => Vec::new(),
@@ -1116,6 +1121,11 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::AskInput { prompt, default, max } => {
                 let default = default.as_ref().map(|d| format!(", default \"{d}\"")).unwrap_or_default();
                 println!("\n[input] {} (up to {max} characters{default})", plain(prompt));
+            }
+            Cmd::ShowTiming { prompt, bar } => {
+                let [from, to] = bar.good.map(|v| v * 100.0);
+                let perfect = bar.perfect.map(|[a, b]| format!(", perfect {:.0}%..{:.0}%", a * 100.0, b * 100.0)).unwrap_or_default();
+                println!("\n[timing bar] {} (good {from:.0}%..{to:.0}%{perfect})", plain(prompt));
             }
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
@@ -1315,6 +1325,14 @@ mod tests {
         let script = "---\ntheme: t.txt\n---\nHi.\n";
         assert!(checked(script, &[("t.txt", b"font = assets/f.ttf"), ("assets/f.ttf", FONT)]).is_ok());
         assert!(checked(script, &[("t.txt", b"font = assets/f.ttf")]).is_err());
+    }
+
+    #[test]
+    fn the_timing_bar_pictures_are_checked_like_other_theme_pictures() {
+        let keys = "timing_bar_image = assets/tb.png\ntiming_marker_image = assets/tm.png\n";
+        let missing = themed(keys, &[]);
+        assert!(missing.len() == 2 && missing.iter().all(|m| m.contains("missing theme picture")), "{missing:?}");
+        assert!(themed("timing_bar_image = assets/tb.png\n", &[("assets/tb.png", b"not a picture")]).len() == 1);
     }
 
     #[test]

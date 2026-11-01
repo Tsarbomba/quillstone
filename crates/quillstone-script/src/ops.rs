@@ -839,7 +839,7 @@ impl Program {
             .ops
             .iter()
             .map(|op| match op {
-                Op::Set(_) | Op::Input { .. } => 1,
+                Op::Set(_) | Op::Input { .. } | Op::Timing { .. } => 1,
                 Op::Choice { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
                 Op::Call { args, .. } => args.len(),
                 _ => 0,
@@ -1238,6 +1238,84 @@ pub fn kind_from_path(path: &str) -> AssetKind {
 pub const MIN_CHOICE_TIME: f32 = 0.5;
 pub const MAX_CHOICE_TIME: f32 = 600.0;
 
+/// Slowest and fastest marker of a `::timing` bar, in sweeps (one way across the bar) per second.
+pub const MIN_TIMING_SPEED: f32 = 0.2;
+pub const MAX_TIMING_SPEED: f32 = 5.0;
+
+/// Where a `::timing` bar was stopped. The number is the `Input::Choose` index of the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Miss = 0,
+    Good = 1,
+    Perfect = 2,
+}
+
+impl Hit {
+    /// What the bar's `result=` variable is set to.
+    pub fn text(self) -> &'static str {
+        match self {
+            Hit::Miss => "miss",
+            Hit::Good => "good",
+            Hit::Perfect => "perfect",
+        }
+    }
+
+    pub fn from_index(i: usize) -> Option<Hit> {
+        [Hit::Miss, Hit::Good, Hit::Perfect].get(i).copied()
+    }
+}
+
+/// A `::timing` bar: the marker sweeps from the left end to the right and back again at `speed` sweeps
+/// per second, and the player stops it. Zones are `[from, to]` fractions (0..1) of the bar's length.
+/// Everything here is a pure function of the time, so the frontend and the tests agree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimingBar {
+    pub speed: f32,
+    pub good: [f32; 2],
+    /// Inside `good`; `None` leaves "good" as the best outcome.
+    pub perfect: Option<[f32; 2]>,
+    /// Seconds before the bar counts as a miss; `None` waits for ever.
+    pub time: Option<f32>,
+}
+
+impl TimingBar {
+    /// Where the marker is `elapsed` seconds after the bar appeared (0 = left end, 1 = right end).
+    pub fn marker(&self, elapsed: f32) -> f32 {
+        let sweeps = (elapsed.max(0.0) * self.speed).rem_euclid(2.0);
+        if sweeps <= 1.0 {
+            sweeps
+        } else {
+            2.0 - sweeps
+        }
+    }
+
+    /// The outcome of stopping the marker at `pos`; the ends of a zone count as inside it.
+    pub fn hit_at(&self, pos: f32) -> Hit {
+        let inside = |z: &[f32; 2]| (z[0]..=z[1]).contains(&pos);
+        if self.perfect.as_ref().is_some_and(inside) {
+            Hit::Perfect
+        } else if inside(&self.good) {
+            Hit::Good
+        } else {
+            Hit::Miss
+        }
+    }
+
+    /// The outcome of a press `elapsed` seconds after the bar appeared.
+    pub fn hit(&self, elapsed: f32) -> Hit {
+        self.hit_at(self.marker(elapsed))
+    }
+
+    /// The outcomes this bar can have.
+    pub fn hits(&self) -> &'static [Hit] {
+        if self.perfect.is_some() {
+            &[Hit::Miss, Hit::Good, Hit::Perfect]
+        } else {
+            &[Hit::Miss, Hit::Good]
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChoiceOption {
     pub text: String,
@@ -1399,6 +1477,10 @@ pub enum Op {
     /// `prompt` is tagged text with `{name}` interpolation (like narration). `max`
     /// counts characters. With a `default`, confirming an empty field stores it.
     Input { var: String, prompt: String, default: Option<String>, max: usize },
+    /// A timing bar: waits for the player to stop the marker (or for `bar.time` to run out), then sets
+    /// the text variable `var` to "perfect", "good" or "miss". `prompt` is tagged text like `Input`'s
+    /// (empty: none).
+    Timing { var: String, prompt: String, bar: TimingBar },
     Jump { target: usize, cond: Option<Cond> },
     /// Jump to a label and come back at the next op after `::return`. `args` are
     /// the label's parameters: each is evaluated (all of them before any is
@@ -1474,7 +1556,39 @@ impl Op {
 
 #[cfg(test)]
 mod tests {
+    use super::{Hit, TimingBar};
     use crate::is_inside;
+
+    fn bar(speed: f32) -> TimingBar {
+        TimingBar { speed, good: [0.4, 0.6], perfect: Some([0.48, 0.52]), time: None }
+    }
+
+    #[test]
+    fn the_marker_sweeps_to_the_end_and_back_at_speed_sweeps_per_second() {
+        let b = bar(2.0); // 2 sweeps a second: across in 0.5 s
+        let at = |t: f32| b.marker(t);
+        assert_eq!(at(0.0), 0.0);
+        assert!((at(0.25) - 0.5).abs() < 1e-6 && (at(0.5) - 1.0).abs() < 1e-6, "right end after one sweep");
+        assert!((at(0.75) - 0.5).abs() < 1e-6 && at(1.0).abs() < 1e-6, "and back to the left end");
+        assert!((at(1.125) - 0.25).abs() < 1e-6, "then it wraps and goes out again");
+        assert!((at(100.0 + 0.125) - 0.25).abs() < 1e-3, "also far on");
+        assert_eq!(at(-1.0), 0.0, "before the start it rests at the left end");
+        assert!((bar(0.5).marker(1.0) - 0.5).abs() < 1e-6, "half the speed, half the way");
+    }
+
+    #[test]
+    fn zones_include_their_ends_and_perfect_wins_inside_good() {
+        let b = bar(1.0);
+        let hit = |p: f32| b.hit_at(p);
+        assert_eq!([hit(0.0), hit(0.399), hit(0.601), hit(1.0)], [Hit::Miss; 4]);
+        assert_eq!([hit(0.4), hit(0.47), hit(0.6)], [Hit::Good; 3], "exactly 40% and 60% are inside");
+        assert_eq!([hit(0.48), hit(0.5), hit(0.52)], [Hit::Perfect; 3]);
+        let no_perfect = TimingBar { perfect: None, ..bar(1.0) };
+        assert_eq!(no_perfect.hit_at(0.5), Hit::Good);
+        assert_eq!(no_perfect.hits(), [Hit::Miss, Hit::Good]);
+        assert_eq!(b.hits(), [Hit::Miss, Hit::Good, Hit::Perfect]);
+        assert_eq!(b.hit(0.5), Hit::Perfect, "a press half a sweep in: the marker is mid-bar");
+    }
 
     #[test]
     fn only_paths_inside_the_game_folder_are_inside() {

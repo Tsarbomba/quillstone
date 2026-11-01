@@ -1022,6 +1022,73 @@ object to find, a point-and-click scene.
   `hidden`; `quillstone test` follows
   every region like a choice option.
 
+## Timing bar
+
+A bar with a marker that sweeps back and forth; the player stops it, and where it stops
+decides the result: inside the *perfect* zone, inside the *good* zone, or a miss. It is one
+step of the story, like a choice: the result is stored in a variable and the story goes on
+with the next line, where `::if` can branch on it. Lockpicking, a golf swing, a fishing
+strike (`examples/minigame.quill.md` has a lock with three pins):
+
+````markdown
+---
+vars: { pins: 0, hit: "" }
+---
+::hud{id=pintext text="Pins set: {pins} / 3" x=0.5 y=0.12 size=32 color=#ffd98c}
+::timing{result=hit speed=1.2 good=35%..65% perfect=47%..53% time=6 prompt="Pin {pins}: stop the needle!"}
+::if{hit == "perfect"}
+::set{pins += 1}
+The pin clicks home, clean.
+::elif{hit == "good"}
+::set{pins += 1}
+The pin catches, just.
+::else
+The pick slips.
+::endif
+````
+
+- `result` (required) is a text variable declared in `vars:` (a text default, like `hit: ""`).
+  It is set to `"perfect"`, `"good"` or `"miss"`; without a `perfect` zone it is never
+  `"perfect"`.
+- `good` (required) is the zone to stop in, written `from..to` as percentages of the bar's
+  length (`40%..60%`) or fractions (`0.4..0.6`); `from` must be below `to`. The ends count as
+  inside. `perfect` (optional) is a smaller zone that must lie inside `good`.
+- `speed` (optional, default 1) is how many times the marker crosses the bar in a second,
+  from 0.2 to 5. It starts at the left end, runs to the right end and back again, and so on
+  for ever, so `speed=1` is a back-and-forth every two seconds.
+- `time` (optional, seconds, 0.5 to 600, a plain number) is the limit: when it runs out
+  without a press the result is `"miss"`. Without it the bar waits for ever.
+- `prompt` (optional) is shown above the bar. Like an `::input` prompt it takes `{name}`
+  values, `**bold**`, `*italic*`, colour and size tags (not `{nw}` or `{p}`), and it is
+  translated through `lang export` like one.
+- The player stops the marker with a click, Space, Enter or Right, or the gamepad's confirm
+  button: the same presses that advance a line. The marker starts moving once the line before
+  it is fully typed. It stands still while the window is not in focus or minimised and
+  while Settings, History or a confirmation is open, like the countdown of a timed choice.
+  Skip mode stops at the bar and auto-forward never presses it.
+- Rollback goes back to before the bar, which starts afresh (marker at the left end, full
+  time limit); roll forward uses the result that was recorded. A save made at the bar loads
+  at the bar, started afresh. Nothing about the marker is saved.
+- `quillstone test` plays each result as a branch (miss and good, plus perfect when there is
+  a perfect zone). `quillstone graph` draws no extra arrows: the story simply goes on, and
+  your `::if` jumps show as usual. `quillstone run` asks you to type `p`, `g` or `m` for
+  perfect, good or miss.
+- The look comes from the theme (see Themes): by default a track in `panel_color`, the good zone
+  in `accent_color` (see-through), the perfect zone in `name_color` and a thin marker in
+  `text_color`, in the middle of the screen.
+
+````
+timing_bar_image = assets/gui/lockbar.png      # stretched over the track instead of panel_color
+timing_marker_image = assets/gui/needle.png    # the marker, drawn at its height with its own proportions
+timing_good_color = #ffd98c80                  # the good zone (default accent_color, made see-through)
+timing_perfect_color = #ff5555                 # the perfect zone (default name_color)
+timing_marker_color = #ffffff                  # the plain marker (default text_color)
+````
+
+  The zones are always drawn over the track, so a picture should leave them visible. The
+  pictures are checked by `quillstone check` and packed by `quillstone package` like other theme
+  pictures.
+
 ## Items
 
 Items give the things in a list variable a name, a picture and a description for
@@ -1484,6 +1551,8 @@ menu_music = assets/audio/menu.ogg
 voice_duck = 0.5                    # music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
 choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (default accent_color)
 choice_timer_height = 8             # its thickness, 2 to 40
+timing_bar_image = assets/gui/lockbar.png   # the ::timing bar's track and marker pictures, and zone and marker colours:
+timing_marker_image = assets/gui/needle.png # timing_good_color, timing_perfect_color, timing_marker_color (see "Timing bar")
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).
