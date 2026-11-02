@@ -26,6 +26,8 @@ rollback, history, skip and auto-forward, save slots, a gallery, music room and 
 translations, gamepad support and hot reload. The full language is in
 [SCRIPT.md](SCRIPT.md).
 
+<p align="center"><a href="https://ko-fi.com/E4C829WN5G"><img src="https://img.shields.io/badge/Buy%20me%20a%20sausage-72a4f2?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Buy me a sausage on Ko-fi"></a></p>
+
 ## Set up Rust (one time)
 
 **Windows**
