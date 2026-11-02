@@ -1016,8 +1016,11 @@ object to find, a point-and-click scene.
   `once` and `if` worked out afresh, so a hub of rooms needs no `::jump` back. A region
   without `call` jumps as before. The label can't take parameters, a rollback or a load
   inside it comes back to the screen, and a click does nothing while the call stack is full.
-  The screen's own line (if any) is not restored: end the label with `::bg` and
-  `::textbox{hide}` if it changed the picture or said something. `::choice` has no `call`.
+  The screen's own line (if any) is not restored, and the dialogue box is hidden again on
+  the return (as `::textbox{hide}` does), so the label's last line doesn't stay over the
+  screen; the next line or choice shows it as usual. The background is not restored: an
+  imagemap's `ground=` covers it, but on a block without `ground=` end the label with `::bg`
+  if it changed the picture. `::choice` has no `call`.
   A two-room map (`examples/hotspots.quill.md` has the same pieces):
 
   ````markdown
@@ -1029,11 +1032,9 @@ object to find, a point-and-click scene.
   ::
   # kitchen
   The kettle is still warm.
-  ::textbox{hide}
   ::return
   # cellar
   A cold draught comes up the steps.
-  ::textbox{hide}
   ::return
   ````
 - Effects, `if condition` and `once` work as in a `::choice`, and so does the

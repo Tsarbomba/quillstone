@@ -105,3 +105,26 @@ fn coming_back_to_a_screen_that_starts_its_label_is_not_another_visit() {
     assert!(matches!(s.state().pending, Some(Cmd::ShowHotspots { .. })));
     assert_eq!(seen(&p, &s), 1);
 }
+
+#[test]
+fn returning_to_the_screen_hides_the_box_and_it_survives_rollback_and_save() {
+    let p = parse(SRC).unwrap();
+    let (mut s, _) = Session::start(&p);
+    let said = s.input(Input::Choose(0));
+    assert!(!s.state().textbox_hidden, "the label's line has its box");
+    assert!(!said.iter().any(|c| matches!(c, Cmd::Textbox { hidden: true, .. })));
+    let back = s.input(Input::Advance);
+    assert!(back.iter().any(|c| matches!(c, Cmd::Textbox { hidden: true, .. })), "{back:?}");
+    assert!(s.state().textbox_hidden);
+    let text = s.save();
+    let (loaded, _) = Session::load(&p, &text).unwrap();
+    assert!(loaded.state().textbox_hidden, "a save on the screen keeps it hidden");
+    // a rollback to the label's line shows its box again, and forward hides it again
+    s.rollback().expect("back to the line");
+    assert!(!s.state().textbox_hidden);
+    s.roll_forward().expect("forward");
+    assert!(s.state().textbox_hidden);
+    // the next line shows the box as usual
+    let hall = s.input(Input::Choose(2));
+    assert!(!s.state().textbox_hidden && matches!(&hall[..], [.., Cmd::Say { .. }]), "{hall:?}");
+}

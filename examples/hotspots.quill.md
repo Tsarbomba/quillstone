@@ -40,10 +40,8 @@ You stand in a small town at night. Everything is within walking distance.
 ::show{mika neutral x=80% fade=0.3}
 **Mika:** You found my rooftop. Come back any time.
 ::hide{all fade=0.3}
-<!-- A `call` region comes back to the map when this label returns, so the label puts the picture
-     and the clean look back itself. -->
-::bg{src=assets/night.png fade=0.5}
-::textbox{hide}
+<!-- A `call` region comes back to the map when this label returns: the box hides by itself, and the
+     map's `ground=` covers the rooftop picture. -->
 ::return
 
 # bridge

@@ -1405,7 +1405,15 @@ pub(crate) fn step_traced(
                 state.pc = *target;
             }
             Op::Return => match state.stack.pop() {
-                Some(frame) => return_to(state, program, frame),
+                Some(frame) => {
+                    // Back on a hotspot screen: the called label's last line must not stay over it.
+                    let to_map = matches!(program.ops.get(frame.ret), Some(Op::Choice { options, .. }) if options.iter().any(|o| o.area.is_some()));
+                    return_to(state, program, frame);
+                    if to_map && !state.textbox_hidden {
+                        state.textbox_hidden = true;
+                        out.push(Cmd::Textbox { hidden: true, fade: 0.0 });
+                    }
+                }
                 None => break, // `::return` outside a `::call` ends the story
             },
             Op::Set(effect) => {
