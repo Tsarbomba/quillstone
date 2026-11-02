@@ -20,9 +20,9 @@ a game's story, look and assets organised in a few plain files.
   patches and mods.
 
 **What it covers:** characters and sprites with transitions and animations,
-music, sound and voice, branching choices, variables and inventories, clickable
-scenes, a theme for the menus and dialogue box, rollback, history, skip and
-auto-forward, save slots, a gallery, music room and scene replays,
+music, sound and voice, branching choices, variables, inventories, shops and quests,
+clickable scenes, simple real-time mini-games, a theme for the menus and dialogue box,
+rollback, history, skip and auto-forward, save slots, a gallery, music room and scene replays,
 translations, gamepad support and hot reload. The full language is in
 [SCRIPT.md](SCRIPT.md).
 
@@ -50,6 +50,20 @@ cargo run -- check examples/demo.quill.md       # validate script + assets
 cargo run -- test  examples/demo.quill.md       # play every branch, report story bugs
 ```
 
+All commands (`<script>` is a `.quill.md` file; the script's folder is the game folder):
+
+| Command | What it does |
+| --- | --- |
+| `quillstone check <script>` | validate the script, its theme, translations and that every file exists; warns about unused files |
+| `quillstone test <script> [--limit <n>] [--allow-partial]` | play every branch and report story bugs (below) |
+| `quillstone graph <script> [--format mermaid\|dot] [-o <file>]` | draw the story as a flowchart (Mermaid by default, to the screen unless `-o` names a file) |
+| `quillstone run <script> [--start <label>] [--set var=value]...` | play in the terminal; `--start` begins at a label and `--set` (repeatable) gives variables a starting value |
+| `quillstone dump <script>` | print the compiled ops and labels |
+| `quillstone voices <script>` | list every line's voice file name, speaker and text (tab-separated, for the actors) |
+| `quillstone lang export <script> <code>` | create or update `lang/<code>.txt` for a language the script lists |
+| `quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder]` | build a game folder to ship (see "Ship a game") |
+| `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
+
 `test` plays every choice branch and reports, with the choices that lead there:
 endless loops that never show anything, places the story can never end from,
 labels and lines no branch reaches, choice options whose condition is never
@@ -57,7 +71,7 @@ true, and variables that are read but never set (usually typos). It exits with
 an error only for the first two; the rest are warnings.
 
 Exit codes: `0` when it finished and found no error, `1` for a real problem, and
-`2` when it stopped at the `--limit` (variables that keep growing can make the
+`2` when it stopped at the `--limit` (how many situations it explores, 100000 by default; variables that keep growing can make the
 story endless), because then only part of the story was played. Raise `--limit`,
 or pass `--allow-partial` if a partial run is fine for you (the exit code is then `0`).
 
@@ -99,7 +113,7 @@ cargo run --release -- ../examples/demo.quill.md
 
 The first build downloads and compiles wgpu, winit, cosmic-text and kira (a few minutes).
 
-**Hot reload:** leave the game running while you write. Saving the script (or
+**Hot reload:** leave the game running while you write (this works when the player runs a script, not a `game.qsa`). Saving the script (or
 a file it includes, or its theme) updates the game within half a second, at the same spot, the way a
 save would load after an edit; the music keeps playing. If the edited script has
 errors, a notice shows the first one (all of them go to the console) and the old
@@ -117,21 +131,24 @@ double-click the exe. If it can't start, the reason is also written to
 | click / Space / Enter / Right | advance (the first press finishes typing the line) |
 | 1-9 or click | pick a choice (a timed choice picks its default option when the bar runs out) |
 | Backspace / Left / wheel up | go back (rollback); wheel down rolls forward again |
-| H / Page Up | history (backlog); wheel or Page Up/Down to scroll, Esc to close |
+| H / Page Up | history (backlog); wheel, Up/Down, Page Up/Down, Home/End to scroll; H, Esc, right-click or a click closes it |
 | A | auto-forward on/off (waits for the voice clip; stops at choices) |
 | Tab / hold Ctrl | skip lines already read (stops at unread lines, choices and the end; "Skip unread text" in settings skips everything up to a choice) |
 | S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
 | F5 / F9 | quick save / quick load |
 | U | hide the textbox and quick menu to see the picture; the next key press or click brings them back (and does nothing else) |
-| Esc / right-click | the save screen, with a row of tabs along the top (Save, Load, Settings, History, Main menu, Quit) that works like a game menu: click one, or press Tab to move on to the next screen. Esc or right-click on any of those screens closes it again. Settings (text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu) is also the quick menu's Settings button. From the main menu the tabs are Load, Settings and Quit |
+| Esc / right-click | the save screen, with a row of tabs along the top (Save, Load, Settings, History, Main menu, Quit) that works like a game menu: click one, or press Tab to move on to the next screen. Esc or right-click on any of those screens closes it again. Settings (text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu, and the language in a game that has several) is also the quick menu's Settings button. From the main menu the tabs are Load, Settings and Quit |
 | I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the save screen (closing it returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
 | J | the journal, in games that have one (the inventory's screen listing quests; over the story Esc, right-click or J closes it) |
 | typing | at a text input the keys type into the field (Enter or OK confirms, Backspace deletes, Esc opens the save screen) and shortcut letters are off there |
 | F11 | fullscreen |
-| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions) |
+| F12 | the developer console, only when the player was started with `--dev` (see "Developer tools" in SCRIPT.md) |
+| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions; on the save and load screens Left/Right also turn the page) |
+| Extras (main menu) | click or Enter opens an entry; Tab switches between Gallery, Music room and Scenes; Left/Right turn the page; in a picture or clip Left/Right move on and any click, Esc, Enter, Space or Backspace closes it; Esc, Backspace or right-click goes back |
+| a question (Quit, Overwrite, ...) | Enter or Y says yes; Esc, N or right-click says no |
 
 **Gamepads** (Xbox, PlayStation, Switch Pro, Steam Deck) work too: A advances or
-confirms, B or Start goes back (settings during the story), X rolls back, Y
+confirms, B or Start is Esc (in the story it opens the save screen, with its row of tabs; elsewhere it closes the screen), X rolls back, Y
 opens the history, LB toggles auto-forward, RB toggles skip, holding RT skips,
 LT and Back open the load and save screens, and the D-pad or left stick moves
 around. Building on Linux needs libudev's development files for this
@@ -242,6 +259,7 @@ shows hotspots: a map, a collectible and an exit; `examples/shop.quill.md` shows
 variable as an inventory in a shop; `examples/market.quill.md` and `examples/market_theme.txt`
 show items, the built-in inventory and shop screens, and a theme that restyles them;
 `examples/iconmenu.quill.md` and `examples/icons_theme.txt` replace the quick menu's text buttons with picture buttons at positions the theme picks;
+`examples/hud.quill.md` shows on-screen text, bars and pictures, `examples/minigame.quill.md` a timing bar, key prompts and a moving hotspot, `examples/gallery.quill.md` and `examples/replay.quill.md` the Extras screen, `examples/greeting.quill.md` a typed-in name;
 `examples/staging.quill.md` shows sprite height and layering, text sizes, `{nw}` and a `::tint` colour wash;
 `examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
 `examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer; `examples/weather.quill.md` shows ambient snow, rain and falling petals; `examples/chapters.quill.md` and `examples/chapters/` show a story split over several files with `::include`; `examples/lang.quill.md` and `examples/lang/sv.txt` show a game in English and Swedish).
@@ -255,7 +273,7 @@ show items, the built-in inventory and shop screens, and a theme that restyles t
 | `quillstone-video` | `Decoder` trait, decoder threads + frame queue (`Clip`), which clips play (`Videos`), a test-pattern decoder |
 | `quillstone-render` | virtual 1920x1080 screen, letterboxing, `View` (sprites, fades, typewriter) + `Draw` list, `build_frame` (quads + text jobs), image prep (mipmaps, alpha bleeding) |
 | `quillstone-audio` | `Mixer`: runtime commands -> audio actions (music crossfades, voice per line, rollback-safe) on music/sfx/voice channels |
-| `quillstone` | the CLI (`check`, `test`, `graph`, `voices`, `lang export`, `dump`, `package`, text-mode `run`) |
+| `quillstone` | the CLI (`check`, `test`, `graph`, `voices`, `lang export`, `dump`, `package`, `unpack`, text-mode `run`) |
 | `quillstone-ui` | `Game`: input routing per screen, settings (+ file), backlog, quick menu, auto-forward, skip mode, save/load slots, confirm dialogs |
 | `player/` | the window: winit + wgpu draws the frame, cosmic-text rasterizes text, kira plays sound, FFmpeg decodes video |
 

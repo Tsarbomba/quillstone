@@ -7,8 +7,9 @@ wait, a video, a choice). Everything else runs instantly in between.
 `quillstone check script.quill.md` validates a script and that its files exist;
 `quillstone test script.quill.md` plays every branch and reports story bugs (loops
 with no way out, unreachable parts, options never offered, misspelt variables);
-`quillstone run script.quill.md` plays it in the terminal; `quillstone dump` shows
-the compiled form. Errors name the file and line.
+`quillstone run script.quill.md` plays it in the terminal (`--start <label>` and `--set var=value`
+begin elsewhere); `quillstone dump` shows the compiled form; `quillstone package` builds the folder you
+ship (see the README). Errors name the file and line.
 `quillstone graph script.quill.md > story.md` writes the story's structure as a flowchart:
 a box per heading (as you wrote it, grouped per `::include`d file), an arrow for running on
 into the next heading, `::jump` (thick), `::call` (dashed), each choice or hotspot (labelled
@@ -44,7 +45,7 @@ She looks away.
   main menu), `id:` (the name of the folder the player keeps saves in, e.g. `id: my-story`: 1 to 64 lowercase
   letters, digits and `-`; set it once and the saves survive a new title; without it the folder is named after the
   title, or the script file), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
-  `inventory:` (see [Inventory](#inventory)), `journal:` and `journal_done:` (see [Journal](#journal)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
+  `voice:` (see [Auto-voice](#auto-voice)), `inventory:` (see [Inventory](#inventory)), `journal:` and `journal_done:` (see [Journal](#journal)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
   and [Scene replays](#scene-replays)). `sprite_size:` and `art_scale:` set how big sprites are drawn (see
   [Sprites at their picture's size](#sprites-at-their-pictures-size)).
@@ -92,7 +93,7 @@ game is compiled, so saves, rollback and the tester see one story.
   `chapters/ch1.quill.md:12`. In `quillstone dump` the line column shows the file as well.
 - A script handed to the compiler as plain text, with no folder to read from, can't use it.
 - Hot reload watches every included file: saving one updates the running game. `quillstone
-  package` copies every included file into the game's `game` folder at the same path (put
+  package` packs every included file into the game archive at the same path (put
   included scripts in a folder such as `chapters/`, or name the main script `main.quill.md`,
   so the player can tell which file starts the game).
 
@@ -277,11 +278,17 @@ or a wrong number of arguments is an error that names the line and lists these
 functions. A variable may share a function's name (`count += 1` still works).
 
 ````markdown
-::set{hero.hp = min(hero.hp + 4, hero.max_hp)}      heal, but not above the maximum
-::set{hero.hp = max(hero.hp - dmg, 0)}              hurt, but not below zero
+<!-- heal, but not above the maximum -->
+::set{hero.hp = min(hero.hp + 4, hero.max_hp)}
+<!-- hurt, but not below zero -->
+::set{hero.hp = max(hero.hp - dmg, 0)}
 ::set{cost = base * 2 - discount}
 ::if{count(inventory) >= 2 and abs(a - b) < 3}
+...
+::endif
 ````
+
+A command is one whole line: text after its closing `}` is an error, so write remarks as `<!-- comments -->`.
 
 ### Random numbers
 
@@ -291,7 +298,9 @@ the right side of an assignment, alone or inside a calculation:
 ````markdown
 ::set{roll = random(1, 6)}
 ::set{dmg = random(2, 4) + bonus}
+::choice
 - [Swing the sword](#fight){dmg = random(2, 5)}
+::
 ````
 
 Using it in a condition (`::if{random(1, 6) > 3}`, an option's `if`, a `::call` argument)
@@ -326,7 +335,7 @@ rest were not tried.
 | `::character{id=hero name="{hero.name}" color=#9cc8ff}` | The name may hold `{variable}`s of declared variables (an unknown one is an error). The name plate, History and the text-mode output show the variable's value at that line, so a character the player named (see `::input`) is shown by the typed name, and earlier lines keep the name they had after a rollback or a variable change. What the player typed never becomes formatting. Write `**hero:**` or the name text exactly as declared, `**{hero.name}:**`, before a line. In a translation file the `@ Speaker` context for such a character is the name as written in the script (`@ {hero.name}`), and the name's own entry is `> {hero.name}`. Auto-voice file names do not depend on the variable. |
 | `::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}` | A character drawn from **layers** (see "Layered sprites" below): `layers` lists the layer ids back to front (at most 8), `layer_sprites` is where each layer's pictures are (`{layer}` is the layer id, `{value}` what is shown on it). A character may have `sprites=` poses, layers, or both. |
 | `::show{mika body=casual eyes=open mouth=smile x=20%}` | Show or change a **layered** sprite: each layer id is an attribute whose value says what that layer shows (`eyes=none` hides it, `eyes=anim:blink` uses an animation). See "Layered sprites" below. |
-| `::show{mika happy x=20% fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `x`: `left` `center` `right`, a number or `30%` (see "Placing things: `x` and `y`" below). Without `x` it keeps its position, or is centred if new; without `scale (0.05 to 10) it keeps its size, or is 1 if new. |
+| `::show{mika happy x=20% fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `x`: `left` `center` `right`, a number or `30%` (see "Placing things: `x` and `y`" below). Without `x` it keeps its position, or is centred if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
 | `::show{mika happy y=0.5 z=2}` | `y`: `top` `center` `bottom`, a number or `N%`, placed like `x` (a new sprite stands on the bottom, `y=bottom`). The screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps its `x` and `y` placement, worked out again for its new size. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
 | `::show{src=assets/ghost.png id=ghost x=center}` | A sprite that isn't a character. |
@@ -346,7 +355,7 @@ rest were not tried.
 | `::unlock{src=assets/cg1.png}` | Unlocks a `gallery:` or `music_room:` entry for the Extras screen without showing or playing it; see [Kept across playthroughs](#kept-across-playthroughs). Doesn't wait or show anything. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
-| `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites. Doesn't wait. See [Ambient particles](#ambient-particles). |
+| `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites (`layer=front`, over them, is the default). Doesn't wait. See [Ambient particles](#ambient-particles). |
 | `::tint{color=#203060 alpha=0.35 fade=1}` | A colour wash over the whole stage that **stays** until it is changed or removed: `::tint{none}` (or `{off}`) takes it away. `color` is `#rrggbb` or `#rgb` (required); `alpha` is how strong it is, 0 to 0.9 (default 0.4; it never goes higher so the story stays visible; `35%` also works); `fade` is the seconds to ease from the current tint (or from none), 0 to 10 (default 0: at once). `{none}` takes only `fade`. Doesn't wait. See "Colour wash". |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
@@ -654,7 +663,7 @@ and exactly one of these is required:
 | Attribute | Kind |
 | --- | --- |
 | `text="Day {day}, {hero.gold} gold"` | **Text**. The same tags and `{variable}` values as dialogue (`**bold**`, `*italic*`, `{color=..}`, `{size=..}`), but not `{nw}` or `{p}`. The values are read **every time the screen is drawn**, so the text follows the variables by itself. |
-| `bar=hero.hp max=hero.max_hp size=320,26` | **Bar**. `bar` and `max` are whole-number expressions (a variable, a number, or arithmetic like `hero.max_hp + 2`). It is filled `bar / max` of the way from the left, kept between empty and full; with `max` 0 or less it is empty. `size` is width,height in pixels of the 1920x1080 screen. |
+| `bar=hero.hp max=hero.max_hp size=320,26` | **Bar**. `size` is required. `bar` and `max` are whole-number expressions (a variable, a number, or arithmetic like `hero.max_hp + 2`). It is filled `bar / max` of the way from the left, kept between empty and full; with `max` 0 or less it is empty. `size` is width,height in pixels of the 1920x1080 screen. |
 | `image=assets/heart.png scale=0.5` | **Picture** (`.png`, `.jpg`, `.jpeg` or `.webp` inside the game folder, like a hotspot image), drawn at its own pixel size times `scale` (0.05 to 10, default 1). `quillstone check` tests it as a picture and `package` includes it. |
 
 Attributes for every kind:
@@ -736,7 +745,7 @@ textbox; `::textbox{hide}` does not. Text in a `{color=..}` tag doesn't fade wit
 Elements, like the background and sprites, are part of the scene: rollback, saves and hot reload
 restore them (a save from before `::hud` existed shows none; fades are not saved). `quillstone test`
 ignores `::hud` itself but counts the variables its text, `bar`, `max` and `if` read, so a typo is
-reported as a variable that is never set. Putting an element in a text-heavy corner is up to you: the
+reported as a variable that is never set. `examples/hud.quill.md` shows text, bars and pictures. Putting an element in a text-heavy corner is up to you: the
 textbox and the quick menu are drawn over it.
 
 ## Sound and video
@@ -752,7 +761,7 @@ textbox and the quick menu are drawn over it.
 | `::sfx{stop}` | Stop everything on the sound-effect channel: all loops and all one-shots playing. |
 | `::voice{src=line1.ogg}` | Voice clip for the **next** line; stops when the player advances. |
 | `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
-| `::wait{time=1.5}` | Pause; a click skips it. |
+| `::wait{time=1.5}` | Pause (`time` above 0); a click skips it. |
 
 ### Auto-voice
 
@@ -827,21 +836,29 @@ is really playing, so a file that can't be decoded never traps the player.
 
 ````markdown
 # somewhere
-::jump{to=ending}                       jump to a label
-::jump{to=ending if="trust > 1"}        only if true
-::call{to=flashback}                    run a label like a subroutine...
-::call{to=heal amount=5 who="Mika"}     ...which may take parameters (see below)
-::return                                ...and come back after the ::call
-::end                                   finish the story
-::end_replay                            end a scene replay (see below); otherwise does nothing
+<!-- jump to a label -->
+::jump{to=ending}
+<!-- only if true -->
+::jump{to=ending if="trust > 1"}
+<!-- run a label like a subroutine... -->
+::call{to=flashback}
+<!-- ...which may take parameters (see below) -->
+::call{to=heal amount=5 who="Mika"}
+<!-- ...and come back after the ::call -->
+::return
+<!-- finish the story -->
+::end
+<!-- end a scene replay (see below); otherwise does nothing -->
+::end_replay
 
+<!-- blocks may nest -->
 ::if{trust > 1}
 **Mika:** Great.
 ::elif{trust > 0}
 **Mika:** Fine.
 ::else
 **Mika:** Hm.
-::endif                                  blocks may nest
+::endif
 
 ::choice
 - [Tell the truth](#truth){trust+=1}
@@ -1083,11 +1100,16 @@ The pick slips.
   `text_color`, in the middle of the screen.
 
 ````
-timing_bar_image = assets/gui/lockbar.png      # stretched over the track instead of panel_color
-timing_marker_image = assets/gui/needle.png    # the marker, drawn at its height with its own proportions
-timing_good_color = #ffd98c80                  # the good zone (default accent_color, made see-through)
-timing_perfect_color = #ff5555                 # the perfect zone (default name_color)
-timing_marker_color = #ffffff                  # the plain marker (default text_color)
+# stretched over the track instead of panel_color
+timing_bar_image = assets/gui/lockbar.png
+# the marker, drawn at its height with its own proportions
+timing_marker_image = assets/gui/needle.png
+# the good zone (default accent_color, made see-through)
+timing_good_color = #ffd98c80
+# the perfect zone (default name_color)
+timing_perfect_color = #ff5555
+# the plain marker (default text_color)
+timing_marker_color = #ffffff
 ````
 
   The zones are always drawn over the track, so a picture should leave them visible. The
@@ -1142,7 +1164,8 @@ The dog sails over you.
   (default `name_color`), in the middle of the screen.
 
 ````
-press_key_image = assets/gui/keycap.png   # the key cap, 160x120 on the 1920x1080 screen (checked and packed like other theme pictures)
+# the key cap, 160x120 on the 1920x1080 screen (checked and packed like other theme pictures)
+press_key_image = assets/gui/keycap.png
 ````
 
 ## Items
@@ -1359,7 +1382,7 @@ Asks the player to type a text and stores it in a variable (a name, mostly).
   do nothing there; Backspace deletes and never goes back. Esc and a right click open the
   Save screen (closing it returns to the field with the text kept); F5 and F9 quick save and load.
   A gamepad's A confirms (the default when the field is empty), X deletes and B or Start
-  opens the settings; there is no on-screen keyboard.
+  opens the Save screen; there is no on-screen keyboard.
 - Whatever the player types shows exactly as typed: `{`, `}`, `*` and `\` in a name can't
   become text tags when `{hero.name}` appears in a line or a prompt.
 - The input is an auto save point and stops skip and auto-forward. Neither the question nor
@@ -1577,42 +1600,67 @@ sizes, volumes and waits are clamped to what the language allows.
 ## Themes
 
 The look of the game lives in a small text file named by `theme:` in the front
-matter. Every line is optional; anything left out keeps the built-in look.
+matter. Every line is `key = value` and optional; anything left out keeps the built-in look.
+A line starting with `#` is a comment (a `#` after a value is part of the value, so put comments on their own line).
 Paths are relative to the script. `quillstone check` validates the file and
 checks that everything it names exists, is inside the game's folder, and is the right
 kind of file (fonts are `.ttf` or `.otf`; pictures are PNG, JPEG or WebP).
 
 ```text
-font = assets/fonts/MyFont.ttf      # used for all text; else the system font
-font_bold = assets/fonts/MyFont-Bold.ttf          # for **bold** (same family)
-font_italic = assets/fonts/MyFont-Italic.ttf      # for *italic*
+# used for all text; else the system font
+font = assets/fonts/MyFont.ttf
+# for **bold** (same family)
+font_bold = assets/fonts/MyFont-Bold.ttf
+# for *italic*
+font_italic = assets/fonts/MyFont-Italic.ttf
 font_bold_italic = assets/fonts/MyFont-BoldItalic.ttf
-text_size = 38                      # dialogue and buttons (8 to 200)
-text_outline_size = 2               # a border round dialogue and name text, 0 to 8 px (default 0: none)
-text_outline_color = #000000        # its colour (default black)
-name_size = 36                      # the speaker's name plate (48 px high: bigger names shrink to fit, down to 60%, so keep it under about 60)
+# dialogue and buttons (8 to 200)
+text_size = 38
+# a border round dialogue and name text, 0 to 8 px (default 0: none)
+text_outline_size = 2
+# its colour (default black)
+text_outline_color = #000000
+# the speaker's name plate (48 px high: bigger names shrink to fit, down to 60%, so keep it under about 60)
+name_size = 36
 text_color = #ffffff
-name_color = #ffd98c                # name plates of characters without color=
-accent_color = #ffd98c              # highlights, the title on the main menu
-dim_color = #ffffff8c               # hints and secondary text
-panel_color = #000000b8             # the textbox, if there is no textbox_image
+# name plates of characters without color=
+name_color = #ffd98c
+# highlights, the title on the main menu
+accent_color = #ffd98c
+# hints and secondary text
+dim_color = #ffffff8c
+# the textbox, if there is no textbox_image
+panel_color = #000000b8
 button_color = #000000b3
 button_hover_color = #40336be0
-overlay_color = #050510e0           # behind settings, history and save/load
-textbox_image = assets/gui/textbox.png   # stretched over the textbox (1600x260 unless textbox_rect says otherwise)
-quick_menu = visible                # visible (default), hover or hidden (see below)
-quick_buttons = all                 # all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
-quick_align = right                  # right (default), center or left: where the row sits along the textbox (see below)
-menu_background = assets/gui/menu.png   # a picture, or a video file that loops silently on the main menu
-menu_overlay = assets/gui/menu_frame.png   # a frame, vignette or shading drawn over menu_background, under the menu's buttons
-game_menu_overlay = assets/gui/game_frame.png   # the same behind Save, Load, Settings and History, over their dimming
+# behind settings, history and save/load
+overlay_color = #050510e0
+# stretched over the textbox (1600x260 unless textbox_rect says otherwise)
+textbox_image = assets/gui/textbox.png
+# visible (default), hover or hidden (see below)
+quick_menu = visible
+# all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
+quick_buttons = all
+# right (default), center or left: where the row sits along the textbox (see below)
+quick_align = right
+# a picture, or a video file that loops silently on the main menu
+menu_background = assets/gui/menu.png
+# a frame, vignette or shading drawn over menu_background, under the menu's buttons
+menu_overlay = assets/gui/menu_frame.png
+# the same behind Save, Load, Settings and History, over their dimming
+game_menu_overlay = assets/gui/game_frame.png
 menu_music = assets/audio/menu.ogg
-voice_duck = 0.5                    # music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
-choice_timer_color = #ffd98c        # the countdown bar of a timed ::choice (default accent_color)
-choice_timer_height = 8             # its thickness, 2 to 40
-timing_bar_image = assets/gui/lockbar.png   # the ::timing bar's track and marker pictures, and zone and marker colours:
-timing_marker_image = assets/gui/needle.png # timing_good_color, timing_perfect_color, timing_marker_color (see "Timing bar")
-press_key_image = assets/gui/keycap.png     # the key cap of a ::press prompt (see "Key prompts")
+# music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
+voice_duck = 0.5
+# the countdown bar of a timed ::choice (default accent_color)
+choice_timer_color = #ffd98c
+# its thickness, 2 to 40
+choice_timer_height = 8
+# the ::timing bar's track and marker pictures (zone and marker colours too: see "Timing bar")
+timing_bar_image = assets/gui/lockbar.png
+timing_marker_image = assets/gui/needle.png
+# the key cap of a ::press prompt (see "Key prompts")
+press_key_image = assets/gui/keycap.png
 ```
 
 Colours are `#rrggbb` or `#rrggbbaa` (the last pair is opacity).
@@ -1624,12 +1672,18 @@ Positions and sizes are in the 1920x1080 virtual screen; without these keys the 
 it always has (a 1600x260 box at 160, 780).
 
 ```text
-textbox_rect = 360, 700, 1200, 340      # x, y, width, height; inside the screen, at least 400x120
-textbox_padding = 40, 36, 40, 20        # text inset: left, top, right, bottom (or one number for all four)
-name_plate_image = assets/gui/plate.png # stretched over the name plate, under the speaker's name
-name_plate_rect = 380, 640, 400, 64     # x, y, width, height of the name plate
-text_align = center                     # the dialogue text: left (default) or center
-name_align = center                     # the speaker's name: left (default) or center
+# x, y, width, height; inside the screen, at least 400x120
+textbox_rect = 360, 700, 1200, 340
+# text inset: left, top, right, bottom (or one number for all four)
+textbox_padding = 40, 36, 40, 20
+# stretched over the name plate, under the speaker's name
+name_plate_image = assets/gui/plate.png
+# x, y, width, height of the name plate
+name_plate_rect = 380, 640, 400, 64
+# the dialogue text: left (default) or center
+text_align = center
+# the speaker's name: left (default) or center
+name_align = center
 ```
 
 - The padding must leave at least 200x60 px for the text inside the textbox, otherwise it
@@ -1653,8 +1707,10 @@ name_align = center                     # the speaker's name: left (default) or 
 `::input` shows a centred 1200x460 panel. Two keys change it; without them it looks as it always has.
 
 ```text
-input_image = assets/gui/input.png    # stretched over the panel instead of panel_color
-input_rect = 360, 310, 1200, 460      # x, y, width, height; inside the screen, at least 600x460
+# stretched over the panel instead of panel_color
+input_image = assets/gui/input.png
+# x, y, width, height; inside the screen, at least 600x460
+input_rect = 360, 310, 1200, 460
 ```
 
 The prompt, field and OK button keep their sizes and sit inside the panel (a taller panel centres
@@ -1667,11 +1723,16 @@ The Settings screen (not the main menu, Save, Load or History) can be moved, mad
 dressed with pictures. Without these keys it looks as it always has.
 
 ```text
-options_rect = 80, 60, 960, 960       # x, y, width, height of the panel; at least 640x420 (default 400, 90, 1120, 910)
-options_text_size = 30                # the screen's text size: rows, buttons and hint scale with it (8 to 200, default 36)
-options_background = assets/gui/options.png   # full-screen picture instead of overlay_color
-options_panel_image = assets/gui/frame.png    # drawn over the panel as a 9-slice
-options_panel_border = 40             # the 9-slice corner size in the picture's pixels (0: stretch whole; default 0)
+# x, y, width, height of the panel; at least 640x420 (default 400, 90, 1120, 910)
+options_rect = 80, 60, 960, 960
+# the screen's text size: rows, buttons and hint scale with it (8 to 200, default 36)
+options_text_size = 30
+# full-screen picture instead of overlay_color
+options_background = assets/gui/options.png
+# drawn over the panel as a 9-slice
+options_panel_image = assets/gui/frame.png
+# the 9-slice corner size in the picture's pixels (0 to 400; 0: stretch whole; default 0)
+options_panel_border = 40
 ```
 
 - The title, the rows, the buttons and the hint are laid out inside `options_rect`: the title at its top,
@@ -1715,11 +1776,17 @@ likes. Every key is optional and names a button by its id: `back`, `history`, `s
 `load`, `qsave`, `qload`, `settings`, `items` or `journal` (Q.Save and Q.Load are `qsave` and `qload`).
 
 ```text
-quick_back_icon = assets/gui/back.png        # idle picture: drawn instead of the text label
-quick_back_hover = assets/gui/back_hover.png # while the cursor is on it (needs _icon)
-quick_skip_on = assets/gui/skip_on.png       # while Skip or Auto is switched on (needs _icon)
-quick_back_pos = 160, 976                    # top left in the 1920x1080 screen
-quick_back_size = 56, 56                     # width, height (16 to 512 each)
+# idle picture: drawn instead of the text label
+quick_back_icon = assets/gui/back.png
+# while the cursor is on it (needs _icon)
+quick_back_hover = assets/gui/back_hover.png
+quick_skip_icon = assets/gui/skip.png
+# while Skip or Auto is switched on (needs _icon)
+quick_skip_on = assets/gui/skip_on.png
+# top left in the 1920x1080 screen
+quick_back_pos = 160, 976
+# width, height (16 to 512 each)
+quick_back_size = 56, 56
 ```
 
 - `_icon`, `_hover` and `_on` are PNG, JPEG or WebP files; an id that isn't in the list, a bad
@@ -1756,28 +1823,48 @@ any of them the screens look like the other built-in ones. Positions and sizes a
 the 1920x1080 virtual screen.
 
 ```text
-inventory_background = assets/gui/bag.png   # full-screen picture (else the screen is dimmed)
-shop_background = assets/gui/stall.png      # the shop's own background, if different
-inventory_panel = assets/gui/panel.png      # stretched over the panel, under the grid
-inventory_panel_rect = 160, 70, 1600, 940   # x, y, width, height of the panel (default 210, 90, 1500, 900)
-inventory_columns = 4                       # cells per row (1 to 12; fewer if they don't fit)
-inventory_cell_size = 270, 210              # width, height (or one number for a square); width 48 to 600, height 120 to 600
+# full-screen picture (else the screen is dimmed)
+inventory_background = assets/gui/bag.png
+# the shop's own background, if different
+shop_background = assets/gui/stall.png
+# stretched over the panel, under the grid
+inventory_panel = assets/gui/panel.png
+# x, y, width, height of the panel (default 210, 90, 1500, 900)
+inventory_panel_rect = 160, 70, 1600, 940
+# cells per row (1 to 12; fewer if they don't fit)
+inventory_columns = 4
+# width, height (or one number for a square); width 48 to 600, height 120 to 600
+inventory_cell_size = 270, 210
 inventory_cell_gap = 24
-inventory_icon_size = 104                   # the icon is drawn in a square this big
-inventory_cell = #4a3020                    # a cell: a colour #rrggbb[aa] ...
-inventory_cell_hover = assets/gui/hover.png # ... or a picture, stretched over the cell
-inventory_cell_owned = #2f4a2f              # an owned item in a shop
-inventory_cell_disabled = #2a221cb0         # an item the player can't afford
-inventory_title = Your pack                 # default "Items"
-journal_title = Quests                      # the journal's title (default "Journal")
-shop_title = Night market                   # default "Shop"
-shop_currency = Gold                        # what the shop calls its money (default: the pay variable's name)
-inventory_description_rect = 300, 760, 1300, 170   # where the hovered item is described
-inventory_name_color = #f6e7cf              # item names (default text_color)
-inventory_price_color = #f2b35c             # prices and the money line (default accent_color)
-inventory_text_color = #e6d3b3              # descriptions (default text_color)
+# the icon is drawn in a square this big
+inventory_icon_size = 104
+# a cell: a colour #rrggbb[aa] ...
+inventory_cell = #4a3020
+# ... or a picture, stretched over the cell
+inventory_cell_hover = assets/gui/hover.png
+# an owned item in a shop
+inventory_cell_owned = #2f4a2f
+# an item the player can't afford
+inventory_cell_disabled = #2a221cb0
+# default "Items"
+inventory_title = Your pack
+# the journal's title (default "Journal")
+journal_title = Quests
+# default "Shop"
+shop_title = Night market
+# what the shop calls its money (default: the pay variable's name)
+shop_currency = Gold
+# where the hovered item is described
+inventory_description_rect = 300, 760, 1300, 170
+# item names (default text_color)
+inventory_name_color = #f6e7cf
+# prices and the money line (default accent_color)
+inventory_price_color = #f2b35c
+# descriptions (default text_color)
+inventory_text_color = #e6d3b3
 ```
 
+Defaults: 5 columns, 240x200 cells, `inventory_cell_gap` 24 (0 to 100) and `inventory_icon_size` 96 (16 to 400).
 The panel rect holds the title, the grid, the description box and the buttons, laid
 out from its top left, so a bigger panel or cells that don't fit it give fewer rows
 and more pages rather than overflowing. `quillstone check` validates the pictures
@@ -1807,6 +1894,8 @@ For trying a story, not for players: a game you ship has none of this unless it 
   variables (`--set` repeats; the value is read by the variable's declared type, text needs no quotes; the variable
   must be declared in `vars:`). `--start` and `--set` without `--dev` are refused.
 - `quillstone run <script> --start <label> --set var=value` does the same in the terminal.
+- `quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as unlocked for that run, to test
+  the Extras screen (nothing is saved; it needs no `--dev`).
 
 ## Not (yet) in the language
 
