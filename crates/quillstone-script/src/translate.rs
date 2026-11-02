@@ -450,12 +450,12 @@ pub fn placeholders(text: &str) -> Vec<String> {
 /// The name of a tag (`color` for `color=#fff`), or `None` for a `{variable}`.
 fn tag_name(inner: &str) -> Option<&str> {
     let name = inner.split('=').next().unwrap_or(inner).trim();
-    matches!(name, "nw" | "p" | "w" | "size" | "/size" | "color" | "/color").then_some(name)
+    matches!(name, "nw" | "p" | "w" | "size" | "/size" | "color" | "/color" | "u" | "/u" | "ruby" | "/ruby").then_some(name)
 }
 
 /// What is wrong with `target` as a translation of `source`: a `{variable}` dropped, added or
-/// misspelt, a text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`) missing or extra, or
-/// markup that does not parse. Tag arguments (a colour, a pause length) may differ.
+/// misspelt, a text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{ruby=..}`) missing or extra, or
+/// markup that does not parse. Tag arguments (a colour, a pause length, a ruby reading) may differ.
 pub fn check_translation(source: &str, target: &str) -> Result<(), String> {
     if target.is_empty() {
         return Ok(());
@@ -480,7 +480,7 @@ pub fn check_translation(source: &str, target: &str) -> Result<(), String> {
     }
     for (k, n) in &got {
         if want.get(k).copied().unwrap_or(0) < *n {
-            let hint = if k.len() > 2 && !matches!(&k[1..k.len() - 1], "nw" | "p" | "w" | "size" | "/size" | "color" | "/color") {
+            let hint = if k.len() > 2 && tag_name(&k[1..k.len() - 1]).is_none() {
                 " (a variable the original does not use: a typo?)"
             } else {
                 ""
@@ -590,6 +590,11 @@ mod tests {
         assert!(ok("a {x} b", "a {x} {nw} b").is_err(), "extra tag");
         assert!(ok("a **b**", "a **b").unwrap_err().contains("never closed"));
         assert!(ok("{p}a", "{p}{p}a").is_err());
+        // underline and ruby are tags like the others: they must stay, their reading may change
+        assert!(ok("{ruby=かんじ}漢字{/ruby} {u}x{/u}", "{u}y{/u} {ruby=kanji}Kanji{/ruby}").is_ok());
+        assert!(ok("{u}x{/u}", "y").unwrap_err().contains("missing {"));
+        assert!(ok("x", "{ruby=a}y{/ruby}").unwrap_err().contains("more often"));
+        assert!(ok("{ruby=a}x{/ruby}", "{ruby=a}y").unwrap_err().contains("{/ruby}"));
     }
 
     #[test]

@@ -181,7 +181,7 @@ fn picture(l: &Layer, i: u32, src: &str, size: Size, out: &mut Vec<Draw>) {
     let vy = 55.0 + 70.0 * unit(i, 1);
     let (x, y) = place(l, i, vy, 60.0 + 60.0 * near, 25.0 + 55.0 * unit(i, 4), w.max(h));
     if let Some((dest, uv)) = clip(Rect::new(x, y, w, h), FULL_UV, SCREEN) {
-        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha, shade: 1.0 });
+        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha, shade: 1.0, blur: 0.0 });
     }
 }
 
@@ -397,7 +397,7 @@ mod tests {
     fn the_layer_decides_whether_they_are_behind_the_sprites() {
         let mut v = View::new();
         let sprite = Cmd::ShowSprite {
-            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0,
+            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0,
         };
         let order = |v: &View| -> Vec<&'static str> {
             let mut o: Vec<&'static str> = v
@@ -412,7 +412,7 @@ mod tests {
             o.dedup();
             o
         };
-        let bg = Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false };
+        let bg = Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 };
         v.apply(&[bg.clone(), sprite.clone(), cmd(set(ParticleKind::Snow, 20), 0.0)]);
         assert_eq!(order(&v), ["bg", "sprite", "particle"]);
         v.apply(&[Cmd::ClearScene, bg, sprite, cmd(Particles { back: true, ..set(ParticleKind::Snow, 20) }, 0.0)]);

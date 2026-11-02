@@ -4,6 +4,8 @@
 //! - `{color=#ff8080}...{/color}` (they nest)
 //! - `{w=0.5}`: the typewriter pauses there for half a second
 //! - `{size=+10}`, `{size=-8}`, `{size=24}`...`{/size}`: relative or absolute text size (they nest)
+//! - `{u}...{/u}`: underlined text
+//! - `{ruby=かんじ}漢字{/ruby}`: a small reading above the words (plain text only inside; no nesting)
 //! - `{p}`: a line break inside the line (a paragraph break); it doesn't wait
 //! - `{nw}` at the very end: the story goes on by itself once the line is typed
 //! - `\*`, `\{` and `\\` write the character itself; any other `\` is shown as is
@@ -55,6 +57,7 @@ pub struct Style {
     pub color: Option<[f32; 3]>,
     /// `None` is the text's normal size.
     pub size: Option<TextSize>,
+    pub underline: bool,
 }
 
 /// A stretch of [`Rich::text`] (byte range) in one style.
@@ -63,6 +66,8 @@ pub struct TextRun {
     pub start: usize,
     pub end: usize,
     pub style: Style,
+    /// `{ruby=..}`: the reading drawn small above this stretch (its whole text); only plain text has one.
+    pub ruby: Option<String>,
 }
 
 /// A line with its tags taken out.
@@ -77,6 +82,8 @@ pub struct Rich {
     /// The line ended in `{nw}`: the story goes on once it is typed.
     pub no_wait: bool,
 }
+
+const IN_RUBY: &str = "inside `{ruby=...}` only plain words fit: put bold, colour, size and underline tags around the whole `{ruby}`";
 
 /// Deepest nesting of `{color}` tags and of `{size}` tags (each counted alone).
 pub const MAX_TAG_NESTING: usize = 64;
@@ -93,13 +100,15 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let mut style = Style::default();
     let mut colors: Vec<Option<[f32; 3]>> = Vec::new();
     let mut sizes: Vec<Option<TextSize>> = Vec::new();
+    let mut underlines = 0; // open `{u}` tags
+    let mut ruby: Option<(String, usize)> = None; // the reading and where in the text its words start
     let mut runs: Vec<TextRun> = Vec::new();
     let mut run_start = 0;
     let mut shown = 0; // characters in out.text
     // End the run so far (up to `end`, in `style`) because the style changes there.
-    let mut close_run = |end: usize, style: Style| {
+    let mut close_run = |end: usize, style: Style, ruby: &Option<(String, usize)>| {
         if end > run_start {
-            runs.push(TextRun { start: run_start, end, style });
+            runs.push(TextRun { start: run_start, end, style, ruby: ruby.as_ref().map(|r| r.0.clone()) });
         }
         run_start = end;
     };
@@ -112,13 +121,14 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                 shown += 1;
                 i += 2;
             }
+            '*' if ruby.is_some() => return Err(IN_RUBY.into()),
             '*' if chars.get(i + 1) == Some(&'*') => {
-                close_run(out.text.len(), style);
+                close_run(out.text.len(), style, &ruby);
                 style.bold = !style.bold;
                 i += 2;
             }
             '*' => {
-                close_run(out.text.len(), style);
+                close_run(out.text.len(), style, &ruby);
                 style.italic = !style.italic;
                 i += 1;
             }
@@ -138,9 +148,38 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                 let close = paired.filter(|&k| chars[k] == '}').unwrap_or(first);
                 let inner: String = chars[i + 1..close].iter().collect();
                 let tag = inner.trim();
-                if tag == "/color" {
+                let plain_name = !matches!(tag, "p" | "nw") && (is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok());
+                if ruby.is_some() && tag != "/ruby" && !plain_name {
+                    return Err(IN_RUBY.into());
+                }
+                if tag == "/ruby" {
+                    let (_, from) = ruby.as_ref().ok_or("`{/ruby}` without a `{ruby=...}` before it")?;
+                    if out.text.len() == *from {
+                        return Err("`{ruby=...}` needs some text before `{/ruby}`".into());
+                    }
+                    close_run(out.text.len(), style, &ruby);
+                    ruby = None;
+                } else if let Some(value) = tag.strip_prefix("ruby=") {
+                    let reading = value.trim();
+                    if ruby.is_some() {
+                        return Err("`{ruby=...}` tags can't be nested".into());
+                    }
+                    if reading.is_empty() {
+                        return Err("`{ruby=}` needs the reading to show above the text".into());
+                    }
+                    close_run(out.text.len(), style, &ruby);
+                    ruby = Some((reading.to_string(), out.text.len()));
+                } else if tag == "/u" {
+                    underlines = usize::checked_sub(underlines, 1).ok_or("`{/u}` without a `{u}` before it")?;
+                    close_run(out.text.len(), style, &ruby);
+                    style.underline = underlines > 0;
+                } else if tag == "u" {
+                    close_run(out.text.len(), style, &ruby);
+                    underlines += 1;
+                    style.underline = true;
+                } else if tag == "/color" {
                     let previous = colors.pop().ok_or("`{/color}` without a `{color=...}` before it")?;
-                    close_run(out.text.len(), style);
+                    close_run(out.text.len(), style, &ruby);
                     style.color = previous;
                 } else if let Some(value) = tag.strip_prefix("color=") {
                     let color = crate::parser::parse_color(value.trim())?;
@@ -148,11 +187,11 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                         return Err("`{color=...}` tags are nested too deeply".into());
                     }
                     colors.push(style.color);
-                    close_run(out.text.len(), style);
+                    close_run(out.text.len(), style, &ruby);
                     style.color = Some(color);
                 } else if tag == "/size" {
                     let previous = sizes.pop().ok_or("`{/size}` without a `{size=...}` before it")?;
-                    close_run(out.text.len(), style);
+                    close_run(out.text.len(), style, &ruby);
                     style.size = previous;
                 } else if let Some(value) = tag.strip_prefix("size=") {
                     let size = parse_size(value.trim())?;
@@ -160,7 +199,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                         return Err("`{size=...}` tags are nested too deeply".into());
                     }
                     sizes.push(style.size);
-                    close_run(out.text.len(), style);
+                    close_run(out.text.len(), style, &ruby);
                     style.size = Some(size.within(style.size));
                 } else if tag == "nw" {
                     if chars[close + 1..].iter().any(|c| !c.is_whitespace()) {
@@ -184,7 +223,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     out.text.push_str(&format!("{{{inner}}}"));
                     shown += inner.chars().count() + 2;
                 } else {
-                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{w=0.5}}`, `{{p}}`, `{{nw}}`)"));
+                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{u}}`, `{{/u}}`, `{{ruby=..}}`, `{{/ruby}}`, `{{w=0.5}}`, `{{p}}`, `{{nw}}`)"));
                 }
                 i = close + 1;
             }
@@ -207,7 +246,13 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     if !sizes.is_empty() {
         return Err("`{size=...}` is never closed with `{/size}`".into());
     }
-    close_run(out.text.len(), style);
+    if underlines > 0 {
+        return Err("`{u}` is never closed with `{/u}`".into());
+    }
+    if ruby.is_some() {
+        return Err("`{ruby=...}` is never closed with `{/ruby}`".into());
+    }
+    close_run(out.text.len(), style, &ruby);
     // A break at the very end would only leave an empty last line (and a pause or
     // style that reached past the shorter text is clamped to it).
     if out.text.ends_with('\n') {
@@ -217,7 +262,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
         runs.retain(|r| r.start < r.end);
         out.pauses.iter_mut().for_each(|p| p.0 = p.0.min(chars));
     }
-    if runs.iter().any(|r| r.style != Style::default()) {
+    if runs.iter().any(|r| r.style != Style::default() || r.ruby.is_some()) {
         out.runs = runs;
     }
     Ok(out)
@@ -273,6 +318,20 @@ pub fn rich(src: &str) -> Rich {
 /// it into a space itself.
 pub fn plain(src: &str) -> String {
     rich(src).text
+}
+
+/// The words with each ruby reading in brackets after its text (`漢字(かんじ)`), for the text-mode player.
+pub fn annotated(src: &str) -> String {
+    let r = rich(src);
+    let mut out = String::new();
+    let mut at = 0;
+    for run in r.runs.iter().filter(|run| run.ruby.is_some()) {
+        out.push_str(&r.text[at..run.end]);
+        out.push_str(&format!("({})", run.ruby.as_deref().unwrap_or_default()));
+        at = run.end;
+    }
+    out.push_str(&r.text[at..]);
+    out
 }
 
 /// Text that shows exactly as written (a variable's value put into a line).
@@ -468,6 +527,57 @@ mod tests {
         assert!(check_markup("a{p}b").is_ok());
         assert!(check_option_markup("a{p}b").unwrap_err().contains("not in a choice"));
         assert!(check_option_markup("{p}a").is_ok(), "a leading one is ignored, so harmless");
+    }
+
+    #[test]
+    fn underline_is_a_style_that_nests_with_the_others() {
+        let r = parse_markup("a {u}b **c**{/u} d").unwrap();
+        assert_eq!(r.text, "a b c d");
+        let flags: Vec<(&str, bool, bool)> = r.runs.iter().map(|x| (&r.text[x.start..x.end], x.style.underline, x.style.bold)).collect();
+        assert_eq!(flags, [("a ", false, false), ("b ", true, false), ("c", true, true), (" d", false, false)]);
+        let r = parse_markup("{u}a{u}b{/u}c{/u}d").unwrap();
+        assert_eq!(r.runs.iter().map(|x| x.style.underline).collect::<Vec<_>>(), [true, true, true, false], "it stays on until the outer one closes");
+        assert!(!rich("plain").runs.iter().any(|x| x.style.underline));
+        assert_eq!(plain("{u}x{/u}"), "x");
+    }
+
+    #[test]
+    fn ruby_sits_on_one_run_of_plain_words() {
+        let r = parse_markup("Is {ruby=かんじ}漢字{/ruby} hard?").unwrap();
+        assert_eq!(r.text, "Is 漢字 hard?");
+        let marked: Vec<(&str, Option<&str>)> = r.runs.iter().map(|x| (&r.text[x.start..x.end], x.ruby.as_deref())).collect();
+        assert_eq!(marked, [("Is ", None), ("漢字", Some("かんじ")), (" hard?", None)]);
+        // around a ruby the other tags work, and a pause counts the base's characters
+        let r = parse_markup("**{color=#f00}{ruby=ab}xy{/ruby}{/color}**{w=1}").unwrap();
+        assert!(r.runs[0].style.bold && r.runs[0].style.color.is_some() && r.runs[0].ruby.as_deref() == Some("ab"));
+        assert_eq!(r.pauses, [(2, 1.0)]);
+        assert_eq!(annotated("Is {ruby=かんじ}漢字{/ruby} hard, {ruby=x}y{/ruby}?"), "Is 漢字(かんじ) hard, y(x)?");
+        assert_eq!(annotated("none"), "none");
+        assert_eq!(plain("{ruby=かんじ}漢字{/ruby}"), "漢字", "the history shows the words alone");
+        // a variable's value in the base is plain words, even when it looks like a tag
+        assert_eq!(parse_markup(&format!("{{ruby=a}}{}{{/ruby}}", escape("*{u}"))).unwrap().text, "*{u}");
+    }
+
+    #[test]
+    fn ruby_and_underline_mistakes_are_explained() {
+        for (src, needle) in [
+            ("{u}open", "`{u}` is never closed"),
+            ("{/u}", "without a `{u}`"),
+            ("{ruby=a}open", "never closed"),
+            ("{/ruby}", "without a `{ruby"),
+            ("{ruby=}x{/ruby}", "needs the reading"),
+            ("{ruby=a}{/ruby}", "needs some text"),
+            ("{ruby=a}x{ruby=b}y{/ruby}{/ruby}", "only plain words"),
+            ("{ruby=a}**x**{/ruby}", "only plain words"),
+            ("{ruby=a}*x*{/ruby}", "only plain words"),
+            ("{ruby=a}{u}x{/u}{/ruby}", "only plain words"),
+            ("{ruby=a}x{w=1}{/ruby}", "only plain words"),
+            ("{ruby=a}x{p}{/ruby}", "only plain words"),
+        ] {
+            let e = parse_markup(src).unwrap_err();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
+        assert_eq!(rich("{ruby=a}x").text, "{ruby=a}x", "shown as written, not lost");
     }
 
     #[test]

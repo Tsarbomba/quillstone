@@ -227,7 +227,7 @@ pub fn draw_quick(
                 _ => (idle, ICON_IDLE_ALPHA),
             };
             let uv = FULL_UV;
-            out.push(Draw::Image { src: src.to_string(), dest: rect, uv, alpha: a * alpha, shade: 1.0 });
+            out.push(Draw::Image { src: src.to_string(), dest: rect, uv, alpha: a * alpha, shade: 1.0, blur: 0.0 });
             if on && loaded(&spec.on).is_none() {
                 let bar = Rect::new(rect.x, rect.y + rect.h - 3.0, rect.w, 3.0);
                 out.push(Draw::Rect { rect: bar, color: fade(theme.accent_color) });
@@ -317,7 +317,7 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
         Some((src, size)) => {
             let w = marker.h * size.w / size.h.max(1.0);
             let dest = Rect::new(x - w / 2.0, marker.y, w, marker.h);
-            out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0, shade: 1.0 });
+            out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0, shade: 1.0, blur: 0.0 });
         }
         None => out.push(Draw::Rect { rect: marker, color: theme.timing_marker_color.unwrap_or(theme.text_color) }),
     }
@@ -389,7 +389,7 @@ pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton]) -> Option<MenuButton> {
 fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
     if let Some((src, size)) = src.and_then(|src| image_size(src).map(|size| (src, size))) {
         let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0 });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
     }
 }
 
@@ -660,7 +660,7 @@ pub fn nine_slice(out: &mut Vec<Draw>, src: &str, size: Size, dest: Rect, border
     for (y, h, v, vh) in ys {
         for (x, w, u, uw) in xs {
             if w > 0.0 && h > 0.0 {
-                out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x, y, w, h), uv: Rect::new(u, v, uw, vh), alpha: 1.0, shade: 1.0 });
+                out.push(Draw::Image { src: src.to_string(), dest: Rect::new(x, y, w, h), uv: Rect::new(u, v, uw, vh), alpha: 1.0, shade: 1.0, blur: 0.0 });
             }
         }
     }
@@ -695,7 +695,7 @@ pub fn draw_settings(
     match loaded(&theme.options_background, image_size) {
         Some((src, size)) => {
             let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0 });
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
         }
         None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
     }

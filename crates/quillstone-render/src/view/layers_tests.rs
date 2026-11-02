@@ -25,7 +25,7 @@ fn layered(id: &str, layers: &[(&str, &str)], x: f32, fade: f32) -> Cmd {
         scale: 1.0,
         flip: false,
         xscale: 1.0,
-        yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade,
+        yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade,
     }
 }
 
@@ -69,9 +69,9 @@ fn layers_are_drawn_back_to_front_in_the_same_place_and_size() {
 fn the_layers_follow_the_one_sprite_in_every_way() {
     let mut v = view();
     let mut plain = view();
-    let m = Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.8, y: 0.9, scale: 1.2, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false };
+    let m = Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.8, y: 0.9, scale: 1.2, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false };
     v.apply(&[layered("m", &FACE, 0.3, 0.0), m.clone()]);
-    plain.apply(&[Cmd::ShowSprite { id: "m".into(), src: "body.png".into(), layers: vec![], x: 0.3, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }, m]);
+    plain.apply(&[Cmd::ShowSprite { id: "m".into(), src: "body.png".into(), layers: vec![], x: 0.3, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }, m]);
     for t in [0.0, 0.3, 0.5, 1.0] {
         v.tick(t);
         plain.tick(t);
@@ -89,7 +89,7 @@ fn the_layers_follow_the_one_sprite_in_every_way() {
     if let Cmd::ShowSprite { z, .. } = &mut front {
         *z = 5;
     }
-    v.apply(&[front, Cmd::ShowSprite { id: "o".into(), src: "other.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }]);
+    v.apply(&[front, Cmd::ShowSprite { id: "o".into(), src: "other.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
     assert_eq!(names(&v), ["other.png", "body.png", "eyes.png", "mouth.png"]);
 }
 
@@ -185,7 +185,7 @@ fn hiding_fades_every_layer_together() {
 fn a_pose_and_layers_replace_each_other_with_a_crossfade() {
     let mut v = view();
     v.apply(&[layered("m", &FACE, 0.5, 0.0)]);
-    v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "pose.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 1.0 }]);
+    v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "pose.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 1.0 }]);
     assert_eq!(names(&v), ["body.png", "eyes.png", "mouth.png", "pose.png"], "the layers stay under the fading-in pose");
     v.tick(0.5);
     assert!(close(alpha_of(&v, "pose.png"), 0.5));

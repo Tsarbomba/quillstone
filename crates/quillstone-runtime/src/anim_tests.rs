@@ -52,12 +52,12 @@ fn a_sprite_and_a_background_can_be_animations() {
     let p = program();
     let (game, first) = Session::start(&p);
     assert_eq!(game.state().background.as_deref(), Some("anim:rain"));
-    assert!(first.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.5, wipe: None, sound: false }));
+    assert!(first.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.5, wipe: None, sound: false, blur: 0.0 }));
     assert_eq!(sprite(&game).src, "anim:blink");
     assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, src, x, scale, .. } if id == "mika" && src == "anim:blink" && *x == 0.0 && *scale == 0.8)));
     // The scene is rebuilt from state alone.
     let redraw = game.state().redraw();
-    assert!(redraw.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.0, wipe: None, sound: false }));
+    assert!(redraw.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
     assert!(redraw.iter().any(|c| matches!(c, Cmd::ShowSprite { src, .. } if src == "anim:blink")));
 }
 
@@ -167,13 +167,13 @@ fn a_looping_move_is_sprite_state_and_a_command() {
     let cmds = next(&mut game); // Three: ::show anim, ::move loop
     assert_eq!(
         cmds.iter().find(|c| matches!(c, Cmd::LoopSprite { .. })).unwrap(),
-        &Cmd::LoopSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 } }
+        &Cmd::LoopSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 } }
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { .. })), "the view glides to the far values by itself");
     // The sprite's own values are where it starts (what each leg back ends at).
     let s = sprite(&game);
     assert_eq!((s.x, s.y, s.scale), (0.0, 1.0, 0.8));
-    assert_eq!(loop_of(&game), Some(SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 }));
+    assert_eq!(loop_of(&game), Some(SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 }));
 }
 
 #[test]

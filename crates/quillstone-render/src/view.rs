@@ -69,8 +69,9 @@ pub struct Outline {
 /// draw in list order, back to front.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
-    /// `shade` multiplies the picture's colour (1 as it is, less is darker; a dimmed sprite).
-    Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: f32 },
+    /// `shade` multiplies the picture's colour (1 as it is, less is darker; a dimmed sprite). `blur` is a blur radius
+    /// in virtual pixels (0 is sharp).
+    Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: f32, blur: f32 },
     Rect { rect: Rect, color: [f32; 4] },
     /// `text` is the *full* string so wrapping stays stable; show only the first
     /// `visible_chars` characters (the typewriter effect) without re-wrapping.
@@ -96,6 +97,8 @@ pub struct Background {
     pub wipe: Option<Wipe>,
     /// A video background plays its own sound.
     pub sound: bool,
+    /// Blur radius in stage pixels (0 is sharp).
+    pub blur: f32,
     pub elapsed: f32,
 }
 
@@ -207,18 +210,20 @@ pub struct SpriteView {
     pub alpha_to: f32,
     pub dx: f32,
     pub dy: f32,
+    /// Target blur radius in stage pixels.
+    pub blur: f32,
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
-    /// Where the current leg of a move started: x, y, scale, xscale, yscale, alpha, dx, dy.
-    from: [f32; 8],
+    /// Where the current leg of a move started: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
+    from: [f32; 9],
     move_time: f32,
     /// Seconds into the current leg; negative while it still waits (`wait=`).
     move_elapsed: f32,
     move_ease: Ease,
     /// A looping move: the other end of the oscillation (same order as `from`);
     /// the sprite rests at `x`, `y`, ... The current leg heads for it while `out`.
-    loop_far: Option<[f32; 8]>,
+    loop_far: Option<[f32; 9]>,
     /// A sequence of moves: the legs still to run after the current one, every leg of it, and whether the
     /// legs start over once the last is done (`loop` with `then`).
     queue: VecDeque<SpriteStep>,
@@ -234,7 +239,7 @@ pub struct SpriteView {
 }
 
 impl SpriteView {
-    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 3], fade: f32) -> SpriteView {
+    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 4], fade: f32) -> SpriteView {
         SpriteView {
             id: id.to_string(),
             src: src.to_string(),
@@ -251,10 +256,11 @@ impl SpriteView {
             alpha_to: fx[0],
             dx: fx[1],
             dy: fx[2],
+            blur: fx[3],
             hiding: false,
             fade,
             elapsed: 0.0,
-            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2]],
+            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3]],
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
@@ -300,21 +306,21 @@ impl SpriteView {
         plain.chain(layers).chain(self.previous_layers.iter().map(|(p, _)| p.as_str()))
     }
 
-    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale, alpha, dx, dy.
-    fn target(&self) -> [f32; 8] {
+    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
+    fn target(&self) -> [f32; 9] {
         match (&self.loop_far, self.out) {
             (Some(far), true) => *far,
             _ => self.rest(),
         }
     }
 
-    /// The resting pose: x, y, scale, xscale, yscale, alpha, dx, dy.
-    fn rest(&self) -> [f32; 8] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy]
+    /// The resting pose: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
+    fn rest(&self) -> [f32; 9] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur]
     }
 
     /// The values the sprite rests at for good: where a looping sequence's last leg ends, else `rest`.
-    fn home(&self) -> [f32; 8] {
+    fn home(&self) -> [f32; 9] {
         match self.legs.last() {
             Some(last) if self.cycle => last.values(),
             _ => self.rest(),
@@ -327,9 +333,10 @@ impl SpriteView {
     }
 
     /// Start a leg of a move from `from`; the sprite's own values become the leg's.
-    fn start_leg(&mut self, from: [f32; 8], to: &SpriteStep) {
+    fn start_leg(&mut self, from: [f32; 9], to: &SpriteStep) {
         self.from = from;
-        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy) = (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy);
+        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur) =
+            (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy, to.blur);
         self.move_time = to.time;
         self.move_elapsed = -to.wait;
         self.move_ease = to.ease;
@@ -347,7 +354,7 @@ impl SpriteView {
         self.loop_far.is_some() || self.cycle
     }
 
-    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale, 5 alpha, 6 dx, 7 dy) right now.
+    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale, 5 alpha, 6 dx, 7 dy, 8 blur) right now.
     fn now(&self, k: usize) -> f32 {
         let (from, to) = (self.from[k], self.target()[k]);
         from + (to - from) * self.move_progress()
@@ -365,7 +372,7 @@ impl SpriteView {
     }
 
     /// All the animated values right now.
-    fn here(&self) -> [f32; 8] {
+    fn here(&self) -> [f32; 9] {
         std::array::from_fn(|k| self.now(k))
     }
 
@@ -397,6 +404,11 @@ impl SpriteView {
     /// The pixel offset (of the 1920x1080 stage) right now.
     pub fn current_offset(&self) -> (f32, f32) {
         (self.now(6), self.now(7))
+    }
+
+    /// The blur radius in stage pixels right now.
+    pub fn current_blur(&self) -> f32 {
+        self.now(8).clamp(0.0, *quillstone_script::SPRITE_BLUR.end())
     }
 
     /// Fade progress as opacity: rising when showing, falling when hiding.
@@ -721,6 +733,8 @@ pub struct View {
     pub background: Option<Background>,
     /// The outgoing background while a crossfade is running.
     pub previous_background: Option<String>,
+    /// The blur the outgoing background had.
+    previous_blur: f32,
     pub sprites: Vec<SpriteView>,
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
@@ -775,6 +789,7 @@ impl View {
         View {
             background: None,
             previous_background: None,
+            previous_blur: 0.0,
             sprites: Vec::new(),
             images: Vec::new(),
             dialogue: None,
@@ -969,10 +984,10 @@ impl View {
                         self.box_fade.alpha = self.box_fade.target;
                     }
                 }
-                Cmd::SetBackground { src, fade, wipe, sound } => self.set_background(src, *fade, *wipe, *sound),
-                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, fade } => {
+                Cmd::SetBackground { src, fade, wipe, sound, blur } => self.set_background(src, *fade, *wipe, *sound, *blur),
+                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, fade } => {
                     let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip };
-                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy], *fade)
+                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy, *blur], *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
                 Cmd::LoopSprite { id, flip, to } => {
@@ -1094,15 +1109,18 @@ impl View {
         }
     }
 
-    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>, sound: bool) {
-        if let Some(b) = self.background.as_mut().filter(|b| b.src == src) {
-            b.sound = sound; // the same clip: it keeps playing, only its sound is turned on or off
+    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32) {
+        // The same clip keeps playing: only its sound is turned on or off, and a blur that changes
+        // crossfades from the old look when there is a `fade` (else it just changes).
+        if let Some(b) = self.background.as_mut().filter(|b| b.src == src && (b.blur == blur || fade <= 0.0)) {
+            (b.sound, b.blur) = (sound, blur);
             return;
         }
+        self.previous_blur = self.background.as_ref().map_or(0.0, |b| b.blur);
         self.previous_background = if fade > 0.0 { self.background.take().map(|b| b.src) } else { None };
         self.previous_bg_clock = self.bg_clock;
         self.bg_clock = 0.0;
-        self.background = Some(Background { src: src.to_string(), fade, wipe, sound, elapsed: 0.0 });
+        self.background = Some(Background { src: src.to_string(), fade, wipe, sound, blur, elapsed: 0.0 });
     }
 
     /// Start moving the camera from wherever it is now.
@@ -1205,7 +1223,7 @@ impl View {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 3], fade: f32) {
+    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 4], fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
@@ -1222,7 +1240,7 @@ impl View {
                     s.fade = fade;
                 }
                 // A new pose that leaves the resting values alone does not disturb a loop.
-                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2]];
+                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3]];
                 if (s.loop_far.is_some() || s.cycle) && s.home() == values {
                     s.z = z;
                     s.flip = look.flip;
@@ -1232,7 +1250,7 @@ impl View {
                 s.end_sequence();
                 s.out = false;
                 s.from = values;
-                (s.alpha_to, s.dx, s.dy) = (fx[0], fx[1], fx[2]);
+                (s.alpha_to, s.dx, s.dy, s.blur) = (fx[0], fx[1], fx[2], fx[3]);
                 s.x = x;
                 s.y = y;
                 s.z = z;
@@ -1428,8 +1446,9 @@ impl View {
         self.push_sprite_pictures(stage, s, image_size);
         let (dx, dy) = s.current_offset();
         for d in &mut stage[first..] {
-            if let Draw::Image { shade, dest, .. } = d {
+            if let Draw::Image { shade, dest, blur, .. } = d {
                 *shade = s.shade;
+                *blur = s.current_blur();
                 // The offset comes after placement, in pixels of the stage (VIRTUAL).
                 dest.x += dx;
                 dest.y += dy;
@@ -1515,15 +1534,17 @@ impl View {
         let mut stage = Vec::new();
         if let Some(prev) = &self.previous_background {
             push_backdrop(&mut stage, self.picture(prev, self.previous_bg_clock), screen, 1.0, image_size);
+            blur_all(&mut stage, self.previous_blur);
         }
         if let Some(bg) = &self.background {
             let mut picture = Vec::new();
             push_backdrop(&mut picture, self.picture(&bg.src, self.bg_clock), screen, bg.alpha(), image_size);
+            blur_all(&mut picture, bg.blur);
             for draw in picture {
                 match (draw, bg.revealed()) {
-                    (Draw::Image { src, dest, uv, alpha, shade }, Some(part)) => {
+                    (Draw::Image { src, dest, uv, alpha, shade, blur }, Some(part)) => {
                         if let Some((dest, uv)) = clip(dest, uv, part) {
-                            stage.push(Draw::Image { src, dest, uv, alpha, shade });
+                            stage.push(Draw::Image { src, dest, uv, alpha, shade, blur });
                         }
                     }
                     (Draw::Rect { rect, color }, Some(part)) => {
@@ -1555,9 +1576,11 @@ impl View {
         let sprites = stage.split_off(bg_end);
         let view = self.stage_transform();
         let place = |out: &mut Vec<Draw>, draw: Draw| match draw {
-            Draw::Image { src, dest, uv, alpha, shade } => {
-                if let Some((dest, uv)) = clip(view(dest), uv, screen) {
-                    out.push(Draw::Image { src, dest, uv, alpha, shade });
+            Draw::Image { src, dest, uv, alpha, shade, blur } => {
+                let zoomed = view(dest);
+                let blur = if dest.w > 0.0 { blur * zoomed.w / dest.w } else { blur }; // a zoomed-in camera blurs as much more
+                if let Some((dest, uv)) = clip(zoomed, uv, screen) {
+                    out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
                 }
             }
             // A solid colour fills the screen whatever the camera and shake do.
@@ -1624,7 +1647,7 @@ impl View {
         if let (Some(map), Some((spot, rect))) = (&self.imagemap, hovered_spot) {
             if spot.image.is_none() && !has_hover(spot) && image_size(&map.hover).is_some() {
                 if let Some((dest, uv)) = clip(screen, FULL_UV, rect) {
-                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: 1.0 });
+                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
                 }
             }
         }
@@ -1904,6 +1927,15 @@ pub fn choice_rects(theme: &Theme, count: usize) -> Vec<Rect> {
 }
 
 /// A background: its picture, or the whole screen in its colour for a `color:#rrggbb` one.
+/// Blur every picture in `draws` by `radius` stage pixels.
+fn blur_all(draws: &mut [Draw], radius: f32) {
+    for d in draws {
+        if let Draw::Image { blur, .. } = d {
+            *blur = radius;
+        }
+    }
+}
+
 fn push_backdrop(out: &mut Vec<Draw>, src: &str, screen: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
     match quillstone_script::bg_color(src) {
         Some([r, g, b]) => out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] }),
@@ -1924,7 +1956,7 @@ fn push_image(
     }
     if let Some(size) = image_size(src) {
         let p = place(size, container, fit);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: 1.0 });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: 1.0, blur: 0.0 });
     }
 }
 
@@ -1963,11 +1995,13 @@ fn push_sprite(
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { FULL_UV };
-    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha, shade: 1.0 });
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha, shade: 1.0, blur: 0.0 });
 }
 
 #[cfg(test)]
 mod anim_tests;
+#[cfg(test)]
+mod blur_tests;
 #[cfg(test)]
 mod highlight_tests;
 #[cfg(test)]
@@ -1984,15 +2018,15 @@ mod tests {
     }
 
     fn bg(src: &str, fade: f32) -> Cmd {
-        Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false }
+        Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur: 0.0 }
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade }
+        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade }
     }
 
     fn slide(id: &str, x: f32, scale: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y: 1.0, scale, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 }, queued: false }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y: 1.0, scale, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease, wait: 0.0 }, queued: false }
     }
 
     fn images(list: &[Draw]) -> Vec<(&str, Rect, Rect)> {
@@ -2056,6 +2090,23 @@ mod tests {
         assert!(runs.iter().any(|r| r.style.color == Some([1.0, 0.0, 0.0]) && &d.text[r.start..r.end] == "red"));
         v.apply(&[Cmd::ShowChoices { options: vec!["*Softly*".into()], locked: Vec::new() }]);
         assert!(v.draw_list(&sizes, None).iter().any(|d| matches!(d, Draw::Text { text, runs, .. } if text == "Softly" && !runs.is_empty())));
+    }
+
+    #[test]
+    fn ruby_and_underline_ride_with_the_dialogue_text_which_types_by_its_base() {
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "Is {ruby=かんじ}漢字{/ruby} {u}hard{/u}?")]);
+        let d = v.dialogue.as_ref().unwrap();
+        assert_eq!(d.text, "Is 漢字 hard?", "the reading is not a typed character");
+        assert!(d.runs.iter().any(|r| r.ruby.as_deref() == Some("かんじ") && &d.text[r.start..r.end] == "漢字"));
+        assert!(d.runs.iter().any(|r| r.style.underline && &d.text[r.start..r.end] == "hard"));
+        v.tick(0.5);
+        assert_eq!(v.dialogue.as_ref().unwrap().visible_chars(), 5);
+        let shown = v.draw_list(&|_| None, None).into_iter().find_map(|d| match d {
+            Draw::Text { visible_chars, runs, .. } => Some((visible_chars, runs.iter().any(|r| r.ruby.is_some()))),
+            _ => None,
+        });
+        assert_eq!(shown, Some((5, true)));
     }
 
     #[test]
@@ -2299,7 +2350,7 @@ mod tests {
     #[test]
     fn x_and_y_put_the_point_that_far_across_a_sprite_that_far_across_the_screen() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
@@ -2315,7 +2366,7 @@ mod tests {
     }
 
     fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }
     }
 
     fn drawn_order(v: &View) -> Vec<String> {
@@ -2374,7 +2425,7 @@ mod tests {
     }
 
     fn slide_y(id: &str, x: f32, y: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 }, queued: false }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease, wait: 0.0 }, queued: false }
     }
 
     #[test]
@@ -2455,7 +2506,7 @@ mod tests {
     fn a_wipe_reveals_the_new_background_from_one_side() {
         let mut v = View::new();
         v.apply(&[bg("a.png", 0.0)]);
-        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false }]);
+        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false, blur: 0.0 }]);
         v.tick(0.25);
         let list = v.draw_list(&all_1080p, None);
         let shown = images(&list);
@@ -3023,7 +3074,7 @@ mod tests {
         assert_eq!(v.hotspot_at(old.0, old.1), None, "its old place misses");
         assert_eq!(v.hotspot_at(drawn.x + drawn.w / 2.0, drawn.y + drawn.h / 2.0), Some(0));
         // scale, stretch and flip are the sprite's own
-        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }], false);
+        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }], false);
         v.tick(10.0);
         let (drawn, spot) = drawn_and_spot(&v, &size);
         assert_eq!(spot, drawn);
@@ -3056,7 +3107,7 @@ mod tests {
         let size = |s: &str| Some(if s == "body.png" { Size::new(500.0, 1000.0) } else { Size::new(100.0, 100.0) });
         let mut v = View::new();
         let layers = vec![("body".to_string(), "body.png".to_string()), ("face".to_string(), "face.png".to_string())];
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
         let drawn: Vec<Rect> = images(&v.draw_list(&size, None)).iter().map(|(_, r, _)| *r).collect();
         assert_eq!(drawn.len(), 2, "{drawn:?}");
         let (l, t) = (drawn.iter().map(|r| r.x).fold(f32::MAX, f32::min), drawn.iter().map(|r| r.y).fold(f32::MAX, f32::min));
@@ -3716,7 +3767,7 @@ mod tests {
     // ---- flip and per-axis scale ------------------------------------------------------------
 
     fn look_show(id: &str, flip: bool, xscale: f32, yscale: f32, x: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }
     }
 
     #[test]
@@ -3762,7 +3813,7 @@ mod tests {
         assert!(close(dest.y + dest.h, VIRTUAL.h), "still standing on the bottom edge");
         assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w)), "still placed by x on its new size");
         // multiplied with scale
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         assert!(close(images(&list)[0].1.w, 470.0) && close(images(&list)[0].1.h, 235.0));
     }
@@ -3771,7 +3822,7 @@ mod tests {
     fn a_move_animates_the_scales_and_switches_flip_at_its_start() {
         let mut v = View::new();
         v.apply(&[look_show("m", false, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
+        v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
         let size = |_: &str| Some(Size::new(500.0, 1000.0));
         let at = |v: &View| {
             let list = v.draw_list(&size, None);
@@ -3817,7 +3868,7 @@ mod tests {
     fn a_pose_change_crossfade_keeps_the_flip_for_both_poses() {
         let mut v = View::new();
         v.apply(&[look_show("m", true, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 1.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 1.0 }]);
         v.tick(0.5);
         let list = v.draw_list(&all_1080p, None);
         let flipped: Vec<_> = images(&list).into_iter().map(|(_, _, uv)| uv.w < 0.0).collect();

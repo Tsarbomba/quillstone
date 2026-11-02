@@ -1997,6 +1997,7 @@ dependencies = [
  "gilrs",
  "image",
  "kira",
+ "naga",
  "pollster",
  "quillstone-audio",
  "quillstone-render",

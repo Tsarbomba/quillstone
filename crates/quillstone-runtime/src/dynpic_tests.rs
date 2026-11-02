@@ -40,7 +40,7 @@ fn the_state_and_the_commands_carry_the_resolved_path() {
     assert_eq!(game.state().background.as_deref(), Some("bg/rooftop.png"));
     assert_eq!(game.state().sprites[0].src, "art/mika_happy.png", "a pose from a variable goes through the sprites template");
     assert_eq!(game.state().inline[0].0, "items/Alex.png", "dotted names work, inline images too");
-    assert!(first.contains(&Cmd::SetBackground { src: "bg/rooftop.png".into(), fade: 0.0, wipe: None, sound: false }));
+    assert!(first.contains(&Cmd::SetBackground { src: "bg/rooftop.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
     assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { src, .. } if src == "art/mika_happy.png")));
     assert!(first.iter().any(|c| matches!(c, Cmd::ShowImage { src, .. } if src == "items/Alex.png")));
     assert!(warnings(&first).is_empty());
@@ -49,7 +49,7 @@ fn the_state_and_the_commands_carry_the_resolved_path() {
     assert_eq!(game.state().sprites[0].src, "art/mika_sad.png");
     assert_eq!(game.state().sprites[0].x, 0.0, "the sprite kept its place");
     // A redraw is built from what the state holds, never from the pattern.
-    assert!(game.state().redraw().contains(&Cmd::SetBackground { src: "bg/night.png".into(), fade: 0.0, wipe: None, sound: false }));
+    assert!(game.state().redraw().contains(&Cmd::SetBackground { src: "bg/night.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn rollback_restores_the_picture_that_was_shown() {
     let back = game.rollback().unwrap();
     assert_eq!(game.state().background.as_deref(), Some("bg/rooftop.png"));
     assert_eq!(game.state().sprites[0].src, "art/mika_happy.png");
-    assert!(back.contains(&Cmd::SetBackground { src: "bg/rooftop.png".into(), fade: 0.0, wipe: None, sound: false }));
+    assert!(back.contains(&Cmd::SetBackground { src: "bg/rooftop.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
     assert!(warnings(&back).is_empty());
     // And rolling forward again shows the later picture.
     let fwd = game.roll_forward().unwrap();
@@ -96,7 +96,7 @@ fn an_unsafe_value_shows_nothing_and_warns_once_per_run() {
     next(&mut game);
     let cmds = next(&mut game); // place = "../x"
     assert_eq!(game.state().background.as_deref(), Some(MISSING_PICTURE));
-    assert!(cmds.contains(&Cmd::SetBackground { src: MISSING_PICTURE.into(), fade: 0.0, wipe: None, sound: false }));
+    assert!(cmds.contains(&Cmd::SetBackground { src: MISSING_PICTURE.into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
     let w = warnings(&cmds);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("{place}") && w[0].contains("bg/{place}.png") && !w[0].contains("../x"), "{}", w[0]);

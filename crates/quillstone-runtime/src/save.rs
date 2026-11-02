@@ -13,7 +13,7 @@ use std::collections::{HashSet, VecDeque};
 use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
-use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_OFFSET};
+use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_OFFSET};
 use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
@@ -508,13 +508,15 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     w(format!("rng {}", s.rng));
     if let Some(bg) = &s.background {
         // `sound` is appended only when set: saves from before have no such word.
-        w(format!("bg {}{}", q(bg), if s.background_sound { " sound" } else { "" }));
+        // `blur` likewise, with its radius after it.
+        let blur = if s.background_blur > 0.0 { format!(" blur {}", s.background_blur) } else { String::new() };
+        w(format!("bg {}{}{blur}", q(bg), if s.background_sound { " sound" } else { "" }));
     }
     for sp in &s.sprites {
         // New fields are appended: `y` and `z` came after the first four, then `flip`,
-        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`; an older save has fewer and loads with the defaults.
+        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`, then `blur`; an older save has fewer and loads with the defaults.
         w(format!(
-            "sprite {} {} {} {} {} {} {} {} {} {} {} {}",
+            "sprite {} {} {} {} {} {} {} {} {} {} {} {} {}",
             q(&sp.id),
             q(&sp.src),
             sp.x,
@@ -526,7 +528,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.yscale,
             sp.alpha,
             sp.dx,
-            sp.dy
+            sp.dy,
+            sp.blur
         ));
         // The layers of a layered sprite (its `src` is empty) are records of their own; a save
         // without them (every save from before layers) loads as plain sprites.
@@ -535,11 +538,11 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         }
         // A looping move is a record of its own, so older saves and readers are unaffected.
         if let Some(l) = &sp.looped {
-            w(format!("loop {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy));
+            w(format!("loop {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy, l.blur));
         }
         // So is each leg of a looping sequence.
         for l in &sp.cycle {
-            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait));
+            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur));
         }
     }
     if s.camera != Camera::default() {
@@ -769,10 +772,18 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             }
             "rng" => s.rng = num(arg(1)?, n)?,
             // A solid colour is `color:#rrggbb`; anything else is a file and must be inside the game folder.
-            "bg" if bg_color(arg(1)?).is_some() => s.background = Some(arg(1)?.to_string()),
             "bg" => {
-                s.background = Some(pic(1)?);
-                s.background_sound = t.get(2).is_some_and(|w| w == "sound");
+                if bg_color(arg(1)?).is_some() {
+                    s.background = Some(arg(1)?.to_string());
+                } else {
+                    s.background = Some(pic(1)?);
+                    s.background_sound = t.get(2).is_some_and(|w| w == "sound");
+                }
+                let blur_at = t.iter().skip(2).position(|w| w == "blur").map(|i| i + 3);
+                s.background_blur = match blur_at {
+                    Some(i) => sane(f(i)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0),
+                    None => 0.0,
+                };
             }
             "hud" => {
                 if s.hud.len() >= MAX_HUD_RECORDS {
@@ -804,6 +815,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 alpha: if t.len() > 10 { sane(f(10)?, 0.0, 1.0, 1.0) } else { 1.0 },
                 dx: if t.len() > 11 { sane(f(11)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
                 dy: if t.len() > 12 { sane(f(12)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
+                blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                 looped: None,
                 cycle: Vec::new(),
             }),
@@ -852,6 +864,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     alpha: if t.len() > 9 { sane(f(9)?, 0.0, 1.0, 1.0) } else { 1.0 },
                     dx: if t.len() > 10 { sane(f(10)?, lo, hi, 0.0) } else { 0.0 },
                     dy: if t.len() > 11 { sane(f(11)?, lo, hi, 0.0) } else { 0.0 },
+                    blur: if t.len() > 12 { sane(f(12)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                     time: sane(f(7)?, 0.02, MAX_LOOP_LEG, 1.0),
                     ease: Ease::parse(arg(8)?).unwrap_or_default(),
                     wait: 0.0,
@@ -879,6 +892,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     alpha: sane(f(7)?, 0.0, 1.0, 1.0),
                     dx: sane(f(8)?, lo, hi, 0.0),
                     dy: sane(f(9)?, lo, hi, 0.0),
+                    blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                     time: sane(f(10)?, 0.0, MAX_LOOP_LEG, 0.0),
                     ease: Ease::parse(arg(11)?).unwrap_or_default(),
                     wait: sane(f(12)?, 0.0, MAX_LOOP_LEG, 0.0),

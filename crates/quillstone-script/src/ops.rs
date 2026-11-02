@@ -1534,7 +1534,7 @@ impl Area {
 }
 
 /// One step of a `::move`: what to animate (`None` leaves it), over `time` seconds after waiting `wait`.
-/// `dx` / `dy` are pixels of the 1920x1080 stage; `alpha` is 0..1.
+/// `dx` / `dy` and `blur` are pixels of the 1920x1080 stage; `alpha` is 0..1.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MoveStep {
     pub x: Option<f32>,
@@ -1545,15 +1545,16 @@ pub struct MoveStep {
     pub alpha: Option<f32>,
     pub dx: Option<f32>,
     pub dy: Option<f32>,
+    pub blur: Option<f32>,
     pub time: f32,
     pub ease: Ease,
     pub wait: f32,
 }
 
 impl MoveStep {
-    /// x, y, scale, xscale, yscale, alpha, dx, dy: the values the step sets.
-    pub fn props(&self) -> [Option<f32>; 8] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy]
+    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur: the values the step sets.
+    pub fn props(&self) -> [Option<f32>; 9] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur]
     }
 
     /// Sets nothing and waits for nothing.
@@ -1571,8 +1572,8 @@ pub enum Op {
     Image { src: String, alt: String },
     /// Background. `src` may be a video (the backend plays it looped). With a
     /// `wipe`, the new picture is revealed from one side over `fade` seconds. `sound`: a video
-    /// background plays its own sound (otherwise it is muted).
-    Bg { src: String, fade: f32, wipe: Option<Wipe>, sound: bool },
+    /// background plays its own sound (otherwise it is muted). `blur`: how blurred it is, in stage pixels (0 sharp).
+    Bg { src: String, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32 },
     /// Show (or change the pose of) a sprite. `x` and `y` place it (see [`POSITION`]): the point that
     /// fraction across (down) the sprite is that fraction across (down) the screen, so 0..1 keeps it on
     /// screen; beyond that it slides off by whole screens. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
@@ -1600,6 +1601,8 @@ pub enum Op {
         alpha: Option<f32>,
         dx: Option<f32>,
         dy: Option<f32>,
+        /// Blur radius in stage pixels (0 sharp); keeps the current value when `None` (0 for a new sprite).
+        blur: Option<f32>,
         fade: f32,
     },
     /// Hide one sprite, or all of them when `id` is `None`.
@@ -1961,9 +1964,9 @@ mod tests {
 
     #[test]
     fn asset_kinds_follow_the_extension() {
-        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false };
+        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into(), volume: 1.0 }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

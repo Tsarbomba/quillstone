@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
-use quillstone_script::markup::plain;
+use quillstone_script::markup::{annotated, plain};
 use quillstone_script::markup::MAX_PAUSE;
 use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
 
@@ -1142,8 +1142,8 @@ fn print_cmds(cmds: &[Cmd]) {
     for cmd in cmds {
         match cmd {
             Cmd::ClearScene => println!("[scene cleared]"),
-            Cmd::Say { speaker: Some(who), text, .. } => println!("\n{who}: {}", plain(text)),
-            Cmd::Say { speaker: None, text, .. } => println!("\n  {}", plain(text)),
+            Cmd::Say { speaker: Some(who), text, .. } => println!("\n{who}: {}", annotated(text)),
+            Cmd::Say { speaker: None, text, .. } => println!("\n  {}", annotated(text)),
             Cmd::ShowImage { src, alt } => println!("[image: {src}] {alt}"),
             Cmd::SetBackground { src, .. } => println!("[background: {src}]"),
             Cmd::ShowSprite { id, src, layers, x, y, .. } => {
@@ -1197,9 +1197,9 @@ fn print_cmds(cmds: &[Cmd]) {
                 println!();
                 for (i, text) in options.iter().enumerate() {
                     match locked.get(i) {
-                        Some(Some(reason)) if !reason.is_empty() => println!("  {}. {}  [locked: {}]", i + 1, plain(text), plain(reason)),
-                        Some(Some(_)) => println!("  {}. {}  [locked]", i + 1, plain(text)),
-                        _ => println!("  {}. {}", i + 1, plain(text)),
+                        Some(Some(reason)) if !reason.is_empty() => println!("  {}. {}  [locked: {}]", i + 1, annotated(text), plain(reason)),
+                        Some(Some(_)) => println!("  {}. {}  [locked]", i + 1, annotated(text)),
+                        _ => println!("  {}. {}", i + 1, annotated(text)),
                     }
                 }
             }

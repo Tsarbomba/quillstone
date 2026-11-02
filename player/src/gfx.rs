@@ -21,10 +21,12 @@ struct Vertex {
     pos: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
+    /// Blur radius in window pixels.
+    blur: f32,
 }
 
-const VERTEX_ATTRS: [wgpu::VertexAttribute; 3] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
 
 const VERTS_PER_QUAD: usize = 6;
 const INITIAL_QUADS: usize = 256;
@@ -326,8 +328,8 @@ impl Gfx {
 
             let [l, t, r, b] = quad.rect;
             let [u0, v0, u1, v1] = quad.uv;
-            let color = quad.color;
-            let v = |x: f32, y: f32, u: f32, w: f32| Vertex { pos: [x, y], uv: [u, w], color };
+            let (color, blur) = (quad.color, quad.blur);
+            let v = |x: f32, y: f32, u: f32, w: f32| Vertex { pos: [x, y], uv: [u, w], color, blur };
             vertices.extend_from_slice(&[
                 v(l, t, u0, v0),
                 v(l, b, u0, v1),

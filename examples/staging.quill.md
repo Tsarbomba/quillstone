@@ -2,8 +2,8 @@
 title: Staging
 ---
 
-<!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{p}` and `{nw}`
-     text tags, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
+<!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{u}`, `{ruby}`, `{p}` and `{nw}`
+     text tags, `blur=` on the background and on a sprite, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
      one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
@@ -70,6 +70,15 @@ The screen is black, and this narration is still readable: the dialogue box is n
 ::tint{none fade=1}
 **Mika:** Gone again. A grey or sepia tint makes a decent flashback, but it only lays a colour over the picture: it does not drain it.
 
+<!-- `blur=` softens a picture; the radius is in pixels of the stage (0 to 64). A `::bg` is sharp unless it says `blur=`. -->
+::bg{src=assets/rooftop.png blur=16 fade=1}
+**Mika:** The background is blurred with `blur=16`, over a one second fade. It stays like that until the next `::bg`.
+
+::move{mika blur=12 time=0.6 then blur=0 time=0.6}
+**Mika:** And I just went out of focus and back with `blur=12` in a `::move`, and `blur=0` in the `then` step after it.
+
+::bg{src=assets/rooftop.png fade=1}
+
 **Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
 
 <!-- A CG moment: the dialogue box is hidden for a few seconds (a click goes on). The next line shows it again by itself. -->
@@ -77,6 +86,8 @@ The screen is black, and this narration is still readable: the dialogue box is n
 ::wait{time=3}
 
 **Mika:** A paragraph break starts a new line inside one line of dialogue.{p}It never waits, and it works with {color=#ffd98c}colour{/color} and {size=+14}size{/size} too.
+
+**Mika:** Words can be {u}underlined{/u}, and a word can carry a small reading above it, like {ruby=かんじ}漢字{/ruby}.
 
 **Mika:** Text can change size too: {size=+14}bigger{/size}, {size=24}smaller{/size}, and {size=+14}big {color=#ff8080}and red{/color}{/size} together.
 

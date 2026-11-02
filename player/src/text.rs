@@ -41,7 +41,7 @@ mod real {
     use super::*;
     use std::collections::HashMap;
 
-    use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight};
+    use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, UnderlineStyle, Weight};
     use quillstone_render::Align;
 
     /// Byte offset in `text` where each buffer line begins. Built from the buffer's own lines,
@@ -65,6 +65,27 @@ mod real {
         }
         starts
     }
+
+    /// Lay `color` over the premultiplied pixel at (`px`, `py`), if it is inside the `width` x `height` bitmap.
+    fn plot(acc: &mut [[f32; 4]], (width, height): (i32, i32), (px, py): (i32, i32), color: Color) {
+        if px < 0 || py < 0 || px >= width || py >= height {
+            return;
+        }
+        let cover = color.a() as f32 / 255.0;
+        let slot = &mut acc[(py * width + px) as usize];
+        let src = [color.r(), color.g(), color.b()].map(|c| c as f32 / 255.0 * cover);
+        for k in 0..3 {
+            slot[k] = src[k] + slot[k] * (1.0 - cover); // source-over
+        }
+        slot[3] = cover + slot[3] * (1.0 - cover);
+    }
+
+    /// A ruby reading is this fraction of the size of the text it sits on.
+    const RUBY_SCALE: f32 = 0.5;
+    /// Extra line height for a line with ruby, in text sizes (cosmic-text puts half of it above the text).
+    const RUBY_ROOM: f32 = 0.85;
+    /// How far above the baseline the reading's own baseline is, in text sizes (just above the tallest glyphs).
+    const RUBY_LIFT: f32 = 0.95;
 
     /// The strongest stamp of every lit pixel's disc of radius `r` on each pixel; `edges_only` skips
     /// pixels that cannot change the result (see [`add_outline`]).
@@ -202,7 +223,8 @@ mod real {
                     let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
                     // `{size=..}`: when any run has one, every run gets its own metrics, so a line is
                     // as tall as its largest run (a line of smaller text alone is shorter).
-                    let sized = job.runs.iter().any(|run| run.style.size.is_some());
+                    // A run with ruby also gets its own, taller line (room for the reading above).
+                    let sized = job.runs.iter().any(|run| run.style.size.is_some() || run.ruby.is_some());
                     let shrink = metrics.font_size / job.size_px.max(1.0); // when the text was made to fit its box
                     let spans = job.runs.iter().map(|run| {
                         let mut a = attrs.clone();
@@ -215,9 +237,13 @@ mod real {
                         if let Some([r, g, b]) = run.style.color {
                             a = a.color(Color::rgb(byte(r), byte(g), byte(b)));
                         }
+                        if run.style.underline {
+                            a = a.underline(UnderlineStyle::Single);
+                        }
                         if sized {
                             let px = (job.run_size_px(run) * shrink).max(1.0);
-                            a = a.metrics(Metrics::new(px, quillstone_render::line_height(px)));
+                            let room = if run.ruby.is_some() { (px * RUBY_ROOM).round() } else { 0.0 };
+                            a = a.metrics(Metrics::new(px, quillstone_render::line_height(px) + room));
                         }
                         (&job.text[run.start..run.end], a)
                     });
@@ -228,6 +254,33 @@ mod real {
             // text dirty, and shaping/layout happens here.
             buffer.shape_until_scroll(&mut self.fonts, false);
             buffer
+        }
+
+        /// A ruby reading of `px` size, centred on `centre` with its baseline at `baseline`.
+        fn draw_ruby(&mut self, acc: &mut [[f32; 4]], size: (i32, i32), text: &str, color: Color, (centre, baseline): (f32, i32), px: f32) {
+            let px = px.max(1.0);
+            let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(px, quillstone_render::line_height(px)));
+            {
+                let attrs = match &self.family {
+                    Some(name) => Attrs::new().family(Family::Name(name)),
+                    None => Attrs::new(),
+                };
+                let mut b = buffer.borrow_with(&mut self.fonts);
+                b.set_size(None, None);
+                b.set_text(text, &attrs, Shaping::Advanced, None);
+            }
+            buffer.shape_until_scroll(&mut self.fonts, false);
+            let wide = buffer.layout_runs().map(|run| run.line_w).fold(0.0, f32::max);
+            let left = (centre - wide / 2.0).max(0.0);
+            for run in buffer.layout_runs() {
+                for glyph in run.glyphs.iter() {
+                    let physical = glyph.physical((left, 0.0), 1.0);
+                    let color = glyph.color_opt.unwrap_or(color);
+                    self.swash.with_pixels(&mut self.fonts, physical.cache_key, color, |x, y, c| {
+                        plot(acc, size, (physical.x + x, baseline + physical.y + y), c);
+                    });
+                }
+            }
         }
 
         /// The typed part of a shaped text, in its colours.
@@ -263,6 +316,7 @@ mod real {
             }
 
             // Premultiplied colour and coverage per pixel (coloured runs differ).
+            let size = (width as i32, height as i32);
             let mut acc = std::mem::take(&mut self.acc);
             acc.clear();
             acc.resize((width * height) as usize, [0.0; 4]);
@@ -280,19 +334,50 @@ mod real {
                     let physical = glyph.physical((x_off, 0.0), 1.0);
                     let glyph_color = glyph.color_opt.unwrap_or(base);
                     self.swash.with_pixels(&mut self.fonts, physical.cache_key, glyph_color, |x, y, color| {
-                        let px = physical.x + x;
-                        let py = line_y + physical.y + y;
-                        if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
-                            return;
-                        }
-                        let cover = color.a() as f32 / 255.0;
-                        let slot = &mut acc[py as usize * width as usize + px as usize];
-                        let src = [color.r(), color.g(), color.b()].map(|c| c as f32 / 255.0 * cover);
-                        for k in 0..3 {
-                            slot[k] = src[k] + slot[k] * (1.0 - cover); // source-over
-                        }
-                        slot[3] = cover + slot[3] * (1.0 - cover);
+                        plot(&mut acc, size, (physical.x + x, line_y + physical.y + y), color);
                     });
+                }
+                // Underlines run under the typed part of each underlined stretch, in the stretch's colour.
+                let start = line_starts.get(run.line_i).copied().unwrap_or(0);
+                for span in run.decorations.iter().filter(|s| s.data.text_decoration.underline != UnderlineStyle::None) {
+                    let typed = run.glyphs[span.glyph_range.clone()].iter().filter(|g| start + g.start < byte_limit);
+                    let (left, right) = typed.fold((f32::MAX, f32::MIN), |(l, r), g| (l.min(g.x), r.max(g.x + g.w)));
+                    if left >= right {
+                        continue;
+                    }
+                    let m = span.data.underline_metrics;
+                    let thickness = (m.thickness * span.font_size).max(1.0).ceil() as i32;
+                    let (x0, y0) = ((left + x_off) as i32, (line_y as f32 - m.offset * span.font_size) as i32);
+                    let color = span.color_opt.unwrap_or(base);
+                    for y in y0..y0 + thickness {
+                        for x in x0..(right + x_off) as i32 {
+                            plot(&mut acc, size, (x, y), color);
+                        }
+                    }
+                }
+            }
+
+            // Ruby: each reading is centred over its text on the first line that holds any of it, and
+            // appears with the first typed character of that text.
+            for tr in job.runs.iter().filter(|r| r.ruby.is_some()) {
+                let found = buffer.layout_runs().find_map(|run| {
+                    let start = line_starts.get(run.line_i).copied().unwrap_or(0);
+                    let base: Vec<_> = run.glyphs.iter().filter(|g| (tr.start..tr.end).contains(&(start + g.start))).collect();
+                    let first = base.iter().map(|g| start + g.start).min()?;
+                    let (left, right) = base.iter().fold((f32::MAX, f32::MIN), |(l, r), g| (l.min(g.x), r.max(g.x + g.w)));
+                    let x_off = match job.align {
+                        Align::Center | Align::CenterX => ((width as f32 - run.line_w) / 2.0).max(0.0),
+                        Align::Left => 0.0,
+                        Align::Right => (width as f32 - run.line_w).max(0.0),
+                    };
+                    let px = base[0].font_size;
+                    Some((first, x_off + (left + right) / 2.0, (run.line_y + y_off - RUBY_LIFT * px).round() as i32, px * RUBY_SCALE))
+                });
+                if let (Some((first, centre, baseline, px)), Some(reading)) = (found, &tr.ruby) {
+                    let [r, g, b] = tr.style.color.map_or([r, g, b], |c| c.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+                    if first < byte_limit {
+                        self.draw_ruby(&mut acc, size, reading, Color::rgba(r, g, b, 255), (centre, baseline), px);
+                    }
                 }
             }
 
@@ -441,6 +526,73 @@ mod tests {
         let blank = renderer.rasterize(&job("{size=+30}A{p}{p}B{/size}")).unwrap();
         let filled = renderer.rasterize(&job("{size=+30}A{p}x{p}B{/size}")).unwrap();
         assert_eq!(bottom(&blank), bottom(&filled), "the empty line has the sized height");
+    }
+
+    /// Row of the highest lit pixel.
+    fn top(bitmap: &Bitmap) -> usize {
+        let rows = bitmap.rgba.chunks(bitmap.width as usize * 4);
+        rows.enumerate().find(|(_, row)| row.chunks(4).any(|p| p[3] > 0)).map_or(usize::MAX, |(y, _)| y)
+    }
+
+    fn lit(b: &Bitmap) -> usize {
+        b.rgba.chunks(4).filter(|p| p[3] > 0).count()
+    }
+
+    #[test]
+    fn an_underline_is_a_line_under_the_typed_part_of_its_text_only() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): underline test did not run");
+            return;
+        }
+        let plain = renderer.rasterize(&job("Hello there")).unwrap();
+        let under = renderer.rasterize(&job("Hello {u}there{/u}")).unwrap();
+        assert_ne!(plain.rgba, under.rgba);
+        assert!(lit(&under) > lit(&plain) + 100, "a line about the width of the word: {} vs {}", lit(&under), lit(&plain));
+        // the longest unbroken stretch of lit pixels in one row: letters leave gaps, a line does not
+        let run = |b: &Bitmap| {
+            let row_runs = b.rgba.chunks(b.width as usize * 4).map(|row| {
+                row.chunks(4).fold((0, 0), |(best, now), p| if p[3] > 0 { (best.max(now + 1), now + 1) } else { (best, 0) }).0
+            });
+            row_runs.max().unwrap_or(0)
+        };
+        assert!(run(&plain) < 40 && run(&under) > 80, "the underline is an unbroken row: {} vs {}", run(&under), run(&plain));
+        // not typed yet: no line (the pixels are those of the same text without the tag)
+        let before = renderer.rasterize(&typed("Hello {u}there{/u}", 6)).unwrap();
+        assert_eq!(before.rgba, renderer.rasterize(&typed("Hello there", 6)).unwrap().rgba);
+        let half = renderer.rasterize(&typed("Hello {u}there{/u}", 8)).unwrap();
+        assert!(run(&half) > run(&before) && run(&half) < run(&under), "two letters typed: a short line");
+        // the underline takes the stretch's colour
+        let red = renderer.rasterize(&job("{color=#ff0000}{u}____{/u}{/color}")).unwrap();
+        assert!(red.rgba.chunks(4).filter(|p| p[3] > 0).all(|p| p[..3] == [255, 0, 0]));
+    }
+
+    #[test]
+    fn ruby_sits_above_its_text_makes_only_its_own_line_taller_and_types_with_its_base() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): ruby test did not run");
+            return;
+        }
+        // The same layout with a reading that draws nothing (a zero-width space), to tell the reading's pixels apart.
+        let (real, blank) = ("ab {ruby=xy}cd{/ruby}", "ab {ruby=\u{200B}}cd{/ruby}");
+        let with = renderer.rasterize(&job(real)).unwrap();
+        let without = renderer.rasterize(&job(blank)).unwrap();
+        assert_eq!(bottom(&with), bottom(&without), "the same layout");
+        assert!(top(&with) + 10 < top(&without), "the reading is above everything else: {} vs {}", top(&with), top(&without));
+        assert!(lit(&with) > lit(&without));
+        let left_edge = |b: &Bitmap| (0..b.width as usize).find(|&x| (0..b.height as usize).any(|y| b.rgba[(y * b.width as usize + x) * 4 + 3] > 0));
+        assert_eq!(left_edge(&with), left_edge(&without), "the reading is within the text, over `cd`");
+        // a line without ruby keeps its normal height
+        let no_ruby = renderer.rasterize(&job("ab cd{p}ef")).unwrap();
+        let ruby_second = renderer.rasterize(&job("ab cd{p}{ruby=xy}ef{/ruby}")).unwrap();
+        assert!(bottom(&ruby_second) > bottom(&no_ruby), "a line with ruby is taller");
+        let ruby_first = renderer.rasterize(&job("{ruby=xy}ab{/ruby} cd{p}ef")).unwrap();
+        assert!(bottom(&ruby_first) > bottom(&no_ruby));
+        // typing: the reading shows up with the first character of its text, not before
+        let mut at = |tagged: &str, n| renderer.rasterize(&typed(tagged, n)).unwrap().rgba;
+        assert_eq!(at(real, 3), at(blank, 3), "only `ab ` is typed");
+        assert_ne!(at(real, 4), at(blank, 4), "`c` is typed");
     }
 
     #[test]

@@ -192,11 +192,27 @@ Inside lines and choice texts:
 | `First.{p}Second.` | a line break inside the line (a paragraph break); it doesn't wait. A `{p}` at the very start or end of a line is ignored. Not allowed in a choice text |
 | `Well...{w=0.5} no.` | the typing pauses for half a second there (a click skips it; over 10 seconds `check` warns of a typo, and 3600 is the most) |
 | `Hold on.{nw}` | "no wait": once the line has finished typing the story goes on by itself, without a click or the auto-forward delay. It must be the very last thing in a dialogue line (not a choice text) |
+| `{u}underlined{/u}` | underlined text, in the text's colour (they nest, and mix with the other tags) |
+| `{ruby=かんじ}漢字{/ruby}` | a small **reading** above the words (furigana, a gloss: see below) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
+
+**Ruby text.** `{ruby=reading}words{/ruby}` draws `reading` at half the size, centred above `words`. Only plain
+words go between the tags (bold, colour, size and underline tags go **around** the whole `{ruby=..}...{/ruby}`, and
+ruby can't nest), and the reading is plain text too. The reading types out with its first word, and a line that has
+ruby is taller by the room it needs; the others keep their height. If the words wrap over two lines the reading stays
+over the first piece, and a reading wider than its words may overhang its neighbours (it never moves the text).
+Like `{p}` and `{nw}`, `{u}` is a tag, so a variable named `u` can't be shown with `{u}`. Example:
+
+```
+**Mika:** Do you know the word {ruby=かんじ}漢字{/ruby}? It means {u}Chinese character{/u}.
+```
+
+The history shows the words alone (`漢字`), and the text-mode `quillstone run` writes the reading in brackets
+after them: `漢字(かんじ)`.
 
 A `{` with no `}` after it is just a brace, and an unknown `{name}` is left as
 written. `{p}` and `{nw}` are tags, so a variable with one of those names can't be
-shown with `{p}` / `{nw}`. Mistakes (an unclosed `**` or `{size=..}`, a size outside 8
+shown with `{p}` / `{nw}`. Mistakes (an unclosed `**`, `{size=..}`, `{u}` or `{ruby=..}`, an empty reading, a size outside 8
 to 200, `{nw}` in the middle of a line, `{p}` in a choice, an unknown tag like
 `{huge=40}`) are errors with the line number. A variable's value always shows as it is, even if it
 contains `*` or braces. The history and save previews show the words without
@@ -378,6 +394,7 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
 | `::bg{anim=rain fade=1}` | An **animation** (see "Frame animations" below) as the background, instead of `src=`/`color=`: exactly one of the three. `fade`, `wipe` and `through` work as for a picture. |
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
+| `::bg{src=room.png blur=12 fade=1}` | **Blur** the background: `blur` is a radius in pixels of the 1920x1080 stage, 0 (sharp, the default) to 64. A `::bg` is sharp unless it says `blur=`, so to blur or sharpen the picture that is already there, give `::bg` again with the same `src` and a new `blur`: with a `fade` the two looks crossfade, without one it changes at once. Works for pictures and animations (a video background blurs too, but more roughly; a solid colour has nothing to blur). The blur is part of the scene: rollback, saves and hot reload keep it. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
 | `::character{id=hero name="{hero.name}" color=#9cc8ff}` | The name may hold `{variable}`s of declared variables (an unknown one is an error). The name plate, History and the text-mode output show the variable's value at that line, so a character the player named (see `::input`) is shown by the typed name, and earlier lines keep the name they had after a rollback or a variable change. What the player typed never becomes formatting. Write `**hero:**` or the name text exactly as declared, `**{hero.name}:**`, before a line. In a translation file the `@ Speaker` context for such a character is the name as written in the script (`@ {hero.name}`), and the name's own entry is `> {hero.name}`. Auto-voice file names do not depend on the variable. |
@@ -387,6 +404,7 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::show{mika happy y=0.5 z=2}` | `y`: `top` `center` `bottom`, a number or `N%`, placed like `x` (a new sprite stands on the bottom, `y=bottom`). The screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps its `x` and `y` placement, worked out again for its new size. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
 | `::show{mika happy alpha=0.5 xoffset=40 yoffset=-20}` | `alpha` (0 to 1, default 1) makes the sprite see-through, on top of `fade=` (which fades it in and out by itself); `xoffset` and `yoffset` shift it by pixels of the 1920x1080 stage (negative: left, up) **after** `x` and `y` have placed it, so `x=left xoffset=-100` puts it 100 px past the edge. Each is from -3840 to 3840 and kept like the other values when a later `::show` doesn't give it. `::move` can animate all three (see "Move sequences" below). |
+| `::show{mika happy blur=8}` | **Blur** the sprite: a radius in pixels of the 1920x1080 stage (0 sharp, the default; at most 64), whatever the sprite's size. The blur stays inside the picture's own frame (nothing glows past it), so leave a few transparent pixels round the art of a sprite you blur: a figure that touches the edge of its file stays sharp there. Kept like the other values when a later `::show` doesn't give it. `::move` can animate it (see "Move sequences" below). Use it for a dreamlike flashback, or to put a character out of focus while another speaks. |
 | `::show{src=assets/ghost.png id=ghost x=center}` | A sprite that isn't a character. |
 | `::show{mika anim=blink x=20%}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`x`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
@@ -395,6 +413,7 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
 | `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `x`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
 | `::move{mika alpha=0 xoffset=-60 time=0.5}` | Fade the sprite to an opacity and/or slide it by pixels, as `::show` sets them (`alpha` 0 to 1; `xoffset`, `yoffset` in stage pixels). The sprite stays on stage at `alpha=0`: `::hide` it when it should be gone. |
+| `::move{mika blur=16 time=0.8}` | Go out of focus (or `blur=0`: back to sharp) over the time, as `::show{blur=}` sets it. Blur costs a few extra texture reads per screen pixel it covers, so it is fine for a sprite or a background but not worth covering the whole screen with many blurred layers. |
 | `::move{eve x=30% time=1 then x=70% time=1 wait=0.5 then alpha=0 time=0.5}` | A **sequence**: steps that run one after another (see "Move sequences" below). |
 | `::move{mika y=0.85 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` place the view over the stage the same way as a sprite (`left` `center` `right`, `top` `center` `bottom`, a number or `N%`, but only 0 to 100%: the view never leaves the stage). Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
@@ -689,18 +708,19 @@ Put `then` between the steps of one `::move` and they run one after another, in 
 ```
 
 - Each step is a small `::move` of its own: it names what it animates (`x`, `y`, `scale`, `xscale`, `yscale`,
-  `alpha`, `xoffset`, `yoffset`), a `time` (default 0.5) and an `ease`, and starts from where the step before it ended.
+  `alpha`, `xoffset`, `yoffset`, `blur`), a `time` (default 0.5) and an `ease`, and starts from where the step before it ended.
   A property a step leaves out stays as it is. Separate steps with spaces and `then` (commas are not separators).
 - `wait=` (seconds, default 0) waits **before** the step starts; a step may be just a pause (`then wait=2`). A `wait=`
   on the first step delays the whole move.
 - `flip` belongs in the first step (it switches at the start, as in any move). At most 32 steps.
 - `alpha` runs from 0 (invisible) to 1; it multiplies with the fade of `::show{fade=}` and `::hide{fade=}`. `xoffset` and
-  `yoffset` are pixels of the 1920x1080 stage added after the placement of `x` and `y`.
-- A new `::move` (or a `::show` that sets position, size, `alpha` or an offset, or `::hide`) cuts a running sequence short; the sprite
+  `yoffset` are pixels of the 1920x1080 stage added after the placement of `x` and `y`. `blur` is the radius in stage pixels
+  (0 to 64): `::move{eve blur=20 time=1 then blur=0 time=1}` goes out of focus and back.
+- A new `::move` (or a `::show` that sets position, size, `alpha`, an offset or `blur`, or `::hide`) cuts a running sequence short; the sprite
   glides on from where it is. Without `then` a move is the one-step sequence it always was.
 - It never waits: the next line shows at once. The values are part of the scene: a rollback, a redraw (changing the
   language, loading a save) and skip mode put the sprite at the **end** of the sequence with no animation, the same as for any move.
-  A save also keeps the sprite's `alpha` and offsets (an older save loads with 1 and 0).
+  A save also keeps the sprite's `alpha`, offsets and `blur` (an older save loads with 1, 0 and 0).
 
 ## Looping moves
 
@@ -715,7 +735,7 @@ Add `loop` to a `::move` and the sprite keeps going back and forth:
   then to the target again, for ever. `time` is the time of **one leg** (it must be above
   0), and `ease` applies to each leg.
 - `loop` alone and `loop=pingpong` mean the same; there is no other kind of loop.
-- It animates any mix of `x`, `y`, `scale`, `xscale`, `yscale`, `alpha`, `xoffset` and `yoffset`; a move that changes
+- It animates any mix of `x`, `y`, `scale`, `xscale`, `yscale`, `alpha`, `xoffset`, `yoffset` and `blur`; a move that changes
   none of them (only `flip`, say) can't loop. `flip` may be added: it switches at the start.
 - With `then` steps, `loop` (put it anywhere, the end reads best) repeats **all** the steps, in order, for ever:
   `::move{lamp alpha=0.4 time=1 then alpha=1 time=1 wait=0.5 loop}` pulses a lamp. The repeat starts from
@@ -1711,9 +1731,10 @@ and descriptions, `::hud` texts, `::input` prompts, `::notify` texts, the title,
 `music_room:`. A text with no translation shows in the script's language, without any message. The
 game's own buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.
 
-Keep every `{name}` and every text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}` and their
-closing tags) in the translation, as often as in the original: `{name}` values are put in after the
-translation is chosen, and `{nw}` must still end the line. A tag's own value (a colour, a pause) may differ.
+Keep every `{name}` and every text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{ruby=..}` and
+their closing tags) in the translation, as often as in the original: `{name}` values are put in after the
+translation is chosen, and `{nw}` must still end the line. A tag's own value (a colour, a pause, a ruby reading) may
+differ, so a translation can give its own reading.
 The theme's `font` has to cover the characters the translations use.
 
 `quillstone check` reads every translation file: syntax errors with `file:line`, a translation that

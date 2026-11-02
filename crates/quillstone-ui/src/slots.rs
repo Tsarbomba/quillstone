@@ -260,10 +260,10 @@ pub fn thumbnail(scene: &View, image_size: &dyn Fn(&str) -> Option<Size>, into: 
     let scale = into.w / VIRTUAL.w;
     let mut out = vec![Draw::Rect { rect: into, color: [0.0, 0.0, 0.0, 1.0] }];
     for draw in scene.draw_list(image_size, None) {
-        if let Draw::Image { src, dest, uv, alpha, shade } = draw {
+        if let Draw::Image { src, dest, uv, alpha, shade, blur } = draw {
             let dest = Rect::new(into.x + dest.x * scale, into.y + dest.y * scale, dest.w * scale, dest.h * scale);
             if let Some((dest, uv)) = clip(dest, uv, into) {
-                out.push(Draw::Image { src, dest, uv, alpha, shade });
+                out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
             }
         }
     }

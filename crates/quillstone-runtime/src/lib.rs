@@ -21,6 +21,8 @@ mod review3_tests;
 #[cfg(test)]
 mod anim_tests;
 #[cfg(test)]
+mod blur_tests;
+#[cfg(test)]
 mod seq_tests;
 #[cfg(test)]
 mod dynname_tests;
@@ -83,8 +85,8 @@ pub enum Cmd {
     /// An inline image shown with the next waiting line.
     ShowImage { src: String, alt: String },
     /// `src` may be a video file (a looping video background). With a `wipe`,
-    /// `fade` is how long the wipe takes. `sound`: the video plays its own sound.
-    SetBackground { src: String, fade: f32, wipe: Option<Wipe>, sound: bool },
+    /// `fade` is how long the wipe takes. `sound`: the video plays its own sound. `blur`: radius in stage pixels.
+    SetBackground { src: String, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32 },
     /// Show a sprite or change its pose. `x` is 0..1 across the screen; `y` is
     /// where its bottom edge is, as a fraction of the screen height (1 is the
     /// bottom of the screen); `z` orders sprites (higher is in front). `flip`
@@ -106,6 +108,8 @@ pub enum Cmd {
         alpha: f32,
         dx: f32,
         dy: f32,
+        /// Blur radius in stage pixels (0 is sharp).
+        blur: f32,
         fade: f32,
     },
     HideSprite { id: String, fade: f32 },
@@ -340,6 +344,8 @@ pub struct SpriteState {
     pub alpha: f32,
     pub dx: f32,
     pub dy: f32,
+    /// Blur radius in stage pixels (0 is sharp).
+    pub blur: f32,
     /// A looping move: the sprite oscillates between the values above (where it
     /// starts) and these. The oscillation's phase is not state: it restarts on a redraw.
     pub looped: Option<SpriteStep>,
@@ -360,22 +366,23 @@ pub struct SpriteStep {
     pub alpha: f32,
     pub dx: f32,
     pub dy: f32,
+    pub blur: f32,
     pub time: f32,
     pub ease: Ease,
     pub wait: f32,
 }
 
 impl SpriteStep {
-    /// x, y, scale, xscale, yscale, alpha, dx, dy.
-    pub fn values(&self) -> [f32; 8] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy]
+    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur.
+    pub fn values(&self) -> [f32; 9] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur]
     }
 }
 
 impl SpriteState {
     /// The values the sprite rests at, as an instant step (a move that puts the view there and ends loops).
     fn rest_step(&self) -> SpriteStep {
-        SpriteStep { x: self.x, y: self.y, scale: self.scale, xscale: self.xscale, yscale: self.yscale, alpha: self.alpha, dx: self.dx, dy: self.dy, time: 0.0, ease: Ease::Linear, wait: 0.0 }
+        SpriteStep { x: self.x, y: self.y, scale: self.scale, xscale: self.xscale, yscale: self.yscale, alpha: self.alpha, dx: self.dx, dy: self.dy, blur: self.blur, time: 0.0, ease: Ease::Linear, wait: 0.0 }
     }
 
     /// A move step with what it leaves out taken from the sprite's values.
@@ -389,6 +396,7 @@ impl SpriteState {
             alpha: m.alpha.unwrap_or(self.alpha),
             dx: m.dx.unwrap_or(self.dx),
             dy: m.dy.unwrap_or(self.dy),
+            blur: m.blur.unwrap_or(self.blur),
             time: m.time,
             ease: m.ease,
             wait: m.wait,
@@ -396,7 +404,8 @@ impl SpriteState {
     }
 
     fn set_values(&mut self, to: &SpriteStep) {
-        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy) = (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy);
+        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur) =
+            (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy, to.blur);
     }
 
     fn loop_cmd(&self, l: &SpriteStep) -> Cmd {
@@ -472,6 +481,8 @@ pub struct State {
     pub background: Option<String>,
     /// The video background plays its sound (`::bg{.. sound}`).
     pub background_sound: bool,
+    /// How blurred the background is, in stage pixels (`::bg{.. blur=8}`).
+    pub background_blur: f32,
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
     /// The ambient particles (`::particles`): only their settings. Where each one is
@@ -525,6 +536,7 @@ impl State {
             stack: Vec::new(),
             background: None,
             background_sound: false,
+            background_blur: 0.0,
             sprites: Vec::new(),
             camera: Camera::default(),
             particles: None,
@@ -548,7 +560,7 @@ impl State {
     pub fn redraw(&self) -> Vec<Cmd> {
         let mut out = vec![Cmd::ClearScene];
         if let Some(src) = &self.background {
-            out.push(Cmd::SetBackground { src: src.clone(), fade: 0.0, wipe: None, sound: self.background_sound });
+            out.push(Cmd::SetBackground { src: src.clone(), fade: 0.0, wipe: None, sound: self.background_sound, blur: self.background_blur });
         }
         if self.camera != Camera::default() {
             out.push(Cmd::Camera { camera: self.camera, time: 0.0, ease: Ease::Linear });
@@ -583,6 +595,7 @@ impl State {
                 alpha: s.alpha,
                 dx: s.dx,
                 dy: s.dy,
+                blur: s.blur,
                 fade: 0.0,
             });
             if let Some(l) = &s.looped {
@@ -1039,7 +1052,7 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
             match brace_end(rest) {
                 Some(end) => {
                     let name = rest[1..end].trim();
-                    match quillstone_script::get_var(vars, name).filter(|_| !matches!(name, "nw" | "p")) {
+                    match quillstone_script::get_var(vars, name).filter(|_| !matches!(name, "nw" | "p" | "u")) {
                         Some(v) => out.push_str(&quillstone_script::markup::escape(&v.to_string())),
                         None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` / `{p}` text tags
                     }
@@ -1287,11 +1300,12 @@ pub(crate) fn step_traced(
                 out.push(Cmd::ShowImage { src, alt: alt.clone() });
                 state.pc += 1;
             }
-            Op::Bg { src, fade, wipe, sound } => {
+            Op::Bg { src, fade, wipe, sound, blur } => {
                 let src = &picture_path(src, &state.vars, &mut out);
                 state.background = Some(src.clone());
                 state.background_sound = *sound;
-                out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe, sound: *sound });
+                state.background_blur = *blur;
+                out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe, sound: *sound, blur: *blur });
                 state.pc += 1;
             }
             Op::Hud { elem, fade } => {
@@ -1313,7 +1327,7 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Show { id, src, layers: layers_given, x: x_given, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, alpha: alpha_given, dx: dx_given, dy: dy_given, fade } => {
+            Op::Show { id, src, layers: layers_given, x: x_given, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, alpha: alpha_given, dx: dx_given, dy: dy_given, blur: blur_given, fade } => {
                 let (y, scale) = (*y_given, *scale_given);
                 let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
@@ -1328,17 +1342,18 @@ pub(crate) fn step_traced(
                 let flip = flip.or(existing.map(|i| state.sprites[i].flip)).unwrap_or(false);
                 let alpha = alpha_given.or(existing.map(|i| state.sprites[i].alpha)).unwrap_or(1.0);
                 let (dx, dy) = (dx_given.or(existing.map(|i| state.sprites[i].dx)).unwrap_or(0.0), dy_given.or(existing.map(|i| state.sprites[i].dy)).unwrap_or(0.0));
-                // A loop goes on through a new pose, unless the show sets position, size or opacity values.
-                let sets_values = [x_given, y_given, scale_given, xscale_given, yscale_given, alpha_given, dx_given, dy_given].iter().any(|v| v.is_some());
+                let blur = blur_given.or(existing.map(|i| state.sprites[i].blur)).unwrap_or(0.0);
+                // A loop goes on through a new pose, unless the show sets position, size, opacity or blur values.
+                let sets_values = [x_given, y_given, scale_given, xscale_given, yscale_given, alpha_given, dx_given, dy_given, blur_given].iter().any(|v| v.is_some());
                 let old_loop = existing.and_then(|i| state.sprites[i].looped);
                 let old_cycle = existing.map(|i| state.sprites[i].cycle.clone()).unwrap_or_default();
                 let (looped, cycle) = if sets_values { (None, Vec::new()) } else { (old_loop, old_cycle.clone()) };
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, looped, cycle };
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, looped, cycle };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, fade: *fade });
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, fade: *fade });
                 if let (Some(i), true) = (existing, (old_loop.is_some() || !old_cycle.is_empty()) && sets_values) {
                     // The view would keep a loop whose resting values did not change: end it.
                     out.push(Cmd::MoveSprite { id: id.clone(), flip, to: state.sprites[i].rest_step(), queued: false });
@@ -1724,7 +1739,7 @@ vars: { trust: 0 }
         let p = parse(STORY).unwrap();
         let mut s = State::new(&p);
         let cmds = step(&mut s, &p, None);
-        assert_eq!(cmds, vec![Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false }, say("A", "First.")]);
+        assert_eq!(cmds, vec![Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }, say("A", "First.")]);
         assert_eq!(s.background.as_deref(), Some("a.webp"));
     }
 
@@ -1784,7 +1799,7 @@ vars: { trust: 0 }
             redraw,
             vec![
                 Cmd::ClearScene,
-                Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false },
+                Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 },
                 Cmd::StopMusic { fade: 0.0 },
                 say("A", "First."), // the line stays under the choices
                 Cmd::ShowChoices { options: vec!["Good".into(), "Bad".into()], locked: vec![None; 2] },
@@ -2075,7 +2090,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -2084,9 +2099,9 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }
         );
-        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 1.0, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.0, ease: Ease::InOut, wait: 0.0 }, queued: false });
+        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 1.0, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.0, ease: Ease::InOut, wait: 0.0 }, queued: false });
         assert_eq!(game.state().sprites.len(), 1);
         assert_eq!(game.state().sprites[0].x, 1.0);
 
@@ -2100,7 +2115,7 @@ vars: { trust: 0 }
         let src = "::show{src=s.png id=s x=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), flip: false, to: SpriteStep { x: 0.0, y: 1.0, scale: 1.2, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 0.5, ease: Ease::InOut, wait: 0.0 }, queued: false }));
+        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), flip: false, to: SpriteStep { x: 0.0, y: 1.0, scale: 1.2, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 0.5, ease: Ease::InOut, wait: 0.0 }, queued: false }));
         let camera = Camera { zoom: 1.5, x: 0.2, y: 0.5 };
         assert!(first.contains(&Cmd::Camera { camera, time: 3.0, ease: Ease::InOut }), "keeps the zoom it had");
         assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::Both }));
@@ -2131,7 +2146,7 @@ vars: { trust: 0 }
         assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "b" && *y == 1.0 && *z == 0)), "new: bottom edge, z 0");
         let two = game.input(Input::Advance);
         assert!(matches!(&two[0], Cmd::ShowSprite { y, z, .. } if *y == 0.9 && *z == 2), "a new pose keeps y and z");
-        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), flip: false, to: SpriteStep { x: 0.5, y: 0.7, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 0.3, ease: Ease::Out, wait: 0.0 }, queued: false });
+        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), flip: false, to: SpriteStep { x: 0.5, y: 0.7, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 0.3, ease: Ease::Out, wait: 0.0 }, queued: false });
         assert_eq!(game.state().sprites[0].y, 0.7);
         let three = game.input(Input::Advance);
         assert!(matches!(&three[0], Cmd::MoveSprite { to, .. } if to.x == 0.0 && to.y == 0.7), "an `at` move keeps y");
@@ -2159,7 +2174,7 @@ vars: { trust: 0 }
         // a save from before y and z: the sprite record stops after the scale (and has no alpha or offsets)
         let old: String = text
             .lines()
-            .map(|l| if l.starts_with("sprite ") { l.rsplitn(9, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(10, ' ').last().unwrap().to_string() } else { l.to_string() })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
@@ -2239,7 +2254,7 @@ vars: { trust: 0 }
         game.rollback(); // back to "two": everything about that moment returns
         let again = game.state().redraw();
         assert_eq!(again[0], Cmd::ClearScene);
-        assert!(again.contains(&Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false }));
+        assert!(again.contains(&Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
         assert!(again.iter().any(|c| matches!(c, Cmd::ShowSprite { id, fade, .. } if id == "s" && *fade == 0.0)));
         assert!(again.contains(&Cmd::PlayMusic { src: "m.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 0.5 }));
         assert!(again.contains(&Cmd::ShowImage { src: "pic.png".into(), alt: "alt".into() }));
@@ -2283,7 +2298,7 @@ vars: { trust: 0 }
     fn a_video_clears_the_line_and_backgrounds_may_be_video_files() {
         let p = parse("::bg{src=loop.webm}\n**A:** x\n::video{src=c.webm}\n**A:** y\n").unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::SetBackground { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false }));
+        assert!(first.contains(&Cmd::SetBackground { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
         game.input(Input::Advance);
         assert!(game.state().line.is_none());
     }
@@ -2309,6 +2324,13 @@ vars: { trust: 0 }
         assert_eq!(interpolate("\\{a}", &vars), "\\{a}", "the escape is the markup's to resolve");
         assert_eq!(quillstone_script::markup::plain(&interpolate("\\{a} {a}", &vars)), "{a} 1");
         assert_eq!(interpolate("é{a}é", &vars), "é1é");
+    }
+
+    #[test]
+    fn the_underline_tag_is_not_a_variable() {
+        let mut vars = Vars::new();
+        vars.insert("u".into(), Value::Int(7));
+        assert_eq!(interpolate("{u}x{/u} {ruby=u}y{/ruby}", &vars), "{u}x{/u} {ruby=u}y{/ruby}");
     }
 
     #[test]
@@ -2392,7 +2414,7 @@ vars: { trust: 0 }
     fn a_hotspot_screen_keeps_the_background_and_a_once_hotspot_goes_away() {
         let p = parse(MAP).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::SetBackground { src: "map.png".into(), fade: 0.0, wipe: None, sound: false }));
+        assert!(first.contains(&Cmd::SetBackground { src: "map.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
         game.input(Input::Choose(0));
         let back = game.input(Input::Advance);
         assert_eq!(labels(&spots(&back).unwrap()), ["Key", "Leave"]);
@@ -3194,7 +3216,7 @@ vars: { amount: 99 }
         assert_eq!(cmds, vec![Cmd::FadeOut { time: 0.5, color: [0.0; 3] }, Cmd::Wait { seconds: 0.5 }]);
         assert_eq!(game.state().background.as_deref(), Some("a.png"), "the picture changes after the fade out");
         let cmds = game.input(Input::Advance);
-        assert_eq!(cmds[0], Cmd::SetBackground { src: "b.png".into(), fade: 0.0, wipe: None, sound: false });
+        assert_eq!(cmds[0], Cmd::SetBackground { src: "b.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 });
         assert_eq!(cmds[1], Cmd::FadeIn { time: 0.5 });
         assert!(matches!(cmds[2], Cmd::Say { .. }));
         assert_eq!(game.state().cover, None);
@@ -3241,7 +3263,7 @@ vars: { amount: 99 }
         // a save from before these existed: the record stops after `z`
         let old: String = text
             .lines()
-            .map(|l| if l.starts_with("sprite ") { l.rsplitn(7, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(8, ' ').last().unwrap().to_string() } else { l.to_string() })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";

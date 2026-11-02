@@ -25,19 +25,19 @@ fn big(_: &str) -> Option<Size> {
 }
 
 fn show(id: &str, src: &str, x: f32, y: f32, scale: f32, fade: f32) -> Cmd {
-    Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade }
+    Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade }
 }
 
 fn bg(src: &str, fade: f32) -> Cmd {
-    Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false }
+    Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur: 0.0 }
 }
 
 fn bob(id: &str, y: f32, time: f32, ease: Ease) -> Cmd {
-    Cmd::LoopSprite { id: id.into(), flip: false, to: SpriteStep { x: 0.5, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 } }
+    Cmd::LoopSprite { id: id.into(), flip: false, to: SpriteStep { x: 0.5, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease, wait: 0.0 } }
 }
 
 fn plain_move(id: &str, x: f32, y: f32, time: f32) -> Cmd {
-    Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease: Ease::Linear, wait: 0.0 }, queued: false }
+    Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease: Ease::Linear, wait: 0.0 }, queued: false }
 }
 
 /// The picture files drawn, back to front.
@@ -139,7 +139,7 @@ fn a_background_animation_plays_with_fades_and_wipes() {
     // A wipe reveals the animated picture, which keeps playing underneath it.
     let mut w = view();
     w.apply(&[bg("plain.png", 0.0)]);
-    w.apply(&[Cmd::SetBackground { src: "anim:bgloop".into(), fade: 2.0, wipe: Some(quillstone_script::Wipe::Right), sound: false }]);
+    w.apply(&[Cmd::SetBackground { src: "anim:bgloop".into(), fade: 2.0, wipe: Some(quillstone_script::Wipe::Right), sound: false, blur: 0.0 }]);
     w.tick(1.0);
     let list = files(&w);
     assert_eq!(list, ["plain.png", "day.png"]);
@@ -290,7 +290,7 @@ fn a_loop_animates_every_value_together() {
     let mut v = view();
     v.apply(&[
         show("m", "x.png", 0.25, 1.0, 1.0, 0.0),
-        Cmd::LoopSprite { id: "m".into(), flip: false, to: SpriteStep { x: 0.75, y: 0.9, scale: 1.2, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, time: 2.0, ease: Ease::Linear, wait: 0.0 } },
+        Cmd::LoopSprite { id: "m".into(), flip: false, to: SpriteStep { x: 0.75, y: 0.9, scale: 1.2, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 2.0, ease: Ease::Linear, wait: 0.0 } },
     ]);
     v.tick(1.0);
     let s = &v.sprites[0];
@@ -409,7 +409,7 @@ fn a_looping_view_needs_ticks_until_it_stops() {
 // ---- move sequences, alpha and pixel offsets ----------------------------------------------------
 
 fn leg(x: f32, alpha: f32, time: f32, wait: f32, queued: bool) -> Cmd {
-    let to = SpriteStep { x, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha, dx: 0.0, dy: 0.0, time, ease: Ease::Linear, wait };
+    let to = SpriteStep { x, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha, dx: 0.0, dy: 0.0, blur: 0.0, time, ease: Ease::Linear, wait };
     Cmd::MoveSprite { id: "m".into(), flip: false, to, queued }
 }
 
@@ -464,7 +464,7 @@ fn a_looping_sequence_goes_round_and_a_new_move_ends_it() {
 #[test]
 fn alpha_dims_the_sprite_and_a_pixel_offset_shifts_it_after_placement() {
     let mut v = view();
-    v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 0.5, dx: 30.0, dy: -10.0, fade: 0.0 }]);
+    v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 0.5, dx: 30.0, dy: -10.0, blur: 0.0, fade: 0.0 }]);
     let dest = |v: &View| match v.draw_list(&big, None).into_iter().find_map(|d| if let Draw::Image { dest, alpha, .. } = d { Some((dest, alpha)) } else { None }) {
         Some(d) => d,
         None => panic!("no sprite drawn"),
@@ -476,7 +476,7 @@ fn alpha_dims_the_sprite_and_a_pixel_offset_shifts_it_after_placement() {
     let (base, full) = dest(&w);
     assert!(close(full, 1.0) && close(plain.x - base.x, 30.0) && close(plain.y - base.y, -10.0));
     // the move animates them
-    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 130.0, dy: -10.0, time: 2.0, ease: Ease::Linear, wait: 0.0 };
+    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 130.0, dy: -10.0, blur: 0.0, time: 2.0, ease: Ease::Linear, wait: 0.0 };
     v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: false, to, queued: false }]);
     v.tick(1.0);
     let (half, alpha) = dest(&v);

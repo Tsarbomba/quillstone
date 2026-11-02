@@ -29,6 +29,8 @@ pub struct Quad {
     pub uv: [f32; 4],
     /// Multiplied with the texture; alpha is straight (not premultiplied).
     pub color: [f32; 4],
+    /// Blur radius in window pixels (0 is sharp): the backend averages the picture over a disc this wide.
+    pub blur: f32,
 }
 
 /// Text to rasterize, in window pixels (already scaled to the letterboxed screen).
@@ -73,7 +75,7 @@ impl TextJob {
     pub fn layout_key(&self) -> String {
         let mut key = format!("{}|{}x{}|{:.2}@{:.4}|{:?}", self.text, self.rect.w, self.rect.h, self.size_px, self.scale, self.align);
         for run in &self.runs {
-            key.push_str(&format!("|{}-{}:{:?}", run.start, run.end, run.style));
+            key.push_str(&format!("|{}-{}:{:?}:{:?}", run.start, run.end, run.style, run.ruby));
         }
         key
     }
@@ -98,17 +100,19 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
 
     for draw in draws {
         match draw {
-            Draw::Image { src, dest, uv, alpha, shade } => frame.quads.push(Quad {
+            Draw::Image { src, dest, uv, alpha, shade, blur } => frame.quads.push(Quad {
                 texture: Tex::Image(src.clone()),
                 rect: to_ndc(to_window(*dest, lb), window),
                 uv: [uv.x, uv.y, uv.x + uv.w, uv.y + uv.h],
                 color: [*shade, *shade, *shade, *alpha],
+                blur: blur.max(0.0) * scale,
             }),
             Draw::Rect { rect, color } => frame.quads.push(Quad {
                 texture: Tex::Solid,
                 rect: to_ndc(to_window(*rect, lb), window),
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: *color,
+                blur: 0.0,
             }),
             Draw::Text { text, runs, visible_chars, rect, size, color, align, outline } => {
                 let total = text.chars().count();
@@ -125,6 +129,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                     rect: to_ndc(rect, window),
                     uv: [0.0, 0.0, 1.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
+                    blur: 0.0,
                 });
                 frame.texts.push(TextJob {
                     text: text.clone(),
@@ -152,7 +157,7 @@ mod tests {
     }
 
     fn image(src: &str, uv: Rect, alpha: f32) -> Draw {
-        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: 1.0 }
+        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: 1.0, blur: 0.0 }
     }
 
     fn text(s: &str, visible: usize, rect: Rect) -> Draw {
@@ -169,6 +174,30 @@ mod tests {
     }
 
     const UNIT: Rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+
+    #[test]
+    fn blur_is_scaled_to_window_pixels() {
+        let blurred = Draw::Image { src: "a.png".into(), dest: screen(), uv: UNIT, alpha: 1.0, shade: 1.0, blur: 10.0 };
+        assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(1920.0, 1080.0)).quads[0].blur, 10.0);
+        assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(960.0, 540.0)).quads[0].blur, 5.0);
+        let f = build_frame(&[image("a.png", UNIT, 1.0), Draw::Rect { rect: screen(), color: [0.0; 4] }], Size::new(960.0, 540.0));
+        assert!(f.quads.iter().all(|q| q.blur == 0.0), "sharp unless asked");
+    }
+
+    #[test]
+    fn a_ruby_or_underline_changes_the_layout_key() {
+        let job = |tagged: &str| {
+            let r = quillstone_script::markup::rich(tagged);
+            let d = Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect: screen(), size: 38.0, color: [1.0; 4], align: Align::Left, outline: None };
+            build_frame(&[d], Size::new(1920.0, 1080.0)).texts.remove(0)
+        };
+        let keys = ["ab", "{ruby=x}ab{/ruby}", "{ruby=y}ab{/ruby}", "{u}ab{/u}"].map(|t| job(t).layout_key());
+        for i in 0..keys.len() {
+            for j in 0..i {
+                assert_ne!(keys[i], keys[j], "{i} vs {j}");
+            }
+        }
+    }
 
     #[test]
     fn full_screen_image_in_a_16_9_window_covers_clip_space() {
