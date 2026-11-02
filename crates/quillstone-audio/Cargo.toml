@@ -3,6 +3,9 @@ name = "quillstone-audio"
 description = "Music, sound effect and voice logic for Quillstone (backend-neutral)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [dependencies]
 quillstone-runtime.workspace = true

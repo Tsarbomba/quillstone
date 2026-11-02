@@ -3,6 +3,9 @@ name = "quillstone"
 description = "The Quillstone visual novel engine: app binary and CLI"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [dependencies]
 quillstone-script.workspace = true

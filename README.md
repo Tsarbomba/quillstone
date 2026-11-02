@@ -4,6 +4,9 @@ A lightweight but powerful visual novel engine written in Rust, and an
 alternative to the established VN engines. It is small, starts fast, and keeps
 a game's story, look and assets organised in a few plain files.
 
+**Status:** early and under active development. It is built and tested on Windows;
+Linux and macOS are less tested. The script language may still change.
+
 **What stands out**
 - **Scripts are plain markdown.** A scene reads like a screenplay: headings are
   scenes, `**Name:** text` is a line, and a short `::command` stages it. No
@@ -294,3 +297,22 @@ The `examples/` folder has a script for each area:
 The renderer is split on purpose: `View` turns runtime commands into a plain
 list of `Draw` items (images, rectangles, text), and a backend only has to
 execute that list. A video frame is one more textured quad.
+
+## Contributing
+
+Bug reports and feature ideas are welcome as GitHub issues. Pull requests aren't
+being taken yet.
+
+## License
+
+The engine is licensed under either of [MIT](LICENSE-MIT) or
+[Apache License 2.0](LICENSE-APACHE), at your option. Unless you say otherwise, any
+contribution you submit is licensed the same way.
+
+The example scripts and their art, sounds and video in `examples/` are released into the
+public domain under [CC0 1.0](examples/LICENSE-CC0): use them for anything.
+
+The Quillstone logo (`qs_logo.jpg`) is not covered by these licenses; all rights reserved.
+
+Packaged games include FFmpeg, which is licensed under the LGPL; `quillstone package`
+adds its license notice to every game.

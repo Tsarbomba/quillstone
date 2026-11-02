@@ -4,6 +4,9 @@ default-run = "quillstone-player"
 description = "Windowed Quillstone player (winit + wgpu)"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Tsarbomba/quillstone"
+publish = false
 
 # Standalone on purpose: the engine crates in ../crates have no dependencies and
 # build anywhere; this one needs the GPU stack. To fold it into the main workspace,

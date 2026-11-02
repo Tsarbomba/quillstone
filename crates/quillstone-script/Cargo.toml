@@ -3,5 +3,8 @@ name = "quillstone-script"
 description = "Parser and compiler for Quillstone's markdown-based script format"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [dependencies]
