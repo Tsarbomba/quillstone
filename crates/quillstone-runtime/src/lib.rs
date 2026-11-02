@@ -2869,6 +2869,37 @@ vars: { amount: 99 }
     }
 
     #[test]
+    fn a_call_without_a_defaulted_argument_stores_the_default() {
+        let src = "---\nvars: { power: 99 }\n---\n::call{to=hit who=\"A\"}\n::call{to=hit who=\"B\" power=7}\n::call{hit who=\"C\"}\n::end\n\
+                   # hit(power=1, who, tag=\"x\")\n**A:** {who} {power} {tag}\n::return\n";
+        let p = parse(src).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first, vec![say("A", "A 1 x")]);
+        assert_eq!(game.input(Input::Advance), vec![say("A", "B 7 x")]);
+        assert_eq!(game.input(Input::Advance), vec![say("A", "C 1 x")], "the default is back after a call that gave another value");
+        game.rollback();
+        assert_eq!(game.state().vars["power"], int(7), "ordinary variables: rollback restores them");
+    }
+
+    #[test]
+    fn a_list_is_set_and_cleared_by_assignment_and_rolled_back() {
+        let src = "---\nvars: { bag: [a, b] }\n---\n::set{bag = [\"key\", \"map\"]}\n**A:** {bag}\n\
+                   # c\n::choice\n- [Empty](#d){bag = []}\n::\n# d\n**A:** [{bag}]\n";
+        let p = parse(src).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first, vec![say("A", "key, map")]);
+        assert_eq!(game.state().vars["bag"], Value::List(vec!["key".into(), "map".into()]));
+        game.input(Input::Advance);
+        let cmds = game.input(Input::Choose(0));
+        assert_eq!(cmds.last(), Some(&say("A", "[]")));
+        assert_eq!(game.state().vars["bag"], Value::List(vec![]));
+        let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(loaded.state().vars["bag"], Value::List(vec![]), "saved");
+        game.rollback();
+        assert_eq!(game.state().vars["bag"], Value::List(vec!["key".into(), "map".into()]));
+    }
+
+    #[test]
     fn arguments_read_variables_and_are_all_worked_out_before_any_is_stored() {
         let src = "---\nvars: { a: 1, b: 2 }\n---\n::call{to=f a=b b=a}\n::end\n# f(a, b)\n**X:** {a} {b}\n::return\n";
         let p = parse(src).unwrap();

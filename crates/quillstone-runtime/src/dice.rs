@@ -1,4 +1,4 @@
-//! `random(lo, hi)`: determinism, rollback, saves; dotted variable names through the runtime.
+//! `random(lo, hi)` and `pick(..)`: determinism, rollback, saves; dotted variable names through the runtime.
 
 use quillstone_script::{parse, Value, DEFAULT_SEED};
 
@@ -269,4 +269,27 @@ fn a_roll_in_the_stats_demo_cannot_be_rerolled_by_going_back() {
     s.input(Input::Choose(i));
     s.input(Input::Advance); // the dice are thrown after the first line
     assert_eq!(int(&s, "roll"), roll);
+}
+
+#[test]
+fn pick_uses_the_same_seeded_generator_and_rollback_repeats_it() {
+    let src = "---\nvars: { bag: [a, b, c, d], r: \"\", e: \"\", empty: [] }\n---\n\
+        ::set{r = pick(bag)}\nP1: {r}\n::set{r = pick(\"x\", \"y\", \"z\")}\nP2: {r}\n::set{e = pick(empty)}\nP3: [{e}]\n";
+    let p = parse(src).unwrap();
+    let go = |seed| {
+        let (mut s, first) = Session::start_seeded(&p, Default::default(), seed);
+        let lines = vec![said(&first).unwrap(), said(&s.input(Input::Advance)).unwrap(), said(&s.input(Input::Advance)).unwrap()];
+        (s, lines)
+    };
+    let (mut s, lines) = go(11);
+    assert_eq!(lines, go(11).1, "same seed, same picks");
+    assert!(["P1: a", "P1: b", "P1: c", "P1: d"].contains(&lines[0].as_str()), "{lines:?}");
+    assert!(["P2: x", "P2: y", "P2: z"].contains(&lines[1].as_str()), "{lines:?}");
+    assert_eq!(lines[2], "P3: []", "an empty list picks nothing");
+    assert!((0..40).any(|seed| go(seed).1[0] != lines[0]), "another seed can pick another item");
+    s.rollback();
+    assert_eq!(said(&s.input(Input::Advance)), Some(lines[2].clone()));
+    s.rollback();
+    s.rollback();
+    assert_eq!(said(&s.input(Input::Advance)), Some(lines[1].clone()), "going back doesn't buy a re-pick");
 }

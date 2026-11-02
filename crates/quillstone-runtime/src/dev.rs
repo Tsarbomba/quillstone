@@ -2,7 +2,7 @@
 //! `--dev` console) and start a new game at a label with chosen variables (`--start`, `--set`).
 //! Nothing here is reachable by a player of a released game unless the host turns it on.
 
-use quillstone_script::{parse_effect, slug, Program, Value};
+use quillstone_script::{parse_effect, slug, Expr, Program, Value};
 
 use crate::{refresh_pending, refused_write, run_effect, step, Cmd, Input, Session, State};
 
@@ -77,8 +77,8 @@ fn set_checked(program: &Program, state: &mut State, src: &str) -> Result<(), St
     run_effect(&effect, &mut vars, &mut rng, &mut None, &mut Vec::new());
     let now = vars.get(var);
     match (&was, now) {
-        (Some(Value::List(_)), _) if matches!(effect.op, quillstone_script::AssignOp::Set) => {
-            return Err(format!("`{var}` is a list: change it with `{var} += \"item\"` or `{var} -= \"item\"`"));
+        (Some(Value::List(_)), _) if matches!(effect.op, quillstone_script::AssignOp::Set) && !matches!(effect.value, Expr::Lit(Value::List(_))) => {
+            return Err(format!("`{var}` is a list: change it with `{var} += \"item\"`, `{var} -= \"item\"` or `{var} = [\"a\", \"b\"]`"));
         }
         (Some(w), Some(n)) if std::mem::discriminant(w) != std::mem::discriminant(n) => {
             return Err(format!("`{var}` holds {}; it can't be changed to {}", kind(w), kind(n)));

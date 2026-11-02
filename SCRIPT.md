@@ -164,7 +164,11 @@ The key turns in the lock.
 - A bare list can't be used as a value: `copy = inventory`, `x += inventory` and
   `::call{to=heal who=inventory}` are errors (they would be silently ignored). Ask
   with `inventory has "key"` instead.
-- Lists change only with `+=` and `-=` of text. `inventory = "x"`, adding a
+- A list changes with `+=` and `-=` of text, or is set whole with a list literal:
+  `::set{inventory = []}` empties it, `::set{inventory = ["key", "map"]}` replaces its
+  items (text, quoted or bare, repeats dropped, in the same places `+=` works: a
+  `::set`, a choice or hotspot effect). Only a list declared in `vars:` or `persistent:`
+  can be set this way; `gold = []` is an error. `inventory = "x"`, adding a
   number, and `has` on a variable that isn't a declared list are errors that
   `quillstone check` reports with their line. (A computed value that isn't text
   is ignored at run time.) In `::jump{if=...}` write quotes inside as
@@ -272,6 +276,7 @@ fails: results stop at the ends of that range instead of wrapping around.
 | `abs(x)` | the value without its sign |
 | `count(list)` | how many items the list variable holds (`count(inventory)`) |
 | `random(lo, hi)` | a whole number from `lo` to `hi`, both included (see below) |
+| `pick(a, b, ...)` or `pick(list)` | one of the values, or one item of the list variable, chosen at random (see below) |
 
 `count` needs a list variable declared in `vars:` or `persistent:`. An unknown function
 or a wrong number of arguments is an error that names the line and lists these
@@ -344,6 +349,25 @@ run` and `quillstone test` use one fixed seed.)
 `quillstone test` treats a roll as a branch: a range of up to 12 values is tried value by
 value, and a wider one at its lowest, middle and highest value, with a warning that the
 rest were not tried.
+
+### Picking at random
+
+`pick("a", "b", "c")` returns one of its values at random, and `pick(inventory)` one
+item of a list variable (text items; numbers work too: `pick(1, 5, 10)`). It follows
+the rules of `random`: only on the right of an assignment, never in a condition or
+inside another `random` or `pick`, drawn from the same seed, so rollback, roll forward
+and saves repeat the pick. An empty list picks `""`.
+
+````markdown
+::set{who = pick("Mika", "Ren", "Sora")}
+::set{found = pick(loot)}
+::if{found == ""}
+Nothing left.
+::endif
+````
+
+`quillstone test` tries each value of a `pick` as a branch, like a roll (up to 12
+values; a longer list is tried at its first, middle and last item, with a warning).
 
 ## Scene
 
@@ -1014,7 +1038,7 @@ A label can take values from the `::call` that runs it:
 ````
 
 - Write the parameter names after the label in parentheses, separated by commas:
-  letters, digits and `_`, with no defaults and no types. The label is still `heal`
+  letters, digits and `_`, with no types (a default value is optional, see below). The label is still `heal`
   (the heading text before the parenthesis), so `seen(heal)` works as usual.
 - **The rule for parentheses in a heading.** The `(` must touch the name *and* the
   heading must end with `)` for it to be a parameter list. `# Round 1(a)` and
@@ -1030,6 +1054,22 @@ A label can take values from the `::call` that runs it:
   `true`/`false`, a variable, a calculation in parentheses (`n=(gold - 5)`), or a parenthesised
   condition. Spaces are fine inside quotes or parentheses (`who="Mika Tanaka"`,
   `ok=(gold >= 5 and met)`); elsewhere a space starts the next argument.
+- **Default values.** A parameter may be written `name=value` with a literal: a number,
+  `"text"` in quotes, or `true`/`false` (not an expression or a variable). A `::call`
+  that leaves it out gets the default; one that gives it overrides it. A parameter
+  without a default must be given.
+
+  ````markdown
+  ::call{to=hit target="Ren"}
+  ::call{to=hit target="Ren" magnitude=3}
+
+  # hit(magnitude=1, target)
+  {target} takes {magnitude}.
+  ::set{hp -= magnitude}
+  ::return
+  ````
+
+  A default is stored like a passed value, so the label cannot tell the two apart.
 - **Parameters are ordinary variables.** At the call, every value is worked out
   first (so `a=b b=a` swaps them) and then stored into the variables of those names
   before the label runs. Nothing is restored at `::return`: they keep their values
@@ -1037,7 +1077,7 @@ A label can take values from the `::call` that runs it:
   line shows them. Pick parameter names that don't clash with variables the story
   uses for something else. A list variable can't be a parameter.
 - A label with parameters can only be reached by `::call`. `quillstone check`
-  reports, with the line: a call that leaves out a parameter, passes one the
+  reports, with the line: a call that leaves out a parameter that has no default, passes one the
   label doesn't have (a misspelling shows up as both), or passes arguments to a label
   without parameters; a `::jump`, choice link or hotspot link to it; and a label
   above it that runs on into it. End the label above with `::jump`, `::return` or
@@ -2004,7 +2044,7 @@ For trying a story, not for players: a game you ship has none of this unless it 
   - `get <var>`, or just the name: the value (`gold = 5`, text in quotes, lists in brackets).
   - `vars [prefix]`: the variables, sorted, at most 10 (the rest is counted; a prefix narrows it).
   - `set <var> = <expression>`: the same assignment `::set` takes (`=`, `+=`, `-=`, `random(1,6)` too). A variable the
-    script declares keeps its kind: a number can't become text, and a list changes only with `+=` / `-=`.
+    script declares keeps its kind: a number can't become text, and a list changes with `+=` / `-=` or `= [..]`.
     The line on screen is redrawn with the new value.
   - `jump <label>`: go there now, as `::jump` does: variables, call stack and the picture stay. It is an ordinary
     step, so rollback comes back to where you were.

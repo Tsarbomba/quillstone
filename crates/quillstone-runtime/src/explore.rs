@@ -688,7 +688,7 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
                 }
             },
             // arithmetic and calls: whatever `seen:` counts they read feed a computed value
-            Expr::Bin(..) | Expr::Neg(_) | Expr::Func(..) | Expr::Random(..) => uncapped(caps, e),
+            Expr::Bin(..) | Expr::Neg(_) | Expr::Func(..) | Expr::Random(..) | Expr::Pick(_) => uncapped(caps, e),
             Expr::Lit(_) | Expr::Var(_) | Expr::Count(_) => {}
         }
     }
@@ -1280,6 +1280,29 @@ mod tests {
         assert!(r.warnings.is_empty() && r.situations == 12 * 2);
         let r = test("---\nvars: { roll: 0 }\n---\n::set{roll = random(1, 13)}\nRolled {roll}.\n::end\n");
         assert_eq!((r.warnings.len(), r.situations), (1, 3 * 2));
+    }
+
+    #[test]
+    fn a_pick_is_a_branch_per_value_and_an_omitted_default_is_followed() {
+        let src = "---\nvars: { bag: [a, b, c], r: \"\" }\n---\n::set{r = pick(bag)}\n::if{r == \"c\"}\nOnly c.\n::endif\n::set{r = pick(\"x\", \"y\")}\n\
+                   ::if{r == \"y\"}\nOnly y.\n::endif\nDone.\n::end\n";
+        let r = test(src);
+        assert!(r.errors.is_empty() && r.warnings.is_empty(), "{:?}", messages(&r.warnings));
+        let src = "---\nvars: { p: 0 }\n---\n::call{to=hit}\n::call{to=hit power=5}\n::end\n# hit(power=2)\n::if{power == 2}\nDefault.\n::elif{power == 5}\n\
+                   Given.\n::else\nNever.\n::endif\n::return\n";
+        let r = test(src);
+        assert!(r.errors.is_empty(), "{:?}", messages(&r.errors));
+        assert!(r.warnings.iter().any(|w| w.message.contains("Never")), "only the impossible line is unreachable: {:?}", messages(&r.warnings));
+        assert!(!r.warnings.iter().any(|w| w.message.contains("Default") || w.message.contains("Given")), "{:?}", messages(&r.warnings));
+    }
+
+    #[test]
+    fn setting_a_list_changes_what_the_tester_follows() {
+        let src = "---\nvars: { bag: [key] }\n---\n::set{bag = []}\n::if{bag has \"key\"}\nStill.\n::endif\n::set{bag = [\"key\"]}\n\
+                   ::if{bag has \"key\"}\nBack.\n::endif\n::end\n";
+        let r = test(src);
+        let w = messages(&r.warnings);
+        assert!(r.errors.is_empty() && w.len() == 1 && w[0].contains("Still"), "{w:?}");
     }
 
     #[test]

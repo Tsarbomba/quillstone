@@ -349,11 +349,18 @@ impl Parser {
             match self.program.labels.get(&f.label).copied() {
                 Some(target) => {
                     let params = self.program.params.get(&f.label).cloned();
+                    let defaults = self.program.param_defaults.get(&f.label).cloned().unwrap_or_default();
                     let mut problems = Vec::new();
                     match &mut self.program.ops[f.op] {
                         Op::Call { target: t, args } => {
                             *t = target;
-                            problems = call_problems(&f.label, params.as_deref(), args);
+                            problems = call_problems(&f.label, params.as_deref(), &defaults, args);
+                            // a parameter left out takes its default: the call passes it like any other
+                            for (k, v) in defaults {
+                                if !args.iter().any(|(a, _)| *a == k) {
+                                    args.push((k, Expr::Lit(v)));
+                                }
+                            }
                         }
                         Op::Jump { target: t, .. } => {
                             *t = target;
@@ -897,24 +904,30 @@ impl Parser {
     fn not_a_list_value(&self, e: &Expr, place: &str) -> Result<(), String> {
         match e {
             Expr::Var(name) if self.is_list(name) => Err(format!(
-                "`{name}` is a list and can't be {place}: lists change only by `+=`/`-=` of an item, and \
-                 `{name} has \"item\"` asks about one"
+                "`{name}` is a list and can't be {place}: lists change by `+=`/`-=` of an item or `= [..]`, \
+                 `{name} has \"item\"` asks about one, and `pick({name})` takes one"
             )),
             _ => Ok(()),
         }
     }
 
-    /// A declared list changes only by `+=` / `-=` of text.
+    /// A declared list changes by `+=` / `-=` of text, or `=` a list literal (`[]`, `["key", "map"]`).
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
         self.check_expr(&e.value)?;
         self.not_a_list_value(&e.value, "the right side of an assignment")?;
         self.check_parts(&e.var)?;
+        if matches!(e.value, Expr::Lit(Value::List(_))) && !self.is_list(&e.var) {
+            return Err(format!("`{}` is not a list, so `= [..]` can't set it (declare it in the front matter: `vars: {{ {0}: [] }}`)", e.var));
+        }
         if !self.is_list(&e.var) {
             return Ok(());
         }
         let var = &e.var;
         match (e.op, &e.value) {
-            (AssignOp::Set, _) => Err(format!("`{var}` is a list: change it with `{var} += \"item\"` or `{var} -= \"item\"`, not `=`")),
+            (AssignOp::Set, Expr::Lit(Value::List(_))) => Ok(()),
+            (AssignOp::Set, _) => Err(format!(
+                "`{var}` is a list: change it with `{var} += \"item\"`, `{var} -= \"item\"` or set it with `{var} = [\"a\", \"b\"]` (`[]` clears it), not `= value`"
+            )),
             (_, Expr::Lit(Value::Str(s))) if !s.is_empty() => Ok(()),
             (_, Expr::Lit(_)) => Err(format!("`{var}` is a list: `+=` and `-=` take a non-empty text, like `{var} += \"key\"`")),
             (_, Expr::Bin(..) | Expr::Neg(_) | Expr::Func(..) | Expr::Count(_) | Expr::Random(..)) => {
@@ -950,18 +963,33 @@ impl Parser {
             self.label_lines.insert(name.clone(), line);
         }
         if let Some(params) = params {
-            self.program.params.insert(name.clone(), params);
+            let defaults: BTreeMap<String, Value> = params.iter().filter_map(|(n, d)| Some((n.clone(), d.clone()?))).collect();
+            if !defaults.is_empty() {
+                self.program.param_defaults.insert(name.clone(), defaults);
+            }
+            self.program.params.insert(name.clone(), params.into_iter().map(|(n, _)| n).collect());
             self.param_labels.push((name, line));
         }
     }
 
-    /// The parameter names of a heading like `# heal(amount, who)`.
-    fn parameters(&self, label: &str, inner: &str) -> Result<Vec<String>, String> {
+    /// The parameters of a heading like `# heal(amount, who="you", times=1)`: names and defaults (literals).
+    fn parameters(&self, label: &str, inner: &str) -> Result<Vec<(String, Option<Value>)>, String> {
         if inner.trim().is_empty() {
             return Err(format!("`{label}()` has no parameters: write the heading without parentheses"));
         }
-        let mut names: Vec<String> = Vec::new();
-        for part in inner.split(',').map(str::trim) {
+        let mut names: Vec<(String, Option<Value>)> = Vec::new();
+        for part in split_top_level(inner, ',').into_iter().map(str::trim) {
+            let (part, default) = match part.split_once('=') {
+                Some((n, d)) => (n.trim(), Some(d.trim())),
+                None => (part, None),
+            };
+            let default = match default.map(parse_value) {
+                Some(Ok(v)) => Some(v),
+                Some(Err(_)) => {
+                    return Err(format!("the default of `{part}` must be a number, true/false or \"text\" in quotes (a literal, not an expression)"))
+                }
+                None => None,
+            };
             if !is_plain_ident(part) {
                 return Err(format!("bad parameter `{part}` in the heading (names are letters, digits and `_`, separated by commas)"));
             }
@@ -973,13 +1001,13 @@ impl Parser {
                 };
                 return Err(format!("`{part}` can't be a parameter name: {why}"));
             }
-            if names.iter().any(|n| n == part) {
+            if names.iter().any(|(n, _)| n == part) {
                 return Err(format!("parameter `{part}` is listed twice"));
             }
             if self.is_list(part) {
                 return Err(format!("`{part}` is a list variable and can't be a parameter"));
             }
-            names.push(part.to_string());
+            names.push((part.to_string(), default));
         }
         Ok(names)
     }
@@ -2989,19 +3017,22 @@ fn split_params(text: &str) -> (&str, Option<&str>) {
 }
 
 /// Problems with the arguments of a `::call` to `label`, whose parameters are `params`.
-fn call_problems(label: &str, params: Option<&[String]>, args: &[(String, Expr)]) -> Vec<String> {
+fn call_problems(label: &str, params: Option<&[String]>, defaults: &BTreeMap<String, Value>, args: &[(String, Expr)]) -> Vec<String> {
     let Some(params) = params else {
         return args
             .iter()
             .map(|(k, _)| format!("`{label}` takes no parameters, but this `::call` passes `{k}`"))
             .collect();
     };
-    let takes = format!("{label} takes: {}", params.join(", "));
+    let takes = format!(
+        "{label} takes: {}",
+        params.iter().map(|p| if defaults.contains_key(p) { format!("{p} (optional)") } else { p.clone() }).collect::<Vec<_>>().join(", ")
+    );
     let mut out = Vec::new();
     for (k, _) in args.iter().filter(|(k, _)| !params.contains(k)) {
         out.push(format!("`{label}` has no parameter `{k}` ({takes})"));
     }
-    for p in params.iter().filter(|p| !args.iter().any(|(k, _)| k == *p)) {
+    for p in params.iter().filter(|p| !defaults.contains_key(*p) && !args.iter().any(|(k, _)| k == *p)) {
         out.push(format!("this `::call` is missing `{p}={{...}}` ({takes})"));
     }
     out
@@ -4688,6 +4719,40 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_list_can_be_set_or_cleared_with_a_list_literal() {
+        let head = "---\nvars: { inv: [a], gold: 5 }\n---\n";
+        let p = ok(&format!("{head}::set{{inv = [], inv = [\"key\", \"magic map\", key]}}\n# a\n::choice\n- [x](#a){{inv = [\"k\"], gold += 1}}\n::\n"));
+        let sets: Vec<_> = p.ops.iter().filter_map(|o| if let Op::Set(e) = o { Some(e) } else { None }).collect();
+        assert_eq!(sets[0].value, Expr::Lit(Value::List(vec![])));
+        assert_eq!(sets[1].value, Expr::Lit(Value::List(vec!["key".into(), "magic map".into()])), "repeats dropped");
+        assert!(p.ops.iter().any(|o| matches!(o, Op::Choice { options, .. } if options[0].effects.iter().any(|e| e.var == "inv"))));
+        // only a declared list; `+=` takes an item; a bad item is an error
+        for (tail, needle) in [
+            ("::set{gold = []}\n", "is not a list"),
+            ("::set{nope = [\"a\"]}\n", "is not a list"),
+            ("::set{inv += [\"a\"]}\n", "unexpected"),
+            ("::set{inv = [\"\"]}\n", "bad list item"),
+            ("::set{inv = [a, \"b\"}\n", "is not a list"),
+        ] {
+            assert!(has_err(&format!("{head}{tail}"), needle), "{tail}: {:?}", errs(&format!("{head}{tail}")));
+        }
+    }
+
+    #[test]
+    fn pick_is_for_assignments_like_random() {
+        let head = "---\nvars: { inv: [a], who: \"\", n: 0 }\n---\n";
+        let p = ok(&format!("{head}::set{{who = pick(inv), who = pick(\"A\", \"B\"), n = pick(1, 2, 3) + 1}}\n"));
+        assert!(p.ops.iter().any(|o| matches!(o, Op::Set(e) if matches!(e.value, Expr::Pick(_)))));
+        for (tail, needle) in [
+            ("::if{pick(\"a\", \"b\") == \"a\"}\nHi.\n::endif\n", "only be used on the right of an assignment"),
+            ("::set{who = pick()}\n", "takes at least 1"),
+            ("::set{who = pick(random(1, 2))}\n", "assign it to a variable first"),
+        ] {
+            assert!(has_err(&format!("{head}{tail}"), needle), "{tail}: {:?}", errs(&format!("{head}{tail}")));
+        }
+    }
+
+    #[test]
     fn list_mistakes_are_errors_with_line_numbers() {
         let head = "---\nvars: { inv: [], gold: 5 }\n---\n";
         let line = |tail: &str, needle: &str| {
@@ -4696,11 +4761,11 @@ mod tests {
             assert!(hit.is_some(), "{tail:?}: {e:?}");
             hit.unwrap().line
         };
-        assert_eq!(line("Hi.\n::set{inv = \"x\"}\n", "not `=`"), 5);
+        assert_eq!(line("Hi.\n::set{inv = \"x\"}\n", "not `= value`"), 5);
         assert_eq!(line("Hi.\n::set{inv += 3}\n", "non-empty text"), 5);
         assert_eq!(line("::set{inv -= true}\n", "non-empty text"), 4);
         assert_eq!(line("::set{inv += \"\"}\n", "non-empty text"), 4);
-        assert_eq!(line("# a\n::choice\n- [x](#a){inv += \"k\"}\n- [y](#a){inv = 1}\n::\n", "not `=`"), 7);
+        assert_eq!(line("# a\n::choice\n- [x](#a){inv += \"k\"}\n- [y](#a){inv = 1}\n::\n", "not `= value`"), 7);
         assert_eq!(line("::if{gold has \"x\"}\nHi.\n::endif\n", "not a list"), 4);
         assert_eq!(line("::if{nothing has \"x\"}\nHi.\n::endif\n", "declare it"), 4);
         assert_eq!(line("# a\n::jump{to=a if=\"gold has 'x'\"}\n", "not a list"), 5);
@@ -4839,6 +4904,46 @@ mod tests {
                 ]
             }
         );
+    }
+
+    #[test]
+    fn a_parameter_may_have_a_literal_default_that_a_call_without_it_passes() {
+        let src = "::call{to=hit}\n::call{to=hit power=9}\n::end\n# hit(power=1, who=\"Mi, (ka)\", loud = true, delta=-2, need)\n::return\n";
+        let src = src.replace("::call{to=hit}", "::call{to=hit need=1}").replace("power=9", "power=9 need=2");
+        let p = ok(&src);
+        assert_eq!(p.params["hit"], ["power", "who", "loud", "delta", "need"]);
+        let d = &p.param_defaults["hit"];
+        assert_eq!(d.len(), 4, "`need` has none");
+        assert_eq!((&d["power"], &d["who"]), (&Value::Int(1), &Value::Str("Mi, (ka)".into())));
+        assert_eq!((&d["loud"], &d["delta"]), (&Value::Bool(true), &Value::Int(-2)));
+        let arg = |op: usize, name: &str| match &p.ops[op] {
+            Op::Call { args, .. } => args.iter().find(|(k, _)| k == name).map(|(_, e)| e.clone()),
+            _ => panic!(),
+        };
+        assert_eq!(arg(0, "power"), Some(Expr::Lit(Value::Int(1))), "left out: the default");
+        assert_eq!(arg(1, "power"), Some(Expr::Lit(Value::Int(9))), "given: kept, once");
+        let Op::Call { args, .. } = &p.ops[1] else { panic!() };
+        assert_eq!(args.len(), 5);
+        assert!(ok("::call{to=f}\n::end\n# f(a=1)\n::return\n").param_defaults.contains_key("f"));
+        assert!(ok("::end\n# f(a)\n::return\n").param_defaults.is_empty());
+    }
+
+    #[test]
+    fn a_parameter_without_a_default_stays_required_and_names_stay_checked() {
+        let tail = "::end\n# hit(power=1, need)\n::return\n";
+        assert_eq!(line_of(&format!("::call{{to=hit}}\n{tail}"), "missing `need"), 1);
+        ok(&format!("::call{{to=hit need=1}}\n{tail}"));
+        assert!(has_err(&format!("::call{{to=hit need=1 powr=2}}\n{tail}"), "no parameter `powr`"));
+        assert!(has_err(&format!("::call{{to=hit}}\n{tail}"), "power (optional)"), "the error says which are optional");
+    }
+
+    #[test]
+    fn a_bad_default_is_an_error_on_the_heading() {
+        for head in ["f(a=b)", "f(a=1 + 2)", "f(a=)", "f(a=[1])", "f(a=random(1, 2))", "f(a=1, a=2)", "f(1=2)", "f(a=\"x)"] {
+            let src = format!("::end\n# {head}\n::return\n");
+            assert!(!errs(&src).is_empty(), "{head}");
+        }
+        assert_eq!(line_of("::end\n# f(a=b)\n::return\n", "default of `a`"), 2);
     }
 
     #[test]

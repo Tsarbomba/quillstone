@@ -5,7 +5,7 @@
 //! `=` also means equality) or `list has item` (the same level; the left side is
 //! a list variable, the right a text, variable or parenthesised expression), then
 //! `+ -`, `* / %`, unary `-`, and literals, variables, function calls
-//! (`min max abs count random`), `seen(label)` and `( ... )`.
+//! (`min max abs count random pick`), `seen(label)` and `( ... )`.
 //! Literals: whole numbers, `true` / `false`, and "text" or 'text'.
 //! Variable names may have dotted parts: `hero.love`, and parts named by a variable: `love.{who}`.
 //! `seen(label)` is how many times the story has passed that label (0: never);
@@ -388,7 +388,7 @@ impl Parser {
         self.pos += 1;
         // no rolls inside a roll's own bounds
         let allowed = self.allow_random;
-        if name == "random" {
+        if matches!(name, "random" | "pick") {
             self.allow_random = false;
         }
         let mut args = Vec::new();
@@ -447,6 +447,15 @@ impl Parser {
                     }
                 }
                 Ok(Expr::Random(lo, hi))
+            }
+            "pick" => {
+                arity(!args.is_empty(), "at least 1 value (a list variable, or the choices)")?;
+                if !allowed {
+                    return Err("`pick` can only be used on the right of an assignment (`::set{who = pick(\"Mika\", \"Sora\")}`), \
+                        not in a condition: assign it to a variable first, then test the variable"
+                        .into());
+                }
+                Ok(Expr::Pick(args))
             }
             _ => Err(format!("unknown function `{name}` (the functions are {FUNCTIONS})")),
         }
@@ -544,7 +553,7 @@ pub fn parse_list(s: &str) -> Result<Value, String> {
 }
 
 /// Parse an assignment: `trust+=1`, `trust-=1`, `met=true`, `name = "Alex"`, `gold -= price * 2`,
-/// `roll = random(1, 6)` (the only place `random` is allowed).
+/// `bag = ["key"]`, `roll = random(1, 6)` (the only place `random` and `pick` are allowed).
 pub fn parse_effect(s: &str) -> Result<Effect, String> {
     let s = s.trim();
     let bad = || format!("bad assignment `{s}` (expected `name+=1`, `name-=1` or `name=value`)");
@@ -572,7 +581,12 @@ pub fn parse_effect(s: &str) -> Result<Effect, String> {
     if rhs.trim().is_empty() {
         return Err(format!("missing value after the operator in `{s}`"));
     }
-    let value = parse_expr_with(rhs, true).map_err(|m| format!("{m} (in `{s}`)"))?;
+    // `bag = []` / `bag = ["key", "map"]` set a list (the parser checks that `bag` is one)
+    let value = if op == AssignOp::Set && rhs.trim_start().starts_with('[') {
+        Expr::Lit(parse_list(rhs)?)
+    } else {
+        parse_expr_with(rhs, true).map_err(|m| format!("{m} (in `{s}`)"))?
+    };
     Ok(Effect { var: var.to_string(), op, value })
 }
 
@@ -900,7 +914,7 @@ mod tests {
             assert!(e.contains(want), "{src}: {e}");
         }
         for src in ["min(1)", "len(a)", "abs()"] {
-            assert!(parse_expr(src).unwrap_err().contains("min(a, b, ...), max(a, b, ...), abs(x), count(list), random(lo, hi)"), "{src}");
+            assert!(parse_expr(src).unwrap_err().contains("min(a, b, ...), max(a, b, ...), abs(x), count(list), random(lo, hi), pick(a, b, ...)"), "{src}");
         }
         assert_eq!(parse_expr("min").unwrap(), Expr::Var("min".into()), "a variable may share a function's name");
     }
@@ -988,6 +1002,53 @@ mod tests {
             assert!((i64::MIN..=i64::MAX).contains(&crate::roll(&mut s, i64::MIN, i64::MAX)));
             assert_eq!(crate::roll(&mut s, 5, 5), 5);
         }
+    }
+
+    #[test]
+    fn pick_takes_one_value_or_list_item_with_the_same_generator() {
+        let mut vars: Vars = [("bag".to_string(), Value::List(vec!["a".into(), "b".into(), "c".into()]))].into_iter().collect();
+        let mut state = 5;
+        let mut seen = std::collections::BTreeSet::new();
+        for src in ["x = pick(bag)", "x = pick(\"a\", \"b\", \"c\")"] {
+            let e = parse_effect(src).unwrap();
+            assert!(e.value.has_random());
+            for _ in 0..100 {
+                e.apply_with(&mut vars, &mut |lo, hi| crate::roll(&mut state, lo, hi));
+                seen.insert(vars["x"].to_string());
+            }
+        }
+        assert_eq!(seen.into_iter().collect::<Vec<_>>(), ["a", "b", "c"]);
+        // the draw is an index, 0 ..= n - 1; numbers keep their type; one value is still a draw
+        // returns what was asked of the generator, and answers with the highest
+        let take = |e: &str, vars: &mut Vars| {
+            let mut asked = Vec::new();
+            parse_effect(e).unwrap().apply_with(vars, &mut |lo, hi| {
+                asked.push((lo, hi));
+                hi
+            });
+            asked
+        };
+        assert_eq!(take("n = pick(4, 7, 9)", &mut vars), [(0, 2)]);
+        assert_eq!(vars["n"], Value::Int(9));
+        assert_eq!(take("m = pick(\"only\")", &mut vars), [(0, 0)]);
+        // an empty list gives "" and does not draw
+        vars.insert("bag".into(), Value::List(vec![]));
+        assert!(take("x = pick(bag)", &mut vars).is_empty());
+        assert_eq!(vars["x"], Value::Str(String::new()));
+    }
+
+    #[test]
+    fn a_list_literal_sets_a_list_variable_and_only_that() {
+        let mut vars: Vars = [("bag".to_string(), Value::List(vec!["a".into()])), ("n".to_string(), Value::Int(1))].into_iter().collect();
+        parse_effect("bag = [\"key\", map, \"key\"]").unwrap().apply(&mut vars);
+        assert_eq!(vars["bag"], Value::List(vec!["key".into(), "map".into()]));
+        parse_effect("bag = []").unwrap().apply(&mut vars);
+        assert_eq!(vars["bag"], Value::List(vec![]));
+        parse_effect("n = [\"x\"]").unwrap().apply(&mut vars);
+        assert_eq!(vars["n"], Value::Int(1), "a non-list is left alone (the parser refuses it)");
+        let many = format!("bag = [{}]", (0..crate::ops::MAX_LIST_ITEMS + 1).map(|i| format!("i{i}")).collect::<Vec<_>>().join(","));
+        parse_effect(&many).unwrap().apply(&mut vars);
+        assert_eq!(vars["bag"].to_string().split(", ").count(), crate::ops::MAX_LIST_ITEMS, "capped like `+=`");
     }
 
     #[test]

@@ -134,6 +134,9 @@ pub enum Expr {
     /// parser's assignment sites let it through (never a condition), so rebuilding a
     /// screen can't re-roll it.
     Random(Box<Expr>, Box<Expr>),
+    /// `pick("a", "b")` or `pick(list)`: one of the values (or of the list's items) at random; ""
+    /// when there are none. Placed like `Random`, and rolled the same way (`draw(0, n - 1)`).
+    Pick(Vec<Expr>),
 }
 
 /// The condition as the author could have written it, for the flowchart export: nested
@@ -142,7 +145,7 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn arg(f: &mut fmt::Formatter<'_>, e: &Expr) -> fmt::Result {
             match e {
-                Expr::Lit(_) | Expr::Var(_) | Expr::Func(..) | Expr::Count(_) | Expr::Random(..) => write!(f, "{e}"),
+                Expr::Lit(_) | Expr::Var(_) | Expr::Func(..) | Expr::Count(_) | Expr::Random(..) | Expr::Pick(_) => write!(f, "{e}"),
                 _ => write!(f, "({e})"),
             }
         }
@@ -198,6 +201,10 @@ impl fmt::Display for Expr {
             }
             Expr::Count(l) => write!(f, "count({l})"),
             Expr::Random(a, b) => write!(f, "random({a}, {b})"),
+            Expr::Pick(args) => {
+                let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+                write!(f, "pick({})", args.join(", "))
+            }
         }
     }
 }
@@ -248,7 +255,7 @@ pub enum Func {
 }
 
 /// The functions of the language, for error messages.
-pub const FUNCTIONS: &str = "min(a, b, ...), max(a, b, ...), abs(x), count(list), random(lo, hi)";
+pub const FUNCTIONS: &str = "min(a, b, ...), max(a, b, ...), abs(x), count(list), random(lo, hi), pick(a, b, ...)";
 
 /// The generator behind `random(lo, hi)`: splitmix64, one step per call. The seed
 /// lives in the story state, so rollback and saves replay the same rolls.
@@ -325,6 +332,16 @@ impl Expr {
                 let hi = int(&hi.eval_with(vars, draw));
                 Value::Int(if lo <= hi { draw(lo, hi) } else { draw(hi, lo) })
             }
+            Expr::Pick(args) => {
+                let mut values: Vec<Value> = args.iter().map(|a| a.eval_with(vars, draw)).collect();
+                if let [Value::List(items)] = values.as_slice() {
+                    values = items.iter().cloned().map(Value::Str).collect();
+                }
+                match values.len() {
+                    0 => Value::Str(String::new()),
+                    n => values.swap_remove(draw(0, n as i64 - 1).clamp(0, n as i64 - 1) as usize),
+                }
+            }
         }
     }
 
@@ -348,7 +365,7 @@ impl Expr {
                 name(out, n);
                 item.vars_read(out);
             }
-            Expr::Func(_, args) => args.iter().for_each(|a| a.vars_read(out)),
+            Expr::Func(_, args) | Expr::Pick(args) => args.iter().for_each(|a| a.vars_read(out)),
         }
     }
 
@@ -368,13 +385,13 @@ impl Expr {
             Expr::Lit(_) | Expr::Var(_) | Expr::Count(_) => Vec::new(),
             Expr::Not(e) | Expr::Neg(e) | Expr::Has(_, e) => vec![e],
             Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) | Expr::Bin(a, _, b) | Expr::Random(a, b) => vec![a, b],
-            Expr::Func(_, args) => args.iter().collect(),
+            Expr::Func(_, args) | Expr::Pick(args) => args.iter().collect(),
         }
     }
 
-    /// Whether a `random(lo, hi)` is anywhere inside.
+    /// Whether a `random(lo, hi)` or `pick(..)` is anywhere inside.
     pub fn has_random(&self) -> bool {
-        matches!(self, Expr::Random(..)) || self.children().into_iter().any(Expr::has_random)
+        matches!(self, Expr::Random(..) | Expr::Pick(_)) || self.children().into_iter().any(Expr::has_random)
     }
 
     /// Every `list has item` test inside the expression, as `(list variable, item expression)`.
@@ -443,9 +460,10 @@ impl Effect {
         let rhs = self.value.eval_with(vars, draw);
         let Some(target) = self.target(vars) else { return };
         let target = target.as_ref();
-        // A list changes only by `+=` / `-=` of text; anything else leaves it alone.
+        // A list changes by `+=` / `-=` of text, or `=` a list literal; anything else leaves it alone.
         if let Some(Value::List(items)) = vars.get_mut(target) {
             match (self.op, rhs) {
+                (AssignOp::Set, Value::List(new)) => *items = new.into_iter().take(MAX_LIST_ITEMS).collect(),
                 (AssignOp::Add, Value::Str(s)) if !s.is_empty() && items.len() < MAX_LIST_ITEMS && !items.contains(&s) => {
                     items.push(s);
                 }
@@ -456,7 +474,7 @@ impl Effect {
         }
         match self.op {
             AssignOp::Set => {
-                // lists only come from the front matter, never from an assignment
+                // a list is made only by the front matter; an assignment only changes a declared one (above)
                 if !matches!(rhs, Value::List(_)) {
                     vars.insert(target.to_string(), rhs);
                 }
@@ -680,8 +698,11 @@ pub struct Program {
     /// The `Jump` ops the compiler made for `::if` / `::elif` / `::else`, not written as `::jump`.
     pub block_jumps: BTreeSet<usize>,
     /// Labels written with parameters (`# heal(amount, who)`): label -> parameter names.
-    /// Only `::call` reaches them, and it must pass exactly these.
+    /// Only `::call` reaches them, and it must pass these (those without a default) and no others.
     pub params: BTreeMap<String, Vec<String>>,
+    /// The defaults of those parameters (`# hit(power=1)`): label -> parameter -> value. A `::call`
+    /// that leaves one out gets it as a literal argument (the parser adds it), so the runtime sees none missing.
+    pub param_defaults: BTreeMap<String, BTreeMap<String, Value>>,
     /// Labels whose visits are counted because a `seen(label)` reads them:
     /// op index -> the `seen:` variables to count up when that op runs.
     pub counted: BTreeMap<usize, Vec<String>>,
