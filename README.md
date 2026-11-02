@@ -253,16 +253,28 @@ is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
 ::
 ````
 
-See [SCRIPT.md](SCRIPT.md) for every command, conditions, variables and flow control,
-and `examples/demo.quill.md` for a script that uses them all (`examples/hotspots.quill.md`
-shows hotspots: a map, a collectible and an exit; `examples/shop.quill.md` shows a list
-variable as an inventory in a shop; `examples/market.quill.md` and `examples/market_theme.txt`
-show items, the built-in inventory and shop screens, and a theme that restyles them;
-`examples/iconmenu.quill.md` and `examples/icons_theme.txt` replace the quick menu's text buttons with picture buttons at positions the theme picks;
-`examples/hud.quill.md` shows on-screen text, bars and pictures, `examples/minigame.quill.md` a timing bar, key prompts and a moving hotspot, `examples/gallery.quill.md` and `examples/replay.quill.md` the Extras screen, `examples/greeting.quill.md` a typed-in name;
-`examples/staging.quill.md` shows sprite height and layering, text sizes, `{nw}` and a `::tint` colour wash;
-`examples/stats.quill.md` shows grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls;
-`examples/anim.quill.md` shows frame animations (a talking sprite, a one-shot, an animated background) and looping moves; `examples/places.quill.md` picks the background and a pose from variables; `examples/layers.quill.md` builds a sprite from body, eyes and mouth layers, with a blinking eyes layer; `examples/weather.quill.md` shows ambient snow, rain and falling petals; `examples/chapters.quill.md` and `examples/chapters/` show a story split over several files with `::include`; `examples/lang.quill.md` and `examples/lang/sv.txt` show a game in English and Swedish).
+See [SCRIPT.md](SCRIPT.md) for every command, conditions, variables and flow control.
+The `examples/` folder has a script for each area:
+
+| Example | Shows |
+| --- | --- |
+| `demo.quill.md` | a bit of everything: the place to start |
+| `hotspots.quill.md` | clickable regions: a map, a collectible, an exit, hover pictures, an imagemap and a region that returns |
+| `minigame.quill.md` | a timed screen with a moving target, a timing bar and key prompts |
+| `shop.quill.md` | a list variable used as an inventory in a shop |
+| `market.quill.md` + `market_theme.txt` | items, the inventory and shop screens, a quest journal, a HUD button, and a theme that restyles them |
+| `hud.quill.md` | on-screen text, bars and pictures |
+| `stats.quill.md` | grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls |
+| `greeting.quill.md` | a typed-in name |
+| `staging.quill.md` | sprite height and layering, text sizes, `{nw}` and a colour wash |
+| `anim.quill.md` | frame animations (talking, a one-shot, an animated background) and looping moves |
+| `layers.quill.md` | a sprite built from body, eyes and mouth layers, with blinking eyes |
+| `places.quill.md` | the background and a pose picked from variables |
+| `weather.quill.md` | snow, rain and falling petals |
+| `gallery.quill.md`, `replay.quill.md` | the Extras screen: a gallery with pictures and clips, and scene replays |
+| `iconmenu.quill.md` + `icons_theme.txt` | picture buttons in the quick menu, placed by the theme |
+| `chapters.quill.md` + `chapters/` | a story split over several files with `::include` |
+| `lang.quill.md` + `lang/sv.txt` | a game in English and Swedish |
 
 ## Layout
 
