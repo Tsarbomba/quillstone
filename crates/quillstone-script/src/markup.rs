@@ -83,6 +83,8 @@ pub const MAX_TAG_NESTING: usize = 64;
 
 /// Longest `{w=...}` pause, in seconds.
 pub const MAX_PAUSE: f32 = 10.0;
+/// Longest accepted pause; between the two `check` warns (a typo?).
+pub const MAX_PAUSE_CAP: f32 = 3600.0;
 
 /// Parse tagged text, or say what is wrong with it.
 pub fn parse_markup(src: &str) -> Result<Rich, String> {
@@ -160,8 +162,8 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     out.no_wait = true;
                 } else if let Some(value) = tag.strip_prefix("w=") {
                     let seconds: f32 = value.trim().parse().map_err(|_| format!("`{{w={value}}}` needs a number of seconds"))?;
-                    if !(seconds > 0.0 && seconds <= MAX_PAUSE) {
-                        return Err(format!("`{{w={value}}}`: a pause is more than 0 and at most {MAX_PAUSE} seconds"));
+                    if !(seconds > 0.0 && seconds <= MAX_PAUSE_CAP) {
+                        return Err(format!("`{{w={value}}}`: a pause is more than 0 and at most {MAX_PAUSE_CAP} seconds"));
                     }
                     out.pauses.push((shown, seconds));
                 } else if tag == "p" {
@@ -377,6 +379,14 @@ mod tests {
     }
 
     #[test]
+    fn a_long_pause_is_accepted_up_to_the_cap() {
+        // over MAX_PAUSE only `check` warns: it is probably a typo, but a real game may want it
+        for (src, secs) in [("a{w=10}", 10.0), ("a{w=11}", 11.0), ("a{w=3600}", 3600.0)] {
+            assert_eq!(parse_markup(src).unwrap().pauses, [(1, secs)], "{src}");
+        }
+    }
+
+    #[test]
     fn mistakes_are_explained() {
         for (src, needle) in [
             ("**open", "bold"),
@@ -386,6 +396,7 @@ mod tests {
             ("{color=red}x{/color}", "bad colour"),
             ("{w=fast}", "number of seconds"),
             ("{w=0}", "more than 0"),
+            ("{w=3601}", "at most 3600"),
             ("{size=big}x{/size}", "whole number"),
             ("{size=7}x{/size}", "from 8 to 200"),
             ("{size=201}x{/size}", "from 8 to 200"),

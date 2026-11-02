@@ -626,8 +626,9 @@ mod tests {
             assert!(e.message.contains(needle), "{fm}: {}", e.message);
             assert!(e.line >= 2);
         }
-        let many: Vec<String> = (0..17).map(|i| format!("l{i}=L")).collect();
-        assert!(errs(&format!("languages: {}", many.join(", "))).message.contains("at most 16"));
+        let many = |n: usize| (0..n).map(|i| format!("l{i}=L")).collect::<Vec<_>>().join(", ");
+        assert_eq!(prog(&format!("---\nlanguages: {}\n---\nHi.\n", many(crate::ops::MAX_LANGUAGES))).languages.len(), 64);
+        assert!(errs(&format!("languages: {}", many(crate::ops::MAX_LANGUAGES + 1))).message.contains("at most 64"));
     }
 
     #[test]

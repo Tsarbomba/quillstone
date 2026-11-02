@@ -10,9 +10,10 @@ fn program() -> Program {
     parse("---\nvars: { gold: 2 }\n---\n# start\nHello.\n::hud{id=g text=\"Gold {gold}\"}\nBye.\n").unwrap()
 }
 
-/// A thread with a 512 KB stack: smaller than a Windows main thread (1 MB).
+/// A thread with a 1 MB stack, like a Windows main thread (a debug build needs more than 512 KB to read a save with
+/// an expression nested to the limit).
 fn small_stack<F: FnOnce() + Send + 'static>(f: F) {
-    std::thread::Builder::new().stack_size(512 * 1024).spawn(f).unwrap().join().expect("overflowed or panicked");
+    std::thread::Builder::new().stack_size(1024 * 1024).spawn(f).unwrap().join().expect("overflowed or panicked");
 }
 
 #[test]

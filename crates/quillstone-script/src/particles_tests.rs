@@ -20,6 +20,12 @@ fn snow_and_rain_have_defaults() {
 }
 
 #[test]
+fn the_most_particles_are_accepted() {
+    let (p, _) = set(&ok("::particles{snow amount=1000}\nHi.\n"), 0);
+    assert_eq!(p.unwrap().amount, crate::MAX_PARTICLES);
+}
+
+#[test]
 fn every_attribute_is_read() {
     let p = ok("::particles{rain amount=200 speed=2.5 wind=-1.5 fade=0 layer=back}\n::particles{snow layer=front}\nHi.\n");
     let (rain, fade) = set(&p, 0);
@@ -54,7 +60,7 @@ fn mistakes_name_the_line() {
     bad("::particles{none src=a.png}\n", "not none and src");
     bad("::particles{none amount=3}\n", "takes only `fade=`");
     bad("::particles{snow amount=0}\n", "amount=0");
-    bad("::particles{snow amount=201}\n", "amount=201");
+    bad("::particles{snow amount=1001}\n", "amount=1001");
     bad("::particles{snow amount=1.5}\n", "amount=1.5");
     bad("::particles{snow speed=0.1}\n", "speed=0.1");
     bad("::particles{snow speed=6}\n", "speed=6");

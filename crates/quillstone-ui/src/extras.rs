@@ -6,7 +6,7 @@ use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::input::{screen, text};
-use crate::screens::slots_back_rect;
+use crate::screens::{fit_value, slots_back_rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -186,7 +186,8 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
             }
             (Tab::Scenes, true) => {
                 let label = Rect::new(r.x + 30.0, r.y, r.w - 60.0, r.h);
-                text(out, src, label, 34.0, theme.text_color, Align::Left);
+                let (title, size) = fit_value(src, 34.0, label.w);
+                text(out, title, label, size, theme.text_color, Align::Left);
             }
             (Tab::Music | Tab::Scenes, false) => {
                 text(out, "???", Rect::new(r.x + 30.0, r.y, r.w - 60.0, r.h), 34.0, theme.dim_color, Align::Left);
@@ -259,6 +260,32 @@ mod tests {
         let n = next_rect();
         assert_eq!(hit(n.x + 1.0, n.y + 1.0, &tabs, Tab::Gallery, 0, 0, 2), Some(Hit::Next));
         assert_eq!(hit(n.x + 1.0, n.y + 1.0, &tabs, Tab::Gallery, 0, 1, 2), None, "no page after the last");
+    }
+
+    #[test]
+    fn a_very_long_scene_title_is_shrunk_and_cut_to_fit_its_row() {
+        let theme = Theme::default();
+        let tabs = tabs_for(0, 0, 1);
+        let long = "An extremely long scene title ".repeat(30);
+        let entries = [(long.as_str(), true)];
+        let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Scenes, page: 0, pages: 1, entries: &entries, thumbs: &[], focus: None, playing: None, hover: None };
+        let mut out = Vec::new();
+        draw_extras(&mut out, &theme, &screen, &|_| None);
+        let row = track_rect(0);
+        let (shown, size) = out
+            .iter()
+            .find_map(|d| match d {
+                Draw::Text { text, size, rect, .. } if rect.y == row.y => Some((text.clone(), *size)),
+                _ => None,
+            })
+            .unwrap();
+        assert!(shown.ends_with('…') && shown.len() < long.len() && size < 34.0 && size > 34.0 * 0.6 - 1.0, "{shown:?} at {size}");
+        assert_eq!(quillstone_render::estimate_lines(&shown, size, row.w - 60.0), 1);
+        let short = [("The rooftop", true)];
+        let screen = ExtrasScreen { entries: &short, ..screen };
+        out.clear();
+        draw_extras(&mut out, &theme, &screen, &|_| None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { text, size, .. } if text == "The rooftop" && *size == 34.0)), "short titles are untouched");
     }
 
     #[test]

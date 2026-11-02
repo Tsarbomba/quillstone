@@ -668,7 +668,7 @@ pub fn nine_slice(out: &mut Vec<Draw>, src: &str, size: Size, dest: Rect, border
 
 /// A value and the size to draw it at so that it fits one row `width` wide: stepped
 /// down from `size` (not below 60%), then cut with an ellipsis.
-fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
+pub(crate) fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
     let mut s = size;
     while s > size * 0.6 && estimate_lines(value, s, width) > 1 {
         s -= 1.0;

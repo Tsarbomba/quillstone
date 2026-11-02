@@ -8,7 +8,8 @@ use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::plain;
-use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, MAX_PARTICLES};
+use quillstone_script::markup::MAX_PAUSE;
+use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
 
 mod graph;
 mod lang;
@@ -233,6 +234,9 @@ fn check(path: &Path) -> Result<(), String> {
         ));
     }
     for (line, msg) in line_warnings(&program, theme) {
+        found.push(warning(line, msg));
+    }
+    for (line, msg) in range_warnings(&program) {
         found.push(warning(line, msg));
     }
     for (line, msg) in replay_warnings(&program) {
@@ -519,6 +523,30 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
 
 /// A timed `::choice` shorter than this (seconds) gets a warning.
 const MIN_READABLE_TIME: f32 = 2.0;
+
+/// Typo-sized values the parser accepts (it only refuses absurd ones): `time=` over `MAX_CHOICE_TIME`, a `{w=}` pause
+/// over `MAX_PAUSE` and an `::input` `max=` over `INPUT_MAX_LIMIT`.
+fn range_warnings(program: &Program) -> Vec<(usize, String)> {
+    let long_time = |what: &str, t: f32| {
+        (t > MAX_CHOICE_TIME).then(|| format!("the `time={t}` of this {what} is longer than 10 minutes: a typo?"))
+    };
+    let mut out = Vec::new();
+    for (pc, op) in program.ops.iter().enumerate() {
+        let found = match op {
+            Op::Choice { time: Some(t), .. } => long_time("choice or hotspot screen", *t),
+            Op::Timing { bar: TimingBar { time: Some(t), .. }, .. } => long_time("timing bar", *t),
+            Op::Press { press, .. } => long_time("key prompt", press.time),
+            Op::Input { max, .. } => (*max > INPUT_MAX_LIMIT)
+                .then(|| format!("`max={max}` is more than {INPUT_MAX_LIMIT} characters for an answer to `::input`: a typo?")),
+            Op::Say { text, .. } => quillstone_script::markup::rich(text).pauses.iter().map(|p| p.1).find(|s| *s > MAX_PAUSE).map(
+                |s| format!("the `{{w={s}}}` pause in this line is longer than {MAX_PAUSE} seconds: a typo?"),
+            ),
+            _ => None,
+        };
+        out.extend(found.map(|m| (program.lines[pc], m)));
+    }
+    out
+}
 
 /// Text clearly too long for where it is drawn: `(line, message)`. The player shrinks text that
 /// doesn't fit, so these are warnings; the estimate errs long, so only clear cases count.
@@ -1209,6 +1237,27 @@ mod tests {
         ] {
             let p = parse(&format!("# a\n::hotspots\n{fine}\n::\n")).unwrap();
             assert!(hidden_hotspots(&p).is_empty(), "{fine}");
+        }
+    }
+
+    #[test]
+    fn typo_sized_ranges_are_warnings_in_check_and_not_errors() {
+        let front = "---\nvars: { hit: \"\", who: \"\" }\n---\n";
+        let warns = |body: &str| range_warnings(&parse(&format!("{front}# a\n{body}")).unwrap_or_else(|e| panic!("{body}: {e:?}")));
+        let one = |body: &str, needle: &str| {
+            let w = warns(body);
+            assert!(w.len() == 1 && w[0].1.contains(needle), "{body}: {w:?}");
+            assert!(checked(&format!("{front}# a\n{body}"), &[]).is_ok(), "{body}: only a warning");
+        };
+        one("::choice{time=601}\n- [x](#a){default}\n::\n", "longer than 10 minutes");
+        one("::hotspots{time=86400 default=#a}\n- [x](#a){rect=0,0,1,1}\n::\n", "longer than 10 minutes");
+        one("::timing{result=hit good=40%..60% time=900}\n", "timing bar");
+        one("::press{key=space time=900 result=hit}\n", "key prompt");
+        one("Wait.{w=11}\n", "`{w=11}` pause");
+        one("::input{var=who prompt=\"Name?\" max=65}\n", "`max=65`");
+        one("::input{var=who prompt=\"Name?\" max=1024}\n", "`max=1024`");
+        for fine in ["::choice{time=600}\n- [x](#a){default}\n::\n", "Wait.{w=10}\n", "::input{var=who prompt=\"Name?\" max=64}\n"] {
+            assert!(warns(fine).is_empty(), "{fine}");
         }
     }
 

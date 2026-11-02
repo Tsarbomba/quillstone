@@ -61,15 +61,14 @@ pub fn parse_files(src: &str, main: &str, load: Loader) -> Result<Program, Vec<P
 fn parse_inner(src: &str, main: &str, load: Option<Loader>) -> Result<Program, Vec<ParseError>> {
     let mut p = Parser { main: main.to_string(), ..Parser::default() };
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
-    let mut files = Files { load, stack: Vec::new(), seen: Vec::new(), bytes: 0, next_base: src.lines().count() + 1 };
+    let mut files = Files { load, stack: Vec::new(), seen: std::collections::HashMap::new(), bytes: 0, next_base: src.lines().count() + 1 };
     p.run_file(src, &mut files);
     p.finish()
 }
 
-/// Most files that may be included in one game, how deep they may nest, how much text they may
-/// add up to in all, and how large one may be (scripts can come from shared packages; a long game
-/// split into a file per scene needs thousands of files).
-pub const MAX_INCLUDES: usize = 4096;
+/// How deep includes may nest, how much text they may add up to in all, and how large one may be
+/// (scripts can come from shared packages). There is no limit on the number of files: the total
+/// size stops a runaway include, and a cycle is refused.
 pub const MAX_INCLUDE_DEPTH: usize = 8;
 pub const MAX_INCLUDE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_INCLUDE_FILE_BYTES: usize = 8 * 1024 * 1024;
@@ -80,8 +79,8 @@ struct Files<'a> {
     /// The files being read right now, outermost first (for cycles and the depth); the main
     /// script is not in it.
     stack: Vec<String>,
-    /// Every file included so far: (name, line of the `::include`) for the "twice" error.
-    seen: Vec<(String, usize)>,
+    /// Every file included so far: lowercased name -> line of the `::include`, for the "twice" error.
+    seen: std::collections::HashMap<String, usize>,
     bytes: usize,
     /// The program line number the next included file's line 0 gets.
     next_base: usize,
@@ -519,20 +518,17 @@ impl Parser {
             chain.push(&key);
             return self.err(line, format!("`::include{{{path}}}` includes a file that is already being read (a cycle: {})", chain.join(" -> ")));
         }
-        if let Some((_, first)) = files.seen.iter().find(|(k, _)| same(k)) {
+        if let Some(first) = files.seen.get(&key.to_ascii_lowercase()) {
             let first = self.describe(*first);
             return self.err(line, format!("`{path}` is included twice (first at {first}); each file may be included once, or its labels would be defined twice"));
         }
         if files.stack.len() >= MAX_INCLUDE_DEPTH {
             return self.err(line, format!("`::include` nests more than {MAX_INCLUDE_DEPTH} files deep"));
         }
-        if files.seen.len() >= MAX_INCLUDES {
-            return self.err(line, format!("a game may include at most {MAX_INCLUDES} files"));
-        }
         let Some(load) = files.load else {
             return self.err(line, "`::include` needs a game folder to read the file from: it can't be used in a script given as plain text");
         };
-        files.seen.push((key.clone(), line));
+        files.seen.insert(key.to_ascii_lowercase(), line);
         let text = match load(&key) {
             Ok(t) => t,
             Err(why) => return self.err(line, format!("cannot include `{path}`: {why}")),
@@ -775,15 +771,10 @@ impl Parser {
                 self.err(line, format!("replay `{label}` needs a title, like `{label}: \"The rooftop\"`"));
             } else if title.chars().any(char::is_control) {
                 self.err(line, format!("the title of replay `{label}` can't hold control characters"));
-            } else if title.chars().count() > MAX_REPLAY_TITLE {
-                self.err(line, format!("the title of replay `{label}` is longer than {MAX_REPLAY_TITLE} characters (it has to fit on a row of the Scenes list)"));
             } else if self.replay_decls.iter().any(|(_, l, _)| *l == label) {
                 self.err(line, format!("replay `{label}` is listed twice"));
             } else if self.replay_decls.iter().any(|(_, _, t)| *t == title) {
                 self.err(line, format!("two replays are titled \"{title}\"; titles must differ"));
-            } else if self.replay_decls.len() >= MAX_REPLAYS {
-                self.err(line, format!("at most {MAX_REPLAYS} replays"));
-                return;
             } else {
                 self.replay_decls.push((line, label, title));
             }
@@ -1478,8 +1469,8 @@ impl Parser {
                 let max = match a.value("max") {
                     None => INPUT_MAX_DEFAULT,
                     Some(v) => match v.parse::<usize>() {
-                        Ok(n) if (1..=INPUT_MAX_LIMIT).contains(&n) => n,
-                        _ => return Err(format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_LIMIT})")),
+                        Ok(n) if (1..=INPUT_MAX_CAP).contains(&n) => n,
+                        _ => return Err(format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_CAP})")),
                     },
                 };
                 if let Some(d) = &default {
@@ -2751,13 +2742,14 @@ fn take_attr(inner: &mut String, key: &str) -> Option<String> {
     None
 }
 
-/// `time=` of a `::choice`: a plain number of seconds, `MIN_CHOICE_TIME` to `MAX_CHOICE_TIME`.
+/// `time=` of a `::choice`: a plain number of seconds, `MIN_CHOICE_TIME` to `MAX_CHOICE_TIME_CAP` (above
+/// `MAX_CHOICE_TIME`, `check` warns).
 fn parse_choice_time(s: &str) -> Result<f32, String> {
     s.parse::<f32>()
         .ok()
-        .filter(|t| t.is_finite() && (MIN_CHOICE_TIME..=MAX_CHOICE_TIME).contains(t))
+        .filter(|t| t.is_finite() && (MIN_CHOICE_TIME..=MAX_CHOICE_TIME_CAP).contains(t))
         .ok_or_else(|| {
-            format!("bad `time={s}` (a number of seconds from {MIN_CHOICE_TIME} to {MAX_CHOICE_TIME}, not a variable)")
+            format!("bad `time={s}` (a number of seconds from {MIN_CHOICE_TIME} to {MAX_CHOICE_TIME_CAP}, not a variable)")
         })
 }
 
@@ -2999,9 +2991,6 @@ pub fn slug(s: &str) -> String {
     }
     out
 }
-
-/// The longest replay title, in characters (a row of the Scenes list is about this wide).
-const MAX_REPLAY_TITLE: usize = 60;
 
 /// `\"` and `\\` inside a quoted title are the character itself; any other backslash stays.
 /// The `id:` front matter key becomes a folder name on every system, so it is plain and short.
@@ -3693,7 +3682,7 @@ mod tests {
         assert_eq!(*time, Some(8.0));
         assert_eq!(options.iter().map(|o| o.default).collect::<Vec<_>>(), [false, true]);
         assert!(options[1].cond.is_some() && options[1].effects.len() == 2, "if, once and effects all kept");
-        for t in ["0.5", "2.5", "600"] {
+        for t in ["0.5", "2.5", "600", "601", "86400"] {
             ok(&format!("# a\n::choice{{time={t}}}\n- [x](#a){{default}}\n::\n"));
         }
         let plain = ok("# a\n::choice\n- [x](#a)\n::\n");
@@ -3721,7 +3710,7 @@ mod tests {
             e.iter().find(|e| e.message.contains(msg)).unwrap_or_else(|| panic!("{msg}: {e:?}")).line
         };
         let block = |attrs: &str| format!("# a\n# b\n::hotspots{attrs}\n- [x](#a){{rect=0,0,1,1}}\n::\n");
-        for bad in ["0.4", "601", "abc", "nan"] {
+        for bad in ["0.4", "86401", "abc", "nan"] {
             assert_eq!(line(&block(&format!("{{time={bad} default=#b}}")), "bad `time="), 3, "{bad}");
         }
         assert_eq!(line(&block("{time=3}"), "needs `default=#label`"), 3);
@@ -3778,7 +3767,7 @@ mod tests {
         assert_eq!(line("# a\n::choice{time=5}\n- [x](#a)\n::\n", "needs one option marked `{default}`"), 2);
         assert_eq!(line("# a\n::choice\n- [x](#a)\n- [y](#a){default}\n::\n", "`default` needs a timed choice"), 4);
         assert_eq!(line("# a\n::choice{time=5}\n- [x](#a){default}\n- [y](#a){default}\n::\n", "only one option"), 4);
-        for bad in ["0", "0.4", "601", "-3", "abc", "{secs}", "nan", "inf", "1e9"] {
+        for bad in ["0", "0.4", "86401", "-3", "abc", "{secs}", "nan", "inf", "1e9"] {
             let src = format!("# a\n::choice{{time={bad}}}\n- [x](#a){{default}}\n::\n");
             assert_eq!(line(&src, "bad `time="), 2, "{bad}");
         }
@@ -4009,6 +3998,14 @@ mod tests {
     }
 
     #[test]
+    fn an_input_accepts_up_to_the_cap_and_a_long_one_is_only_a_check_warning() {
+        for max in [INPUT_MAX_LIMIT, INPUT_MAX_LIMIT + 1, INPUT_MAX_CAP] {
+            let p = ok(&format!("{ASK}::input{{var=hero.name prompt=\"Name?\" max={max}}}\n"));
+            assert!(p.ops.iter().any(|op| matches!(op, Op::Input { max: m, .. } if *m == max)), "{max}");
+        }
+    }
+
+    #[test]
     fn input_errors_name_the_line() {
         let e = |body: &str, needle: &str| {
             let errors = errs(&format!("{ASK}{body}"));
@@ -4021,7 +4018,7 @@ mod tests {
         e("::input{var=n prompt=\"Name?\"}\n", "must be a text variable");
         e("::input{var=hero.name prompt=\"Name?\" bogus=1}\n", "unknown attribute `bogus`");
         e("::input{var=hero.name prompt=\"Name?\" max=0}\n", "bad `max=0`");
-        e("::input{var=hero.name prompt=\"Name?\" max=65}\n", "bad `max=65`");
+        e("::input{var=hero.name prompt=\"Name?\" max=1025}\n", "bad `max=1025`");
         e("::input{var=hero.name prompt=\"Name?\" max=x}\n", "bad `max=x`");
         e("::input{var=hero.name prompt=\"Name?\" default=\"toolong\" max=3}\n", "longer than `max=3`");
         e("::input{var=hero.name prompt=\"Name?{nw}\"}\n", "only work in dialogue");
@@ -4070,7 +4067,9 @@ mod tests {
         e("::press{key=ab time=1 result=hit}\n", "needs `key=`");
         e("::press{key=space result=hit}\n", "needs `time=");
         e("::press{key=space time=0.2 result=hit}\n", "bad `time=0.2`");
-        e("::press{key=space time=601 result=hit}\n", "bad `time=601`");
+        e("::press{key=space time=86401 result=hit}\n", "bad `time=86401`");
+        ok(&format!("{TIMED}::press{{key=space time=86400 result=hit}}\n"));
+        ok(&format!("{TIMED}::press{{key=space time=601 result=hit}}\n"));
         e("::press{key=space time=n result=hit}\n", "bad `time=n`");
         e("::press{key=space time=1 count=0 result=hit}\n", "bad `count=0`");
         e("::press{key=space time=1 count=201 result=hit}\n", "bad `count=201`");
@@ -4102,9 +4101,11 @@ mod tests {
         e("::timing{result=hit good=40%..60% speed=0.1}\n", "bad `speed=0.1`");
         e("::timing{result=hit good=40%..60% speed=9}\n", "bad `speed=9`");
         e("::timing{result=hit good=40%..60% time=0}\n", "bad `time=0`");
+        e("::timing{result=hit good=40%..60% time=86401}\n", "bad `time=86401`");
         e("::timing{result=hit good=40%..60% bogus=1}\n", "unknown attribute `bogus`");
         e("::timing{result=hit good=40%..60% prompt=\"Go{nw}\"}\n", "only work in dialogue");
         ok(&format!("{TIMED}::timing{{result=hit good=40%..60% perfect=40%..60% speed=5 time=600}}\n"));
+        ok(&format!("{TIMED}::timing{{result=hit good=40%..60% time=86400}}\n"));
     }
 
     const SHOP: &str = "---\nvars: { gold: 40, bag: [], met: false, name: \"x\" }\n---\n::item{id=key price=15}\n::item{id=lamp price=8}\n::item{id=free}\n# a\n";
@@ -5476,7 +5477,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replay_label_may_not_take_parameters_and_there_are_at_most_64() {
+    fn a_replay_label_may_not_take_parameters_and_the_number_of_replays_is_not_limited() {
         let src = "---\nreplays: { heal: \"Heal\" }\n---\n# Start\n::call{to=heal amount=1}\n::end\n# heal(amount)\nHi.\n::return\n";
         let e = errs(src);
         assert!(e.iter().any(|e| e.line == 2 && e.message.contains("has parameters")), "{e:?}");
@@ -5486,21 +5487,18 @@ mod tests {
             let labels: String = (0..n).map(|i| format!("# s{i}\nHi.\n")).collect();
             format!("---\nreplays: {{ {} }}\n---\n{labels}", list.join(", "))
         };
-        assert_eq!(ok(&many(64)).replays.len(), 64);
-        let e = errs(&many(65));
-        assert!(e.iter().any(|e| e.line == 2 && e.message.contains("at most 64")), "{e:?}");
+        assert_eq!(ok(&many(500)).replays.len(), 500);
     }
 
     #[test]
-    fn replay_titles_are_unescaped_and_capped() {
+    fn replay_titles_are_unescaped_and_any_length() {
         let src = |title: &str| format!("---\nreplays: {{ a: {title}, b: \"Two\" }}\n---\n# a\nHi.\n# b\nHo.\n");
         let p = parse(&src("\"Q\\\"uote, \\\\ ok\"")).unwrap();
         assert_eq!(p.replays[0].title, "Q\"uote, \\ ok");
         assert_eq!(p.replays[1].title, "Two");
-        let sixty = "x".repeat(60);
-        assert!(parse(&src(&format!("\"{sixty}\""))).is_ok());
-        let errors = parse(&src(&format!("\"{}\"", "x".repeat(61)))).unwrap_err();
-        assert!(errors.iter().any(|e| e.line == 2 && e.message.contains("longer than 60")), "{errors:?}");
+        // the Scenes list shrinks or cuts a long title to fit its row, so there is no limit here
+        let long = "x".repeat(5000);
+        assert_eq!(parse(&src(&format!("\"{long}\""))).unwrap().replays[0].title, long);
         // an escaped quote doesn't end the title, so a comma after it doesn't split it
         let p = parse(&src("\"A\\\", B\"")).unwrap();
         assert_eq!(p.replays[0].title, "A\", B");

@@ -12,7 +12,7 @@ use std::collections::{HashSet, VecDeque};
 
 use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
-use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_LIMIT};
+use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
 use quillstone_script::{Ease, ANIM_PREFIX};
 use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
 
@@ -155,7 +155,7 @@ impl<'p> Session<'p> {
                         (Some("use"), Some(id)) => Input::Use(id.clone()),
                         (Some("hud"), Some(id)) if quillstone_script::is_plain_ident(id) => Input::Hud(id.clone()),
                         // Only kept so the history lines up: the state before it is what rollback uses.
-                        (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_LIMIT).collect()),
+                        (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_CAP).collect()),
                         _ => return Err(format!("line {n}: bad input record")),
                     });
                 }

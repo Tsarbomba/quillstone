@@ -1,6 +1,6 @@
 //! `::particles` in the runtime: state, redraw, rollback, saves, hostile saves.
 
-use quillstone_script::{parse, ParticleKind, Particles, Program};
+use quillstone_script::{parse, ParticleKind, Particles, Program, MAX_PARTICLES};
 
 use crate::test_util::replace_records;
 use crate::{Cmd, Input, Session};
@@ -115,7 +115,7 @@ fn hostile_records_are_refused_or_made_safe() {
     let loaded = |rec: &str| Session::load(&p, &replace_records(&save, "particles ", &[rec])).unwrap().0.state().particles.clone().unwrap();
     // Numbers are clamped, NaN falls back.
     let big = loaded("particles rain 1000000 100 -100 true");
-    assert_eq!((big.amount, big.speed, big.wind, big.back), (200, 5.0, -2.0, true));
+    assert_eq!((big.amount, big.speed, big.wind, big.back), (MAX_PARTICLES, 5.0, -2.0, true));
     let small = loaded("particles snow -5 0 5 false");
     assert_eq!((small.amount, small.speed, small.wind), (1, 0.2, 2.0));
     let nan = loaded("particles snow 0 NaN inf false");

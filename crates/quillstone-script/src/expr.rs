@@ -80,9 +80,11 @@ pub fn is_keyword(s: &str) -> bool {
 /// Deepest nesting of parentheses, function calls, `-` and `not` chains: the parser
 /// is recursive and expressions come from saves (untrusted).
 pub const MAX_NESTING: usize = 64;
-/// Most tokens in one expression, so long flat chains (`1+1+1+...`) can't build trees
-/// deep enough to overflow a stack in eval, clone or drop.
-pub const MAX_TOKENS: usize = 512;
+/// Most tokens in one expression (a long list literal is fine), and most operators (`+ - * / % and or not`,
+/// comparisons): every operator can add a level to the tree, and a flat chain (`1+1+1+...`) must not build
+/// one deep enough to overflow a stack in eval, clone or drop.
+pub const MAX_TOKENS: usize = 8192;
+pub const MAX_OPERATORS: usize = 256;
 
 fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
     let chars: Vec<char> = s.chars().collect();
@@ -482,7 +484,12 @@ fn parse_expr_with(s: &str, allow_random: bool) -> Result<Expr, String> {
     if s.trim().is_empty() {
         return Err("expected a condition, found nothing".into());
     }
-    let mut p = Parser { toks: tokenize(s)?, pos: 0, allow_random, depth: 0 };
+    let toks = tokenize(s)?;
+    let operators = toks.iter().filter(|t| matches!(t, Tok::Cmp(_) | Tok::Plus | Tok::Minus | Tok::Star | Tok::Slash | Tok::Percent | Tok::And | Tok::Or | Tok::Not));
+    if operators.count() > MAX_OPERATORS {
+        return Err(format!("expression is too long (at most {MAX_OPERATORS} operators)"));
+    }
+    let mut p = Parser { toks, pos: 0, allow_random, depth: 0 };
     let expr = p.or()?;
     match p.toks.get(p.pos) {
         None => Ok(expr),
@@ -1040,10 +1047,11 @@ mod tests {
     #[test]
     fn a_long_flat_chain_is_refused_and_the_longest_allowed_one_is_safe_to_use() {
         small_stack(|| {
-            let long = vec!["1"; 5000].join("+");
+            let long = vec!["1"; MAX_TOKENS].join("+");
             assert!(parse_expr(&long).unwrap_err().contains("too long"));
             // the longest chain that is accepted: evaluate, clone, walk and drop it
-            let n = MAX_TOKENS.div_ceil(2);
+            assert!(parse_expr(&vec!["1"; MAX_OPERATORS + 2].join("+")).unwrap_err().contains("operators"));
+            let n = MAX_OPERATORS + 1;
             let chain = vec!["x"; n].join("+");
             let e = parse_expr(&chain).unwrap();
             let vars: Vars = [("x".to_string(), Value::Int(2))].into_iter().collect();
@@ -1054,6 +1062,11 @@ mod tests {
             copy.vars_read(&mut out);
             assert_eq!(out.len(), n);
             drop(copy);
+            // many tokens but no deep tree: a wide call is fine up to the token limit
+            let wide = format!("min({})", vec!["x"; MAX_TOKENS / 2 - 2].join(","));
+            assert_eq!(parse_expr(&wide).unwrap().eval(&vars), Value::Int(2));
+            let wider = format!("min({})", vec!["x"; MAX_TOKENS / 2].join(","));
+            assert!(parse_expr(&wider).unwrap_err().contains("too long"));
             let mixed = format!("{}x{}", "-(".repeat(MAX_NESTING / 2), ")".repeat(MAX_NESTING / 2));
             parse_expr(&mixed).unwrap().eval(&vars);
         });

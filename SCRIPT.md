@@ -86,7 +86,7 @@ game is compiled, so saves, rollback and the tester see one story.
 - Labels are global: the same label in two files is an error that names both places.
 - Includes may nest up to 8 files deep. A file can be included once: including it a second
   time, or a cycle (`a` includes `b` includes `a`, or a file including the main script), is
-  an error. A game may include up to 4096 files and 64 MB of script in all, each file up to 8 MB.
+  an error. A game may include any number of files, up to 64 MB of script in all, each file up to 8 MB and nested up to 8 deep.
 - A `::choice`, `::hotspots` or `::shop` block, a comment and a front matter block each
   stay inside one file; an `::if` block may open in one file and close in another.
 - Errors, warnings and `quillstone test` findings name the file and line, such as
@@ -186,7 +186,7 @@ Inside lines and choice texts:
 | `{size=+10}big{/size}` | text 10 pixels bigger than the text around it (`{size=-8}` smaller); they nest, so `{size=+10}a{size=+4}b{/size}{/size}` makes `b` 14 bigger |
 | `{size=24}small{/size}` | text exactly 24 pixels tall (on the 1920x1080 screen; 8 to 200, as is the result of a relative size) |
 | `First.{p}Second.` | a line break inside the line (a paragraph break); it doesn't wait. A `{p}` at the very start or end of a line is ignored. Not allowed in a choice text |
-| `Well...{w=0.5} no.` | the typing pauses for half a second there (up to 10; a click skips it) |
+| `Well...{w=0.5} no.` | the typing pauses for half a second there (a click skips it; over 10 seconds `check` warns of a typo, and 3600 is the most) |
 | `Hold on.{nw}` | "no wait": once the line has finished typing the story goes on by itself, without a click or the auto-forward delay. It must be the very last thing in a dialogue line (not a choice text) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
@@ -355,7 +355,7 @@ rest were not tried.
 | `::unlock{src=assets/cg1.png}` | Unlocks a `gallery:` or `music_room:` entry for the Extras screen without showing or playing it; see [Kept across playthroughs](#kept-across-playthroughs). Doesn't wait or show anything. |
 | `::fade{out time=0.5 color=#000000}` | **Dip to a colour**: the whole stage (background, sprites, inline images, video and camera) fades to the colour over `time` seconds (more than 0, up to 10; default 0.5; `color` as for `::flash`, default black) and **stays covered**. It waits until the fade is done, like `::wait`; a click, or skip mode, ends it at once and the story goes on. The textbox, choices and menus are not covered, so a line of narration works over a black screen. |
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
-| `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 200, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites (`layer=front`, over them, is the default). Doesn't wait. See [Ambient particles](#ambient-particles). |
+| `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 1000, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites (`layer=front`, over them, is the default). Doesn't wait. See [Ambient particles](#ambient-particles). |
 | `::tint{color=#203060 alpha=0.35 fade=1}` | A colour wash over the whole stage that **stays** until it is changed or removed: `::tint{none}` (or `{off}`) takes it away. `color` is `#rrggbb` or `#rgb` (required); `alpha` is how strong it is, 0 to 0.9 (default 0.4; it never goes higher so the story stays visible; `35%` also works); `fade` is the seconds to ease from the current tint (or from none), 0 to 10 (default 0: at once). `{none}` takes only `fade`. Doesn't wait. See "Colour wash". |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
@@ -411,7 +411,7 @@ art_scale: 1.5
 
 ## Ambient particles
 
-`::particles` is cheap weather: no spawning, no physics, never more than 200 particles.
+`::particles` is cheap weather: no spawning, no physics, never more than 1000 particles.
 
 ```
 ::particles{snow}
@@ -487,7 +487,7 @@ there is an error), and `anim=` and `color=` take no variables.
 `{name}` is replaced: no spaces inside the braces, no calculations. A variable that is
 not declared in `vars:` is allowed (a `::set` may create it, and `quillstone test` warns
 when nothing ever sets it), but a declared number, `true`/`false` or list is an error. The
-name needs a written-out extension (`.png`, `.jpg`, `.jpeg` or `.webp`; nothing else), at most four variables
+name needs a written-out extension (`.png`, `.jpg`, `.jpeg` or `.webp`; nothing else), at most eight variables
 fit in one name, and a name with a `{variable}` can only be a picture, not a video.
 Braces cannot be part of any file name: there is no way to write a literal one.
 
@@ -583,7 +583,7 @@ every combination. Declare the layers on the character, back to front:
 ::show{mika eyes=none}
 ```
 
-- `layers` is a comma-separated list of layer ids (letters, digits and `_`, at most 8, no
+- `layers` is a comma-separated list of layer ids (letters, digits and `_`, at most 32, no
   repeats; not `none`, and not the name of a `::show` attribute such as `x` or `scale`).
   `layer_sprites` must contain both `{layer}` and `{value}` and end in a picture type
   (`.png`, `.jpg`, `.jpeg` or `.webp`). With `layer_sprites=assets/mika/{layer}_{value}.png`,
@@ -897,8 +897,8 @@ is really playing, so a file that can't be decoded never traps the player.
   option is locked counts as one with nothing on offer, so the story carries on past it. A
   `{once}` option that was already picked stays hidden, not greyed. `show` isn't for
   `::hotspots`. `quillstone test` never picks a locked option.
-- A **timed choice** runs out: `::choice{time=8}` (seconds, 0.5 to 600, a plain
-  number) and exactly one option marked `default` in its braces. When the time is up
+- A **timed choice** runs out: `::choice{time=8}` (seconds, 0.5 and up, a plain
+  number; over 600 `check` warns of a typo, and 86400 is the most) and exactly one option marked `default` in its braces. When the time is up
   that option is picked as if it had been clicked, so a silent answer is an answer too:
 
   ````markdown
@@ -1011,7 +1011,7 @@ object to find, a point-and-click scene.
   point like a choice, and the pick isn't added to the history. Going back
   returns to the screen before the click.
 - **Timed screens.** `::hotspots{time=3 default=#too-slow}` gives the player 3 seconds
-  (0.5 to 600, a plain number) and jumps to the label when time runs out; both are
+  (seconds, 0.5 and up, a plain number, as for `::choice`) and jumps to the label when time runs out; both are
   needed together. It counts down like a timed `::choice` (see Choices): the same bar
   (along the top of the screen, since there are no buttons), starting when the screen
   appears and again after a rollback or a load, waiting while Settings, the history or
@@ -1079,7 +1079,7 @@ The pick slips.
 - `speed` (optional, default 1) is how many times the marker crosses the bar in a second,
   from 0.2 to 5. It starts at the left end, runs to the right end and back again, and so on
   for ever, so `speed=1` is a back-and-forth every two seconds.
-- `time` (optional, seconds, 0.5 to 600, a plain number) is the limit: when it runs out
+- `time` (optional, seconds, 0.5 and up, a plain number, as for `::choice`) is the limit: when it runs out
   without a press the result is `"miss"`. Without it the bar waits for ever.
 - `prompt` (optional) is shown above the bar. Like an `::input` prompt it takes `{name}`
   values, `**bold**`, `*italic*`, colour and size tags (not `{nw}` or `{p}`), and it is
@@ -1139,7 +1139,7 @@ The dog sails over you.
   click) or a letter `a` to `z`. Anything else is an error that lists these. The prompt draws
   a key cap with the key's name. `space` and `enter` are the same key here (either one
   counts), which is what lets the gamepad's confirm button press them.
-- `time` (required, seconds, 0.5 to 600, a plain number) is the limit.
+- `time` (required, seconds, 0.5 and up, a plain number, as for `::choice`) is the limit.
 - `count` (optional, 1 to 200, default 1) is how many presses it takes: a bar under the time
   bar fills with each one. All of them within `time` is a hit.
 - `result` (required) is a text variable declared in `vars:`. It is set to `"hit"` or
@@ -1368,7 +1368,7 @@ Asks the player to type a text and stores it in a variable (a name, mostly).
   values, `**bold**`, `*italic*`, colour and size tags like a line does (not `{nw}` or
   `{p}`). `default` (optional) is the answer used when the player confirms an empty
   field; the field then shows it dimmed as a hint. `max` (optional) is how many
-  characters the answer may have, from 1 to 64 (24 when left out); it counts characters,
+  characters the answer may have, from 1 to 1024 (24 when left out; over 64 `check` warns of a typo); it counts characters,
   not bytes, and `default` may not be longer.
 - The story waits at a centred panel with the prompt, a text field with a blinking
   caret and an OK button. A long text scrolls so its last characters stay in view.
@@ -1457,8 +1457,8 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 - **`replays:`** lists scenes the player can watch again. Each entry is a label (written the
   way a `::jump` writes it: `# The rooftop` is `the-rooftop`; spaces and underscores
   become dashes) and the title shown in the menu. The label must exist and
-  take no parameters; titles must be different and not empty, at most 60 characters (write `\"` for a quote
-  mark inside one); there can be up to 64.
+  take no parameters; titles must be different and not empty (write `\"` for a quote
+  mark inside one). Any number of scenes, and a long title is shrunk or cut to fit its row.
   Entries show in the order written (several `replays:` lines add up).
 - A scene **unlocks** the first time the story reaches its label, however it gets there
   (falling in from above, `::jump`, `::call`, a choice). Like gallery pictures, it stays
@@ -1497,7 +1497,7 @@ languages: en=English, sv=Svenska
 
 `languages:` lists the languages the game is offered in as `code=Name`. The **first** is the
 one the script is written in; every other language gets a translation file. Codes are short
-(letters, digits, `-` and `_`, at most 16), at most 16 languages. The name is what the player sees
+(letters, digits, `-` and `_`, at most 16), at most 64 languages. The name is what the player sees
 in Settings, so write it in that language itself. Without `languages:` nothing changes anywhere.
 
 With more than one language, Settings gets a **Language** row (click, Left/Right or the gamepad

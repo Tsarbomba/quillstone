@@ -57,9 +57,11 @@ pub type Vars = BTreeMap<String, Value>;
 /// (see `seen(label)` in conditions). Real variable names can't contain `:`.
 pub const SEEN: &str = "seen:";
 
-/// The most characters `::input` accepts by default, and the most it may be told to accept.
+/// The most characters `::input` accepts by default; a `max=` above `INPUT_MAX_LIMIT` is probably a typo
+/// (`check` warns), and above `INPUT_MAX_CAP` it is refused.
 pub const INPUT_MAX_DEFAULT: usize = 24;
 pub const INPUT_MAX_LIMIT: usize = 64;
+pub const INPUT_MAX_CAP: usize = 1024;
 
 /// Most items a list variable holds: `+=` stops adding there, and a save with a longer list is refused
 /// (real games hold dozens; the limit keeps a damaged or hostile file from costing memory or time).
@@ -476,7 +478,7 @@ pub struct Character {
 }
 
 /// The most layers one character may have.
-pub const MAX_LAYERS: usize = 8;
+pub const MAX_LAYERS: usize = 32;
 
 /// The layer value that hides a layer (`::show{mika eyes=none}`).
 pub const LAYER_NONE: &str = "none";
@@ -599,9 +601,6 @@ pub struct Replay {
     pub title: String,
 }
 
-/// Most scenes a game may list for replay.
-pub const MAX_REPLAYS: usize = 64;
-
 /// A heading that became a label.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heading {
@@ -694,7 +693,7 @@ pub struct Language {
 }
 
 /// Most languages a game may list.
-pub const MAX_LANGUAGES: usize = 16;
+pub const MAX_LANGUAGES: usize = 64;
 
 /// Where an included file's lines sit in a [`Program`]'s line numbering: its line `n` is
 /// numbered `base + n`.
@@ -986,7 +985,7 @@ impl Axis {
 }
 
 /// Most particles `::particles` draws at once.
-pub const MAX_PARTICLES: u32 = 200;
+pub const MAX_PARTICLES: u32 = 1000;
 /// How many it draws when `amount=` is left out.
 pub const DEFAULT_PARTICLES: u32 = 60;
 /// Allowed `speed=` and `wind=` of `::particles`.
@@ -1237,6 +1236,8 @@ pub fn kind_from_path(path: &str) -> AssetKind {
 /// Shortest and longest `::choice{time=..}`, in seconds.
 pub const MIN_CHOICE_TIME: f32 = 0.5;
 pub const MAX_CHOICE_TIME: f32 = 600.0;
+/// Longest accepted `time=`; between the two `check` warns (a typo?).
+pub const MAX_CHOICE_TIME_CAP: f32 = 86_400.0;
 
 /// Slowest and fastest marker of a `::timing` bar, in sweeps (one way across the bar) per second.
 pub const MIN_TIMING_SPEED: f32 = 0.2;

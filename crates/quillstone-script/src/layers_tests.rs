@@ -49,8 +49,10 @@ fn bad_layer_declarations_are_refused() {
     assert!(line("layers=a/b layer_sprites=a/{layer}_{value}.png").contains("layer id"));
     assert!(line("layers=x layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
     assert!(line("layers=none layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
-    assert!(line("layers=a,b,c,d,e,f,g,h,i layer_sprites=a/{layer}_{value}.png").contains("at most 8"));
-    assert!(line("layers=a,b,c,d,e,f,g,h layer_sprites=a/{layer}_{value}.png").is_empty(), "eight are fine");
+    let many = |n: usize| (0..n).map(|i| format!("l{i}")).collect::<Vec<_>>().join(",");
+    let sprites = "layer_sprites=a/{layer}_{value}.png";
+    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS + 1))).contains("at most 32"));
+    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS))).is_empty(), "thirty-two are fine");
     assert!(line("layers=body layer_sprites=a/{layer}_{value}.webm").contains("picture"));
     assert!(line("layers=body layer_sprites=../a/{layer}_{value}.png").contains("inside the game folder"));
     assert!(line("layers=body layer_sprites=a/{layer}_{value}_{x}.png").contains("braces"), "only {{layer}} and {{value}}");

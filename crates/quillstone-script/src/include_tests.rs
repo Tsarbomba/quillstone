@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::{parse, parse_files, Op, ParseError, Program, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH, MAX_INCLUDE_FILE_BYTES};
+use crate::{parse, parse_files, Op, ParseError, Program, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH, MAX_INCLUDE_FILE_BYTES};
 
 fn load(main: &str, files: &[(&str, &str)]) -> Result<Program, Vec<ParseError>> {
     let files: HashMap<String, String> = files.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
@@ -196,14 +196,22 @@ fn nesting_depth_is_capped() {
 }
 
 #[test]
-fn the_number_of_files_is_capped() {
-    let main: String = (0..=MAX_INCLUDES).map(|i| format!("::include{{f{i}.quill.md}}\n")).collect();
-    let parsed = parse_files(&main, "main.quill.md", &|_| Ok("Hi.\n".into()));
-    let e = parsed.unwrap_err();
-    assert_eq!(e.len(), 1, "{e:?}");
-    assert!(e[0].message.contains("at most 4096") && e[0].line == MAX_INCLUDES + 1, "{e:?}");
-    let ok: String = (0..MAX_INCLUDES).map(|i| format!("::include{{f{i}.quill.md}}\n")).collect();
-    assert_eq!(parse_files(&ok, "m.quill.md", &|_| Ok("Hi.\n".into())).unwrap().sources.len(), MAX_INCLUDES);
+fn there_is_no_limit_on_the_number_of_files() {
+    let main: String = (0..5000).map(|i| format!("::include{{f{i}.quill.md}}\n")).collect();
+    let p = parse_files(&main, "m.quill.md", &|_| Ok("Hi.\n".into())).unwrap();
+    assert_eq!(p.sources.len(), 5000);
+}
+
+#[test]
+fn a_cycle_is_still_refused_with_no_count_limit() {
+    let ring = |n: &str| Ok(if n == "f1.quill.md" { "::include{f2.quill.md}\n" } else { "::include{f1.quill.md}\n" }.to_string());
+    let e = parse_files("::include{f1.quill.md}\n", "m.quill.md", &ring).unwrap_err();
+    assert!(e.iter().any(|e| e.message.contains("cycle")), "{e:?}");
+    // after thousands of other files: the cycle check does not depend on how many were read
+    let main: String = (0..3000).map(|i| format!("::include{{g{i}.quill.md}}\n")).collect::<String>() + "::include{f1.quill.md}\n";
+    let load = |n: &str| if n.starts_with('g') { Ok("Hi.\n".to_string()) } else { ring(n) };
+    let e = parse_files(&main, "m.quill.md", &load).unwrap_err();
+    assert!(e.iter().any(|e| e.message.contains("cycle")), "{e:?}");
 }
 
 #[test]
