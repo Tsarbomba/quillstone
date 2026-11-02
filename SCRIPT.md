@@ -362,6 +362,7 @@ rest were not tried.
 | `::show{mika happy x=20% fade=0.4 scale=1}` | Show a sprite (or change its pose; the new pose crossfades and keeps its position and size). `x`: `left` `center` `right`, a number or `30%` (see "Placing things: `x` and `y`" below). Without `x` it keeps its position, or is centred if new; without `scale` (0.05 to 10) it keeps its size, or is 1 if new. |
 | `::show{mika happy y=0.5 z=2}` | `y`: `top` `center` `bottom`, a number or `N%`, placed like `x` (a new sprite stands on the bottom, `y=bottom`). The screen cuts off what hangs outside. `z`: a whole number from -100 to 100 (default 0); sprites with a higher `z` are drawn in front, and equal ones in the order they were shown. `z` only orders sprites among themselves: the background stays behind them and the textbox and menus stay on top. Showing a sprite again keeps its `y` and `z` unless you give them. |
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps its `x` and `y` placement, worked out again for its new size. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
+| `::show{mika happy alpha=0.5 xoffset=40 yoffset=-20}` | `alpha` (0 to 1, default 1) makes the sprite see-through, on top of `fade=` (which fades it in and out by itself); `xoffset` and `yoffset` shift it by pixels of the 1920x1080 stage (negative: left, up) **after** `x` and `y` have placed it, so `x=left xoffset=-100` puts it 100 px past the edge. Each is from -3840 to 3840 and kept like the other values when a later `::show` doesn't give it. `::move` can animate all three (see "Move sequences" below). |
 | `::show{src=assets/ghost.png id=ghost x=center}` | A sprite that isn't a character. |
 | `::show{mika anim=blink x=20%}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`x`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
@@ -369,6 +370,8 @@ rest were not tried.
 | `::move{mika scale=1.2 time=0.5 ease=out}` | Grow or shrink it (can be combined with `x` and `y`). `ease`: `inout` (default: slow at both ends), `in`, `out`, `linear`. |
 | `::move{mika y=0.9 time=0.3 ease=out}` | Slide it up or down the same way (`y` as for `::show`). `z` can't be animated; change it with `::show`. |
 | `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `x`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
+| `::move{mika alpha=0 xoffset=-60 time=0.5}` | Fade the sprite to an opacity and/or slide it by pixels, as `::show` sets them (`alpha` 0 to 1; `xoffset`, `yoffset` in stage pixels). The sprite stays on stage at `alpha=0`: `::hide` it when it should be gone. |
+| `::move{eve x=30% time=1 then x=70% time=1 wait=0.5 then alpha=0 time=0.5}` | A **sequence**: steps that run one after another (see "Move sequences" below). |
 | `::move{mika y=0.85 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` place the view over the stage the same way as a sprite (`left` `center` `right`, `top` `center` `bottom`, a number or `N%`, but only 0 to 100%: the view never leaves the stage). Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
 | `::camera{reset time=1}` | Back to the whole stage. |
@@ -648,6 +651,30 @@ every combination. Declare the layers on the character, back to front:
 `{variable}` value can build, and `quillstone package` ships them all. A demo is in
 `examples/layers.quill.md`.
 
+## Move sequences
+
+Put `then` between the steps of one `::move` and they run one after another, in order, without holding up the story:
+
+```
+::move{eve x=30% time=1 then x=70% time=1 wait=0.5 then alpha=0 time=0.5}
+::show{eve alpha=0 xoffset=-80}
+::move{eve alpha=1 xoffset=0 time=0.6}
+```
+
+- Each step is a small `::move` of its own: it names what it animates (`x`, `y`, `scale`, `xscale`, `yscale`,
+  `alpha`, `xoffset`, `yoffset`), a `time` (default 0.5) and an `ease`, and starts from where the step before it ended.
+  A property a step leaves out stays as it is. Separate steps with spaces and `then` (commas are not separators).
+- `wait=` (seconds, default 0) waits **before** the step starts; a step may be just a pause (`then wait=2`). A `wait=`
+  on the first step delays the whole move.
+- `flip` belongs in the first step (it switches at the start, as in any move). At most 32 steps.
+- `alpha` runs from 0 (invisible) to 1; it multiplies with the fade of `::show{fade=}` and `::hide{fade=}`. `xoffset` and
+  `yoffset` are pixels of the 1920x1080 stage added after the placement of `x` and `y`.
+- A new `::move` (or a `::show` that sets position, size, `alpha` or an offset, or `::hide`) cuts a running sequence short; the sprite
+  glides on from where it is. Without `then` a move is the one-step sequence it always was.
+- It never waits: the next line shows at once. The values are part of the scene: a rollback, a redraw (changing the
+  language, loading a save) and skip mode put the sprite at the **end** of the sequence with no animation, the same as for any move.
+  A save also keeps the sprite's `alpha` and offsets (an older save loads with 1 and 0).
+
 ## Looping moves
 
 Add `loop` to a `::move` and the sprite keeps going back and forth:
@@ -661,8 +688,12 @@ Add `loop` to a `::move` and the sprite keeps going back and forth:
   then to the target again, for ever. `time` is the time of **one leg** (it must be above
   0), and `ease` applies to each leg.
 - `loop` alone and `loop=pingpong` mean the same; there is no other kind of loop.
-- It animates any mix of `x`, `y`, `scale`, `xscale` and `yscale`; a move that changes
+- It animates any mix of `x`, `y`, `scale`, `xscale`, `yscale`, `alpha`, `xoffset` and `yoffset`; a move that changes
   none of them (only `flip`, say) can't loop. `flip` may be added: it switches at the start.
+- With `then` steps, `loop` (put it anywhere, the end reads best) repeats **all** the steps, in order, for ever:
+  `::move{lamp alpha=0.4 time=1 then alpha=1 time=1 wait=0.5 loop}` pulses a lamp. The repeat starts from
+  where the last step ended (that is the sprite's resting value); a `wait=` in a step is a pause on every round. A single
+  step with `loop` still goes back and forth and can't `wait=`.
 - "Where it started" is the sprite's resting values: what it had when the move was given.
   The loop doesn't change them, so a pose change (`::show{mika happy}`) keeps the loop going.
 - The loop ends when the sprite gets another `::move`, a `::show` that **sets** `x`, `y`,
@@ -676,6 +707,25 @@ Add `loop` to a `::move` and the sprite keeps going back and forth:
 Like animations, where a loop is in its cycle is not part of the state: a save, rollback or
 reload restarts the sprite at its resting values and heading for the target. A loop stands still while a menu is open,
 and skip mode does not speed it up.
+
+## Moving backgrounds
+
+There is no separate background move: `::camera` already pans and zooms the stage, and it eases over time, so a
+background that slides or zooms is a camera move (the stage is the background and the sprites together, so the
+sprites move with it):
+
+```
+::bg{src=assets/street.png}
+::camera{zoom=1.4 x=left y=center}              // close in on the left of the picture, at once
+::camera{x=right time=20 ease=linear}            // a slow pan to the right
+::camera{zoom=1.8 x=60% y=40% time=6 ease=out}   // then a slow zoom in
+::camera{reset time=1}
+```
+
+- The view never leaves the stage, so a pan needs `zoom` above 1 (the picture is bigger than the screen, as for
+  any pan); `zoom` goes from 1 to 4. The camera stays put through `::bg`, `::show` and `::hide` until you `::camera{reset}`.
+- To keep the sprites still while only the background moves, there is no way: the camera moves them too.
+- Like sprites, it is part of the scene: rollback, saves and a redraw put it at the end of the move.
 
 ## HUD: text, bars and pictures over the story
 
@@ -1632,7 +1682,7 @@ per text.
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch, mirroring, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the colour wash of `::tint`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, `alpha` and pixel offsets, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the colour wash of `::tint`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;

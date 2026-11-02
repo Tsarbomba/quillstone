@@ -397,7 +397,7 @@ mod tests {
     fn the_layer_decides_whether_they_are_behind_the_sprites() {
         let mut v = View::new();
         let sprite = Cmd::ShowSprite {
-            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0,
+            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0,
         };
         let order = |v: &View| -> Vec<&'static str> {
             let mut o: Vec<&'static str> = v

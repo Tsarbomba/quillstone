@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -20,6 +20,8 @@ mod test_util;
 mod review3_tests;
 #[cfg(test)]
 mod anim_tests;
+#[cfg(test)]
+mod seq_tests;
 #[cfg(test)]
 mod dynname_tests;
 #[cfg(test)]
@@ -100,16 +102,23 @@ pub enum Cmd {
         flip: bool,
         xscale: f32,
         yscale: f32,
+        /// Opacity 0..1 and the pixel offset (of the 1920x1080 stage) added after placing by `x`, `y`.
+        alpha: f32,
+        dx: f32,
+        dy: f32,
         fade: f32,
     },
     HideSprite { id: String, fade: f32 },
-    /// Animate a sprite to position `x`, `y` and sizes `scale`, `xscale`, `yscale`
-    /// over `time` seconds. `flip` is what the sprite is from the start of the move.
-    MoveSprite { id: String, x: f32, y: f32, scale: f32, flip: bool, xscale: f32, yscale: f32, time: f32, ease: Ease },
-    /// A looping move: glide to these values over `time` seconds, then back to the
-    /// values the sprite rests at (its last `ShowSprite`/`MoveSprite`) and forth, for
-    /// ever. Any `MoveSprite` or a `ShowSprite` that changes where the sprite rests ends it.
-    LoopSprite { id: String, x: f32, y: f32, scale: f32, flip: bool, xscale: f32, yscale: f32, time: f32, ease: Ease },
+    /// Animate a sprite to the values of `to` (see [`SpriteStep`]). `flip` is what the sprite is from the start
+    /// of the move. `queued`: the next leg of a sequence: it starts when the legs before it are done.
+    MoveSprite { id: String, flip: bool, to: SpriteStep, queued: bool },
+    /// A looping move: glide to the values of `to` over its `time`, then back to the values the
+    /// sprite rests at (its last `ShowSprite`/`MoveSprite`) and forth, for ever. Any `MoveSprite` or a
+    /// `ShowSprite` that changes where the sprite rests ends it.
+    LoopSprite { id: String, flip: bool, to: SpriteStep },
+    /// The legs of the sprite's last `MoveSprite` sequence repeat for ever once the last one is done. Any
+    /// `MoveSprite` or a `ShowSprite` that changes where the sprite rests ends it.
+    CycleSprite { id: String },
     /// Shake the stage for `time` seconds by up to `strength` pixels along `axis`.
     Shake { time: f32, strength: f32, axis: Axis },
     /// A full-screen flash of `color` (0..1 RGB) that fades out over `time` seconds.
@@ -327,36 +336,77 @@ pub struct SpriteState {
     /// Stretch along one axis, multiplied with `scale`.
     pub xscale: f32,
     pub yscale: f32,
+    /// Opacity 0..1, and the pixel offset (of the 1920x1080 stage) added after placing by `x`, `y`.
+    pub alpha: f32,
+    pub dx: f32,
+    pub dy: f32,
     /// A looping move: the sprite oscillates between the values above (where it
     /// starts) and these. The oscillation's phase is not state: it restarts on a redraw.
-    pub looped: Option<SpriteLoop>,
+    pub looped: Option<SpriteStep>,
+    /// A looping sequence of moves (`::move{... then ... loop}`): the legs in order, repeated from the
+    /// values above (where the last one ends). Empty when there is none; the phase is not state either.
+    pub cycle: Vec<SpriteStep>,
 }
 
-/// The far end of a looping `::move`, with the time of one leg and its easing.
+/// One leg of a `::move`: the values to glide to (absolute, in the sprite's own units), after waiting `wait`
+/// seconds, over `time` seconds with `ease`. A looping move's far end is one too (`wait` 0).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SpriteLoop {
+pub struct SpriteStep {
     pub x: f32,
     pub y: f32,
     pub scale: f32,
     pub xscale: f32,
     pub yscale: f32,
+    pub alpha: f32,
+    pub dx: f32,
+    pub dy: f32,
     pub time: f32,
     pub ease: Ease,
+    pub wait: f32,
+}
+
+impl SpriteStep {
+    /// x, y, scale, xscale, yscale, alpha, dx, dy.
+    pub fn values(&self) -> [f32; 8] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy]
+    }
 }
 
 impl SpriteState {
-    fn loop_cmd(&self, l: &SpriteLoop) -> Cmd {
-        Cmd::LoopSprite {
-            id: self.id.clone(),
-            x: l.x,
-            y: l.y,
-            scale: l.scale,
-            flip: self.flip,
-            xscale: l.xscale,
-            yscale: l.yscale,
-            time: l.time,
-            ease: l.ease,
+    /// The values the sprite rests at, as an instant step (a move that puts the view there and ends loops).
+    fn rest_step(&self) -> SpriteStep {
+        SpriteStep { x: self.x, y: self.y, scale: self.scale, xscale: self.xscale, yscale: self.yscale, alpha: self.alpha, dx: self.dx, dy: self.dy, time: 0.0, ease: Ease::Linear, wait: 0.0 }
+    }
+
+    /// A move step with what it leaves out taken from the sprite's values.
+    fn resolve(&self, m: &MoveStep) -> SpriteStep {
+        SpriteStep {
+            x: m.x.unwrap_or(self.x),
+            y: m.y.unwrap_or(self.y),
+            scale: m.scale.unwrap_or(self.scale),
+            xscale: m.xscale.unwrap_or(self.xscale),
+            yscale: m.yscale.unwrap_or(self.yscale),
+            alpha: m.alpha.unwrap_or(self.alpha),
+            dx: m.dx.unwrap_or(self.dx),
+            dy: m.dy.unwrap_or(self.dy),
+            time: m.time,
+            ease: m.ease,
+            wait: m.wait,
         }
+    }
+
+    fn set_values(&mut self, to: &SpriteStep) {
+        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy) = (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy);
+    }
+
+    fn loop_cmd(&self, l: &SpriteStep) -> Cmd {
+        Cmd::LoopSprite { id: self.id.clone(), flip: self.flip, to: *l }
+    }
+
+    /// The commands of a looping sequence: its legs, then the repeat.
+    fn cycle_cmds(&self) -> impl Iterator<Item = Cmd> + '_ {
+        let legs = self.cycle.iter().enumerate().map(|(i, to)| Cmd::MoveSprite { id: self.id.clone(), flip: self.flip, to: *to, queued: i > 0 });
+        legs.chain((!self.cycle.is_empty()).then(|| Cmd::CycleSprite { id: self.id.clone() }))
     }
 }
 
@@ -530,11 +580,15 @@ impl State {
                 flip: s.flip,
                 xscale: s.xscale,
                 yscale: s.yscale,
+                alpha: s.alpha,
+                dx: s.dx,
+                dy: s.dy,
                 fade: 0.0,
             });
             if let Some(l) = &s.looped {
                 out.push(s.loop_cmd(l));
             }
+            out.extend(s.cycle_cmds());
         }
         match &self.music {
             Some(m) => out.push(Cmd::PlayMusic {
@@ -1254,7 +1308,7 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Show { id, src, layers: layers_given, x: x_given, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, fade } => {
+            Op::Show { id, src, layers: layers_given, x: x_given, y: y_given, z, scale: scale_given, flip, xscale: xscale_given, yscale: yscale_given, alpha: alpha_given, dx: dx_given, dy: dy_given, fade } => {
                 let (y, scale) = (*y_given, *scale_given);
                 let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
@@ -1267,19 +1321,22 @@ pub(crate) fn step_traced(
                 let keep = |given: Option<f32>, of: fn(&SpriteState) -> f32| given.or(existing.map(|i| of(&state.sprites[i]))).unwrap_or(1.0);
                 let (xscale, yscale) = (keep(*xscale_given, |s| s.xscale), keep(*yscale_given, |s| s.yscale));
                 let flip = flip.or(existing.map(|i| state.sprites[i].flip)).unwrap_or(false);
-                // A loop goes on through a new pose, unless the show sets position or size values.
-                let sets_values = x_given.is_some() || y_given.is_some() || scale_given.is_some() || xscale_given.is_some() || yscale_given.is_some();
+                let alpha = alpha_given.or(existing.map(|i| state.sprites[i].alpha)).unwrap_or(1.0);
+                let (dx, dy) = (dx_given.or(existing.map(|i| state.sprites[i].dx)).unwrap_or(0.0), dy_given.or(existing.map(|i| state.sprites[i].dy)).unwrap_or(0.0));
+                // A loop goes on through a new pose, unless the show sets position, size or opacity values.
+                let sets_values = [x_given, y_given, scale_given, xscale_given, yscale_given, alpha_given, dx_given, dy_given].iter().any(|v| v.is_some());
                 let old_loop = existing.and_then(|i| state.sprites[i].looped);
-                let looped = if sets_values { None } else { old_loop };
-                let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, looped };
+                let old_cycle = existing.map(|i| state.sprites[i].cycle.clone()).unwrap_or_default();
+                let (looped, cycle) = if sets_values { (None, Vec::new()) } else { (old_loop, old_cycle.clone()) };
+                let sprite = SpriteState { id: id.clone(), src: src.clone(), layers: layers.clone(), x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, looped, cycle };
                 match existing {
                     Some(i) => state.sprites[i] = sprite,
                     None => state.sprites.push(sprite),
                 }
-                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), layers, x, y, z, scale, flip, xscale, yscale, fade: *fade });
-                if old_loop.is_some() && looped.is_none() {
+                out.push(Cmd::ShowSprite { id: id.clone(), src: src.clone(), layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, fade: *fade });
+                if let (Some(i), true) = (existing, (old_loop.is_some() || !old_cycle.is_empty()) && sets_values) {
                     // The view would keep a loop whose resting values did not change: end it.
-                    out.push(Cmd::MoveSprite { id: id.clone(), x, y, scale, flip, xscale, yscale, time: 0.0, ease: Ease::Linear });
+                    out.push(Cmd::MoveSprite { id: id.clone(), flip, to: state.sprites[i].rest_step(), queued: false });
                 }
                 state.pc += 1;
             }
@@ -1299,44 +1356,32 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped: true } => {
+            Op::Move { id, flip, steps, looped } => {
                 if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
-                    // The sprite keeps the values it has (where each leg back ends); the far end is new.
                     s.flip = flip.unwrap_or(s.flip);
-                    let far = SpriteLoop {
-                        x: x.unwrap_or(s.x),
-                        y: y.unwrap_or(s.y),
-                        scale: scale.unwrap_or(s.scale),
-                        xscale: xscale.unwrap_or(s.xscale),
-                        yscale: yscale.unwrap_or(s.yscale),
-                        time: *time,
-                        ease: *ease,
-                    };
-                    s.looped = Some(far);
-                    out.push(s.loop_cmd(&far));
-                }
-                state.pc += 1;
-            }
-            Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped: false } => {
-                if let Some(s) = state.sprites.iter_mut().find(|s| s.id == *id) {
-                    s.looped = None; // a plain move ends a loop (the view glides on from where the sprite is)
-                    s.x = x.unwrap_or(s.x);
-                    s.y = y.unwrap_or(s.y);
-                    s.scale = scale.unwrap_or(s.scale);
-                    s.flip = flip.unwrap_or(s.flip);
-                    s.xscale = xscale.unwrap_or(s.xscale);
-                    s.yscale = yscale.unwrap_or(s.yscale);
-                    out.push(Cmd::MoveSprite {
-                        id: id.clone(),
-                        x: s.x,
-                        y: s.y,
-                        scale: s.scale,
-                        flip: s.flip,
-                        xscale: s.xscale,
-                        yscale: s.yscale,
-                        time: *time,
-                        ease: *ease,
-                    });
+                    s.looped = None; // a move ends a loop (the view glides on from where the sprite is)
+                    s.cycle.clear();
+                    if let (true, [step]) = (*looped, steps.as_slice()) {
+                        // The sprite keeps the values it has (where each leg back ends); the far end is new.
+                        let far = s.resolve(step);
+                        s.looped = Some(far);
+                        out.push(s.loop_cmd(&far));
+                    } else {
+                        // Each step starts from where the one before ends: the sprite's values end at the last.
+                        let mut legs = Vec::new();
+                        for step in steps {
+                            let to = s.resolve(step);
+                            s.set_values(&to);
+                            legs.push(to);
+                        }
+                        for (i, to) in legs.iter().enumerate() {
+                            out.push(Cmd::MoveSprite { id: id.clone(), flip: s.flip, to: *to, queued: i > 0 });
+                        }
+                        if *looped {
+                            s.cycle = legs;
+                            out.push(Cmd::CycleSprite { id: id.clone() });
+                        }
+                    }
                 }
                 state.pc += 1;
             }
@@ -2025,7 +2070,7 @@ vars: { trust: 0 }
         let (mut game, first) = Session::start(&p);
         assert_eq!(
             first[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.3 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_neutral.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.3 }
         );
         // speaker colour comes from the character
         assert!(matches!(&first[1], Cmd::Say { color: Some(c), .. } if c[0] == 1.0));
@@ -2034,9 +2079,9 @@ vars: { trust: 0 }
         // the new pose keeps the old x; then it moves
         assert_eq!(
             cmds[0],
-            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
+            Cmd::ShowSprite { id: "mika".into(), src: "m_happy.png".into(), layers: vec![], x: 0.0, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
         );
-        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), x: 1.0, y: 1.0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 1.0, ease: Ease::InOut });
+        assert_eq!(cmds[1], Cmd::MoveSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 1.0, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.0, ease: Ease::InOut, wait: 0.0 }, queued: false });
         assert_eq!(game.state().sprites.len(), 1);
         assert_eq!(game.state().sprites[0].x, 1.0);
 
@@ -2050,7 +2095,7 @@ vars: { trust: 0 }
         let src = "::show{src=s.png id=s x=left scale=0.8}\n::move{s scale=1.2}\n::camera{zoom=1.5}\n::camera{x=0.2 time=3}\n::shake\n**A:** one\n**A:** two\n";
         let p = parse(src).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), x: 0.0, y: 1.0, scale: 1.2, flip: false, xscale: 1.0, yscale: 1.0, time: 0.5, ease: Ease::InOut }));
+        assert!(first.contains(&Cmd::MoveSprite { id: "s".into(), flip: false, to: SpriteStep { x: 0.0, y: 1.0, scale: 1.2, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 0.5, ease: Ease::InOut, wait: 0.0 }, queued: false }));
         let camera = Camera { zoom: 1.5, x: 0.2, y: 0.5 };
         assert!(first.contains(&Cmd::Camera { camera, time: 3.0, ease: Ease::InOut }), "keeps the zoom it had");
         assert!(first.contains(&Cmd::Shake { time: 0.4, strength: 20.0, axis: Axis::Both }));
@@ -2081,10 +2126,10 @@ vars: { trust: 0 }
         assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, y, z, .. } if id == "b" && *y == 1.0 && *z == 0)), "new: bottom edge, z 0");
         let two = game.input(Input::Advance);
         assert!(matches!(&two[0], Cmd::ShowSprite { y, z, .. } if *y == 0.9 && *z == 2), "a new pose keeps y and z");
-        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), x: 0.5, y: 0.7, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time: 0.3, ease: Ease::Out });
+        assert_eq!(two[1], Cmd::MoveSprite { id: "a".into(), flip: false, to: SpriteStep { x: 0.5, y: 0.7, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 0.3, ease: Ease::Out, wait: 0.0 }, queued: false });
         assert_eq!(game.state().sprites[0].y, 0.7);
         let three = game.input(Input::Advance);
-        assert!(matches!(&three[0], Cmd::MoveSprite { x, y, .. } if *x == 0.0 && *y == 0.7), "an `at` move keeps y");
+        assert!(matches!(&three[0], Cmd::MoveSprite { to, .. } if to.x == 0.0 && to.y == 0.7), "an `at` move keeps y");
         assert!(matches!(&three[1], Cmd::ShowSprite { y, z, .. } if *y == 1.1 && *z == -4), "unless told otherwise");
 
         // rollback restores y and z, and redraw carries them
@@ -2106,10 +2151,10 @@ vars: { trust: 0 }
         let s = &loaded.state().sprites[0];
         assert_eq!((s.y, s.z, s.scale), (0.85, 7, 1.5));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowSprite { y, z, .. } if *y == 0.85 && *z == 7)));
-        // a save from before y and z: the sprite record stops after the scale
+        // a save from before y and z: the sprite record stops after the scale (and has no alpha or offsets)
         let old: String = text
             .lines()
-            .map(|l| if l.starts_with("sprite ") { l.rsplitn(6, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(9, ' ').last().unwrap().to_string() } else { l.to_string() })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
@@ -3140,7 +3185,7 @@ vars: { amount: 99 }
     fn move_resolves_flip_and_the_scales_from_the_sprite() {
         let p = parse("::show{src=s.png id=s xscale=2}\n::move{s flip time=1}\n::move{s yscale=0.5 time=2 ease=out}\n::move{s x=left time=0}\n**A:** hi\n").unwrap();
         let (game, cmds) = Session::start(&p);
-        let moves: Vec<_> = cmds.iter().filter_map(|c| if let Cmd::MoveSprite { flip, xscale, yscale, time, .. } = c { Some((*flip, *xscale, *yscale, *time)) } else { None }).collect();
+        let moves: Vec<_> = cmds.iter().filter_map(|c| if let Cmd::MoveSprite { flip, to, .. } = c { Some((*flip, to.xscale, to.yscale, to.time)) } else { None }).collect();
         assert_eq!(moves, [(true, 2.0, 1.0, 1.0), (true, 2.0, 0.5, 2.0), (true, 2.0, 0.5, 0.0)]);
         let s = &game.state().sprites[0];
         assert_eq!((s.flip, s.xscale, s.yscale), (true, 2.0, 0.5));
@@ -3160,7 +3205,7 @@ vars: { amount: 99 }
         // a save from before these existed: the record stops after `z`
         let old: String = text
             .lines()
-            .map(|l| if l.starts_with("sprite ") { l.rsplitn(4, ' ').last().unwrap().to_string() } else { l.to_string() })
+            .map(|l| if l.starts_with("sprite ") { l.rsplitn(7, ' ').last().unwrap().to_string() } else { l.to_string() })
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";

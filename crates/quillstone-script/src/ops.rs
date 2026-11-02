@@ -1512,6 +1512,35 @@ impl Area {
     }
 }
 
+/// One step of a `::move`: what to animate (`None` leaves it), over `time` seconds after waiting `wait`.
+/// `dx` / `dy` are pixels of the 1920x1080 stage; `alpha` is 0..1.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MoveStep {
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    pub scale: Option<f32>,
+    pub xscale: Option<f32>,
+    pub yscale: Option<f32>,
+    pub alpha: Option<f32>,
+    pub dx: Option<f32>,
+    pub dy: Option<f32>,
+    pub time: f32,
+    pub ease: Ease,
+    pub wait: f32,
+}
+
+impl MoveStep {
+    /// x, y, scale, xscale, yscale, alpha, dx, dy: the values the step sets.
+    pub fn props(&self) -> [Option<f32>; 8] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy]
+    }
+
+    /// Sets nothing and waits for nothing.
+    pub fn is_empty(&self) -> bool {
+        self.wait <= 0.0 && self.props().iter().all(Option::is_none)
+    }
+}
+
 /// One instruction of the compiled script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
@@ -1545,24 +1574,23 @@ pub enum Op {
         flip: Option<bool>,
         xscale: Option<f32>,
         yscale: Option<f32>,
+        /// Opacity 0..1 and the pixel offset (of the 1920x1080 stage) added after `x`/`y` placement; each keeps
+        /// the current value when `None` (and is 1 / 0 for a new sprite).
+        alpha: Option<f32>,
+        dx: Option<f32>,
+        dy: Option<f32>,
         fade: f32,
     },
     /// Hide one sprite, or all of them when `id` is `None`.
     Hide { id: Option<String>, fade: f32 },
-    /// Slide and/or resize a sprite. `None` leaves that property as it is. `flip`
-    /// switches at the start of the move; the rest animate.
+    /// Slide, resize and/or fade a sprite in one or more `steps` that run one after another (`then`).
+    /// `flip` switches at the start of the move; the rest animate.
     Move {
         id: String,
-        x: Option<f32>,
-        y: Option<f32>,
-        scale: Option<f32>,
         flip: Option<bool>,
-        xscale: Option<f32>,
-        yscale: Option<f32>,
-        time: f32,
-        ease: Ease,
-        /// `loop`: after the move, go back and forth between the start and the end
-        /// values until something else moves, shows or hides the sprite. `time` is one leg.
+        steps: Vec<MoveStep>,
+        /// `loop`: one step goes back and forth between the start and the end values until something
+        /// else moves, shows or hides the sprite (`time` is one leg); several steps repeat all of them.
         looped: bool,
     },
     /// Shake the stage (background and sprites) for `time` seconds, by up to
@@ -1914,7 +1942,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into(), volume: 1.0 }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

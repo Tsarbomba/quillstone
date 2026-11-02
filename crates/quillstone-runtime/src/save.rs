@@ -13,8 +13,8 @@ use std::collections::{HashSet, VecDeque};
 use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
-use quillstone_script::{Ease, ANIM_PREFIX};
-use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteLoop, SpriteState, State};
+use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_OFFSET};
+use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
@@ -512,9 +512,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     }
     for sp in &s.sprites {
         // New fields are appended: `y` and `z` came after the first four, then `flip`,
-        // `xscale` and `yscale`; an older save has fewer and loads with the defaults.
+        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`; an older save has fewer and loads with the defaults.
         w(format!(
-            "sprite {} {} {} {} {} {} {} {} {}",
+            "sprite {} {} {} {} {} {} {} {} {} {} {} {}",
             q(&sp.id),
             q(&sp.src),
             sp.x,
@@ -523,7 +523,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.z,
             sp.flip,
             sp.xscale,
-            sp.yscale
+            sp.yscale,
+            sp.alpha,
+            sp.dx,
+            sp.dy
         ));
         // The layers of a layered sprite (its `src` is empty) are records of their own; a save
         // without them (every save from before layers) loads as plain sprites.
@@ -532,7 +535,11 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         }
         // A looping move is a record of its own, so older saves and readers are unaffected.
         if let Some(l) = &sp.looped {
-            w(format!("loop {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name()));
+            w(format!("loop {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy));
+        }
+        // So is each leg of a looping sequence.
+        for l in &sp.cycle {
+            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait));
         }
     }
     if s.camera != Camera::default() {
@@ -794,7 +801,11 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 flip: t.get(7).is_some_and(|v| v == "true"),
                 xscale: if t.len() > 8 { sane(f(8)?, 0.05, 10.0, 1.0) } else { 1.0 },
                 yscale: if t.len() > 9 { sane(f(9)?, 0.05, 10.0, 1.0) } else { 1.0 },
+                alpha: if t.len() > 10 { sane(f(10)?, 0.0, 1.0, 1.0) } else { 1.0 },
+                dx: if t.len() > 11 { sane(f(11)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
+                dy: if t.len() > 12 { sane(f(12)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
                 looped: None,
+                cycle: Vec::new(),
             }),
             "layer" => {
                 let (id, layer) = (arg(1)?, arg(2)?);
@@ -831,14 +842,46 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     }
                     return Err(format!("line {n}: a `loop` for the sprite `{id}`, which is not on stage"));
                 };
-                sprite.looped = Some(SpriteLoop {
+                let (lo, hi) = (*SPRITE_OFFSET.start(), *SPRITE_OFFSET.end());
+                sprite.looped = Some(SpriteStep {
                     x: sane(f(2)?, *POSITION.start(), *POSITION.end(), 0.5),
                     y: sane(f(3)?, *POSITION.start(), *POSITION.end(), 1.0),
                     scale: sane(f(4)?, 0.05, 10.0, 1.0),
                     xscale: sane(f(5)?, 0.05, 10.0, 1.0),
                     yscale: sane(f(6)?, 0.05, 10.0, 1.0),
+                    alpha: if t.len() > 9 { sane(f(9)?, 0.0, 1.0, 1.0) } else { 1.0 },
+                    dx: if t.len() > 10 { sane(f(10)?, lo, hi, 0.0) } else { 0.0 },
+                    dy: if t.len() > 11 { sane(f(11)?, lo, hi, 0.0) } else { 0.0 },
                     time: sane(f(7)?, 0.02, MAX_LOOP_LEG, 1.0),
                     ease: Ease::parse(arg(8)?).unwrap_or_default(),
+                    wait: 0.0,
+                });
+            }
+            // One leg of a looping sequence; the legs of a sprite come in order.
+            "cycle" => {
+                let id = arg(1)?;
+                let Some(sprite) = s.sprites.iter_mut().find(|sp| sp.id == id) else {
+                    if dropped.iter().any(|d| d == id) {
+                        continue;
+                    }
+                    return Err(format!("line {n}: a `cycle` for the sprite `{id}`, which is not on stage"));
+                };
+                if sprite.cycle.len() >= MAX_MOVE_STEPS {
+                    return Err(format!("line {n}: more than {MAX_MOVE_STEPS} `cycle` records for the sprite `{id}`"));
+                }
+                let (lo, hi) = (*SPRITE_OFFSET.start(), *SPRITE_OFFSET.end());
+                sprite.cycle.push(SpriteStep {
+                    x: sane(f(2)?, *POSITION.start(), *POSITION.end(), 0.5),
+                    y: sane(f(3)?, *POSITION.start(), *POSITION.end(), 1.0),
+                    scale: sane(f(4)?, 0.05, 10.0, 1.0),
+                    xscale: sane(f(5)?, 0.05, 10.0, 1.0),
+                    yscale: sane(f(6)?, 0.05, 10.0, 1.0),
+                    alpha: sane(f(7)?, 0.0, 1.0, 1.0),
+                    dx: sane(f(8)?, lo, hi, 0.0),
+                    dy: sane(f(9)?, lo, hi, 0.0),
+                    time: sane(f(10)?, 0.0, MAX_LOOP_LEG, 0.0),
+                    ease: Ease::parse(arg(11)?).unwrap_or_default(),
+                    wait: sane(f(12)?, 0.0, MAX_LOOP_LEG, 0.0),
                 });
             }
             "camera" => s.camera = Camera { zoom: sane(f(1)?, 1.0, 4.0, 1.0), x: sane(f(2)?, 0.0, 1.0, 0.5), y: sane(f(3)?, 0.0, 1.0, 0.5) },

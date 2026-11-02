@@ -1132,8 +1132,12 @@ fn print_cmds(cmds: &[Cmd]) {
                 println!("[show {id}: {what} at {:.0}%,{:.0}%]", x * 100.0, y * 100.0)
             }
             Cmd::HideSprite { id, .. } => println!("[hide {id}]"),
-            Cmd::MoveSprite { id, x, y, scale, .. } => println!("[move {id} to {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
-            Cmd::LoopSprite { id, x, y, scale, .. } => println!("[loop {id} between here and {:.0}%,{:.0}% at {scale}x]", x * 100.0, y * 100.0),
+            Cmd::MoveSprite { id, to, queued, .. } => {
+                let then = if *queued { "then " } else { "" };
+                println!("[{then}move {id} to {:.0}%,{:.0}% at {}x, opacity {}]", to.x * 100.0, to.y * 100.0, to.scale, to.alpha)
+            }
+            Cmd::LoopSprite { id, to, .. } => println!("[loop {id} between here and {:.0}%,{:.0}% at {}x]", to.x * 100.0, to.y * 100.0, to.scale),
+            Cmd::CycleSprite { id } => println!("[{id}'s moves repeat]"),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
             Cmd::Notify { text, .. } => println!("[notice: {text}]"),

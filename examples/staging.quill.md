@@ -4,7 +4,7 @@ title: Staging
 
 <!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{p}` and `{nw}`
      text tags, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
-     one axis, a flipped and a stretched sprite, a dip to black (`::fade` and `through=`), a `::tint` wash and a timed choice.
+     one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
@@ -42,7 +42,14 @@ title: Staging
 **Ren:** And now I'm stretched: `xscale` and `yscale` change one direction only.
 
 ::move{ren xscale=1 yscale=1 flip=false time=0.4}
-**Mika:** Back to normal. Now a scene change through black.
+**Mika:** Back to normal. Now Ren walks a sequence.
+
+<!-- `then` steps run one after another without holding up the story; `wait=` pauses before a step. `alpha` dims, `xoffset` shifts by pixels after `x` places. -->
+::move{ren x=30% time=1 then x=72% time=1 wait=0.5 then alpha=0.3 time=0.5 then alpha=1 xoffset=-60 time=0.5}
+**Ren:** One `::move` with `then`: over, a pause, back, a fade down to 0.3 and up again, and nudged 60 pixels left with `xoffset`. The story never waited for it.
+
+::move{ren xoffset=0 time=0.4}
+**Mika:** Now a scene change through black.
 
 ::fade{out time=0.8}
 The screen is black, and this narration is still readable: the dialogue box is never covered.

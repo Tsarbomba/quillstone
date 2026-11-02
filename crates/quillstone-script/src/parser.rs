@@ -89,6 +89,12 @@ struct Files<'a> {
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
+/// Allowed `xoffset=` / `yoffset=` of a sprite, in pixels of the 1920x1080 stage (two stage widths either way).
+pub const SPRITE_OFFSET: RangeInclusive<f32> = -3840.0..=3840.0;
+
+/// Most steps (`then`) one `::move` may have.
+pub const MAX_MOVE_STEPS: usize = 32;
+
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
@@ -103,9 +109,9 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through"],
         "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
-        "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
+        "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "time", "ease", "loop"],
+        "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "time", "ease", "wait", "loop", "then"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "notify" => &["text", "time"],
@@ -1248,8 +1254,19 @@ impl Parser {
                 Ok((Op::Hide { id, fade }, None))
             }
             "move" => {
+                // `then` starts the next step: split before anything is taken from the first.
+                let loop_attr = a.take("loop"); // anywhere in the command (the end reads best); before the bare words: a bare `loop` is no sprite name
+                let mut parts: Vec<Vec<_>> = vec![Vec::new()];
+                for (i, item) in std::mem::take(&mut a.0).into_iter().enumerate() {
+                    if i > 0 && item.0 == "then" && item.1.is_none() {
+                        parts.push(Vec::new());
+                    } else if let Some(last) = parts.last_mut() {
+                        last.push(item);
+                    }
+                }
+                let mut groups = parts.into_iter().map(Attrs);
+                a.0 = groups.next().map(|g| g.0).unwrap_or_default();
                 let flip = opt_flag(a, "flip");
-                let loop_attr = a.take("loop"); // before the bare words: a bare `loop` is no sprite name
                 let bare = a.take_bare();
                 let looped = match loop_attr {
                     None => None,
@@ -1261,26 +1278,41 @@ impl Parser {
                 let Some(id) = bare.first().map(|s| self.sprite_id(s)) else {
                     return Err("`::move` needs a sprite, like `::move{mika x=left time=0.5}`".into());
                 };
-                let x = Self::place(a, "x", POSITION)?;
-                let y = Self::place(a, "y", POSITION)?;
-                let scale = Self::number(a, "scale", SPRITE_SCALE)?;
-                let xscale = Self::number(a, "xscale", SPRITE_SCALE)?;
-                let yscale = Self::number(a, "yscale", SPRITE_SCALE)?;
-                if x.is_none() && y.is_none() && scale.is_none() && flip.is_none() && xscale.is_none() && yscale.is_none() {
-                    return Err("`::move` needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=` and/or `flip`".into());
+                let mut steps = vec![Self::move_step(a)?];
+                if steps[0].is_empty() && flip.is_none() {
+                    return Err("`::move` needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=`, `alpha=`, `xoffset=`, `yoffset=`, `wait=` and/or `flip`".into());
                 }
-                let time = Self::seconds(a, "time", 0.5)?;
-                let ease = Self::ease(a)?;
+                for mut g in groups {
+                    steps.push(Self::move_step(&mut g)?);
+                    if let Some((k, _)) = g.0.first() {
+                        let hint = if k == "flip" { ": it belongs in the first step" } else { "" };
+                        return Err(format!("unknown attribute `{k}` in a `then` step of `::move`{hint}"));
+                    }
+                    if steps[steps.len() - 1].is_empty() {
+                        return Err("a `then` step needs `x=`, `y=`, `scale=`, `xscale=`, `yscale=`, `alpha=`, `xoffset=`, `yoffset=` and/or `wait=`".into());
+                    }
+                }
+                if steps.len() > MAX_MOVE_STEPS {
+                    return Err(format!("a `::move` takes at most {MAX_MOVE_STEPS} steps"));
+                }
                 let looped = looped.is_some();
                 if looped {
-                    if time <= 0.0 {
-                        return Err("a `loop` move needs `time=` above 0 (the seconds one leg takes)".into());
-                    }
-                    if x.is_none() && y.is_none() && scale.is_none() && xscale.is_none() && yscale.is_none() {
-                        return Err("a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=` or `yscale=` (`flip` can't loop)".into());
+                    if steps.len() == 1 {
+                        let s = &steps[0];
+                        if s.time <= 0.0 {
+                            return Err("a `loop` move needs `time=` above 0 (the seconds one leg takes)".into());
+                        }
+                        if s.wait > 0.0 {
+                            return Err("a one-step `loop` can't `wait=`: add `then` steps to repeat them all".into());
+                        }
+                        if s.props().iter().all(Option::is_none) {
+                            return Err("a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=`, `yscale=`, `alpha=`, `xoffset=` or `yoffset=` (`flip` can't loop)".into());
+                        }
+                    } else if steps.iter().map(|s| s.time + s.wait).sum::<f32>() <= 0.0 {
+                        return Err("a `loop` move needs some `time=` or `wait=` above 0 (it would repeat without taking any time)".into());
                     }
                 }
-                Ok((Op::Move { id, x, y, scale, flip, xscale, yscale, time, ease, looped }, None))
+                Ok((Op::Move { id, flip, steps, looped }, None))
             }
             "shake" => {
                 let time = Self::seconds(a, "time", 0.4)?;
@@ -1660,8 +1692,28 @@ impl Parser {
         let scale = Self::number(a, "scale", SPRITE_SCALE)?;
         let xscale = Self::number(a, "xscale", SPRITE_SCALE)?;
         let yscale = Self::number(a, "yscale", SPRITE_SCALE)?;
+        let alpha = Self::number(a, "alpha", 0.0..=1.0)?;
+        let dx = Self::number(a, "xoffset", SPRITE_OFFSET)?;
+        let dy = Self::number(a, "yoffset", SPRITE_OFFSET)?;
         let fade = Self::fade(a)?;
-        Ok((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade }, None))
+        Ok((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, fade }, None))
+    }
+
+    /// One step of a `::move`: the properties to animate, `time=`, `ease=` and `wait=`.
+    fn move_step(a: &mut Attrs) -> Result<MoveStep, String> {
+        Ok(MoveStep {
+            x: Self::place(a, "x", POSITION)?,
+            y: Self::place(a, "y", POSITION)?,
+            scale: Self::number(a, "scale", SPRITE_SCALE)?,
+            xscale: Self::number(a, "xscale", SPRITE_SCALE)?,
+            yscale: Self::number(a, "yscale", SPRITE_SCALE)?,
+            alpha: Self::number(a, "alpha", 0.0..=1.0)?,
+            dx: Self::number(a, "xoffset", SPRITE_OFFSET)?,
+            dy: Self::number(a, "yoffset", SPRITE_OFFSET)?,
+            time: Self::seconds(a, "time", 0.5)?,
+            ease: Self::ease(a)?,
+            wait: Self::seconds(a, "wait", 0.0)?,
+        })
     }
 
     /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
@@ -3241,7 +3293,7 @@ mod tests {
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), x: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out, looped: false });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: None, scale: Some(1.2), xscale: None, yscale: None, alpha: None, dx: None, dy: None, time: 0.5, ease: Ease::Out, wait: 0.0 }], looped: false });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
         assert_eq!(
@@ -3283,7 +3335,7 @@ mod tests {
         for (src, needle) in [
             ("::bg{src=b.png wipe=sideways fade=1}\n", "wipe=sideways"),
             ("::bg{src=b.png wipe=left}\n", "needs a duration"),
-            ("::move{mika}\n", "`xscale=`, `yscale=` and/or `flip`"),
+            ("::move{mika}\n", "`wait=` and/or `flip`"),
             ("::move{mika x=left ease=bouncy}\n", "ease=bouncy"),
             ("::move{mika scale=0}\n", "scale=0"),
             ("::camera{time=1}\n", "needs `zoom=`"),
@@ -3469,12 +3521,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy x=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], x: Some(0.0), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], x: Some(0.0), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, fade: 0.0 }
         );
     }
 
@@ -3483,7 +3535,7 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost x=0.3}\n::show{src=art/x.png x=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], x: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], x: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, x: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
@@ -3501,8 +3553,8 @@ mod tests {
         assert_eq!(show(1), (Some(0.9), Some(-100)));
         assert_eq!(show(2), (Some(-0.5), Some(100)));
         assert_eq!(show(3), (Some(1.5), None));
-        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), x: None, y: Some(0.9), scale: None, flip: None, xscale: None, yscale: None, time: 0.3, ease: Ease::Out, looped: false });
-        assert!(matches!(&p.ops[5], Op::Move { x: Some(_), y: Some(y), .. } if *y == 1.5));
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.9), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, time: 0.3, ease: Ease::Out, wait: 0.0 }], looped: false });
+        assert!(matches!(&p.ops[5], Op::Move { steps, .. } if steps[0].x.is_some() && steps[0].y == Some(1.5)));
         // not given: `None`, so the sprite keeps its own
         let q = ok(&format!("{MIKA}::show{{mika}}\n"));
         assert!(matches!(&q.ops[0], Op::Show { y: None, z: None, .. }));
@@ -3532,8 +3584,50 @@ mod tests {
         let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika x=right time=1}}\n::move{{mika x=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), x: Some(1.0), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 1.0, ease: Ease::InOut, looped: false });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), x: Some(0.1), y: None, scale: None, flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::InOut, looped: false });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(1.0), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, time: 1.0, ease: Ease::InOut, wait: 0.0 }], looped: false });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(0.1), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, time: 0.5, ease: Ease::InOut, wait: 0.0 }], looped: false });
+    }
+
+    #[test]
+    fn move_sequences_alpha_and_offsets_parse() {
+        let p = ok("::show{src=a.png id=a alpha=0.4 xoffset=-30 yoffset=12.5}\n\
+                    ::move{a x=30% time=1 then x=70% time=1 wait=0.5 ease=linear then alpha=0 xoffset=0 time=0.5 loop}\n\
+                    ::move{a alpha=50% yoffset=8 loop}\n");
+        assert!(matches!(&p.ops[0], Op::Show { alpha: Some(a), dx: Some(dx), dy: Some(dy), .. } if *a == 0.4 && *dx == -30.0 && *dy == 12.5));
+        let Op::Move { steps, looped, flip: None, .. } = &p.ops[1] else { panic!("{:?}", p.ops[1]) };
+        assert!(*looped && steps.len() == 3);
+        assert_eq!((steps[0].x, steps[0].time, steps[0].wait), (Some(0.3), 1.0, 0.0));
+        assert_eq!((steps[1].x, steps[1].wait, steps[1].ease), (Some(0.7), 0.5, Ease::Linear));
+        assert_eq!((steps[2].alpha, steps[2].dx, steps[2].x, steps[2].time), (Some(0.0), Some(0.0), None, 0.5));
+        assert!(matches!(&p.ops[2], Op::Move { steps, looped: true, .. } if steps.len() == 1 && steps[0].alpha == Some(0.5) && steps[0].dy == Some(8.0)));
+        // a pause only is a step; flip belongs to the first
+        let p = ok("::move{a flip then wait=1 then x=0}\n");
+        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), steps, .. } if steps.len() == 3 && steps[1].wait == 1.0 && steps[1].props().iter().all(Option::is_none)));
+    }
+
+    #[test]
+    fn move_sequence_alpha_and_offset_errors() {
+        for (src, needle) in [
+            ("::show{src=a.png alpha=1.5}\n", "`alpha=1.5` must be a number from 0 to 1"),
+            ("::show{src=a.png xoffset=5000}\n", "`xoffset=5000` must be a number from -3840 to 3840"),
+            ("::show{src=a.png yoffset=up}\n", "`yoffset=up`"),
+            ("::move{a alpha=-1}\n", "`alpha=-1`"),
+            ("::move{a x=1 then}\n", "a `then` step needs"),
+            ("::move{a x=1 then time=1}\n", "a `then` step needs"),
+            ("::move{a x=1 then flip}\n", "unknown attribute `flip` in a `then` step of `::move`: it belongs in the first step"),
+            ("::move{a x=1 then speed=2 x=2}\n", "unknown attribute `speed` in a `then` step"),
+            ("::move{a x=1 then x=2 wait=-1}\n", "`wait=-1`"),
+            ("::move{a x=1 time=0 loop}\n", "needs `time=` above 0"),
+            ("::move{a x=1 time=1 wait=1 loop}\n", "can't `wait=`"),
+            ("::move{a x=1 time=0 then x=2 time=0 loop}\n", "would repeat without taking any time"),
+            ("::move{a flip loop}\n", "needs something to animate"),
+            ("::move{a}\n", "`wait=`"),
+        ] {
+            assert!(has_err(src, needle), "{src}: {:?}", errs(src));
+        }
+        let many = format!("::move{{a x=1{}}}\n", " then x=2".repeat(MAX_MOVE_STEPS));
+        assert!(has_err(&many, "at most 32 steps"));
+        assert_eq!(ok(&format!("::move{{a x=1{}}}\n", " then x=2".repeat(MAX_MOVE_STEPS - 1))).ops.len(), 2);
     }
 
     #[test]
@@ -3922,7 +4016,7 @@ mod tests {
     #[test]
     fn the_staging_demo_uses_y_z_size_and_nw() {
         let p = ok(include_str!("../../../examples/staging.quill.md"));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { y: Some(_), .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { steps, .. } if steps[0].y.is_some())));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Show { z: Some(_), .. })));
         let says = |f: &str| p.ops.iter().any(|op| matches!(op, Op::Say { text, .. } if text.contains(f)));
         assert!(says("{size=+14}") && says("{size=24}") && says("{nw}") && says("{p}"));
@@ -3930,7 +4024,7 @@ mod tests {
         assert!(p.ops.iter().any(|op| matches!(op, Op::FadeOut { .. })) && p.ops.iter().any(|op| matches!(op, Op::FadeIn { .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Shake { axis: Axis::Y, .. })));
         assert!(p.ops.iter().any(|op| matches!(op, Op::Show { flip: Some(true), .. })));
-        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { xscale: Some(_), yscale: Some(_), .. })));
+        assert!(p.ops.iter().any(|op| matches!(op, Op::Move { steps, .. } if steps[0].xscale.is_some() && steps[0].yscale.is_some())));
         assert!(p.ops.contains(&Op::SfxLoop { src: "assets/calm.ogg".into(), fade: 1.0, volume: 0.4 }));
         assert!(p.ops.contains(&Op::StopSfx { src: Some("assets/calm.ogg".into()), fade: 1.5 }));
         assert_eq!(p.characters.len(), 2);
@@ -5017,9 +5111,9 @@ mod tests {
     #[test]
     fn move_takes_flip_xscale_and_yscale() {
         let p = ok(&format!("{MIKA}::move{{mika flip}}\n::move{{mika xscale=2 yscale=0.5 time=1}}\n::move{{mika flip=false x=left}}\n"));
-        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), x: None, xscale: None, yscale: None, .. }));
-        assert!(matches!(&p.ops[1], Op::Move { flip: None, xscale: Some(x), yscale: Some(y), time, .. } if *x == 2.0 && *y == 0.5 && *time == 1.0));
-        assert!(matches!(&p.ops[2], Op::Move { flip: Some(false), x: Some(_), .. }));
+        assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), steps, .. } if steps[0].props().iter().all(Option::is_none)));
+        assert!(matches!(&p.ops[1], Op::Move { flip: None, steps, .. } if steps[0].xscale == Some(2.0) && steps[0].yscale == Some(0.5) && steps[0].time == 1.0));
+        assert!(matches!(&p.ops[2], Op::Move { flip: Some(false), steps, .. } if steps[0].x.is_some()));
     }
 
     #[test]
@@ -5372,13 +5466,13 @@ mod tests {
     #[test]
     fn a_move_may_loop_forever() {
         let p = ok("::character{id=mika sprites=m_{pose}.png}\n::move{mika y=0.97 time=1.2 ease=inout loop}\n::move{mika scale=1.1 loop=pingpong}\n::move{mika x=left y=0.9 loop time=2}\n::move{loop mika x=right flip}\n::move{mika y=0.9}\n");
-        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), x: None, y: Some(0.97), scale: None, flip: None, xscale: None, yscale: None, time: 1.2, ease: Ease::InOut, looped: true });
-        assert!(matches!(&p.ops[1], Op::Move { scale: Some(s), looped: true, time, .. } if *s == 1.1 && *time == 0.5));
-        assert!(matches!(&p.ops[2], Op::Move { x: Some(_), y: Some(_), looped: true, time, .. } if *time == 2.0));
-        assert!(matches!(&p.ops[3], Op::Move { id, x: Some(_), flip: Some(true), looped: true, .. } if id == "mika"), "a flip may come along");
+        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.97), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, time: 1.2, ease: Ease::InOut, wait: 0.0 }], looped: true });
+        assert!(matches!(&p.ops[1], Op::Move { looped: true, steps, .. } if steps[0].scale == Some(1.1) && steps[0].time == 0.5));
+        assert!(matches!(&p.ops[2], Op::Move { looped: true, steps, .. } if steps[0].x.is_some() && steps[0].y.is_some() && steps[0].time == 2.0));
+        assert!(matches!(&p.ops[3], Op::Move { id, flip: Some(true), looped: true, steps } if id == "mika" && steps[0].x.is_some()), "a flip may come along");
         assert!(matches!(&p.ops[4], Op::Move { looped: false, .. }));
         let all = ok("::move{a x=left y=0.9 scale=1.2 xscale=1.1 yscale=0.9 loop}\n");
-        assert!(matches!(&all.ops[0], Op::Move { looped: true, xscale: Some(_), yscale: Some(_), .. }));
+        assert!(matches!(&all.ops[0], Op::Move { looped: true, steps, .. } if steps[0].xscale.is_some() && steps[0].yscale.is_some()));
     }
 
     #[test]

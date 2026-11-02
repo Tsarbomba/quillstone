@@ -4,7 +4,7 @@
 use quillstone_script::{parse, Ease, Program};
 
 use crate::test_util::next;
-use crate::{Cmd, Input, Session, SpriteLoop};
+use crate::{Cmd, Input, Session, SpriteStep};
 
 const SRC: &str = "\
 ::anim{id=blink frames=\"a.png 1, b.png 0.5\" loop}
@@ -41,7 +41,7 @@ fn sprite<'a>(game: &'a Session) -> &'a crate::SpriteState {
     &game.state().sprites[0]
 }
 
-fn loop_of(game: &Session) -> Option<SpriteLoop> {
+fn loop_of(game: &Session) -> Option<SpriteStep> {
     game.state().sprites.first().and_then(|s| s.looped)
 }
 
@@ -167,13 +167,13 @@ fn a_looping_move_is_sprite_state_and_a_command() {
     let cmds = next(&mut game); // Three: ::show anim, ::move loop
     assert_eq!(
         cmds.iter().find(|c| matches!(c, Cmd::LoopSprite { .. })).unwrap(),
-        &Cmd::LoopSprite { id: "mika".into(), x: 0.0, y: 0.9, scale: 0.8, flip: false, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }
+        &Cmd::LoopSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 } }
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { .. })), "the view glides to the far values by itself");
     // The sprite's own values are where it starts (what each leg back ends at).
     let s = sprite(&game);
     assert_eq!((s.x, s.y, s.scale), (0.0, 1.0, 0.8));
-    assert_eq!(loop_of(&game), Some(SpriteLoop { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, time: 1.2, ease: Ease::Out }));
+    assert_eq!(loop_of(&game), Some(SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.2, ease: Ease::Out, wait: 0.0 }));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn a_redraw_sends_the_loop_after_the_sprite() {
     next(&mut game);
     let redraw = game.state().redraw();
     let show = redraw.iter().position(|c| matches!(c, Cmd::ShowSprite { .. })).unwrap();
-    assert!(matches!(&redraw[show + 1], Cmd::LoopSprite { y, .. } if *y == 0.9));
+    assert!(matches!(&redraw[show + 1], Cmd::LoopSprite { to, .. } if to.y == 0.9));
     assert!(matches!(&redraw[show], Cmd::ShowSprite { y, .. } if *y == 1.0), "shown at the starting values: the phase restarts there");
 }
 
@@ -203,7 +203,7 @@ fn a_new_pose_keeps_the_loop_but_new_position_or_size_values_end_it() {
     assert!(loop_of(&game).is_none());
     assert!(matches!(&cmds[0], Cmd::ShowSprite { x, .. } if *x == 1.0));
     assert!(
-        matches!(&cmds[1], Cmd::MoveSprite { time, y, .. } if *time == 0.0 && *y == 1.0),
+        matches!(&cmds[1], Cmd::MoveSprite { to, .. } if to.time == 0.0 && to.y == 1.0),
         "an instant move tells the view to end its loop: {cmds:?}"
     );
 }
@@ -215,7 +215,7 @@ fn showing_the_values_it_already_has_still_ends_the_loop() {
     assert!(loop_of(&game).is_some());
     let cmds = next(&mut game);
     assert!(loop_of(&game).is_none());
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { time, .. } if *time == 0.0)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { to, .. } if to.time == 0.0)));
 }
 
 #[test]
@@ -229,11 +229,11 @@ fn a_plain_move_cancels_the_loop_and_a_new_loop_replaces_it() {
     assert!(loop_of(&game).is_some(), "Six comes with `::move{{mika y=0.9 time=1 loop}}`");
     let cmds = next(&mut game); // Seven: plain move
     assert!(loop_of(&game).is_none());
-    assert!(matches!(&cmds[0], Cmd::MoveSprite { x, y, time, .. } if *x == 0.0 && *y == 1.0 && *time == 0.5));
+    assert!(matches!(&cmds[0], Cmd::MoveSprite { to, .. } if to.x == 0.0 && to.y == 1.0 && to.time == 0.5));
     let cmds = next(&mut game); // Eight: a loop on size only
     let l = loop_of(&game).unwrap();
     assert_eq!((l.scale, l.xscale, l.yscale, l.y, l.time), (1.2, 1.1, 0.9, 1.0, 2.0));
-    assert!(matches!(&cmds[0], Cmd::LoopSprite { scale, xscale, .. } if *scale == 1.2 && *xscale == 1.1));
+    assert!(matches!(&cmds[0], Cmd::LoopSprite { to, .. } if to.scale == 1.2 && to.xscale == 1.1));
     next(&mut game); // Nine: hidden
     assert!(game.state().sprites.is_empty() && game.state().redraw().iter().all(|c| !matches!(c, Cmd::LoopSprite { .. })));
 }
@@ -270,7 +270,7 @@ fn saves_restore_the_loop_and_old_saves_have_none() {
     assert!(text.contains("loop \"mika\" 0 0.9 0.8 1 1 1.2 out"), "{text}");
     let (loaded, cmds) = Session::load(&p, &text).unwrap();
     assert_eq!(loaded.state().sprites, game.state().sprites);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::LoopSprite { y, time, .. } if *y == 0.9 && *time == 1.2)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::LoopSprite { to, .. } if to.y == 0.9 && to.time == 1.2)));
     // The history carries it too, so rollback after a load works.
     let mut loaded = loaded;
     assert!(loaded.rollback().is_some() && loop_of(&loaded).is_none());

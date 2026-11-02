@@ -8,9 +8,9 @@
 //! sends `Cmd::ClearScene` + the scene again, so the two never drift apart.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use quillstone_runtime::{Camera, Cmd, Spot};
+use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Imagemap, Wipe};
@@ -203,17 +203,27 @@ pub struct SpriteView {
     /// Target stretch along one axis, on top of `scale`.
     pub xscale: f32,
     pub yscale: f32,
+    /// Target opacity, and pixel offset (of the 1920x1080 stage) added after placing by `x`, `y`.
+    pub alpha_to: f32,
+    pub dx: f32,
+    pub dy: f32,
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
-    /// Where the current leg of a move started: x, y, scale, xscale, yscale.
-    from: [f32; 5],
+    /// Where the current leg of a move started: x, y, scale, xscale, yscale, alpha, dx, dy.
+    from: [f32; 8],
     move_time: f32,
+    /// Seconds into the current leg; negative while it still waits (`wait=`).
     move_elapsed: f32,
     move_ease: Ease,
-    /// A looping move: the other end of the oscillation (x, y, scale, xscale, yscale);
+    /// A looping move: the other end of the oscillation (same order as `from`);
     /// the sprite rests at `x`, `y`, ... The current leg heads for it while `out`.
-    loop_far: Option<[f32; 5]>,
+    loop_far: Option<[f32; 8]>,
+    /// A sequence of moves: the legs still to run after the current one, every leg of it, and whether the
+    /// legs start over once the last is done (`loop` with `then`).
+    queue: VecDeque<SpriteStep>,
+    legs: Vec<SpriteStep>,
+    cycle: bool,
     out: bool,
     /// Seconds since this sprite's picture started being shown (an animation's clock),
     /// and the same for the outgoing picture of a pose change.
@@ -224,7 +234,7 @@ pub struct SpriteView {
 }
 
 impl SpriteView {
-    fn new(id: &str, (src, layers): (&str, &[(String, String)]), x: f32, y: f32, z: i32, look: Look, fade: f32) -> SpriteView {
+    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 3], fade: f32) -> SpriteView {
         SpriteView {
             id: id.to_string(),
             src: src.to_string(),
@@ -238,14 +248,20 @@ impl SpriteView {
             flip: look.flip,
             xscale: look.xscale,
             yscale: look.yscale,
+            alpha_to: fx[0],
+            dx: fx[1],
+            dy: fx[2],
             hiding: false,
             fade,
             elapsed: 0.0,
-            from: [x, y, look.scale, look.xscale, look.yscale],
+            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2]],
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
             loop_far: None,
+            queue: VecDeque::new(),
+            legs: Vec::new(),
+            cycle: false,
             out: false,
             anim_time: 0.0,
             previous_anim_time: 0.0,
@@ -284,25 +300,54 @@ impl SpriteView {
         plain.chain(layers).chain(self.previous_layers.iter().map(|(p, _)| p.as_str()))
     }
 
-    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale.
-    fn target(&self) -> [f32; 5] {
+    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale, alpha, dx, dy.
+    fn target(&self) -> [f32; 8] {
         match (&self.loop_far, self.out) {
             (Some(far), true) => *far,
             _ => self.rest(),
         }
     }
 
-    /// The resting pose: x, y, scale, xscale, yscale.
-    fn rest(&self) -> [f32; 5] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale]
+    /// The resting pose: x, y, scale, xscale, yscale, alpha, dx, dy.
+    fn rest(&self) -> [f32; 8] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy]
     }
 
-    /// Whether the sprite oscillates (a looping move is running).
+    /// The values the sprite rests at for good: where a looping sequence's last leg ends, else `rest`.
+    fn home(&self) -> [f32; 8] {
+        match self.legs.last() {
+            Some(last) if self.cycle => last.values(),
+            _ => self.rest(),
+        }
+    }
+
+    /// Whether a leg of a move is running (or waiting to start).
+    fn moving(&self) -> bool {
+        self.move_time > 0.0 || self.move_elapsed < 0.0
+    }
+
+    /// Start a leg of a move from `from`; the sprite's own values become the leg's.
+    fn start_leg(&mut self, from: [f32; 8], to: &SpriteStep) {
+        self.from = from;
+        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy) = (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy);
+        self.move_time = to.time;
+        self.move_elapsed = -to.wait;
+        self.move_ease = to.ease;
+    }
+
+    /// Every sequence leg ever started stops: the next move starts a sequence of its own.
+    fn end_sequence(&mut self) {
+        self.queue.clear();
+        self.legs.clear();
+        self.cycle = false;
+    }
+
+    /// Whether the sprite oscillates (a looping move or looping sequence is running).
     pub fn is_looping(&self) -> bool {
-        self.loop_far.is_some()
+        self.loop_far.is_some() || self.cycle
     }
 
-    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale) right now.
+    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale, 5 alpha, 6 dx, 7 dy) right now.
     fn now(&self, k: usize) -> f32 {
         let (from, to) = (self.from[k], self.target()[k]);
         from + (to - from) * self.move_progress()
@@ -310,11 +355,18 @@ impl SpriteView {
 
     /// Progress through the current move, eased (1 when not moving).
     fn move_progress(&self) -> f32 {
-        if self.move_time > 0.0 {
+        if self.move_elapsed < 0.0 {
+            0.0
+        } else if self.move_time > 0.0 {
             self.move_ease.apply(self.move_elapsed / self.move_time)
         } else {
             1.0
         }
+    }
+
+    /// All the animated values right now.
+    fn here(&self) -> [f32; 8] {
+        std::array::from_fn(|k| self.now(k))
     }
 
     /// How big the sprite is right now (growing towards `scale` during a move).
@@ -335,6 +387,16 @@ impl SpriteView {
     /// Size, stretch and mirroring right now.
     fn look(&self) -> Look {
         Look { scale: self.current_scale(), xscale: self.current_xscale(), yscale: self.current_yscale(), flip: self.flip }
+    }
+
+    /// How opaque the sprite is right now: the fade in or out of showing and hiding times `alpha=` (which moves can animate).
+    pub fn opacity(&self) -> f32 {
+        self.alpha() * self.now(5).clamp(0.0, 1.0)
+    }
+
+    /// The pixel offset (of the 1920x1080 stage) right now.
+    pub fn current_offset(&self) -> (f32, f32) {
+        (self.now(6), self.now(7))
     }
 
     /// Fade progress as opacity: rising when showing, falling when hiding.
@@ -384,11 +446,27 @@ impl SpriteView {
                     self.from = if self.out { self.rest() } else { self.loop_far.unwrap_or_default() };
                 }
             }
-        } else if self.move_time > 0.0 {
-            self.move_elapsed += dt;
-            if self.move_elapsed >= self.move_time {
-                self.move_time = 0.0;
-                self.from = self.rest();
+        } else if self.moving() || !self.queue.is_empty() {
+            // Legs of a sequence that end within `dt` pass their leftover time on to the next.
+            let mut left = dt;
+            for _ in 0..10_000 {
+                if self.moving() {
+                    let need = self.move_time - self.move_elapsed;
+                    if left < need {
+                        self.move_elapsed += left;
+                        break;
+                    }
+                    left -= need;
+                    self.move_time = 0.0;
+                    self.move_elapsed = 0.0;
+                    self.from = self.rest();
+                }
+                if self.queue.is_empty() && self.cycle && animate && self.legs.iter().any(|l| l.time + l.wait > 0.0) {
+                    self.queue = self.legs.iter().copied().collect();
+                }
+                let Some(next) = self.queue.pop_front() else { break };
+                let from = self.rest();
+                self.start_leg(from, &next);
             }
         }
         if !self.hiding && self.elapsed >= self.fade {
@@ -779,6 +857,8 @@ impl View {
     pub fn animating(&self) -> bool {
         let sprite = |s: &SpriteView| {
             s.is_looping()
+                || s.moving() // a leg may be waiting to start, with nothing yet changing on screen
+                || !s.queue.is_empty()
                 || self.playing(&s.src, s.anim_time)
                 || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
                 || s.layers.iter().any(|l| {
@@ -890,40 +970,46 @@ impl View {
                     }
                 }
                 Cmd::SetBackground { src, fade, wipe, sound } => self.set_background(src, *fade, *wipe, *sound),
-                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade } => {
+                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, fade } => {
                     let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip };
-                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, *fade)
+                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy], *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
-                Cmd::LoopSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
+                Cmd::LoopSprite { id, flip, to } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
                         // The first leg glides from wherever the sprite is to the far values; the
                         // resting values (x, y, ...) stay where they are.
-                        let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
-                        s.from = here;
-                        s.loop_far = Some([*x, *y, *scale, *xscale, *yscale]);
+                        s.end_sequence();
+                        s.from = s.here();
+                        s.loop_far = Some(to.values());
                         s.out = true;
                         s.flip = *flip;
-                        s.move_time = *time;
+                        s.move_time = to.time;
                         s.move_elapsed = 0.0;
-                        s.move_ease = *ease;
+                        s.move_ease = to.ease;
                     }
                 }
-                Cmd::MoveSprite { id, x, y, scale, flip, xscale, yscale, time, ease } => {
+                Cmd::MoveSprite { id, flip, to, queued } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
-                        let here = [s.current_x(), s.current_y(), s.current_scale(), s.current_xscale(), s.current_yscale()];
-                        s.from = here;
+                        let here = s.here(); // before a loop ends: it decides where the sprite is
                         s.loop_far = None; // a plain move ends a loop
                         s.out = false;
-                        s.y = *y;
-                        s.x = *x;
-                        s.scale = *scale;
-                        s.flip = *flip; // mirroring can't be animated: it switches as the move starts
-                        s.xscale = *xscale;
-                        s.yscale = *yscale;
-                        s.move_time = *time;
-                        s.move_elapsed = 0.0;
-                        s.move_ease = *ease;
+                        if *queued && (s.moving() || !s.queue.is_empty()) {
+                            s.queue.push_back(*to);
+                            s.legs.push(*to);
+                        } else {
+                            if !*queued {
+                                s.end_sequence();
+                            }
+                            s.flip = *flip; // mirroring can't be animated: it switches as the move starts
+                            s.start_leg(here, to);
+                            s.legs.push(*to);
+                        }
+                    }
+                }
+                Cmd::CycleSprite { id } => {
+                    if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
+                        s.cycle = true;
                     }
                 }
                 Cmd::Shake { time, strength, axis } => {
@@ -1118,12 +1204,12 @@ impl View {
         self.camera.current()
     }
 
-    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fade: f32) {
+    #[allow(clippy::too_many_arguments)]
+    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 3], fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
             Some(s) => {
-                let (here, here_y) = (s.current_x(), s.current_y());
                 if !layers.is_empty() || !s.layers.is_empty() {
                     s.set_layers(layers, fade);
                 }
@@ -1136,24 +1222,28 @@ impl View {
                     s.fade = fade;
                 }
                 // A new pose that leaves the resting values alone does not disturb a loop.
-                if s.loop_far.is_some() && s.rest() == [x, y, look.scale, look.xscale, look.yscale] {
+                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2]];
+                if (s.loop_far.is_some() || s.cycle) && s.home() == values {
                     s.z = z;
                     s.flip = look.flip;
                     return;
                 }
                 s.loop_far = None;
+                s.end_sequence();
                 s.out = false;
-                s.from = [here, here_y, look.scale, look.xscale, look.yscale];
+                s.from = values;
+                (s.alpha_to, s.dx, s.dy) = (fx[0], fx[1], fx[2]);
                 s.x = x;
                 s.y = y;
                 s.z = z;
                 s.move_time = 0.0;
+                s.move_elapsed = 0.0;
                 s.scale = look.scale;
                 s.flip = look.flip;
                 s.xscale = look.xscale;
                 s.yscale = look.yscale;
             }
-            None => self.sprites.push(SpriteView::new(id, (src, layers), x, y, z, look, fade)),
+            None => self.sprites.push(SpriteView::new(id, (src, layers), (x, y), z, look, fx, fade)),
         }
     }
 
@@ -1336,26 +1426,30 @@ impl View {
     fn push_sprite_views(&self, stage: &mut Vec<Draw>, s: &SpriteView, image_size: &dyn Fn(&str) -> Option<Size>) {
         let first = stage.len();
         self.push_sprite_pictures(stage, s, image_size);
+        let (dx, dy) = s.current_offset();
         for d in &mut stage[first..] {
-            if let Draw::Image { shade, .. } = d {
+            if let Draw::Image { shade, dest, .. } = d {
                 *shade = s.shade;
+                // The offset comes after placement, in pixels of the stage (VIRTUAL).
+                dest.x += dx;
+                dest.y += dy;
             }
         }
     }
 
     fn push_sprite_pictures(&self, stage: &mut Vec<Draw>, s: &SpriteView, image_size: &dyn Fn(&str) -> Option<Size>) {
-        let (x, y, look) = (s.current_x(), s.current_y(), s.look());
+        let (x, y, look, base) = (s.current_x(), s.current_y(), s.look(), s.now(5).clamp(0.0, 1.0));
         if let Some(prev) = &s.previous_src {
-            push_sprite(stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, self.art_scale, image_size);
+            push_sprite(stage, self.picture(prev, s.previous_anim_time), (x, y), look, base, self.art_scale, image_size);
         }
         // The layers of a layered sprite: the same place and size for each, back to front, and
         // each one crossfades on its own when its picture changes.
         for (src, t) in &s.previous_layers {
-            push_sprite(stage, self.picture(src, *t), (x, y), look, 1.0, self.art_scale, image_size);
+            push_sprite(stage, self.picture(src, *t), (x, y), look, base, self.art_scale, image_size);
         }
-        push_sprite(stage, self.picture(&s.src, s.anim_time), (x, y), look, s.alpha(), self.art_scale, image_size);
+        push_sprite(stage, self.picture(&s.src, s.anim_time), (x, y), look, s.opacity(), self.art_scale, image_size);
         for l in &s.layers {
-            let (sprite_alpha, layer_alpha) = (s.alpha(), l.alpha());
+            let (sprite_alpha, layer_alpha) = (s.opacity(), l.alpha());
             if let Some(prev) = &l.previous_src {
                 // Under a layer that fades in; when the layer fades out to nothing, it fades with it.
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
@@ -1891,11 +1985,11 @@ mod tests {
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade }
+        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade }
     }
 
     fn slide(id: &str, x: f32, scale: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), x, y: 1.0, scale, flip: false, xscale: 1.0, yscale: 1.0, time, ease }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y: 1.0, scale, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 }, queued: false }
     }
 
     fn images(list: &[Draw]) -> Vec<(&str, Rect, Rect)> {
@@ -2202,7 +2296,7 @@ mod tests {
     #[test]
     fn x_and_y_put_the_point_that_far_across_a_sprite_that_far_across_the_screen() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
@@ -2218,7 +2312,7 @@ mod tests {
     }
 
     fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
     }
 
     fn drawn_order(v: &View) -> Vec<String> {
@@ -2277,7 +2371,7 @@ mod tests {
     }
 
     fn slide_y(id: &str, x: f32, y: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), x, y, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time, ease }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 }, queued: false }
     }
 
     #[test]
@@ -2913,7 +3007,7 @@ mod tests {
         assert_eq!(v.hotspot_at(old.0, old.1), None, "its old place misses");
         assert_eq!(v.hotspot_at(drawn.x + drawn.w / 2.0, drawn.y + drawn.h / 2.0), Some(0));
         // scale, stretch and flip are the sprite's own
-        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, fade: 0.0 }], false);
+        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }], false);
         v.tick(10.0);
         let (drawn, spot) = drawn_and_spot(&v, &size);
         assert_eq!(spot, drawn);
@@ -2946,7 +3040,7 @@ mod tests {
         let size = |s: &str| Some(if s == "body.png" { Size::new(500.0, 1000.0) } else { Size::new(100.0, 100.0) });
         let mut v = View::new();
         let layers = vec![("body".to_string(), "body.png".to_string()), ("face".to_string(), "face.png".to_string())];
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
         let drawn: Vec<Rect> = images(&v.draw_list(&size, None)).iter().map(|(_, r, _)| *r).collect();
         assert_eq!(drawn.len(), 2, "{drawn:?}");
         let (l, t) = (drawn.iter().map(|r| r.x).fold(f32::MAX, f32::min), drawn.iter().map(|r| r.y).fold(f32::MAX, f32::min));
@@ -3606,7 +3700,7 @@ mod tests {
     // ---- flip and per-axis scale ------------------------------------------------------------
 
     fn look_show(id: &str, flip: bool, xscale: f32, yscale: f32, x: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }
     }
 
     #[test]
@@ -3652,7 +3746,7 @@ mod tests {
         assert!(close(dest.y + dest.h, VIRTUAL.h), "still standing on the bottom edge");
         assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w)), "still placed by x on its new size");
         // multiplied with scale
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 0.0 }]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         assert!(close(images(&list)[0].1.w, 470.0) && close(images(&list)[0].1.h, 235.0));
     }
@@ -3661,7 +3755,7 @@ mod tests {
     fn a_move_animates_the_scales_and_switches_flip_at_its_start() {
         let mut v = View::new();
         v.apply(&[look_show("m", false, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::MoveSprite { id: "m".into(), x: 0.5, y: 1.0, scale: 1.0, flip: true, xscale: 2.0, yscale: 0.5, time: 1.0, ease: Ease::Linear }]);
+        v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
         let size = |_: &str| Some(Size::new(500.0, 1000.0));
         let at = |v: &View| {
             let list = v.draw_list(&size, None);
@@ -3707,7 +3801,7 @@ mod tests {
     fn a_pose_change_crossfade_keeps_the_flip_for_both_poses() {
         let mut v = View::new();
         v.apply(&[look_show("m", true, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, fade: 1.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade: 1.0 }]);
         v.tick(0.5);
         let list = v.draw_list(&all_1080p, None);
         let flipped: Vec<_> = images(&list).into_iter().map(|(_, _, uv)| uv.w < 0.0).collect();

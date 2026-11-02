@@ -3,6 +3,7 @@
 
 use super::*;
 use quillstone_script::parse;
+use quillstone_runtime::SpriteStep;
 
 fn anims() -> BTreeMap<String, Anim> {
     parse(
@@ -24,7 +25,7 @@ fn big(_: &str) -> Option<Size> {
 }
 
 fn show(id: &str, src: &str, x: f32, y: f32, scale: f32, fade: f32) -> Cmd {
-    Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, fade }
+    Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y, z: 0, scale, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, fade }
 }
 
 fn bg(src: &str, fade: f32) -> Cmd {
@@ -32,11 +33,11 @@ fn bg(src: &str, fade: f32) -> Cmd {
 }
 
 fn bob(id: &str, y: f32, time: f32, ease: Ease) -> Cmd {
-    Cmd::LoopSprite { id: id.into(), x: 0.5, y, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time, ease }
+    Cmd::LoopSprite { id: id.into(), flip: false, to: SpriteStep { x: 0.5, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease, wait: 0.0 } }
 }
 
 fn plain_move(id: &str, x: f32, y: f32, time: f32) -> Cmd {
-    Cmd::MoveSprite { id: id.into(), x, y, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, time, ease: Ease::Linear }
+    Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, time, ease: Ease::Linear, wait: 0.0 }, queued: false }
 }
 
 /// The picture files drawn, back to front.
@@ -289,7 +290,7 @@ fn a_loop_animates_every_value_together() {
     let mut v = view();
     v.apply(&[
         show("m", "x.png", 0.25, 1.0, 1.0, 0.0),
-        Cmd::LoopSprite { id: "m".into(), x: 0.75, y: 0.9, scale: 1.2, flip: false, xscale: 2.0, yscale: 0.5, time: 2.0, ease: Ease::Linear },
+        Cmd::LoopSprite { id: "m".into(), flip: false, to: SpriteStep { x: 0.75, y: 0.9, scale: 1.2, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, time: 2.0, ease: Ease::Linear, wait: 0.0 } },
     ]);
     v.tick(1.0);
     let s = &v.sprites[0];
@@ -403,4 +404,85 @@ fn a_looping_view_needs_ticks_until_it_stops() {
     v.tick(1000.0);
     assert!(v.busy() && v.animating(), "forever");
     assert!(v.sprites[0].current_y() >= 0.8 - 1e-3 && v.sprites[0].current_y() <= 1.0 + 1e-3);
+}
+
+// ---- move sequences, alpha and pixel offsets ----------------------------------------------------
+
+fn leg(x: f32, alpha: f32, time: f32, wait: f32, queued: bool) -> Cmd {
+    let to = SpriteStep { x, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha, dx: 0.0, dy: 0.0, time, ease: Ease::Linear, wait };
+    Cmd::MoveSprite { id: "m".into(), flip: false, to, queued }
+}
+
+#[test]
+fn queued_legs_run_one_after_another_with_their_waits() {
+    let mut v = view();
+    v.apply(&[show("m", "x.png", 0.1, 1.0, 1.0, 0.0), leg(0.3, 1.0, 1.0, 0.0, false), leg(0.7, 1.0, 1.0, 0.5, true), leg(0.7, 0.0, 0.5, 0.0, true)]);
+    let at = |v: &View| (v.sprites[0].current_x(), v.sprites[0].opacity());
+    v.tick(0.5);
+    assert!(close(at(&v).0, 0.2));
+    v.tick(0.75); // 0.25 into the 0.5 wait
+    assert!(close(at(&v).0, 0.3), "waiting at the end of the first leg");
+    v.tick(0.5); // 0.25 into the second leg
+    assert!(close(at(&v).0, 0.4));
+    v.tick(1.0); // 0.25 into the third leg (a long tick passes its rest on)
+    assert!(close(at(&v).0, 0.7) && close(at(&v).1, 0.5), "alpha at mid-step: {:?}", at(&v));
+    v.tick(1.0);
+    assert!(close(at(&v).1, 0.0) && !v.animating());
+}
+
+#[test]
+fn a_plain_move_cuts_a_running_sequence_and_settle_runs_it_out() {
+    let mut v = view();
+    v.apply(&[show("m", "x.png", 0.1, 1.0, 1.0, 0.0), leg(0.3, 1.0, 1.0, 0.0, false), leg(0.7, 1.0, 1.0, 0.0, true)]);
+    v.settle(100.0);
+    assert!(close(v.sprites[0].current_x(), 0.7) && !v.animating());
+    v.apply(&[leg(0.3, 1.0, 1.0, 0.0, false), leg(0.9, 1.0, 1.0, 0.0, true)]);
+    v.tick(0.5);
+    v.apply(&[leg(0.0, 1.0, 1.0, 0.0, false)]);
+    v.tick(100.0);
+    assert!(close(v.sprites[0].current_x(), 0.0), "the queued leg of the old sequence is gone");
+}
+
+#[test]
+fn a_looping_sequence_goes_round_and_a_new_move_ends_it() {
+    let mut v = view();
+    v.apply(&[show("m", "x.png", 0.1, 1.0, 1.0, 0.0), leg(0.9, 1.0, 1.0, 0.0, false), leg(0.1, 1.0, 1.0, 0.5, true), Cmd::CycleSprite { id: "m".into() }]);
+    assert!(v.sprites[0].is_looping());
+    v.tick(1.0);
+    assert!(close(v.sprites[0].current_x(), 0.9));
+    v.tick(1.5); // wait, then back to 0.1
+    assert!(close(v.sprites[0].current_x(), 0.1));
+    v.tick(0.5); // again: half way to 0.9 (0.1 + 0.4)
+    assert!(close(v.sprites[0].current_x(), 0.5));
+    v.settle(100.0);
+    assert!(!v.sprites[0].moving() || v.sprites[0].is_looping());
+    v.apply(&[plain_move("m", 0.3, 1.0, 0.0)]);
+    v.tick(10.0);
+    assert!(close(v.sprites[0].current_x(), 0.3) && !v.animating());
+}
+
+#[test]
+fn alpha_dims_the_sprite_and_a_pixel_offset_shifts_it_after_placement() {
+    let mut v = view();
+    v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 0.5, dx: 30.0, dy: -10.0, fade: 0.0 }]);
+    let dest = |v: &View| match v.draw_list(&big, None).into_iter().find_map(|d| if let Draw::Image { dest, alpha, .. } = d { Some((dest, alpha)) } else { None }) {
+        Some(d) => d,
+        None => panic!("no sprite drawn"),
+    };
+    let (plain, alpha) = dest(&v);
+    assert!(close(alpha, 0.5));
+    let mut w = view();
+    w.apply(&[show("m", "m.png", 0.5, 1.0, 1.0, 0.0)]);
+    let (base, full) = dest(&w);
+    assert!(close(full, 1.0) && close(plain.x - base.x, 30.0) && close(plain.y - base.y, -10.0));
+    // the move animates them
+    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 130.0, dy: -10.0, time: 2.0, ease: Ease::Linear, wait: 0.0 };
+    v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: false, to, queued: false }]);
+    v.tick(1.0);
+    let (half, alpha) = dest(&v);
+    assert!(close(alpha, 0.75) && close(half.x - base.x, 80.0));
+    // hiding fades multiply with it: half way out, with the move's alpha at 0.875
+    v.apply(&[Cmd::HideSprite { id: "m".into(), fade: 1.0 }]);
+    v.tick(0.5);
+    assert!(close(v.sprites[0].opacity(), 0.5 * 0.875), "{}", v.sprites[0].opacity());
 }
