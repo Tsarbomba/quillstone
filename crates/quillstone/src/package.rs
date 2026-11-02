@@ -529,6 +529,28 @@ mod tests {
     }
 
     #[test]
+    fn packages_the_files_a_whole_number_in_a_picture_pattern_can_build() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-number-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        for f in ["room_1.png", "room_2.png", "hall_1.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "---\nvars: { floor: 2 }\n---\n::bg{src=\"assets/room_{floor}.png\"}\nHi.\n";
+        std::fs::write(src.join("n.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("n.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        package(&opts, &program).unwrap();
+        assert!(out.join("game/assets/room_1.png").is_file() && out.join("game/assets/room_2.png").is_file());
+        assert!(!out.join("game/assets/hall_1.png").exists());
+        let unused = unused_assets(&src, "n.quill.md", &program).unwrap();
+        assert_eq!(unused, ["assets/hall_1.png"], "check calls only the unmatched file unused");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn packages_included_scripts_at_their_paths() {
         let base = std::env::temp_dir().join(format!("quillstone-package-include-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

@@ -3,7 +3,7 @@
 use crate::test_util::errors;
 use crate::{parse, AssetKind, Op, Program};
 
-const HEAD: &str = "---\nvars: { mood: \"smile\", n: 3 }\n---\n\
+const HEAD: &str = "---\nvars: { mood: \"smile\", n: 3, flag: true }\n---\n\
     ::anim{id=blink frames=\"e/open.png 3, e/closed.png 0.1\" loop}\n\
     ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=art/{layer}_{value}.png}\n";
 
@@ -83,7 +83,7 @@ fn the_first_layered_show_names_every_layer() {
 fn layer_values_are_checked_like_pictures() {
     bad("::show{mika body=a eyes=b mouth=c}\n::show{mika eyes=anim:nope}\n", "unknown animation `nope`");
     bad("::show{mika body=a/../../../x eyes=b mouth=c}\n", "inside the game folder");
-    bad("::show{mika body={n} eyes=b mouth=c}\n", "must be a text variable");
+    bad("::show{mika body={flag} eyes=b mouth=c}\n", "must be a text or whole-number variable");
     bad("::show{mika body={1x} eyes=b mouth=c}\n", "isn't a variable name");
     let p = ok("::show{mika body=a eyes=b mouth={mood}}\n::show{mika mouth=m_{mood}}\n");
     assert_eq!(shows(&p)[0].1[2], pair("mouth", "art/mouth_{mood}.png"));

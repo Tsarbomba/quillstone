@@ -132,9 +132,9 @@ fn every_kind_of_unsafe_value_is_a_missing_picture() {
 }
 
 #[test]
-fn a_value_that_is_not_text_is_a_missing_picture() {
-    let p = parse("---\nvars: { n: 3 }\n---\n::bg{src=\"bg/{n}.png\"}\n::bg{src=\"bg/{unset}.png\"}\nHi.\n");
-    assert!(p.is_err(), "a declared number can never name a picture");
+fn a_value_that_is_not_text_or_a_number_is_a_missing_picture() {
+    let p = parse("---\nvars: { f: true }\n---\n::bg{src=\"bg/{f}.png\"}\n::bg{src=\"bg/{unset}.png\"}\nHi.\n");
+    assert!(p.is_err(), "a declared bool can never name a picture");
     let p = parse("::bg{src=\"bg/{unset}.png\"}\nHi.\n").unwrap();
     let (game, cmds) = Session::start(&p);
     assert_eq!(game.state().background.as_deref(), Some(MISSING_PICTURE));
@@ -167,4 +167,14 @@ fn a_hostile_save_variable_cannot_make_a_path_outside_the_folder() {
     let cmds = next(&mut loaded);
     assert_eq!(loaded.state().background.as_deref(), Some(MISSING_PICTURE));
     assert_eq!(warnings(&cmds).len(), 1);
+}
+
+#[test]
+fn a_whole_number_spells_its_digits_and_a_negative_one_shows_nothing() {
+    let p = parse("---\nvars: { floor: 2 }\n---\n::bg{src=\"bg/room_{floor}.png\"}\nOne.\n::set{floor = 0 - 1}\n::bg{src=\"bg/room_{floor}.png\"}\nTwo.\n").unwrap();
+    let (mut game, _) = Session::start(&p);
+    assert_eq!(game.state().background.as_deref(), Some("bg/room_2.png"));
+    let cmds = next(&mut game);
+    assert_eq!(game.state().background.as_deref(), Some(MISSING_PICTURE));
+    assert_eq!(warnings(&cmds).len(), 1, "{:?}", warnings(&cmds));
 }

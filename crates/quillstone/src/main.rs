@@ -1817,6 +1817,9 @@ mod tests {
         let script = "---\nvars: { place: \"a\" }\n---\n::bg{src=\"assets/places/{place}.png\"}\nHi.\n";
         assert!(checked(script, &[]).unwrap_err().contains("1 problem"), "no match is an error");
         assert!(checked(script, &[("assets/places/a.png", &png)]).is_ok());
+        // A whole number in the pattern counts like a text: its digits are just characters.
+        let num = "---\nvars: { floor: 2 }\n---\n::bg{src=\"assets/room_{floor}.png\"}\nHi.\n";
+        assert!(checked(num, &[("assets/room_1.png", &png), ("assets/room_2.png", &png)]).is_ok());
         let found = in_dir(&[], |dir| check_pattern(&dir.join("s.quill.md"), dir, 4, "assets/places/{place}.png", &mut HashSet::new()));
         assert_eq!(found.len(), 1);
         assert!(found[0].0 && found[0].1.contains(":4:") && found[0].1.contains("`assets/places/{place}.png` matches no file"), "{}", found[0].1);

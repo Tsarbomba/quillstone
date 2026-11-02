@@ -526,6 +526,9 @@ vars: { place: "rooftop", mood: "happy" }
 ![](assets/items/{item}.png)
 ```
 
+A whole number works too: with `floor: 2`, `::bg{src="assets/room_{floor}.png"}` shows
+`assets/room_2.png`.
+
 **Where it works:** the pose of `::show` (`::show{mika {mood}}`, also joined to other
 letters, like `a_{mood}`: it goes through the character's `sprites=` pattern exactly like
 a written pose), `src=` of `::show` (which then needs a sprite name, `::show{mika
@@ -534,10 +537,10 @@ layered sprite (`::show{mika eyes={mood}}`, see "Layered sprites"). Sounds, voic
 pictures, item icons, animation frames and the gallery take plain file names only (a brace
 there is an error), and `anim=` and `color=` take no variables.
 
-**The variable** is a text variable; dotted names work (`{hero.mood}`). Only a whole
+**The variable** is a text variable or a whole number; dotted names work (`{hero.mood}`). Only a whole
 `{name}` is replaced: no spaces inside the braces, no calculations. A variable that is
 not declared in `vars:` is allowed (a `::set` may create it, and `quillstone test` warns
-when nothing ever sets it), but a declared number, `true`/`false` or list is an error. The
+when nothing ever sets it), but a declared `true`/`false` or list is an error. The
 name needs a written-out extension (`.png`, `.jpg`, `.jpeg` or `.webp`; nothing else), at most eight variables
 fit in one name, and a name with a `{variable}` can only be a picture, not a video.
 Braces cannot be part of any file name: there is no way to write a literal one.
@@ -549,8 +552,8 @@ the first or last character and `..` never appears. Anything else (a `/`, `\`, `
 character, an empty text, a longer one, or a name Windows keeps for devices such as `con`
 or `nul`) does not make a path at all: the picture is treated as a file that is not there.
 It draws nothing, and the game shows a short notice once saying which variable and picture name
-were involved (it never prints the value). A variable that holds a number or is unset
-counts the same way. Nothing outside the game folder can ever be reached this way.
+were involved (it never prints the value). A number spells its digits (`0` and up, like in "variable parts in
+names"); a negative number, or a variable that is unset, counts the same way. Nothing outside the game folder can ever be reached this way.
 
 **When the name is built.** At the moment the command runs, from the variables as they
 are then. The game, its saves and rollback keep the finished file name, so a save
@@ -648,7 +651,7 @@ every combination. Declare the layers on the character, back to front:
   above, see "Frame animations") on that layer, so blinking is just an animated eyes layer; its
   clock runs on while other layers change.
 - A value may hold `{variable}` parts like a pose does (`mouth={feeling}`, `body=outfit_{day}`);
-  the same rules apply as in "Picture names from variables": the variable must be a text variable, and
+  the same rules apply as in "Picture names from variables": the variable must be a text or whole-number variable, and
   a value that is not a safe file-name fragment shows nothing and gives a notice.
 - All the layers of a character should be the **same size** (the same canvas): they are drawn
   stacked, each at the same place, size and mirroring, so one layer is not placed on its own.

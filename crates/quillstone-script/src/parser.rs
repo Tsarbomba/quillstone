@@ -2367,9 +2367,9 @@ impl Parser {
     }
 
     /// A picture name: a plain path inside the game folder, or a pattern whose
-    /// `{variable}` parts name text variables (see `dynpath`). A variable the front
+    /// `{variable}` parts name text or whole-number variables (see `dynpath`). A variable the front
     /// matter doesn't declare is allowed, like in dialogue (a `::set` can create it;
-    /// `quillstone test` warns when nothing sets it); a declared non-text one can never fit.
+    /// `quillstone test` warns when nothing sets it); a declared bool or list can never fit.
     fn picture_path(&self, key: &str, path: &str) -> Result<String, String> {
         if !crate::is_pattern(path) {
             return check_inside(key, path);
@@ -2384,10 +2384,10 @@ impl Parser {
                 crate::Piece::Lit(l) => sample.push_str(l),
                 crate::Piece::Var(v) => {
                     match self.program.vars.get(v) {
-                        Some(Value::Str(_)) | None => {}
+                        Some(Value::Str(_) | Value::Int(_)) | None => {}
                         Some(_) => {
                             return Err(format!(
-                                "`{key}={path}`: `{v}` must be a text variable (the picture name is built from its text; \
+                                "`{key}={path}`: `{v}` must be a text or whole-number variable (the picture name is built from its text or digits; \
                                  declare it with a text default, like `vars: {{ {v}: \"rooftop\" }}`)"
                             ))
                         }
@@ -5683,14 +5683,13 @@ mod tests {
 
     #[test]
     fn pattern_errors_name_the_line() {
-        let cases: [(&str, &str); 14] = [
+        let cases: [(&str, &str); 13] = [
             ("::bg{src=\"a/{place.png\"}", "without a closing"),
             ("::bg{src=\"a/place}.png\"}", "without a `{`"),
             ("::bg{src=\"a/{}.png\"}", "empty `{}`"),
             ("::bg{src=\"a/{ place }.png\"}", "isn't a variable name"),
-            ("::bg{src=\"a/{n}.png\"}", "must be a text variable"),
-            ("::bg{src=\"a/{flag}.png\"}", "must be a text variable"),
-            ("::bg{src=\"a/{bag}.png\"}", "must be a text variable"),
+            ("::bg{src=\"a/{flag}.png\"}", "must be a text or whole-number variable"),
+            ("::bg{src=\"a/{bag}.png\"}", "must be a text or whole-number variable"),
             ("::bg{src=\"a/{place}\"}", "extension"),
             ("::bg{src=\"a/{place}.{mood}\"}", "extension"),
             ("::bg{src=\"a/{place}.webm\"}", "must end in a picture extension"),
@@ -5711,8 +5710,9 @@ mod tests {
         assert!(msg.contains("without a `{`"), "{msg}");
         let (_, msg) = only_error("::show{mika {}}\n");
         assert!(msg.contains("empty `{}`"), "{msg}");
-        let (_, msg) = only_error("::show{mika {n}}\n");
-        assert!(msg.contains("must be a text variable"), "{msg}");
+        let (_, msg) = only_error("::show{mika {flag}}\n");
+        assert!(msg.contains("must be a text or whole-number variable"), "{msg}");
+        assert!(parse(&with_vars("::bg{src=\"a/room_{n}.png\"}\n")).is_ok(), "a whole number is fine");
         let (_, msg) = only_error("::show{src=\"a/{place}.png\"}\n");
         assert!(msg.contains("needs a sprite name"), "{msg}");
         let (_, msg) = only_error("::show{mika happy {mood}}\n");

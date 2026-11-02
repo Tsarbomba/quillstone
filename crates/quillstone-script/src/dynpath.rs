@@ -1,7 +1,7 @@
 //! Picture names with `{variable}` parts (`assets/places/{place}.png`).
 //!
 //! A path that contains `{name}` is a *pattern*: while the story runs, each
-//! `{name}` is replaced by the text variable's value, but only when that value
+//! `{name}` is replaced by the text variable's value (or a whole number's digits), but only when that value
 //! is a safe file-name fragment (see [`unsafe_reason`]). Everything that has to
 //! know the files up front (`check`, `package`) reads a pattern as a glob where
 //! each `{name}` matches one safe fragment inside its folder ([`pattern_matches`]).
@@ -227,8 +227,8 @@ pub(crate) fn is_device_name(part: &str) -> bool {
         || ["com", "lpt"].iter().any(|p| stem.strip_prefix(p).is_some_and(|d| matches!(d.as_bytes(), [b'1'..=b'9'])))
 }
 
-/// Build the file name a pattern stands for. `Err` says why not: a variable that
-/// holds no text, or text that isn't a safe fragment (see [`unsafe_reason`]).
+/// Build the file name a pattern stands for. A whole number from 0 up spells its digits.
+/// `Err` says why not: a variable that holds neither, or text that isn't a safe fragment (see [`unsafe_reason`]).
 /// A plain path comes back unchanged. The result is always inside the game folder.
 pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
     let parts = pieces(pattern)?;
@@ -241,7 +241,9 @@ pub fn resolve(pattern: &str, vars: &Vars) -> Result<String, String> {
                     None => out.push_str(v),
                     Some(why) => return Err(format!("{{{name}}} in {pattern} is not a safe file name ({why})")),
                 },
-                _ => return Err(format!("{{{name}}} in {pattern} is not set to a text")),
+                Some(Value::Int(n)) if *n >= 0 => out.push_str(&n.to_string()),
+                Some(Value::Int(_)) => return Err(format!("{{{name}}} in {pattern} is a negative number")),
+                _ => return Err(format!("{{{name}}} in {pattern} is not set to a text or a whole number")),
             },
         }
     }
@@ -400,12 +402,14 @@ mod tests {
     }
 
     #[test]
-    fn resolves_text_variables_only() {
-        let v = vars(&[("place", text("rooftop")), ("hero.mood", text("happy")), ("n", Value::Int(3)), ("bad", text("../x"))]);
+    fn resolves_text_and_whole_number_variables() {
+        let v = vars(&[("place", text("rooftop")), ("hero.mood", text("happy")), ("n", Value::Int(3)), ("neg", Value::Int(-1)), ("flag", Value::Bool(true)), ("bad", text("../x"))]);
+        assert_eq!(resolve("room_{n}.png", &v).unwrap(), "room_3.png");
+        assert!(resolve("room_{neg}.png", &v).is_err());
+        assert!(resolve("room_{flag}.png", &v).is_err());
         assert_eq!(resolve("a/b.png", &v).unwrap(), "a/b.png");
         assert_eq!(resolve("assets/{place}.png", &v).unwrap(), "assets/rooftop.png");
         assert_eq!(resolve("m_{place}_{hero.mood}.png", &v).unwrap(), "m_rooftop_happy.png");
-        assert!(resolve("a/{n}.png", &v).unwrap_err().contains("not set to a text"));
         assert!(resolve("a/{unset}.png", &v).unwrap_err().contains("not set to a text"));
         let e = resolve("a/{bad}.png", &v).unwrap_err();
         assert!(e.contains("{bad}") && e.contains("a/{bad}.png") && !e.contains("../x"), "{e}");
