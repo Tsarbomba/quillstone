@@ -52,12 +52,12 @@ fn a_sprite_and_a_background_can_be_animations() {
     let p = program();
     let (game, first) = Session::start(&p);
     assert_eq!(game.state().background.as_deref(), Some("anim:rain"));
-    assert!(first.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.5, wipe: None }));
+    assert!(first.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.5, wipe: None, sound: false }));
     assert_eq!(sprite(&game).src, "anim:blink");
     assert!(first.iter().any(|c| matches!(c, Cmd::ShowSprite { id, src, x, scale, .. } if id == "mika" && src == "anim:blink" && *x == 0.0 && *scale == 0.8)));
     // The scene is rebuilt from state alone.
     let redraw = game.state().redraw();
-    assert!(redraw.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.0, wipe: None }));
+    assert!(redraw.contains(&Cmd::SetBackground { src: "anim:rain".into(), fade: 0.0, wipe: None, sound: false }));
     assert!(redraw.iter().any(|c| matches!(c, Cmd::ShowSprite { src, .. } if src == "anim:blink")));
 }
 

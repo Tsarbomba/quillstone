@@ -285,9 +285,9 @@ mod real {
                         handle.stop(tween(fade.max(DECLICK)));
                     }
                 }
-                Action::PlayVoice { src } => {
+                Action::PlayVoice { src, volume } => {
                     let Some(data) = self.stream(&src) else { return self.voice_ended = true };
-                    match self.voice_track.play(data) {
+                    match self.voice_track.play(data.volume(amplitude_to_db(volume))) {
                         Ok(handle) => {
                             self.voice = Some(handle);
                             // An earlier clip of this batch that failed must not end this one.

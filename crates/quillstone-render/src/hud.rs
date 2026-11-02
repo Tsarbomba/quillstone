@@ -190,7 +190,7 @@ impl HudLayer {
                 // the place of the normal one under the mouse once it is.
                 let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
                 let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
-                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha });
+                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: 1.0 });
                 Some(dest)
             }
         }
@@ -596,7 +596,7 @@ mod tests {
     }
 
     fn color_bg(c: &str, fade: f32) -> Cmd {
-        Cmd::SetBackground { src: c.into(), fade, wipe: None }
+        Cmd::SetBackground { src: c.into(), fade, wipe: None, sound: false }
     }
 
     #[test]
@@ -611,12 +611,12 @@ mod tests {
     fn colours_and_pictures_crossfade_both_ways() {
         let pic = |_: &str| Some(Size { w: 1920.0, h: 1080.0 });
         let mut v = View::new();
-        v.apply(&[Cmd::SetBackground { src: "a.png".into(), fade: 0.0, wipe: None }, color_bg("color:#ff0000", 1.0)]);
+        v.apply(&[Cmd::SetBackground { src: "a.png".into(), fade: 0.0, wipe: None, sound: false }, color_bg("color:#ff0000", 1.0)]);
         v.tick(0.5);
         let list = v.draw_list(&pic, None);
         assert!(matches!(&list[0], Draw::Image { src, alpha, .. } if src == "a.png" && *alpha == 1.0), "{list:?}");
         assert!(matches!(&list[1], Draw::Rect { color, .. } if (color[3] - 0.5).abs() < 1e-4 && color[0] == 1.0), "{list:?}");
-        v.apply(&[Cmd::SetBackground { src: "a.png".into(), fade: 1.0, wipe: None }]);
+        v.apply(&[Cmd::SetBackground { src: "a.png".into(), fade: 1.0, wipe: None, sound: false }]);
         v.tick(0.25);
         let list = v.draw_list(&pic, None);
         assert!(matches!(&list[0], Draw::Rect { color, .. } if color[3] == 1.0), "{list:?}");
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn a_colour_wipes_in_like_a_picture_and_ignores_the_camera() {
         let mut v = View::new();
-        v.apply(&[Cmd::SetBackground { src: "color:#ff0000".into(), fade: 1.0, wipe: Some(quillstone_script::Wipe::Right) }]);
+        v.apply(&[Cmd::SetBackground { src: "color:#ff0000".into(), fade: 1.0, wipe: Some(quillstone_script::Wipe::Right), sound: false }]);
         v.tick(0.25);
         let list = v.draw_list(&no_images, None);
         let [Draw::Rect { rect, color }] = &list[..] else { panic!("{list:?}") };

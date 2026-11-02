@@ -81,8 +81,8 @@ pub enum Cmd {
     /// An inline image shown with the next waiting line.
     ShowImage { src: String, alt: String },
     /// `src` may be a video file (a looping video background). With a `wipe`,
-    /// `fade` is how long the wipe takes.
-    SetBackground { src: String, fade: f32, wipe: Option<Wipe> },
+    /// `fade` is how long the wipe takes. `sound`: the video plays its own sound.
+    SetBackground { src: String, fade: f32, wipe: Option<Wipe>, sound: bool },
     /// Show a sprite or change its pose. `x` is 0..1 across the screen; `y` is
     /// where its bottom edge is, as a fraction of the screen height (1 is the
     /// bottom of the screen); `z` orders sprites (higher is in front). `flip`
@@ -152,7 +152,7 @@ pub enum Cmd {
     /// on the sound-effect channel when `src` is `None`.
     StopSfx { src: Option<String>, fade: f32 },
     /// Voice clip for the line being shown; stop it when the player advances.
-    PlayVoice { src: String },
+    PlayVoice { src: String, volume: f32 },
     /// Pause; send [`Input::Advance`] when the time is up (or the player skips).
     Wait { seconds: f32 },
     /// Stop until the player advances (`::wait{click}`): the screen stays as it is.
@@ -420,6 +420,8 @@ pub struct State {
     /// Active `::call`s, innermost last.
     pub stack: Vec<Frame>,
     pub background: Option<String>,
+    /// The video background plays its sound (`::bg{.. sound}`).
+    pub background_sound: bool,
     pub sprites: Vec<SpriteState>,
     pub camera: Camera,
     /// The ambient particles (`::particles`): only their settings. Where each one is
@@ -443,6 +445,8 @@ pub struct State {
     pub inline: Vec<(String, String)>,
     /// Voice clip belonging to the line that is waiting.
     pub voice: Option<String>,
+    /// Its volume, 0..1 (`::voice{.. volume=}`).
+    pub voice_volume: f32,
     pub line: Option<Line>,
     /// The blocking command currently waiting for input, if any.
     pub pending: Option<Cmd>,
@@ -470,6 +474,7 @@ impl State {
             rng: seed,
             stack: Vec::new(),
             background: None,
+            background_sound: false,
             sprites: Vec::new(),
             camera: Camera::default(),
             particles: None,
@@ -481,6 +486,7 @@ impl State {
             sfx_loops: Vec::new(),
             inline: Vec::new(),
             voice: None,
+            voice_volume: 1.0,
             line: None,
             pending: None,
             finished: false,
@@ -492,7 +498,7 @@ impl State {
     pub fn redraw(&self) -> Vec<Cmd> {
         let mut out = vec![Cmd::ClearScene];
         if let Some(src) = &self.background {
-            out.push(Cmd::SetBackground { src: src.clone(), fade: 0.0, wipe: None });
+            out.push(Cmd::SetBackground { src: src.clone(), fade: 0.0, wipe: None, sound: self.background_sound });
         }
         if self.camera != Camera::default() {
             out.push(Cmd::Camera { camera: self.camera, time: 0.0, ease: Ease::Linear });
@@ -547,7 +553,7 @@ impl State {
             out.push(Cmd::ShowImage { src: src.clone(), alt: alt.clone() });
         }
         if let Some(src) = &self.voice {
-            out.push(Cmd::PlayVoice { src: src.clone() });
+            out.push(Cmd::PlayVoice { src: src.clone(), volume: self.voice_volume });
         }
         // A line stays on screen under choices and waits; a pending Say shows itself.
         if !matches!(self.pending, Some(Cmd::Say { .. })) {
@@ -698,6 +704,14 @@ fn count_visits(state: &mut State, program: &Program, pc: usize, default: i64, d
     }
 }
 
+/// Whether `after` shows the line a Use or HUD button called from, again, after `before`'s `::return`
+/// (the line is not new: History and the log already have it).
+pub(crate) fn returned_to_line(before: &State, after: &State) -> bool {
+    matches!(after.pending, Some(Cmd::Say { .. }))
+        && after.stack.len() < before.stack.len()
+        && matches!(before.stack.last(), Some(Frame { ret, line: true }) if *ret == after.pc)
+}
+
 /// `::return`: back to the frame's address. A line call shows its line again, which would count a second visit.
 fn return_to(state: &mut State, program: &Program, frame: Frame) {
     if frame.line {
@@ -759,7 +773,9 @@ fn shop_cmd(program: &Program, pay: &str, into: &str, stock: &[ShopEntry], vars:
             let s = &stock[i];
             // A counted item can be bought again: it is never "owned".
             let owned = held.contains(&s.item) && counted_var(program, &s.item).is_none();
-            ShopItem { item: item_info(program, &s.item), price: s.price, owned }
+            // Its count is shown so the player sees how many they hold.
+            let count = counted_var(program, &s.item).map(|c| vars.get(c).and_then(Value::as_int).unwrap_or(0));
+            ShopItem { item: ItemInfo { count, ..item_info(program, &s.item) }, price: s.price, owned }
         })
         .collect();
     Cmd::ShowShop { pay: pay.to_string(), money: money(vars, pay), items }
@@ -1212,10 +1228,11 @@ pub(crate) fn step_traced(
                 out.push(Cmd::ShowImage { src, alt: alt.clone() });
                 state.pc += 1;
             }
-            Op::Bg { src, fade, wipe } => {
+            Op::Bg { src, fade, wipe, sound } => {
                 let src = &picture_path(src, &state.vars, &mut out);
                 state.background = Some(src.clone());
-                out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe });
+                state.background_sound = *sound;
+                out.push(Cmd::SetBackground { src: src.clone(), fade: *fade, wipe: *wipe, sound: *sound });
                 state.pc += 1;
             }
             Op::Hud { elem, fade } => {
@@ -1406,9 +1423,10 @@ pub(crate) fn step_traced(
                 out.push(Cmd::StopSfx { src: src.clone(), fade: *fade });
                 state.pc += 1;
             }
-            Op::Voice { src } => {
+            Op::Voice { src, volume } => {
                 state.voice = Some(src.clone());
-                out.push(Cmd::PlayVoice { src: src.clone() });
+                state.voice_volume = *volume;
+                out.push(Cmd::PlayVoice { src: src.clone(), volume: *volume });
                 state.pc += 1;
             }
             Op::Jump { target, cond } => {
@@ -1545,7 +1563,17 @@ impl<'p> Session<'p> {
 
     pub fn input(&mut self, input: Input) -> Vec<Cmd> {
         let before = self.state.clone();
-        let cmds = step(&mut self.state, self.program, Some(input.clone()));
+        let mut cmds = step(&mut self.state, self.program, Some(input.clone()));
+        if returned_to_line(&before, &self.state) {
+            // The line comes back as it was before the Use: its pictures (not its voice) are shown again.
+            let at = (self.state.pc, self.state.stack.len());
+            let was = self.history.iter().rev().find(|(s, _)| (s.pc, s.stack.len()) == at && matches!(s.pending, Some(Cmd::Say { .. })));
+            self.state.inline = was.map(|(s, _)| s.inline.clone()).unwrap_or_default();
+            let at = cmds.len().saturating_sub(1);
+            for (src, alt) in self.state.inline.iter().rev() {
+                cmds.insert(at, Cmd::ShowImage { src: src.clone(), alt: alt.clone() });
+            }
+        }
         if !cmds.is_empty() {
             self.push_history(before, input);
             self.redo.clear(); // a new path: what was rolled back is gone
@@ -1646,7 +1674,7 @@ vars: { trust: 0 }
         let p = parse(STORY).unwrap();
         let mut s = State::new(&p);
         let cmds = step(&mut s, &p, None);
-        assert_eq!(cmds, vec![Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None }, say("A", "First.")]);
+        assert_eq!(cmds, vec![Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false }, say("A", "First.")]);
         assert_eq!(s.background.as_deref(), Some("a.webp"));
     }
 
@@ -1706,7 +1734,7 @@ vars: { trust: 0 }
             redraw,
             vec![
                 Cmd::ClearScene,
-                Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None },
+                Cmd::SetBackground { src: "a.webp".into(), fade: 0.0, wipe: None, sound: false },
                 Cmd::StopMusic { fade: 0.0 },
                 say("A", "First."), // the line stays under the choices
                 Cmd::ShowChoices { options: vec!["Good".into(), "Bad".into()], locked: vec![None; 2] },
@@ -2161,11 +2189,11 @@ vars: { trust: 0 }
         game.rollback(); // back to "two": everything about that moment returns
         let again = game.state().redraw();
         assert_eq!(again[0], Cmd::ClearScene);
-        assert!(again.contains(&Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None }));
+        assert!(again.contains(&Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false }));
         assert!(again.iter().any(|c| matches!(c, Cmd::ShowSprite { id, fade, .. } if id == "s" && *fade == 0.0)));
         assert!(again.contains(&Cmd::PlayMusic { src: "m.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 0.5 }));
         assert!(again.contains(&Cmd::ShowImage { src: "pic.png".into(), alt: "alt".into() }));
-        assert!(again.contains(&Cmd::PlayVoice { src: "v.ogg".into() }));
+        assert!(again.contains(&Cmd::PlayVoice { src: "v.ogg".into(), volume: 1.0 }));
         assert_eq!(again.last(), Some(&say("A", "two")));
     }
 
@@ -2205,7 +2233,7 @@ vars: { trust: 0 }
     fn a_video_clears_the_line_and_backgrounds_may_be_video_files() {
         let p = parse("::bg{src=loop.webm}\n**A:** x\n::video{src=c.webm}\n**A:** y\n").unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::SetBackground { src: "loop.webm".into(), fade: 0.0, wipe: None }));
+        assert!(first.contains(&Cmd::SetBackground { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false }));
         game.input(Input::Advance);
         assert!(game.state().line.is_none());
     }
@@ -2314,7 +2342,7 @@ vars: { trust: 0 }
     fn a_hotspot_screen_keeps_the_background_and_a_once_hotspot_goes_away() {
         let p = parse(MAP).unwrap();
         let (mut game, first) = Session::start(&p);
-        assert!(first.contains(&Cmd::SetBackground { src: "map.png".into(), fade: 0.0, wipe: None }));
+        assert!(first.contains(&Cmd::SetBackground { src: "map.png".into(), fade: 0.0, wipe: None, sound: false }));
         game.input(Input::Choose(0));
         let back = game.input(Input::Advance);
         assert_eq!(labels(&spots(&back).unwrap()), ["Key", "Leave"]);
@@ -3085,7 +3113,7 @@ vars: { amount: 99 }
         assert_eq!(cmds, vec![Cmd::FadeOut { time: 0.5, color: [0.0; 3] }, Cmd::Wait { seconds: 0.5 }]);
         assert_eq!(game.state().background.as_deref(), Some("a.png"), "the picture changes after the fade out");
         let cmds = game.input(Input::Advance);
-        assert_eq!(cmds[0], Cmd::SetBackground { src: "b.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(cmds[0], Cmd::SetBackground { src: "b.png".into(), fade: 0.0, wipe: None, sound: false });
         assert_eq!(cmds[1], Cmd::FadeIn { time: 0.5 });
         assert!(matches!(cmds[2], Cmd::Say { .. }));
         assert_eq!(game.state().cover, None);

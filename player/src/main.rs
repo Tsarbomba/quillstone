@@ -61,6 +61,7 @@ struct App {
     /// The window's size and position while it is a normal window, saved with the settings.
     window_size: Option<(u32, u32)>,
     window_pos: Option<(i32, i32)>,
+    window_maximized: bool,
     /// `None` when there is no sound device (or the `audio` feature is off).
     audio: Option<Audio>,
     /// Images on the GPU come and go as the story needs them (see `images.rs`).
@@ -172,7 +173,7 @@ fn main() {
     });
     let audio = Audio::new(&assets, sfx);
 
-    let game_settings_window = (settings.window_size, settings.window_pos);
+    let game_settings_window = (settings.window_size, settings.window_pos, settings.window_maximized);
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
     game.set_voice_files(quillstone_ui::source::voice_files(&assets, program).into_iter().collect());
     game.set_unlock_all(unlock_all);
@@ -202,6 +203,7 @@ fn main() {
         root: root.clone(),
         window_size: game_settings_window.0,
         window_pos: game_settings_window.1,
+        window_maximized: game_settings_window.2,
         settings_file,
         audio,
         images: images::Images::new(assets.clone()),
@@ -454,6 +456,7 @@ impl App {
         let Some(file) = &self.settings_file else { return };
         let mut settings = self.game.settings().clone();
         (settings.window_size, settings.window_pos) = (self.window_size, self.window_pos);
+        settings.window_maximized = self.window_maximized;
         if let Err(e) = quillstone_ui::write_atomic(file, &settings.to_text()) {
             eprintln!("warning: cannot save settings to {}: {e}", file.display());
             self.game.notify(format!("Could not save settings: {e}"));
@@ -461,10 +464,14 @@ impl App {
     }
 
     /// Remember the window's size and position, unless it is full screen, maximised or minimised (their values are no use:
-    /// a maximised window would come back as a huge normal one).
+    /// a maximised window would come back as a huge normal one). Maximised is remembered as a flag instead.
     fn note_window(&mut self) {
         let Some(w) = &self.window else { return };
-        if w.fullscreen().is_some() || w.is_maximized() || w.is_minimized() == Some(true) {
+        if w.fullscreen().is_some() || w.is_minimized() == Some(true) {
+            return;
+        }
+        self.window_maximized = w.is_maximized();
+        if self.window_maximized {
             return;
         }
         let size = w.inner_size();
@@ -693,6 +700,7 @@ impl ApplicationHandler for App {
             .with_title(&self.title)
             .with_inner_size(PhysicalSize::new(size.0, size.1))
             .with_position(PhysicalPosition::new(pos.0, pos.1))
+            .with_maximized(self.window_maximized)
             .with_fullscreen(fullscreen(self.game.settings().fullscreen));
         let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
 

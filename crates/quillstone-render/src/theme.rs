@@ -130,6 +130,8 @@ pub struct Theme {
     /// A border round the dialogue and name text: `text_outline_size` px (0 = none) in this colour.
     pub text_outline_color: [f32; 4],
     pub text_outline_size: f32,
+    /// How bright the sprites of those who are not speaking are drawn (1 = not dimmed).
+    pub speaker_highlight: f32,
     pub text_color: [f32; 4],
     /// Name plates of speakers without their own `color=`.
     pub name_color: [f32; 4],
@@ -245,6 +247,7 @@ impl Default for Theme {
             name_size: 36.0,
             text_outline_color: [0.0, 0.0, 0.0, 1.0],
             text_outline_size: 0.0,
+            speaker_highlight: 1.0,
             text_color: [1.0, 1.0, 1.0, 1.0],
             name_color: [1.0, 0.85, 0.55, 1.0],
             accent_color: [1.0, 0.85, 0.55, 1.0],
@@ -611,7 +614,7 @@ file_keys! {
 
 /// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
 type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
-const NUMBER_KEYS: [NumberKey; 9] = [
+const NUMBER_KEYS: [NumberKey; 10] = [
     ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
     ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
     ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
@@ -620,6 +623,7 @@ const NUMBER_KEYS: [NumberKey; 9] = [
     ("inventory_cell_gap", 0.0, 100.0, "", |t| &mut t.inventory_cell_gap),
     ("inventory_icon_size", 16.0, 400.0, "", |t| &mut t.inventory_icon_size),
     ("voice_duck", 0.0, 1.0, " (1 = no ducking)", |t| &mut t.voice_duck),
+    ("speaker_highlight", 0.0, 1.0, " (1 = no dimming)", |t| &mut t.speaker_highlight),
     ("choice_timer_height", 2.0, 40.0, "", |t| &mut t.choice_timer_height),
 ];
 
@@ -987,5 +991,8 @@ mod tests {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
         assert!(Theme::parse("text_outline_size = 0\ntext_outline_size = 8").1.is_empty(), "0 and 8 are the ends");
+        let (t, problems) = Theme::parse("speaker_highlight = 0.6\n");
+        assert!(problems.is_empty() && t.speaker_highlight == 0.6 && Theme::default().speaker_highlight == 1.0, "{problems:?}");
+        assert!(!Theme::parse("speaker_highlight = 2\n").1.is_empty());
     }
 }

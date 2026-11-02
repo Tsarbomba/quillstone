@@ -106,7 +106,9 @@ impl Session<'_> {
     /// the script text it came from, so the whole log follows a language change.
     pub fn backlog_with(&self, cat: &Catalog) -> Vec<Logged> {
         let mut out = Vec::new();
-        let mut log = |state: &crate::State, input: Option<&crate::Input>| match (&state.pending, input) {
+        let mut log = |state: &crate::State, input: Option<&crate::Input>, again: bool| match (&state.pending, input) {
+            // The line a Use or HUD call came back to is already in the log from before the call.
+            (Some(Cmd::Say { .. }), _) if again => {}
             (Some(Cmd::Say { .. }), _) => {
                 let Some(line) = state.line.clone() else { return };
                 let said = self.say_in(state.pc, &state.vars, &line.speaker, cat);
@@ -128,10 +130,12 @@ impl Session<'_> {
             }
             _ => {}
         };
+        let mut earlier: Option<&crate::State> = None;
         for (state, input) in &self.history {
-            log(state, Some(input));
+            log(state, Some(input), earlier.is_some_and(|e| crate::returned_to_line(e, state)));
+            earlier = Some(state);
         }
-        log(&self.state, None);
+        log(&self.state, None, earlier.is_some_and(|e| crate::returned_to_line(e, &self.state)));
         out
     }
 }

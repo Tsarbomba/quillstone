@@ -507,7 +507,8 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     // Saves from before `random` existed have no such record: they load with the default seed.
     w(format!("rng {}", s.rng));
     if let Some(bg) = &s.background {
-        w(format!("bg {}", q(bg)));
+        // `sound` is appended only when set: saves from before have no such word.
+        w(format!("bg {}{}", q(bg), if s.background_sound { " sound" } else { "" }));
     }
     for sp in &s.sprites {
         // New fields are appended: `y` and `z` came after the first four, then `flip`,
@@ -577,7 +578,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         w(format!("inline {} {}", q(src), q(alt)));
     }
     if let Some(v) = &s.voice {
-        w(format!("voice {}", q(v)));
+        // The volume is appended only when it isn't full: saves from before have no such word.
+        let volume = if s.voice_volume < 1.0 { format!(" {}", s.voice_volume) } else { String::new() };
+        w(format!("voice {}{volume}", q(v)));
     }
     if let Some(l) = &s.line {
         let speaker = l.speaker.as_deref().map_or("-".into(), q);
@@ -760,7 +763,10 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "rng" => s.rng = num(arg(1)?, n)?,
             // A solid colour is `color:#rrggbb`; anything else is a file and must be inside the game folder.
             "bg" if bg_color(arg(1)?).is_some() => s.background = Some(arg(1)?.to_string()),
-            "bg" => s.background = Some(pic(1)?),
+            "bg" => {
+                s.background = Some(pic(1)?);
+                s.background_sound = t.get(2).is_some_and(|w| w == "sound");
+            }
             "hud" => {
                 if s.hud.len() >= MAX_HUD_RECORDS {
                     return Err(format!("line {n}: more than {MAX_HUD_RECORDS} `hud` records in a state"));
@@ -884,7 +890,10 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 return Err(format!("line {n}: more than {MAX_INLINE} `inline` records in a state"));
             }
             "inline" => s.inline.push((path(1)?, arg(2)?.to_string())),
-            "voice" => s.voice = Some(path(1)?),
+            "voice" => {
+                s.voice = Some(path(1)?);
+                s.voice_volume = t.get(2).map_or(1.0, |_| sane(f(2).unwrap_or(1.0), 0.0, 1.0, 1.0));
+            }
             "line" => {
                 let speaker = match (arg(1)?, line.split_whitespace().nth(1)) {
                     ("-", Some("-")) => None, // an unquoted dash is "no speaker"
@@ -986,6 +995,29 @@ Narration with \"quotes\" and a \\\\ backslash.
             assert_eq!(loaded.history, game.history);
             assert_eq!(cmds, game.state().redraw());
         }
+    }
+
+    #[test]
+    fn a_background_videos_sound_flag_is_saved_and_an_old_save_has_none() {
+        let p = parse("::bg{src=a.webm sound}\n**A:** hi\n").unwrap();
+        let game = play(&p, &[]);
+        let text = game.save();
+        assert!(text.contains("bg \"a.webm\" sound"), "{text}");
+        assert!(Session::load(&p, &text).unwrap().0.state().background_sound);
+        let old = text.replace("bg \"a.webm\" sound", "bg \"a.webm\"");
+        assert!(!Session::load(&p, &old).unwrap().0.state().background_sound);
+    }
+
+    #[test]
+    fn a_voices_volume_is_saved_and_an_old_save_has_full_volume() {
+        let p = parse("::voice{src=v.ogg volume=0.5}\n**A:** hi\n").unwrap();
+        let text = play(&p, &[]).save();
+        assert!(text.contains("voice \"v.ogg\" 0.5"), "{text}");
+        assert_eq!(Session::load(&p, &text).unwrap().0.state().voice_volume, 0.5);
+        let old = text.replace(" 0.5\n", "\n");
+        assert_eq!(Session::load(&p, &old).unwrap().0.state().voice_volume, 1.0);
+        let wild = text.replace("v.ogg\" 0.5", "v.ogg\" 7");
+        assert_eq!(Session::load(&p, &wild).unwrap().0.state().voice_volume, 1.0, "out of range: clamped");
     }
 
     #[test]

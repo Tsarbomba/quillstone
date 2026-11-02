@@ -156,7 +156,10 @@ impl Game<'_> {
                     .map(|s| BagCell {
                         name: s.item.name.clone(),
                         icon: s.item.icon.clone(),
-                        price: Some(format!("{} {label}", s.price)),
+                        price: Some(match s.item.count {
+                            Some(n) => format!("{} {label} (owned: {n})", s.price),
+                            None => format!("{} {label}", s.price),
+                        }),
                         state: if s.owned {
                             CellState::Owned
                         } else if s.price > *money {

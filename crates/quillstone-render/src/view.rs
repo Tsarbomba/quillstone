@@ -30,6 +30,8 @@ pub const TEXTBOX: Rect = Rect::new(160.0, 780.0, 1600.0, 260.0);
 pub const SPRITE_HEIGHT: f32 = 940.0;
 
 /// Thickness of the outline around a hovered hotspot.
+/// Seconds a sprite takes to dim or brighten when the speaker changes.
+const SHADE_TIME: f32 = 0.25;
 const HOTSPOT_OUTLINE: f32 = 4.0;
 /// Hotspot tooltip: padding around the label, and the gap kept to the screen edge.
 const TIP_PAD: f32 = 20.0;
@@ -67,7 +69,8 @@ pub struct Outline {
 /// draw in list order, back to front.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
-    Image { src: String, dest: Rect, uv: Rect, alpha: f32 },
+    /// `shade` multiplies the picture's colour (1 as it is, less is darker; a dimmed sprite).
+    Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: f32 },
     Rect { rect: Rect, color: [f32; 4] },
     /// `text` is the *full* string so wrapping stays stable; show only the first
     /// `visible_chars` characters (the typewriter effect) without re-wrapping.
@@ -91,6 +94,8 @@ pub struct Background {
     pub fade: f32,
     /// Reveal the picture from one side instead of fading it in.
     pub wipe: Option<Wipe>,
+    /// A video background plays its own sound.
+    pub sound: bool,
     pub elapsed: f32,
 }
 
@@ -214,6 +219,8 @@ pub struct SpriteView {
     /// and the same for the outgoing picture of a pose change.
     anim_time: f32,
     previous_anim_time: f32,
+    /// How bright it is drawn, 1 as it is: dimmed while someone else speaks (`speaker_highlight`).
+    shade: f32,
 }
 
 impl SpriteView {
@@ -242,6 +249,7 @@ impl SpriteView {
             out: false,
             anim_time: 0.0,
             previous_anim_time: 0.0,
+            shade: 1.0,
         }
     }
 
@@ -664,6 +672,8 @@ pub struct View {
     wait: Option<f32>,
     chars_per_sec: f32,
     theme: Theme,
+    /// The id of the character whose line is on screen, if it is one (see [`View::set_speaker`]).
+    speaker_id: Option<String>,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
     art_scale: Option<f32>,
     /// The size of each picture a sprite is drawn with (by path, so layers and crossfading poses differ), noted by every draw while a hotspot follows a sprite: hit-testing
@@ -710,6 +720,7 @@ impl View {
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
             theme: Theme::default(),
+            speaker_id: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
             anims: BTreeMap::new(),
@@ -795,6 +806,26 @@ impl View {
         &self.theme
     }
 
+    /// Tell the view whose line is on screen (a character id; `None` for narration or a name that is no
+    /// character). With the theme's `speaker_highlight`, the sprites of the others dim. `snap` sets the
+    /// brightness at once (a redraw); otherwise it eases, except for a sprite that has only just appeared.
+    pub fn set_speaker(&mut self, id: Option<String>, snap: bool) {
+        self.speaker_id = id;
+        for i in 0..self.sprites.len() {
+            if snap || self.sprites[i].elapsed == 0.0 {
+                self.sprites[i].shade = self.shade_target(&self.sprites[i].id);
+            }
+        }
+    }
+
+    /// The brightness the sprite `id` is heading for: dimmed when a character who is on stage speaks and it is not them.
+    fn shade_target(&self, id: &str) -> f32 {
+        match &self.speaker_id {
+            Some(who) if who != id && self.sprites.iter().any(|s| s.id == *who && !s.hiding) => self.theme.speaker_highlight,
+            _ => 1.0,
+        }
+    }
+
     /// Set the typewriter speed. `0` (or less) shows each line instantly.
     pub fn with_speed(mut self, chars_per_sec: f32) -> View {
         self.chars_per_sec = chars_per_sec;
@@ -858,7 +889,7 @@ impl View {
                         self.box_fade.alpha = self.box_fade.target;
                     }
                 }
-                Cmd::SetBackground { src, fade, wipe } => self.set_background(src, *fade, *wipe),
+                Cmd::SetBackground { src, fade, wipe, sound } => self.set_background(src, *fade, *wipe, *sound),
                 Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, fade } => {
                     let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip };
                     self.show_sprite(id, (src, layers), (*x, *y), *z, look, *fade)
@@ -977,14 +1008,15 @@ impl View {
         }
     }
 
-    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>) {
-        if self.background.as_ref().is_some_and(|b| b.src == src) {
+    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>, sound: bool) {
+        if let Some(b) = self.background.as_mut().filter(|b| b.src == src) {
+            b.sound = sound; // the same clip: it keeps playing, only its sound is turned on or off
             return;
         }
         self.previous_background = if fade > 0.0 { self.background.take().map(|b| b.src) } else { None };
         self.previous_bg_clock = self.bg_clock;
         self.bg_clock = 0.0;
-        self.background = Some(Background { src: src.to_string(), fade, wipe, elapsed: 0.0 });
+        self.background = Some(Background { src: src.to_string(), fade, wipe, sound, elapsed: 0.0 });
     }
 
     /// Start moving the camera from wherever it is now.
@@ -1162,8 +1194,12 @@ impl View {
                 self.previous_background = None;
             }
         }
-        for s in &mut self.sprites {
+        let targets: Vec<f32> = self.sprites.iter().map(|s| self.shade_target(&s.id)).collect();
+        for (s, target) in self.sprites.iter_mut().zip(targets) {
             s.tick(dt, animate);
+            // The whole dim-and-back range takes SHADE_TIME, however deep the theme dims.
+            let step = dt / SHADE_TIME * (1.0 - self.theme.speaker_highlight).max(0.01);
+            s.shade = if (target - s.shade).abs() <= step { target } else { s.shade + step.copysign(target - s.shade) };
         }
         self.camera.elapsed += dt;
         if let Some(shake) = &mut self.shake {
@@ -1298,6 +1334,16 @@ impl View {
 
     /// Every picture of one sprite at its place and size (the pose, an outgoing pose, layers).
     fn push_sprite_views(&self, stage: &mut Vec<Draw>, s: &SpriteView, image_size: &dyn Fn(&str) -> Option<Size>) {
+        let first = stage.len();
+        self.push_sprite_pictures(stage, s, image_size);
+        for d in &mut stage[first..] {
+            if let Draw::Image { shade, .. } = d {
+                *shade = s.shade;
+            }
+        }
+    }
+
+    fn push_sprite_pictures(&self, stage: &mut Vec<Draw>, s: &SpriteView, image_size: &dyn Fn(&str) -> Option<Size>) {
         let (x, y, look) = (s.current_x(), s.current_y(), s.look());
         if let Some(prev) = &s.previous_src {
             push_sprite(stage, self.picture(prev, s.previous_anim_time), (x, y), look, 1.0, self.art_scale, image_size);
@@ -1381,9 +1427,9 @@ impl View {
             push_backdrop(&mut picture, self.picture(&bg.src, self.bg_clock), screen, bg.alpha(), image_size);
             for draw in picture {
                 match (draw, bg.revealed()) {
-                    (Draw::Image { src, dest, uv, alpha }, Some(part)) => {
+                    (Draw::Image { src, dest, uv, alpha, shade }, Some(part)) => {
                         if let Some((dest, uv)) = clip(dest, uv, part) {
-                            stage.push(Draw::Image { src, dest, uv, alpha });
+                            stage.push(Draw::Image { src, dest, uv, alpha, shade });
                         }
                     }
                     (Draw::Rect { rect, color }, Some(part)) => {
@@ -1415,9 +1461,9 @@ impl View {
         let sprites = stage.split_off(bg_end);
         let view = self.stage_transform();
         let place = |out: &mut Vec<Draw>, draw: Draw| match draw {
-            Draw::Image { src, dest, uv, alpha } => {
+            Draw::Image { src, dest, uv, alpha, shade } => {
                 if let Some((dest, uv)) = clip(view(dest), uv, screen) {
-                    out.push(Draw::Image { src, dest, uv, alpha });
+                    out.push(Draw::Image { src, dest, uv, alpha, shade });
                 }
             }
             // A solid colour fills the screen whatever the camera and shake do.
@@ -1482,7 +1528,7 @@ impl View {
         if let (Some(map), Some((spot, rect))) = (&self.imagemap, hovered_spot) {
             if spot.image.is_none() && spot.hover.is_none() && image_size(&map.hover).is_some() {
                 if let Some((dest, uv)) = clip(screen, FULL_UV, rect) {
-                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0 });
+                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: 1.0 });
                 }
             }
         }
@@ -1781,7 +1827,7 @@ fn push_image(
     }
     if let Some(size) = image_size(src) {
         let p = place(size, container, fit);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: 1.0 });
     }
 }
 
@@ -1820,11 +1866,13 @@ fn push_sprite(
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { FULL_UV };
-    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha });
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha, shade: 1.0 });
 }
 
 #[cfg(test)]
 mod anim_tests;
+#[cfg(test)]
+mod highlight_tests;
 #[cfg(test)]
 mod layers_tests;
 
@@ -1839,7 +1887,7 @@ mod tests {
     }
 
     fn bg(src: &str, fade: f32) -> Cmd {
-        Cmd::SetBackground { src: src.into(), fade, wipe: None }
+        Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false }
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
@@ -2310,7 +2358,7 @@ mod tests {
     fn a_wipe_reveals_the_new_background_from_one_side() {
         let mut v = View::new();
         v.apply(&[bg("a.png", 0.0)]);
-        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) }]);
+        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false }]);
         v.tick(0.25);
         let list = v.draw_list(&all_1080p, None);
         let shown = images(&list);

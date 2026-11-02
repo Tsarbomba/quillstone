@@ -950,7 +950,7 @@ fn voice_ducking_follows_the_theme_the_clip_and_never_happens_while_skipping() {
     // the clip ends by itself: the music comes back
     g.start_story();
     let audio = g.take_audio();
-    assert!(audio.contains(&Action::PlayVoice { src: "v.ogg".into() }) && audio.contains(&set(0.4, 0.3)), "{audio:?}");
+    assert!(audio.contains(&Action::PlayVoice { src: "v.ogg".into(), volume: 1.0 }) && audio.contains(&set(0.4, 0.3)), "{audio:?}");
     g.voice_ended();
     assert_eq!(g.take_audio(), vec![set(0.8, 0.6)]);
     // skipping plays no voice, so it ducks nothing
@@ -1173,6 +1173,16 @@ fn a_cutscene_has_sound_and_backgrounds_do_not() {
 }
 
 #[test]
+fn a_background_video_has_sound_only_when_asked() {
+    let sound = |g: &Game| g.wanted_videos().into_iter().map(|w| (w.src, w.sound)).collect::<Vec<_>>();
+    let p = parse(&MOVIE.replace("::bg{src=loop.webm}", "::bg{src=loop.webm sound}")).unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(sound(&g), vec![("loop.webm".to_string(), true)]);
+    key(&mut g, Key::Space);
+    assert_eq!(sound(&g), vec![("clip.webm".to_string(), true), ("loop.webm".to_string(), true)]);
+}
+
+#[test]
 fn a_cutscene_of_the_background_video_file_replaces_it_and_ends() {
     let p = parse("::bg{src=a.webm}\n**A:** before\n::video{src=a.webm}\n**A:** after\n").unwrap();
     let mut g = new_game(&p, instant());
@@ -1350,7 +1360,7 @@ fn recorded_lines_play_their_voice_by_themselves() {
     g.start_story();
     let voices = |g: &mut Game| -> Vec<String> {
         g.take_audio().into_iter().filter_map(|a| match a {
-            Action::PlayVoice { src } => Some(src),
+            Action::PlayVoice { src, .. } => Some(src),
             _ => None,
         }).collect()
     };
@@ -3189,9 +3199,11 @@ fn a_counted_item_in_a_shop_is_bought_again_and_again_and_shows_in_the_inventory
     let p = parse(POTION_SHOP).unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Space);
+    assert!(drawn_texts(&g).contains(&"5 gold (owned: 0)".to_string()), "{:?}", drawn_texts(&g));
     click_cell(&mut g, 0);
     click_cell(&mut g, 0);
     assert_eq!((potions(&g), notice(&g).as_deref()), (2, Some("Bought Potion")));
+    assert!(drawn_texts(&g).contains(&"5 gold (owned: 2)".to_string()), "the count follows each purchase");
     assert!(!drawn_texts(&g).contains(&"Owned".to_string()));
     click_cell(&mut g, 0);
     assert_eq!((potions(&g), notice(&g).as_deref()), (2, Some("Not enough gold")));
@@ -3334,4 +3346,21 @@ fn a_click_wait_needs_a_press_but_auto_forward_and_skip_pass_it() {
     key(&mut g, Key::Tab);
     run(&mut g, 20);
     assert_eq!(line(&g), "two", "skip mode passes it");
+}
+
+#[test]
+fn after_a_use_the_line_returns_with_its_picture_and_is_not_in_the_history_twice() {
+    let src = POTIONS.replace("**A:** one", "![cat](cat.png)\n**A:** one");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    assert_eq!(g.view().images.len(), 1);
+    key(&mut g, Key::Char('i'));
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!((line(&g).as_str(), g.view().images.len()), ("Glug.", 0));
+    key(&mut g, Key::Space);
+    assert_eq!((line(&g).as_str(), g.view().images.len()), ("one", 1), "the picture is back");
+    assert_eq!(g.session.backlog().len(), 2, "one, Glug: the returned line is not logged again");
+    key(&mut g, Key::Space);
+    assert_eq!(g.session.backlog().len(), 2, "the choice now");
 }

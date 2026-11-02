@@ -63,7 +63,8 @@ pub enum Action {
     /// Fade out only the loop of `src` (a redraw dropped it); one-shots of the same
     /// file play on.
     StopSfxLoop { src: String, fade: f32 },
-    PlayVoice { src: String },
+    /// A voice clip at `volume` (0..1) of the voice channel's.
+    PlayVoice { src: String, volume: f32 },
     /// Cut the voice clip of the line the player has left.
     StopVoice,
     /// The player moved a volume slider: `volume` is the slider position (0..1);
@@ -159,9 +160,9 @@ impl Mixer {
                     // One-shots aren't tracked (they end by themselves), so always tell the backend.
                     out.push(Action::StopSfx { src: src.clone(), fade: *fade });
                 }
-                Cmd::PlayVoice { src } => {
+                Cmd::PlayVoice { src, volume } => {
                     self.stop_voice(&mut out);
-                    out.push(Action::PlayVoice { src: src.clone() });
+                    out.push(Action::PlayVoice { src: src.clone(), volume: *volume });
                     self.voice = true;
                 }
                 _ => {}
@@ -360,11 +361,23 @@ mod tests {
         let p = parse("::voice{src=v1.ogg}\n**A:** one\n**A:** two\n::voice{src=v3.ogg}\n**A:** three\n").unwrap();
         let (mut game, first) = Session::start(&p);
         let mut mixer = Mixer::new();
-        assert_eq!(mixer.apply(&first), vec![Action::PlayVoice { src: "v1.ogg".into() }]);
+        assert_eq!(mixer.apply(&first), vec![Action::PlayVoice { src: "v1.ogg".into(), volume: 1.0 }]);
         assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![Action::StopVoice]);
-        assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![Action::PlayVoice { src: "v3.ogg".into() }]);
+        assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![Action::PlayVoice { src: "v3.ogg".into(), volume: 1.0 }]);
         // rolling back to line two cuts line three's voice; line two has none
         assert_eq!(mixer.apply(&game.rollback().unwrap()), vec![Action::StopVoice]);
+    }
+
+    #[test]
+    fn a_voice_clip_carries_its_own_volume_also_after_a_rollback() {
+        let p = parse("::voice{src=v1.ogg volume=0.4}\n**A:** one\n::voice{src=v2.ogg}\n**A:** two\n").unwrap();
+        let mut mixer = Mixer::new();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(mixer.apply(&first), vec![Action::PlayVoice { src: "v1.ogg".into(), volume: 0.4 }]);
+        let next = mixer.apply(&game.input(Input::Advance));
+        assert!(next.contains(&Action::PlayVoice { src: "v2.ogg".into(), volume: 1.0 }), "{next:?}");
+        let back = mixer.apply(&game.rollback().unwrap());
+        assert!(back.contains(&Action::PlayVoice { src: "v1.ogg".into(), volume: 0.4 }), "{back:?}");
     }
 
     #[test]
@@ -374,7 +387,7 @@ mod tests {
         let mut mixer = Mixer::new();
         mixer.apply(&first);
         mixer.apply(&game.input(Input::Advance));
-        assert_eq!(mixer.apply(&game.rollback().unwrap()), vec![Action::PlayVoice { src: "v1.ogg".into() }]);
+        assert_eq!(mixer.apply(&game.rollback().unwrap()), vec![Action::PlayVoice { src: "v1.ogg".into(), volume: 1.0 }]);
     }
 
     #[test]
@@ -394,7 +407,7 @@ mod tests {
     #[test]
     fn an_empty_batch_changes_nothing() {
         let mut mixer = Mixer::new();
-        mixer.apply(&[Cmd::PlayVoice { src: "v.ogg".into() }]);
+        mixer.apply(&[Cmd::PlayVoice { src: "v.ogg".into(), volume: 1.0 }]);
         assert!(mixer.apply(&[]).is_empty()); // ignored input: the voice keeps going
     }
 
@@ -626,7 +639,7 @@ mod tests {
     }
 
     fn voice(src: &str) -> Cmd {
-        Cmd::PlayVoice { src: src.into() }
+        Cmd::PlayVoice { src: src.into(), volume: 1.0 }
     }
 
     fn music_volume(volume: f32, fade: f32) -> Action {
@@ -648,7 +661,7 @@ mod tests {
         start_bed(&mut mixer);
         assert_eq!(
             mixer.apply(&[voice("v.ogg")]),
-            vec![Action::PlayVoice { src: "v.ogg".into() }, music_volume(0.4, 0.3), rain_volume(0.25, 0.3)]
+            vec![Action::PlayVoice { src: "v.ogg".into(), volume: 1.0 }, music_volume(0.4, 0.3), rain_volume(0.25, 0.3)]
         );
         assert_eq!(mixer.voice_ended(), vec![music_volume(0.8, 0.6), rain_volume(0.5, 0.6)]);
         assert!(mixer.voice_ended().is_empty(), "already back");
@@ -673,7 +686,7 @@ mod tests {
         mixer.apply(&[voice("v1.ogg")]);
         assert_eq!(
             mixer.apply(&[voice("v2.ogg")]),
-            vec![Action::StopVoice, Action::PlayVoice { src: "v2.ogg".into() }]
+            vec![Action::StopVoice, Action::PlayVoice { src: "v2.ogg".into(), volume: 1.0 }]
         );
     }
 
@@ -716,7 +729,7 @@ mod tests {
     fn amount_one_changes_nothing() {
         let mut mixer = Mixer::new();
         start_bed(&mut mixer);
-        assert_eq!(mixer.apply(&[voice("v.ogg")]), vec![Action::PlayVoice { src: "v.ogg".into() }]);
+        assert_eq!(mixer.apply(&[voice("v.ogg")]), vec![Action::PlayVoice { src: "v.ogg".into(), volume: 1.0 }]);
         assert!(mixer.voice_ended().is_empty());
         let mut mixer = ducking_mixer(7.0); // clamped to 1
         start_bed(&mut mixer);
@@ -732,7 +745,7 @@ mod tests {
         assert!(mixer.apply(&game.input(Input::Advance)).contains(&Action::StopVoice));
         // line two has no voice: the music is back; rolling back to line one ducks it again
         let back = mixer.apply(&game.rollback().unwrap());
-        assert!(back.contains(&Action::PlayVoice { src: "v1.ogg".into() }) && back.contains(&music_volume(0.5, 0.3)), "{back:?}");
+        assert!(back.contains(&Action::PlayVoice { src: "v1.ogg".into(), volume: 1.0 }) && back.contains(&music_volume(0.5, 0.3)), "{back:?}");
         assert_eq!(mixer.apply(&game.input(Input::Advance)), vec![Action::StopVoice, music_volume(1.0, 0.6)]);
     }
 
@@ -744,7 +757,7 @@ mod tests {
         mixer.set_voice_duck(0.25);
         assert_eq!(
             mixer.apply(&[voice("w.ogg")]),
-            vec![Action::StopVoice, Action::PlayVoice { src: "w.ogg".into() }, music_volume(0.2, 0.3), rain_volume(0.125, 0.3)]
+            vec![Action::StopVoice, Action::PlayVoice { src: "w.ogg".into(), volume: 1.0 }, music_volume(0.2, 0.3), rain_volume(0.125, 0.3)]
         );
         let mut mixer = ducking_mixer(0.0);
         assert!(mixer.voice_ended().is_empty(), "no music, no loops, no voice: nothing to say");

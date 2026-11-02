@@ -28,7 +28,7 @@ fn show(id: &str, src: &str, x: f32, y: f32, scale: f32, fade: f32) -> Cmd {
 }
 
 fn bg(src: &str, fade: f32) -> Cmd {
-    Cmd::SetBackground { src: src.into(), fade, wipe: None }
+    Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false }
 }
 
 fn bob(id: &str, y: f32, time: f32, ease: Ease) -> Cmd {
@@ -138,7 +138,7 @@ fn a_background_animation_plays_with_fades_and_wipes() {
     // A wipe reveals the animated picture, which keeps playing underneath it.
     let mut w = view();
     w.apply(&[bg("plain.png", 0.0)]);
-    w.apply(&[Cmd::SetBackground { src: "anim:bgloop".into(), fade: 2.0, wipe: Some(quillstone_script::Wipe::Right) }]);
+    w.apply(&[Cmd::SetBackground { src: "anim:bgloop".into(), fade: 2.0, wipe: Some(quillstone_script::Wipe::Right), sound: false }]);
     w.tick(1.0);
     let list = files(&w);
     assert_eq!(list, ["plain.png", "day.png"]);

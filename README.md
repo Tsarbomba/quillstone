@@ -165,7 +165,7 @@ Linux: `~/.local/share/quillstone/<game>/`). `<game>` is the script's `id:` fron
 the title (so renaming the title moves the saves: set `id:` before you ship), or the script's file name.
 The first time, the window opens at 1920x1080 (the game's own size), or at the largest 16:9 size that fits
 the monitor with some margin, centred; after that the player remembers the window's size, position and
-full-screen state (in `settings.txt`) and restores them, kept on screen if the monitors changed.
+full-screen or maximised state (in `settings.txt`) and restores them, kept on screen if the monitors changed.
 `quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as unlocked for that run
 (to test the Extras screen); nothing is written to the saved unlocks.
 `quillstone-player <game> --dev` adds a developer console on F12 (inspect and set variables, jump to a label) and allows

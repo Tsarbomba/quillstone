@@ -117,7 +117,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "textbox" => &["hide", "show", "fade"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
-        "voice" => &["src"],
+        "voice" => &["src", "volume"],
         "wait" => &["time", "click"],
         "video" => &["src", "fit", "loop", "skippable"],
         "jump" => &["to", "if"],
@@ -1198,6 +1198,10 @@ impl Parser {
                     (false, false) => return Err("`::bg` needs `src=file`, `color=#rrggbb` or `anim=id`".into()),
                     (true, false) => self.require(name, a, "src")?,
                 };
+                let sound = a.flag("sound");
+                if sound && kind_from_path(&src) != AssetKind::Video {
+                    return Err("`sound` is for a video background: `src=` must be a video file".into());
+                }
                 let fade = Self::fade(a)?;
                 let wipe = match a.value("wipe") {
                     None => None,
@@ -1225,9 +1229,9 @@ impl Parser {
                     let half = fade / 2.0;
                     self.push(Op::FadeOut { time: half, color }, line);
                     self.trailing.push(Op::FadeIn { time: half });
-                    return Ok((Op::Bg { src, fade: 0.0, wipe: None }, None));
+                    return Ok((Op::Bg { src, fade: 0.0, wipe: None, sound }, None));
                 }
-                Ok((Op::Bg { src, fade, wipe }, None))
+                Ok((Op::Bg { src, fade, wipe, sound }, None))
             }
             "show" => self.show(a),
             "hud" => self.hud(line, a),
@@ -1423,7 +1427,8 @@ impl Parser {
             }
             "voice" => {
                 let src = self.require(name, a, "src")?;
-                Ok((Op::Voice { src }, None))
+                let volume = Self::volume(a)?;
+                Ok((Op::Voice { src, volume }, None))
             }
             "wait" => {
                 let time = a.value("time");
@@ -3235,7 +3240,7 @@ mod tests {
     #[test]
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
-        assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right) });
+        assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false });
         assert_eq!(p.ops[1], Op::Move { id: "mika".into(), x: None, y: None, scale: Some(1.2), flip: None, xscale: None, yscale: None, time: 0.5, ease: Ease::Out, looped: false });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
@@ -3375,7 +3380,7 @@ mod tests {
     #[test]
     fn background_music_video_attributes() {
         let p = ok("::bg{src=a.webp fade=0.5}\n::video{src=\"my clip.webm\" fit=cover loop skippable}\n::music{stop fade=2}\n");
-        assert_eq!(p.ops[0], Op::Bg { src: "a.webp".into(), fade: 0.5, wipe: None });
+        assert_eq!(p.ops[0], Op::Bg { src: "a.webp".into(), fade: 0.5, wipe: None, sound: false });
         assert_eq!(
             p.ops[1],
             Op::Video { src: "my clip.webm".into(), fit: Fit::Cover, looped: true, skippable: true }
@@ -3394,7 +3399,7 @@ mod tests {
     fn sfx_voice_and_wait() {
         let p = ok("::sfx{src=door.ogg volume=0.5}\n::voice{src=v1.ogg}\n::wait{time=1.5}\n::wait{2}\n");
         assert_eq!(p.ops[0], Op::Sfx { src: "door.ogg".into(), volume: 0.5 });
-        assert_eq!(p.ops[1], Op::Voice { src: "v1.ogg".into() });
+        assert_eq!(p.ops[1], Op::Voice { src: "v1.ogg".into(), volume: 1.0 });
         assert_eq!(p.ops[2], Op::Wait { seconds: 1.5 });
         assert_eq!(p.ops[3], Op::Wait { seconds: 2.0 });
     }
@@ -3423,6 +3428,20 @@ mod tests {
         assert!(has_err("::sfx{src=a.ogg volume=3}\n", "between 0 and 1"));
         assert!(has_err("::music{src=a.ogg fade=-1}\n", "seconds"));
         assert!(has_err("::sfx{}\n", "needs `src=...`"));
+    }
+
+    #[test]
+    fn a_voice_takes_a_volume_between_0_and_1() {
+        assert!(matches!(ok("::voice{src=v.ogg volume=0.5}\n").ops[0], Op::Voice { volume, .. } if volume == 0.5));
+        assert!(has_err("::voice{src=v.ogg volume=2}\n", "between 0 and 1"));
+    }
+
+    #[test]
+    fn a_background_video_may_ask_for_its_sound_but_a_picture_may_not() {
+        assert!(matches!(ok("::bg{src=a.webm sound}\n").ops[0], Op::Bg { sound: true, .. }));
+        assert!(matches!(ok("::bg{src=a.webm}\n").ops[0], Op::Bg { sound: false, .. }));
+        assert!(has_err("::bg{src=a.png sound}\n", "video"));
+        assert!(has_err("::bg{color=#fff sound}\n", "video"));
     }
 
     // ---- characters and sprites ------------------------------------------
@@ -4908,14 +4927,14 @@ mod tests {
     fn bg_through_is_a_fade_out_a_cut_and_a_fade_in() {
         let p = ok("::bg{src=a.png fade=1 through=#ff0000}\n::bg{src=b.png fade=2 through}\n::bg{src=c.png fade=1}\n");
         assert_eq!(p.ops[0], Op::FadeOut { time: 0.5, color: [1.0, 0.0, 0.0] });
-        assert_eq!(p.ops[1], Op::Bg { src: "a.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(p.ops[1], Op::Bg { src: "a.png".into(), fade: 0.0, wipe: None, sound: false });
         assert_eq!(p.ops[2], Op::FadeIn { time: 0.5 });
         // bare `through` is black, and each half is fade/2
         assert_eq!(p.ops[3], Op::FadeOut { time: 1.0, color: [0.0; 3] });
-        assert_eq!(p.ops[4], Op::Bg { src: "b.png".into(), fade: 0.0, wipe: None });
+        assert_eq!(p.ops[4], Op::Bg { src: "b.png".into(), fade: 0.0, wipe: None, sound: false });
         assert_eq!(p.ops[5], Op::FadeIn { time: 1.0 });
         // without `through` it is the old crossfade, one op
-        assert_eq!(p.ops[6], Op::Bg { src: "c.png".into(), fade: 1.0, wipe: None });
+        assert_eq!(p.ops[6], Op::Bg { src: "c.png".into(), fade: 1.0, wipe: None, sound: false });
         assert!(matches!(p.ops[7], Op::End) && p.ops.len() == 8);
         // every op of the sugar reports the command's line
         assert_eq!(&p.lines[..3], &[1, 1, 1]);
@@ -5196,9 +5215,9 @@ mod tests {
 
     #[test]
     fn a_solid_colour_background() {
-        assert_eq!(ok("::bg{color=#102030}\n").ops[0], Op::Bg { src: "color:#102030".into(), fade: 0.0, wipe: None });
-        assert_eq!(ok("::bg{color=#fff fade=0.5}\n").ops[0], Op::Bg { src: "color:#ffffff".into(), fade: 0.5, wipe: None });
-        assert_eq!(ok("::bg{color=#000 fade=1 wipe=left}\n").ops[0], Op::Bg { src: "color:#000000".into(), fade: 1.0, wipe: Some(Wipe::Left) });
+        assert_eq!(ok("::bg{color=#102030}\n").ops[0], Op::Bg { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false });
+        assert_eq!(ok("::bg{color=#fff fade=0.5}\n").ops[0], Op::Bg { src: "color:#ffffff".into(), fade: 0.5, wipe: None, sound: false });
+        assert_eq!(ok("::bg{color=#000 fade=1 wipe=left}\n").ops[0], Op::Bg { src: "color:#000000".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false });
         let p = ok("::bg{color=#fff fade=1 through=#000}\n");
         assert!(matches!(p.ops[0], Op::FadeOut { .. }) && matches!(p.ops[1], Op::Bg { fade, .. } if fade == 0.0) && matches!(p.ops[2], Op::FadeIn { .. }));
         assert_eq!(p.assets().count(), 0, "a colour is no file");
@@ -5285,7 +5304,7 @@ mod tests {
         assert_eq!(shows[0], ("mika", "anim:blink", Some(0.0), Some(0.9), Some(2), Some(0.8), Some(true), 0.5));
         assert_eq!((shows[1].0, shows[1].1), ("ghost", "anim:blink"), "any name makes a sprite");
         assert_eq!(shows[2].0, "mika", "a character's name finds the character's sprite");
-        assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left) }));
+        assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false }));
         assert!(p.ops.iter().any(|o| matches!(o, Op::FadeOut { .. })));
         assert_eq!(anim_id("anim:blink"), Some("blink"));
         assert_eq!((anim_id("anim:"), anim_id("blink"), anim_id("anim:a b"), anim_id("color:#fff")), (None, None, None, None));

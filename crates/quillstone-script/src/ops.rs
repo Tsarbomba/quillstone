@@ -1520,8 +1520,9 @@ pub enum Op {
     /// A still image shown inline (`![alt](path)`) together with the next waiting line.
     Image { src: String, alt: String },
     /// Background. `src` may be a video (the backend plays it looped). With a
-    /// `wipe`, the new picture is revealed from one side over `fade` seconds.
-    Bg { src: String, fade: f32, wipe: Option<Wipe> },
+    /// `wipe`, the new picture is revealed from one side over `fade` seconds. `sound`: a video
+    /// background plays its own sound (otherwise it is muted).
+    Bg { src: String, fade: f32, wipe: Option<Wipe>, sound: bool },
     /// Show (or change the pose of) a sprite. `x` and `y` place it (see [`POSITION`]): the point that
     /// fraction across (down) the sprite is that fraction across (down) the screen, so 0..1 keeps it on
     /// screen; beyond that it slides off by whole screens. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
@@ -1609,7 +1610,7 @@ pub enum Op {
     /// Remove every HUD element (`::hud{clear}`).
     HudClear { fade: f32 },
     /// Voice clip for the next line.
-    Voice { src: String },
+    Voice { src: String, volume: f32 },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.
     Wait { seconds: f32 },
     /// Stop with the screen as it is until the player clicks (`::wait{click}`).
@@ -1719,7 +1720,7 @@ impl Op {
             Op::Particles { set: Some(Particles { kind: ParticleKind::Image(src), .. }), .. } => Some((AssetKind::Image, src)),
             Op::Show { src, .. } if src.is_empty() || anim_id(src).is_some() => None,
             Op::Show { src, .. } => Some((AssetKind::Image, src)),
-            Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src } => {
+            Op::Music { src, .. } | Op::Sfx { src, .. } | Op::SfxLoop { src, .. } | Op::Voice { src, .. } => {
                 Some((AssetKind::Audio, src))
             }
             Op::Video { src, .. } => Some((AssetKind::Video, src)),
@@ -1911,11 +1912,11 @@ mod tests {
 
     #[test]
     fn asset_kinds_follow_the_extension() {
-        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None };
+        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
         let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
-        assert_eq!(Op::Voice { src: "v.ogg".into() }.asset(), Some((AssetKind::Audio, "v.ogg")));
+        assert_eq!(Op::Voice { src: "v.ogg".into(), volume: 1.0 }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);
     }
 

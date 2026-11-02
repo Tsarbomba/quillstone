@@ -349,7 +349,8 @@ rest were not tried.
 
 | Command | What it does |
 | --- | --- |
-| `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped). |
+| `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped, muted). |
+| `::bg{src=clip.webm sound}` | A looping **video** background that plays its own sound (an error for a picture, a colour or an animation). The sound uses the music volume, like a cutscene's; it starts with the picture and stops when the background is replaced. Rollback and saves keep the flag. |
 | `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
 | `::bg{anim=rain fade=1}` | An **animation** (see "Frame animations" below) as the background, instead of `src=`/`color=`: exactly one of the three. `fade`, `wipe` and `through` work as for a picture. |
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
@@ -782,7 +783,7 @@ textbox and the quick menu are drawn over it.
 | `::sfx{src=rain.ogg loop volume=0.6 fade=1}` | A **looping** sound effect, fading in over `fade` seconds. It belongs to the scene, like music. |
 | `::sfx{stop=rain.ogg fade=1}` | Stop that loop (and a one-shot of that file that is still playing), fading out over `fade`. The file must be one some `::sfx` plays. |
 | `::sfx{stop}` | Stop everything on the sound-effect channel: all loops and all one-shots playing. |
-| `::voice{src=line1.ogg}` | Voice clip for the **next** line; stops when the player advances. |
+| `::voice{src=line1.ogg volume=0.8}` | Voice clip for the **next** line; stops when the player advances. `volume` (0 to 1, default 1) is this clip's loudness within the Voice volume setting, like `::sfx`'s. Rollback and saves keep it. An automatic voice file (below) plays at full volume. |
 | `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
 | `::wait{time=1.5}` | Pause (`time` above 0); a click skips it. |
 | `::wait{click}` | Stop with the screen as it is until the player clicks (or presses Enter or Space, or confirms on a gamepad). Auto-forward goes on after its delay, skip mode passes it, and rollback can stop on it. `quillstone run` waits for Enter. |
@@ -849,7 +850,7 @@ play, so `quillstone check` refuses other videos (MP4, AV1, H.264, Ogg Theora...
 and shows how to convert them, e.g.
 `ffmpeg -i in.mp4 -c:v libvpx-vp9 -crf 32 -b:v 0 -c:a libopus out.webm`.
 A video's own sound plays with its picture: a `::video` cutscene and a clip opened in the Extras
-gallery have sound; a looping `::bg` video and a video menu background are always muted. The sound
+gallery have sound; a looping `::bg` video is muted unless it says `sound`, and a video menu background is always muted. The sound
 uses the **music** volume setting. Voice lines don't turn it down, and music already playing keeps playing
 under it (stop the music before a cutscene if you want the clip alone). It starts with the first picture,
 and stops when the clip is skipped, rolled back past, replaced or closed; a menu over the story or a
@@ -1269,7 +1270,9 @@ used, like characters:
   ````
 
   A `use=` item with no `count=` is used the same way and stays in its list unless the
-  label does `::set{pack -= "scroll"}`.
+  label does `::set{pack -= "scroll"}`. When the label returns, the line the player used
+  the item at comes back as it was (its inline pictures too; its voice is not replayed), and
+  History keeps it once: the line is not logged a second time. A HUD button's `call=` works the same way.
 - A list may hold an id that was never declared: the screens show it under its id
   with no picture. `quillstone check` warns about a `+= "x"` or `has "x"` on the
   inventory list that names no item (usually a typo) and checks the icons.
@@ -1397,7 +1400,8 @@ vars: { gold: 40, pack: [], polite: false }
   an item that costs more than the player has is greyed out and a click only says
   "Not enough gold". Money can never go below zero.
 - An item with [`count=`](#items) is never "owned": buying it adds 1 to its count
-  variable (and nothing to `into`), as often as the player can pay. Its price must be
+  variable (and nothing to `into`), as often as the player can pay. Its cell says how many the
+  player has: `5 gold (owned: 2)`. Its price must be
   above 0, and its count variable must be `persistent:` exactly when `pay` is.
 - `pay` and `into` must both be `persistent:` or both ordinary variables
   (`quillstone check` reports the line). A persistent list with ordinary money, or the
@@ -1716,6 +1720,10 @@ game_menu_overlay = assets/gui/game_frame.png
 menu_music = assets/audio/menu.ogg
 # music and sound loops play at this fraction of their volume while a voice clip does, 0 to 1 (default 1: off)
 voice_duck = 0.5
+# sprites of those not speaking are drawn at this brightness while a character who is on stage speaks, 0 to 1
+# (default 1: off). The speaker is the character whose `name` is the line's speaker and whose id is a shown
+# sprite's id; narration, and lines by a character with no sprite on stage, dim nobody. Eases over a quarter of a second.
+speaker_highlight = 0.6
 # the countdown bar of a timed ::choice (default accent_color)
 choice_timer_color = #ffd98c
 # its thickness, 2 to 40

@@ -223,7 +223,7 @@ fn fill(out: &mut Vec<Draw>, style: Option<&CellStyle>, fallback: [f32; 4], rect
         Some(CellStyle::Image(src)) => match image_size(src) {
             Some(size) => {
                 let p = place(size, rect, Fit::Stretch);
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha: 1.0 });
+                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0 });
             }
             None => out.push(Draw::Rect { rect, color: fallback }),
         },
@@ -241,13 +241,13 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
     match s.background.and_then(|src| Some((src, image_size(src)?))) {
         Some((src, size)) => {
             let p = place(size, screen(), Fit::Stretch);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0 });
         }
         None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
     }
     if let Some((src, size)) = theme.inventory_panel.as_deref().and_then(|src| Some((src, image_size(src)?))) {
         let p = place(size, panel_rect(theme), Fit::Stretch);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0 });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0 });
     }
     text(out, s.title, title_rect(theme), 48.0, theme.text_color, Align::Center);
     if let Some(money) = s.money {
@@ -291,7 +291,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
             if let Some(size) = image_size(src) {
                 let p = place(size, icon_rect, Fit::Contain);
                 let alpha = if cell.state == CellState::Disabled { 0.45 } else { 1.0 };
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha });
+                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha, shade: 1.0 });
             }
         }
         let name_rect = Rect::new(r.x + 8.0, icon_rect.y + icon + 8.0, r.w - 16.0, 36.0);

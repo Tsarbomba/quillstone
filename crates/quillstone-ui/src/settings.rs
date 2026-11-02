@@ -75,6 +75,8 @@ pub struct Settings {
     /// not full screen. `None` until then: see [`window_placement`].
     pub window_size: Option<(u32, u32)>,
     pub window_pos: Option<(i32, i32)>,
+    /// The window was maximised when the player last closed it (its size above is the normal one).
+    pub window_maximized: bool,
 }
 
 impl Default for Settings {
@@ -91,6 +93,7 @@ impl Default for Settings {
             language: None,
             window_size: None,
             window_pos: None,
+            window_maximized: false,
         }
     }
 }
@@ -141,6 +144,7 @@ impl Settings {
                     let pos = value.split_once(',').and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
                     s.window_pos = pos.filter(|&(x, y): &(i32, i32)| x.abs() <= MAX_WINDOW as i32 && y.abs() <= MAX_WINDOW as i32);
                 }
+                "window_maximized" => s.window_maximized = value.parse().unwrap_or(s.window_maximized),
                 _ => {}
             }
         }
@@ -152,6 +156,7 @@ impl Settings {
         let language = self.language.as_ref().map(|l| format!("language = {l}\n")).unwrap_or_default();
         let size = self.window_size.map(|(w, h)| format!("window_size = {w}x{h}\n")).unwrap_or_default();
         let pos = self.window_pos.map(|(x, y)| format!("window_pos = {x},{y}\n")).unwrap_or_default();
+        let maximized = if self.window_maximized { "window_maximized = true\n" } else { "" };
         format!(
             "# Quillstone settings\n\
              text_speed = {}\n\
@@ -161,7 +166,7 @@ impl Settings {
              voice_volume = {}\n\
              fullscreen = {}\n\
              skip_unread = {}\n\
-             quick_menu = {}\n{}{}{}",
+             quick_menu = {}\n{}{}{}{}",
             self.text_speed,
             self.auto_delay,
             self.music_volume,
@@ -172,7 +177,8 @@ impl Settings {
             self.quick_menu.name(),
             language,
             size,
-            pos
+            pos,
+            maximized
         )
     }
 }
@@ -276,6 +282,7 @@ mod tests {
             language: Some("sv".into()),
             window_size: Some((1280, 720)),
             window_pos: Some((-30, 40)),
+            window_maximized: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse(&Settings::default().to_text()), Settings::default());

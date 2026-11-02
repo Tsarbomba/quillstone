@@ -216,3 +216,22 @@ fn a_hand_edited_seen_counter_at_the_limits_does_not_overflow() {
     s.input(Input::Use("p".into()));
     assert_eq!(int(&s, &seen), i64::MIN + 1, "the line's own pass adds one back to the saturated floor");
 }
+
+#[test]
+fn the_line_after_a_use_is_not_logged_again_and_keeps_its_picture() {
+    let src = "---\ninventory: bag\nvars: { potions: 2, bag: [] }\n---\n::item{id=potion name=\"Potion\" count=potions use=#drink}\n\
+               ![cat](cat.png)\n**A:** one\n**A:** two\n# drink\n**A:** Glug.\n::return\n";
+    let p = parse(src).unwrap();
+    let (mut s, first) = Session::start(&p);
+    assert!(first.iter().any(|c| matches!(c, Cmd::ShowImage { .. })));
+    let log = |s: &Session| s.backlog().into_iter().filter_map(|l| if let crate::Logged::Line(l) = l { Some(l.text) } else { None }).collect::<Vec<_>>();
+    s.input(Input::Use("potion".into()));
+    assert_eq!(log(&s), ["one", "Glug."]);
+    let back = s.input(Input::Advance);
+    assert!(matches!(&back[..], [Cmd::ShowImage { src, .. }, Cmd::Say { text, .. }] if src == "cat.png" && text == "one"), "{back:?}");
+    assert!(!back.iter().any(|c| matches!(c, Cmd::PlayVoice { .. })));
+    assert_eq!(log(&s), ["one", "Glug."], "the line is in the log once");
+    assert_eq!(s.state().inline.len(), 1);
+    s.input(Input::Advance);
+    assert_eq!(log(&s), ["one", "Glug.", "two"]);
+}

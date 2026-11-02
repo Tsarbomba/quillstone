@@ -888,7 +888,7 @@ impl<'p> Game<'p> {
         let looping = |src: &str| Wanted { src: src.to_string(), looped: true, sound: false, generation: 0 };
         let mut out = Vec::new();
         // A gallery clip open full screen is the only thing playing, and the only looping one with sound
-        // (backgrounds are muted: they sit under the story's own music).
+        // (backgrounds are muted unless `::bg{.. sound}`: they sit under the story's own music).
         if let Some(src) = self.viewed_video() {
             return vec![Wanted { sound: true, ..looping(src) }];
         }
@@ -902,8 +902,13 @@ impl<'p> Game<'p> {
         if let Some(v) = &self.view.video {
             out.push(Wanted { src: v.src.clone(), looped: v.looped, sound: true, generation: self.video_generation });
         }
-        let backgrounds = [self.view.background.as_ref().map(|b| b.src.as_str()), self.view.previous_background.as_deref()];
-        out.extend(backgrounds.into_iter().flatten().filter(|s| is_video(s) && Some(*s) != cutscene).map(looping));
+        // The one being crossfaded away is muted at once; the sound of the new one starts as its picture does.
+        let backgrounds = [
+            self.view.background.as_ref().map(|b| (b.src.as_str(), b.sound)),
+            self.view.previous_background.as_deref().map(|s| (s, false)),
+        ];
+        let wanted = backgrounds.into_iter().flatten().filter(|(s, _)| is_video(s) && Some(*s) != cutscene);
+        out.extend(wanted.map(|(s, sound)| Wanted { sound, ..looping(s) }));
         out
     }
 
@@ -1196,8 +1201,17 @@ impl<'p> Game<'p> {
         let say = cmds.iter().position(|c| matches!(c, Cmd::Say { .. }))?;
         let src = self.voice_files.get(&voice_name(self.program, self.session.state().pc)?)?;
         let mut out = cmds.to_vec();
-        out.insert(say, Cmd::PlayVoice { src: src.clone() });
+        out.insert(say, Cmd::PlayVoice { src: src.clone(), volume: 1.0 });
         Some(out)
+    }
+
+    /// Tell the view which character is speaking (for `speaker_highlight`): the one whose declared name is the
+    /// line's speaker, in the script's language or the translated one. A name with `{variables}` matches nobody.
+    fn sync_speaker(&mut self, snap: bool) {
+        let name = self.view.dialogue.as_ref().and_then(|d| d.speaker.as_deref());
+        let is = |c: &&quillstone_script::Character| Some(c.name.as_str()) == name || self.catalog().is_some_and(|cat| Some(cat.text(None, &c.name)) == name);
+        let id = name.and_then(|_| self.program.characters.values().find(is)).map(|c| c.id.clone());
+        self.view.set_speaker(id, snap);
     }
 
     fn show(&mut self, cmds: &[Cmd]) {
@@ -1226,6 +1240,7 @@ impl<'p> Game<'p> {
             }
         }
         self.view.apply(cmds);
+        self.sync_speaker(cmds.first() == Some(&Cmd::ClearScene));
         if !self.view.hud().is_empty() {
             self.view.set_vars(&self.session.state().vars); // the HUD shows them live
         }
@@ -1573,6 +1588,8 @@ mod anim_tests;
 mod layers_tests;
 #[cfg(test)]
 mod dynpic_tests;
+#[cfg(test)]
+mod highlight_tests;
 #[cfg(test)]
 mod hud_tests;
 #[cfg(test)]

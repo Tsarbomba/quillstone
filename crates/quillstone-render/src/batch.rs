@@ -98,11 +98,11 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
 
     for draw in draws {
         match draw {
-            Draw::Image { src, dest, uv, alpha } => frame.quads.push(Quad {
+            Draw::Image { src, dest, uv, alpha, shade } => frame.quads.push(Quad {
                 texture: Tex::Image(src.clone()),
                 rect: to_ndc(to_window(*dest, lb), window),
                 uv: [uv.x, uv.y, uv.x + uv.w, uv.y + uv.h],
-                color: [1.0, 1.0, 1.0, *alpha],
+                color: [*shade, *shade, *shade, *alpha],
             }),
             Draw::Rect { rect, color } => frame.quads.push(Quad {
                 texture: Tex::Solid,
@@ -152,7 +152,7 @@ mod tests {
     }
 
     fn image(src: &str, uv: Rect, alpha: f32) -> Draw {
-        Draw::Image { src: src.into(), dest: screen(), uv, alpha }
+        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: 1.0 }
     }
 
     fn text(s: &str, visible: usize, rect: Rect) -> Draw {
