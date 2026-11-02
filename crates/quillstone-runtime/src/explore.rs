@@ -1335,4 +1335,12 @@ mod tests {
             assert!(r.partial && r.situations + r.reruns <= limit + 1, "limit {limit}: {} + {}", r.situations, r.reruns);
         }
     }
+
+    #[test]
+    fn a_click_wait_is_one_advance_like_a_timed_one() {
+        let timed = test("Hi.\n::wait{time=1}\nBye.\n::end\n");
+        let click = test("Hi.\n::wait{click}\nBye.\n::end\n");
+        assert!(click.errors.is_empty() && !click.partial);
+        assert_eq!((click.situations, click.endings.len()), (timed.situations, 1));
+    }
 }

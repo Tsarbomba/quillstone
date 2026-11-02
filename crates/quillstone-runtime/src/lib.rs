@@ -151,6 +151,8 @@ pub enum Cmd {
     PlayVoice { src: String },
     /// Pause; send [`Input::Advance`] when the time is up (or the player skips).
     Wait { seconds: f32 },
+    /// Stop until the player advances (`::wait{click}`): the screen stays as it is.
+    WaitClick,
     /// Play a clip; send [`Input::Advance`] when it ends or the player skips it.
     PlayVideo { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Show choices and wait for [`Input::Choose`]. Only the options currently
@@ -829,6 +831,7 @@ pub(crate) fn screen_matches(pending: &Cmd, op: &Op) -> bool {
         (pending, op),
         (Cmd::Say { .. }, Op::Say { .. })
             | (Cmd::Wait { .. }, Op::Wait { .. } | Op::FadeOut { .. })
+            | (Cmd::WaitClick, Op::WaitClick)
             | (Cmd::PlayVideo { .. }, Op::Video { .. })
             | (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Op::Choice { .. })
             | (Cmd::ShowInventory, Op::Inventory)
@@ -1050,6 +1053,7 @@ pub(crate) fn step_traced(
                 Cmd::Say { .. }
                 | Cmd::PlayVideo { .. }
                 | Cmd::Wait { .. }
+                | Cmd::WaitClick
                 | Cmd::ShowInventory
                 | Cmd::ShowJournal
                 | Cmd::ShowShop { .. },
@@ -1142,6 +1146,7 @@ pub(crate) fn step_traced(
             Op::Wait { seconds } => {
                 return block(state, &mut out, Cmd::Wait { seconds: *seconds });
             }
+            Op::WaitClick => return block(state, &mut out, Cmd::WaitClick),
             Op::Choice { options, .. } => {
                 let visible = visible_options(options, &state.vars);
                 if !any_pickable(options, &visible, &state.vars) {
@@ -1687,6 +1692,21 @@ vars: { trust: 0 }
         assert_eq!(redraw.last(), Some(&say("A", "one")));
         assert!(matches!(game.state().pending, Some(Cmd::Say { .. })));
         assert!(!game.can_rollback());
+    }
+
+    #[test]
+    fn a_click_wait_stops_for_the_player_and_rollback_and_saves_land_on_it() {
+        let p = parse("**A:** one\n::wait{click}\n**A:** two\n").unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert_eq!(game.input(Input::Advance), vec![Cmd::WaitClick]);
+        assert!(game.input(Input::Choose(0)).is_empty());
+        let (mut loaded, cmds) = Session::load(&p, &game.save()).unwrap();
+        assert_eq!(cmds.last(), Some(&Cmd::WaitClick), "a save made at it loads there");
+        assert_eq!(lines(&loaded.input(Input::Advance)), vec!["two"]);
+        // unlike a timed wait the story doesn't move on by itself, so rollback stops here
+        assert_eq!(lines(&game.input(Input::Advance)), vec!["two"]);
+        assert_eq!(game.rollback().unwrap().last(), Some(&Cmd::WaitClick));
+        assert!(game.can_rollback());
     }
 
     #[test]

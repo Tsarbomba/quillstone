@@ -121,7 +121,7 @@ impl Game<'_> {
         }
         self.skip_elapsed = 0.0;
         match &self.session.state().pending {
-            Some(Cmd::Say { .. } | Cmd::Wait { .. } | Cmd::PlayVideo { skippable: true, .. }) => {
+            Some(Cmd::Say { .. } | Cmd::Wait { .. } | Cmd::WaitClick | Cmd::PlayVideo { skippable: true, .. }) => {
                 self.forward(Input::Advance);
             }
             Some(Cmd::PlayVideo { .. }) => {} // can't be skipped: let it play out

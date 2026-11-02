@@ -3308,3 +3308,30 @@ fn a_theme_can_place_the_journal_button_and_list_it() {
     g.set_theme(listed);
     assert_eq!(g.quick_layout().buttons.iter().map(|b| b.0).collect::<Vec<_>>(), [QuickButton::Journal]);
 }
+
+#[test]
+fn a_click_wait_needs_a_press_but_auto_forward_and_skip_pass_it() {
+    let p = parse("**A:** one\n::wait{click}\n**A:** two\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    g.tick(100.0, false);
+    assert!(matches!(g.state().pending, Some(Cmd::WaitClick)), "time alone doesn't end it");
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+
+    let mut g = new_game(&p, Settings { auto_delay: 1.0, ..instant() });
+    key(&mut g, Key::Char('a'));
+    for _ in 0..10 {
+        g.tick(100.0, false);
+    }
+    assert_eq!(line(&g), "two", "auto-forward goes on after its delay");
+
+    let mut first = new_game(&p, instant());
+    key(&mut first, Key::Space);
+    key(&mut first, Key::Space); // read both lines
+    first.autosave();
+    let mut g = reread(&p, &first, instant());
+    key(&mut g, Key::Tab);
+    run(&mut g, 20);
+    assert_eq!(line(&g), "two", "skip mode passes it");
+}

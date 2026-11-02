@@ -86,7 +86,7 @@ game is compiled, so saves, rollback and the tester see one story.
 - Labels are global: the same label in two files is an error that names both places.
 - Includes may nest up to 8 files deep. A file can be included once: including it a second
   time, or a cycle (`a` includes `b` includes `a`, or a file including the main script), is
-  an error. A game may include up to 200 files and 8 MB of script in all.
+  an error. A game may include up to 4096 files and 64 MB of script in all, each file up to 8 MB.
 - A `::choice`, `::hotspots` or `::shop` block, a comment and a front matter block each
   stay inside one file; an `::if` block may open in one file and close in another.
 - Errors, warnings and `quillstone test` findings name the file and line, such as
@@ -762,6 +762,7 @@ textbox and the quick menu are drawn over it.
 | `::voice{src=line1.ogg}` | Voice clip for the **next** line; stops when the player advances. |
 | `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
 | `::wait{time=1.5}` | Pause (`time` above 0); a click skips it. |
+| `::wait{click}` | Stop with the screen as it is until the player clicks (or presses Enter or Space, or confirms on a gamepad). Auto-forward goes on after its delay, skip mode passes it, and rollback can stop on it. `quillstone run` waits for Enter. |
 
 ### Auto-voice
 
@@ -1570,8 +1571,8 @@ itself. One-shot sound effects, shakes and flashes are not replayed.
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;
 going back further simply stops there, and the backlog lists what that history holds.
 Roll forward is dropped when the state rolled back to moves on by itself (a
-`::wait`, the wait of a `::fade{out}`, a video or a line ending in `{nw}`): rollback goes past those, so there is
-nothing to come back to. Persistent variables are never rolled back: a rollback or a
+timed `::wait`, the wait of a `::fade{out}`, a video or a line ending in `{nw}`): rollback goes past those, so there is
+nothing to come back to (a `::wait{click}` is a step like a line: rollback stops there). Persistent variables are never rolled back: a rollback or a
 loaded save shows the screen (choices, hotspots, shop stock, a line's `{variables}`)
 rebuilt with their current values.
 

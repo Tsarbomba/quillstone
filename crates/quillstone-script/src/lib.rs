@@ -30,5 +30,5 @@ pub use ops::{
     Axis, Fit, Func, Heading, HudAction, HudScreen, HudElem, HudExpr, HudKind, Item, Op, Program, Language, Replay, SourceSpan, ShopEntry, Value, Vars, Wipe, Hit, KeyPress, TimingBar, DEFAULT_SEED, INPUT_MAX_LIMIT, MAX_LIST_ITEMS, ONCE, SEEN, POSITION,
     roll, splitmix64, ParticleKind, Particles, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, Tint, TINT_ALPHA,
 };
-pub use parser::{parse, parse_files, slug, Loader, ParseError, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH};
+pub use parser::{parse, parse_files, slug, Loader, ParseError, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH, MAX_INCLUDE_FILE_BYTES};
 pub use translate::{check_translation, language_file, Catalog, Entry, Source, TranslationError, MAX_ENTRIES, MAX_FILE_BYTES};

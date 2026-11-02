@@ -66,11 +66,13 @@ fn parse_inner(src: &str, main: &str, load: Option<Loader>) -> Result<Program, V
     p.finish()
 }
 
-/// Most files that may be included in one game, how deep they may nest, and how much text
-/// they may add up to (scripts can come from shared packages).
-pub const MAX_INCLUDES: usize = 200;
+/// Most files that may be included in one game, how deep they may nest, how much text they may
+/// add up to in all, and how large one may be (scripts can come from shared packages; a long game
+/// split into a file per scene needs thousands of files).
+pub const MAX_INCLUDES: usize = 4096;
 pub const MAX_INCLUDE_DEPTH: usize = 8;
-pub const MAX_INCLUDE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_INCLUDE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_INCLUDE_FILE_BYTES: usize = 8 * 1024 * 1024;
 
 /// What `::include` needs while one script is read: the loader and what it already read.
 struct Files<'a> {
@@ -117,7 +119,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src"],
-        "wait" => &["time"],
+        "wait" => &["time", "click"],
         "video" => &["src", "fit", "loop", "skippable"],
         "jump" => &["to", "if"],
         "input" => &["var", "prompt", "default", "max"],
@@ -132,6 +134,42 @@ fn unknown_attr(name: &str, extra: &str) -> String {
     let known = known_attrs(name);
     let hint = if known.is_empty() { String::new() } else { format!(" (it takes: {})", known.join(", ")) };
     format!("unknown attribute `{extra}` for `::{name}`{hint}")
+}
+
+/// Why `name` isn't one of `known`: at most 5 close names (a prefix or part of one, or a few typos
+/// away), else just how many there are, so a big game doesn't get thousands of names in a message.
+fn suggest<'a>(name: &str, known: impl Iterator<Item = &'a str>, what: &str) -> String {
+    let (mut total, mut close) = (0, Vec::new());
+    for k in known {
+        total += 1;
+        let d = edit_distance(name, k);
+        if d <= name.chars().count().max(k.chars().count()) / 3 || (name.len() >= 3 && (k.contains(name) || name.contains(k))) {
+            close.push((d, k));
+        }
+    }
+    close.sort();
+    let names: Vec<String> = close.iter().take(5).map(|(_, k)| format!("`{k}`")).collect();
+    let plural = if total == 1 { "" } else { "s" };
+    match (total, names.is_empty()) {
+        (0, _) => format!("there are no {what}s yet"),
+        (_, true) => format!("{total} {what}{plural} exist{}, none close to it", if total == 1 { "s" } else { "" }),
+        _ => format!("did you mean {}? {total} {what}{plural} in all", names.join(", ")),
+    }
+}
+
+/// Number of single-character edits between two names (Levenshtein).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diag = std::mem::replace(&mut row[0], i + 1);
+        for (j, cb) in b.iter().enumerate() {
+            let up = row[j + 1];
+            row[j + 1] = (diag + usize::from(ca != *cb)).min(up + 1).min(row[j] + 1);
+            diag = up;
+        }
+    }
+    row[b.len()]
 }
 
 #[derive(Default)]
@@ -312,13 +350,8 @@ impl Parser {
                     }
                 }
                 None => {
-                    let known: Vec<&str> = self.program.labels.keys().map(String::as_str).collect();
-                    let msg = if known.is_empty() {
-                        format!("unknown label `{}` (the script has no labels)", f.label)
-                    } else {
-                        format!("unknown label `{}` (known: {})", f.label, known.join(", "))
-                    };
-                    self.err(f.line, msg);
+                    let hint = suggest(&f.label, self.program.labels.keys().map(String::as_str), "label");
+                    self.err(f.line, format!("unknown label `{}` ({hint})", f.label));
                 }
             }
         }
@@ -423,8 +456,8 @@ impl Parser {
         for (line, label, title) in std::mem::take(&mut self.replay_decls) {
             match self.program.labels.get(&label).copied() {
                 None => {
-                    let known: Vec<&str> = self.program.labels.keys().map(String::as_str).collect();
-                    self.err(line, format!("`replays`: there is no label `{label}` (known: {})", known.join(", ")));
+                    let hint = suggest(&label, self.program.labels.keys().map(String::as_str), "label");
+                    self.err(line, format!("`replays`: there is no label `{label}` ({hint})"));
                 }
                 Some(_) if self.program.params.contains_key(&label) => self.err(
                     line,
@@ -504,6 +537,9 @@ impl Parser {
             Ok(t) => t,
             Err(why) => return self.err(line, format!("cannot include `{path}`: {why}")),
         };
+        if text.len() > MAX_INCLUDE_FILE_BYTES {
+            return self.err(line, format!("`{path}` is larger than {} MB: that is too much script for one file", MAX_INCLUDE_FILE_BYTES >> 20));
+        }
         files.bytes = files.bytes.saturating_add(text.len());
         if files.bytes > MAX_INCLUDE_BYTES {
             return self.err(line, format!("the included files add up to more than {} MB: that is too much script", MAX_INCLUDE_BYTES >> 20));
@@ -1380,10 +1416,15 @@ impl Parser {
                 Ok((Op::Voice { src }, None))
             }
             "wait" => {
-                let value = a.value("time").or_else(|| a.take_bare().into_iter().next());
+                let time = a.value("time");
+                let bare = if time.is_none() { a.take_bare().into_iter().next() } else { None };
+                if bare.as_deref() == Some("click") {
+                    return Ok((Op::WaitClick, None));
+                }
+                let value = time.or(bare);
                 let seconds = match value.as_deref().map(str::parse::<f32>) {
                     Some(Ok(s)) if s.is_finite() && s > 0.0 => s,
-                    _ => return Err("`::wait` needs a positive number of seconds, like `::wait{time=1.5}`".into()),
+                    _ => return Err("`::wait` needs a positive number of seconds, like `::wait{time=1.5}`, or `click`".into()),
                 };
                 Ok((Op::Wait { seconds }, None))
             }
@@ -1843,9 +1884,8 @@ impl Parser {
     /// The picture `src` for `anim=id`: the animation must be declared before this line.
     fn anim_ref(&self, id: &str) -> Result<String, String> {
         if !self.program.anims.contains_key(id) {
-            let known: Vec<&str> = self.program.anims.keys().map(String::as_str).collect();
-            let hint = if known.is_empty() { "declare it first with `::anim`".to_string() } else { format!("declared: {}", known.join(", ")) };
-            return Err(format!("unknown animation `{id}` ({hint})"));
+            let hint = suggest(id, self.program.anims.keys().map(String::as_str), "animation");
+            return Err(format!("unknown animation `{id}` ({hint}; declare it first with `::anim`)"));
         }
         Ok(anim_src(id))
     }
@@ -3322,6 +3362,23 @@ mod tests {
         assert_eq!(p.ops[1], Op::Voice { src: "v1.ogg".into() });
         assert_eq!(p.ops[2], Op::Wait { seconds: 1.5 });
         assert_eq!(p.ops[3], Op::Wait { seconds: 2.0 });
+    }
+
+    #[test]
+    fn wait_click_is_its_own_op() {
+        assert_eq!(ok("::wait{click}\n").ops[0], Op::WaitClick);
+        assert!(has_err("::wait{click=1}\n", "positive number"));
+    }
+
+    #[test]
+    fn an_unknown_label_gets_a_few_close_names_not_all() {
+        let many: String = (0..300).map(|i| format!("# scene_{i}\nHi.\n")).collect();
+        let e = errs(&format!("{many}# bar\nHi.\n::jump{{to=scen-7}}\n"));
+        let m = &e[0].message;
+        assert!(m.contains("did you mean `scene-7`") && m.contains("301 labels in all") && m.len() < 200, "{m}");
+        let e = errs("# alpha\nHi.\n::jump{to=zzzzzz}\n");
+        assert!(e[0].message.contains("(1 label exists, none close to it)"), "{:?}", e[0].message);
+        assert!(errs("::jump{to=x}\n")[0].message.contains("no labels yet"));
     }
 
     #[test]
@@ -5172,7 +5229,7 @@ mod tests {
         assert_eq!(e[0].line, 4);
         let e = errs(&format!("{chars}::show{{mika anim=blink}}\n{ANIMS}"));
         assert_eq!((e.len(), e[0].line), (1, 2), "an animation is declared before it is used");
-        assert!(e[0].message.contains("unknown animation `blink` (declare it first with `::anim`)"));
+        assert!(e[0].message.contains("unknown animation `blink` (there are no animations yet; declare it first with `::anim`)"));
     }
 
     #[test]

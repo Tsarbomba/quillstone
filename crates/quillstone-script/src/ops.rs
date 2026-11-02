@@ -1506,6 +1506,8 @@ pub enum Op {
     Voice { src: String },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.
     Wait { seconds: f32 },
+    /// Stop with the screen as it is until the player clicks (`::wait{click}`).
+    WaitClick,
     /// Fullscreen video clip. Waits until it ends or the player skips it.
     Video { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Waits for the player to pick an option (or, when the options have an

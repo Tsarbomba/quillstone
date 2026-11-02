@@ -586,6 +586,7 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     match &s.pending {
         Some(Cmd::Say { .. }) => w("pending say".into()),
         Some(Cmd::Wait { seconds }) => w(format!("pending wait {seconds}")),
+        Some(Cmd::WaitClick) => w("pending waitclick".into()),
         Some(Cmd::PlayVideo { src, fit, looped, skippable }) => {
             let fit = match fit {
                 Fit::Contain => "contain",
@@ -902,6 +903,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                         Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone() }
                     }
                     "wait" => Cmd::Wait { seconds: sane(f(2)?, 0.01, MAX_WAIT, 1.0) },
+                    "waitclick" => Cmd::WaitClick,
                     "video" => Cmd::PlayVideo {
                         src: path(2)?,
                         fit: match arg(3)? {

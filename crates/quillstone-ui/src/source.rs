@@ -8,11 +8,11 @@ use crate::assets::Assets;
 use std::collections::BTreeMap;
 
 use quillstone_script::{
-    check_translation, kind_from_path, language_file, parse_files, AssetKind, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_BYTES,
+    check_translation, kind_from_path, language_file, parse_files, AssetKind, Catalog, ParseError, Program, MAX_FILE_BYTES, MAX_INCLUDE_FILE_BYTES,
 };
 
 /// The text of an included file: `rel` (a game-folder path the parser has already checked) under `root`.
-/// At most [`MAX_INCLUDE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
+/// At most [`MAX_INCLUDE_FILE_BYTES`] are read, so a huge file can't fill memory before the parser counts it.
 pub fn read_include(root: &Path, rel: &str) -> Result<String, String> {
     read_include_in(&Assets::folder(root), rel)
 }
@@ -21,7 +21,7 @@ pub fn read_include(root: &Path, rel: &str) -> Result<String, String> {
 pub fn read_include_in(assets: &Assets, rel: &str) -> Result<String, String> {
     let file = assets.open(rel).map_err(|e| e.to_string())?;
     let mut text = String::new();
-    file.take(MAX_INCLUDE_BYTES as u64 + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    file.take(MAX_INCLUDE_FILE_BYTES as u64 + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
     Ok(text)
 }
 
@@ -169,6 +169,21 @@ mod tests {
     }
 
     #[test]
+    fn a_game_of_many_files_is_read_whole() {
+        let names: Vec<String> = (0..300).map(|i| format!("ch/f{i}.quill.md")).collect();
+        let main: String = names.iter().map(|n| format!("::include{{{n}}}\n")).collect();
+        let texts: Vec<String> = (0..300).map(|i| format!("# s{i}\nHi.\n")).collect();
+        let mut files: Vec<(&str, &str)> = vec![("main.quill.md", &main)];
+        files.extend(names.iter().zip(&texts).map(|(n, t)| (n.as_str(), t.as_str())));
+        let dir = game(&files);
+        let script = dir.join("main.quill.md");
+        let p = parse_script(&script, &main).unwrap();
+        assert!(p.labels.contains_key("s299"));
+        assert_eq!(script_files(&script, &p).len(), 301);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn error_lines_name_the_file() {
         let dir = game(&[("main.quill.md", "::include{ch/a.quill.md}\n::bogus\n"), ("ch/a.quill.md", "Hi.\n::bogus\n")]);
         let script = dir.join("main.quill.md");
@@ -190,9 +205,9 @@ mod tests {
 
     #[test]
     fn a_file_over_the_cap_is_cut_and_refused_by_the_parser() {
-        let big = "x".repeat(MAX_INCLUDE_BYTES + 10);
+        let big = "x".repeat(MAX_INCLUDE_FILE_BYTES + 10);
         let dir = game(&[("main.quill.md", "::include{big.quill.md}\n"), ("big.quill.md", &big)]);
-        assert_eq!(read_include(&dir, "big.quill.md").unwrap().len(), MAX_INCLUDE_BYTES + 1);
+        assert_eq!(read_include(&dir, "big.quill.md").unwrap().len(), MAX_INCLUDE_FILE_BYTES + 1);
         let script = dir.join("main.quill.md");
         let e = parse_script(&script, &std::fs::read_to_string(&script).unwrap()).unwrap_err();
         assert!(e[0].message.contains("too much"), "{e:?}");

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::{parse, parse_files, Op, ParseError, Program, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH};
+use crate::{parse, parse_files, Op, ParseError, Program, MAX_INCLUDES, MAX_INCLUDE_BYTES, MAX_INCLUDE_DEPTH, MAX_INCLUDE_FILE_BYTES};
 
 fn load(main: &str, files: &[(&str, &str)]) -> Result<Program, Vec<ParseError>> {
     let files: HashMap<String, String> = files.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
@@ -201,15 +201,23 @@ fn the_number_of_files_is_capped() {
     let parsed = parse_files(&main, "main.quill.md", &|_| Ok("Hi.\n".into()));
     let e = parsed.unwrap_err();
     assert_eq!(e.len(), 1, "{e:?}");
-    assert!(e[0].message.contains("at most 200") && e[0].line == MAX_INCLUDES + 1, "{e:?}");
+    assert!(e[0].message.contains("at most 4096") && e[0].line == MAX_INCLUDES + 1, "{e:?}");
     let ok: String = (0..MAX_INCLUDES).map(|i| format!("::include{{f{i}.quill.md}}\n")).collect();
     assert_eq!(parse_files(&ok, "m.quill.md", &|_| Ok("Hi.\n".into())).unwrap().sources.len(), MAX_INCLUDES);
 }
 
 #[test]
 fn the_total_size_is_capped() {
-    let big = "a\n".repeat(MAX_INCLUDE_BYTES / 2 / 2 + 10);
-    let main = "::include{a.quill.md}\n::include{b.quill.md}\n::include{c.quill.md}\n";
-    let e = parse_files(main, "m.quill.md", &|_| Ok(big.clone())).unwrap_err();
-    assert!(e.iter().any(|e| e.message.contains("too much script") && e.line == 3), "{e:?}");
+    let big = "a".repeat(MAX_INCLUDE_FILE_BYTES); // one long line: cheap to parse
+    let n = MAX_INCLUDE_BYTES / MAX_INCLUDE_FILE_BYTES;
+    let main: String = (0..=n).map(|i| format!("::include{{f{i}.quill.md}}\n")).collect();
+    let e = parse_files(&main, "m.quill.md", &|_| Ok(big.clone())).unwrap_err();
+    assert!(e.iter().any(|e| e.message.contains("too much script") && e.line == n + 1), "{e:?}");
+}
+
+#[test]
+fn one_file_is_capped_too() {
+    let big = "a\n".repeat(MAX_INCLUDE_FILE_BYTES / 2 + 1);
+    let e = parse_files("::include{a.quill.md}\n", "m.quill.md", &|_| Ok(big.clone())).unwrap_err();
+    assert!(e[0].message.contains("too much script for one file"), "{e:?}");
 }

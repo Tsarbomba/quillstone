@@ -602,8 +602,9 @@ impl<'p> Game<'p> {
             return self.skip_tick(dt);
         }
 
-        let line_ready = self.waiting_on_a_line()
-            && self.view.dialogue.as_ref().is_some_and(|d| d.is_complete());
+        // A click wait has no line of its own: auto-forward waits out the delay for it too.
+        let line_ready = (self.waiting_on_a_line() || matches!(self.session.state().pending, Some(Cmd::WaitClick)))
+            && self.view.dialogue.as_ref().is_none_or(|d| d.is_complete());
         if !(self.auto && line_ready && !voice_playing) {
             self.auto_elapsed = 0.0;
             return;

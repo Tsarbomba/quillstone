@@ -1119,6 +1119,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::StopSfx { src: None, .. } => println!("[sfx stops]"),
             Cmd::PlayVoice { src } => println!("[voice: {src}]"),
             Cmd::Wait { seconds } => println!("[wait {seconds}s]"),
+            Cmd::WaitClick => println!("[click to continue]"),
             Cmd::PlayVideo { src, .. } => println!("[video: {src}]"),
             Cmd::ShowChoices { options, locked } => {
                 println!();
