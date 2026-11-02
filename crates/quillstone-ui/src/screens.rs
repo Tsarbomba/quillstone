@@ -984,12 +984,13 @@ impl GameTab {
     }
 }
 
-/// The tabs on offer: from the main menu there is no story to save, read back or leave, so those are left out.
-pub fn game_tabs(in_story: bool) -> &'static [GameTab] {
-    if in_story {
-        &[GameTab::Save, GameTab::Load, GameTab::Settings, GameTab::History, GameTab::MainMenu, GameTab::Quit]
-    } else {
-        &[GameTab::Load, GameTab::Settings, GameTab::Quit]
+/// The tabs on offer: from the main menu there is no story to save, read back or leave, so those are left out;
+/// a scene replay saves nothing and loads nothing, so it has no Save or Load either.
+pub fn game_tabs(in_story: bool, replay: bool) -> &'static [GameTab] {
+    match (in_story, replay) {
+        (true, false) => &[GameTab::Save, GameTab::Load, GameTab::Settings, GameTab::History, GameTab::MainMenu, GameTab::Quit],
+        (true, true) => &[GameTab::Settings, GameTab::History, GameTab::MainMenu, GameTab::Quit],
+        (false, _) => &[GameTab::Load, GameTab::Settings, GameTab::Quit],
     }
 }
 
@@ -1696,7 +1697,7 @@ mod tests {
     #[test]
     fn the_game_tabs_are_hit_where_they_are_drawn_and_clear_every_screens_content() {
         for in_story in [true, false] {
-            let tabs = game_tabs(in_story);
+            let tabs = game_tabs(in_story, false);
             let mut out = Vec::new();
             draw_game_tabs(&mut out, &Theme::default(), tabs, None, None);
             for (i, &tab) in tabs.iter().enumerate() {
@@ -1713,6 +1714,6 @@ mod tests {
         let strip_bottom = game_tab_rect(0, 6).y + game_tab_rect(0, 6).h;
         let settings = Theme::default().options_rect;
         assert!(strip_bottom <= tab_rect(0, 3).y && strip_bottom <= 40.0 && strip_bottom <= settings[1]);
-        assert!(!game_tabs(false).contains(&GameTab::Save) && !game_tabs(false).contains(&GameTab::MainMenu));
+        assert!(!game_tabs(false, false).contains(&GameTab::Save) && !game_tabs(false, false).contains(&GameTab::MainMenu));
     }
 }

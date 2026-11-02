@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::RangeInclusive;
 
-use crate::dynpath::is_device_name;
+use crate::dynpath::{is_device_name, is_dynamic};
 use crate::expr::{is_ident, is_keyword, is_plain_ident, parse_effect, parse_expr, parse_list, parse_value, split_top_level};
 use crate::ops::*;
 
@@ -141,15 +141,31 @@ fn unknown_attr(name: &str, extra: &str) -> String {
     format!("unknown attribute `{extra}` for `::{name}`{hint}")
 }
 
+/// How many unknown names get close-name suggestions: each costs a pass over every name, so a script with
+/// thousands of typos would take quadratic time. The rest are just told how many exist.
+const MAX_SUGGESTED: usize = 20;
+
+/// [`suggest`] for the `nth` unknown label (counting from 0).
+fn label_hint(program: &Program, name: &str, nth: usize) -> String {
+    if nth < MAX_SUGGESTED {
+        return suggest(name, program.labels.keys().map(String::as_str), "label");
+    }
+    let n = program.labels.len();
+    format!("{n} label{} exist{}", if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" })
+}
+
 /// Why `name` isn't one of `known`: at most 5 close names (a prefix or part of one, or a few typos
 /// away), else just how many there are, so a big game doesn't get thousands of names in a message.
 fn suggest<'a>(name: &str, known: impl Iterator<Item = &'a str>, what: &str) -> String {
     let (mut total, mut close) = (0, Vec::new());
     for k in known {
         total += 1;
-        let d = edit_distance(name, k);
-        if d <= name.chars().count().max(k.chars().count()) / 3 || (name.len() >= 3 && (k.contains(name) || name.contains(k))) {
-            close.push((d, k));
+        let (n, kn) = (name.chars().count(), k.chars().count());
+        let limit = n.max(kn) / 3;
+        // names whose lengths differ by more than the limit can't be within it: no need to measure
+        let d = (n.abs_diff(kn) <= limit).then(|| edit_distance(name, k));
+        if d.is_some_and(|d| d <= limit) || (name.len() >= 3 && (k.contains(name) || name.contains(k))) {
+            close.push((d.unwrap_or_else(|| edit_distance(name, k)), k));
         }
     }
     close.sort();
@@ -328,6 +344,7 @@ impl Parser {
         self.program.block_jumps = (0..self.program.ops.len())
             .filter(|i| matches!(self.program.ops[*i], Op::Jump { .. }) && !user_jumps.contains(i))
             .collect();
+        let mut typos = 0;
         for f in fixups {
             match self.program.labels.get(&f.label).copied() {
                 Some(target) => {
@@ -355,7 +372,8 @@ impl Parser {
                     }
                 }
                 None => {
-                    let hint = suggest(&f.label, self.program.labels.keys().map(String::as_str), "label");
+                    let hint = label_hint(&self.program, &f.label, typos);
+                    typos += 1;
                     self.err(f.line, format!("unknown label `{}` ({hint})", f.label));
                 }
             }
@@ -458,10 +476,12 @@ impl Parser {
         self.program.counted = counted;
 
         // `replays:`: each label must exist and take no parameters.
+        let mut typos = 0;
         for (line, label, title) in std::mem::take(&mut self.replay_decls) {
             match self.program.labels.get(&label).copied() {
                 None => {
-                    let hint = suggest(&label, self.program.labels.keys().map(String::as_str), "label");
+                    let hint = label_hint(&self.program, &label, typos);
+                    typos += 1;
                     self.err(line, format!("`replays`: there is no label `{label}` ({hint})"));
                 }
                 Some(_) if self.program.params.contains_key(&label) => self.err(
@@ -810,7 +830,7 @@ impl Parser {
         e.has_tests(&mut tests);
         for (name, _) in tests {
             // a name with `{}` parts spells its variable only at run time, so it can't be checked
-            if !name.contains('{') {
+            if !is_dynamic(name) {
                 self.need_list(name, &format!("`{name} has ...`"))?;
             }
         }
@@ -866,7 +886,7 @@ impl Parser {
                 number(a, "`random`")?;
                 number(b, "`random`")?;
             }
-            Expr::Count(name) if !name.contains('{') => self.need_list(name, &format!("`count({name})`"))?,
+            Expr::Count(name) if !is_dynamic(name) => self.need_list(name, &format!("`count({name})`"))?,
             _ => {}
         }
         e.children().into_iter().try_for_each(|c| self.check_numbers(c))
@@ -1299,14 +1319,14 @@ impl Parser {
                 if looped {
                     if steps.len() == 1 {
                         let s = &steps[0];
+                        if s.props().iter().all(Option::is_none) {
+                            return Err("a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=`, `yscale=`, `alpha=`, `xoffset=` or `yoffset=` (`flip` can't loop)".into());
+                        }
                         if s.time <= 0.0 {
                             return Err("a `loop` move needs `time=` above 0 (the seconds one leg takes)".into());
                         }
                         if s.wait > 0.0 {
                             return Err("a one-step `loop` can't `wait=`: add `then` steps to repeat them all".into());
-                        }
-                        if s.props().iter().all(Option::is_none) {
-                            return Err("a `loop` move needs something to animate: `x=`, `y=`, `scale=`, `xscale=`, `yscale=`, `alpha=`, `xoffset=` or `yoffset=` (`flip` can't loop)".into());
                         }
                     } else if steps.iter().map(|s| s.time + s.wait).sum::<f32>() <= 0.0 {
                         return Err("a `loop` move needs some `time=` or `wait=` above 0 (it would repeat without taking any time)".into());
@@ -1701,7 +1721,7 @@ impl Parser {
 
     /// One step of a `::move`: the properties to animate, `time=`, `ease=` and `wait=`.
     fn move_step(a: &mut Attrs) -> Result<MoveStep, String> {
-        Ok(MoveStep {
+        let mut step = MoveStep {
             x: Self::place(a, "x", POSITION)?,
             y: Self::place(a, "y", POSITION)?,
             scale: Self::number(a, "scale", SPRITE_SCALE)?,
@@ -1710,10 +1730,14 @@ impl Parser {
             alpha: Self::number(a, "alpha", 0.0..=1.0)?,
             dx: Self::number(a, "xoffset", SPRITE_OFFSET)?,
             dy: Self::number(a, "yoffset", SPRITE_OFFSET)?,
-            time: Self::seconds(a, "time", 0.5)?,
+            time: 0.0,
             ease: Self::ease(a)?,
             wait: Self::seconds(a, "wait", 0.0)?,
-        })
+        };
+        // A step that animates nothing is only a pause: its `time` defaults to 0, so `then wait=2` lasts 2 s.
+        let default = if step.props().iter().any(Option::is_some) { 0.5 } else { 0.0 };
+        step.time = Self::seconds(a, "time", default)?;
+        Ok(step)
     }
 
     /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
@@ -3603,6 +3627,7 @@ mod tests {
         // a pause only is a step; flip belongs to the first
         let p = ok("::move{a flip then wait=1 then x=0}\n");
         assert!(matches!(&p.ops[0], Op::Move { flip: Some(true), steps, .. } if steps.len() == 3 && steps[1].wait == 1.0 && steps[1].props().iter().all(Option::is_none)));
+        assert!(matches!(&p.ops[0], Op::Move { steps, .. } if steps[1].time == 0.0 && steps[0].time == 0.0 && steps[2].time == 0.5), "a pause is no longer than its wait");
     }
 
     #[test]
@@ -4463,6 +4488,21 @@ mod tests {
         let p = ok("# start\n::jump{to=start if=\"not seen(The End)\"}\n# the end\nBye.\n");
         assert_eq!(p.counted.get(&p.labels["the-end"]), Some(&vec!["seen:the-end".to_string()]));
         assert!(has_err("# a\n::if{seen(nowhere)}\nX.\n::endif\n", "no label `nowhere`"));
+    }
+
+    #[test]
+    fn thousands_of_unknown_labels_are_checked_quickly_and_only_the_first_few_get_suggestions() {
+        let n = 2000;
+        let mut src = String::new();
+        for i in 0..n {
+            src += &format!("# label number {i}\n::jump{{to=missing{i}}}\n");
+        }
+        let started = std::time::Instant::now();
+        let e = errs(&src);
+        assert!(started.elapsed().as_secs() < 5, "took {:?}", started.elapsed());
+        assert_eq!(e.len(), n, "{:?}", &e[..3]);
+        assert!(e[MAX_SUGGESTED - 1].message.contains("in all") || e[MAX_SUGGESTED - 1].message.contains("none close"), "{:?}", e[MAX_SUGGESTED - 1]);
+        assert!(e[MAX_SUGGESTED].message.ends_with("(2000 labels exist)"), "{:?}", e[MAX_SUGGESTED]);
     }
 
     #[test]

@@ -25,7 +25,7 @@ mod particles_tests;
 #[cfg(test)]
 mod tint_tests;
 
-pub use dynpath::{is_name_piece, is_pattern, name_piece, name_pieces, name_vars, pattern_matches, resolve_name, pattern_vars, pieces, resolve, unsafe_reason, Piece, MISSING_PICTURE, PICTURE_EXTENSIONS};
+pub use dynpath::{is_dynamic, is_name_piece, is_pattern, name_piece, name_pieces, name_vars, pattern_matches, resolve_name, pattern_vars, pieces, resolve, unsafe_reason, Piece, MISSING_PICTURE, PICTURE_EXTENSIONS};
 pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr};
 pub use ops::{
     get_var, is_inside, normal_path, kind_from_path, anim_id, bg_color, Anim, AnimFrame, AssetKind, ANIM_PREFIX, AssignOp, Area, BinOp, Imagemap, Character, ChoiceOption, Lock, Cmp, Cond, Ease, Effect, Expr,

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Component, Path};
 
-use crate::dynpath::{is_device_name, name_piece, name_vars, resolve_name};
+use crate::dynpath::{is_device_name, is_dynamic, name_piece, name_vars, resolve_name};
 
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
 ///
@@ -335,7 +335,7 @@ impl Expr {
     /// Every variable the expression reads, in order (with repeats). A name with `{}` parts
     /// (`love.{who}`) reads the variables in its parts; which variable it names is only known at run time.
     pub fn vars_read<'a>(&'a self, out: &mut Vec<&'a str>) {
-        let name = |out: &mut Vec<&'a str>, n: &'a String| if n.contains('{') { out.extend(name_vars(n)) } else { out.push(n) };
+        let name = |out: &mut Vec<&'a str>, n: &'a String| if is_dynamic(n) { out.extend(name_vars(n)) } else { out.push(n) };
         match self {
             Expr::Lit(_) => {}
             Expr::Var(n) | Expr::Count(n) => name(out, n),
@@ -355,7 +355,7 @@ impl Expr {
     /// Every variable name with `{}` parts (`love.{who}`) the expression reads.
     pub fn dynamic_names<'a>(&'a self, out: &mut Vec<&'a str>) {
         if let Expr::Var(n) | Expr::Count(n) | Expr::Has(n, _) = self {
-            if n.contains('{') {
+            if is_dynamic(n) {
                 out.push(n);
             }
         }
@@ -431,7 +431,7 @@ impl Effect {
     /// ones, so the number of variables stays what the script's own targets allow. `None`: not changed.
     pub fn target<'a>(&'a self, vars: &Vars) -> Option<Cow<'a, str>> {
         let name = resolve_name(&self.var, vars)?;
-        (!self.var.contains('{') || vars.contains_key(name.as_ref())).then_some(name)
+        (!is_dynamic(&self.var) || vars.contains_key(name.as_ref())).then_some(name)
     }
 
     pub fn apply(&self, vars: &mut Vars) {
@@ -906,7 +906,7 @@ impl Program {
     pub fn undeclared_names(&self) -> Vec<(usize, String, Vec<String>)> {
         let mut out = Vec::new();
         for (at, op) in self.ops.iter().enumerate() {
-            let mut names: Vec<&str> = op.effects().into_iter().map(|e| e.var.as_str()).filter(|n| n.contains('{')).collect();
+            let mut names: Vec<&str> = op.effects().into_iter().map(|e| e.var.as_str()).filter(|n| is_dynamic(n)).collect();
             op.exprs().into_iter().for_each(|e| e.dynamic_names(&mut names));
             for name in names {
                 let Ok(pieces) = crate::name_pieces(name) else { continue };

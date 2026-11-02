@@ -833,7 +833,7 @@ impl<'p> Game<'p> {
             Screen::Input => self.draw_input_screen(&mut out, image_size),
         }
         if self.current_tab().is_some() {
-            let tabs = game_tabs(self.in_story);
+            let tabs = game_tabs(self.in_story, self.replay.is_some());
             let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| game_tab_at(x, y, tabs));
             draw_game_tabs(&mut out, theme, tabs, self.current_tab(), hover);
         }
@@ -1412,7 +1412,7 @@ impl<'p> Game<'p> {
     /// A click on a game-menu tab, or Tab (next screen, round again). `true`: the event was for the tabs.
     fn game_tab_event(&mut self, event: &Event) -> bool {
         let Some(current) = self.current_tab() else { return false };
-        let tabs = game_tabs(self.in_story);
+        let tabs = game_tabs(self.in_story, self.replay.is_some());
         let pick = match event {
             Event::Press(Button::Left) => match self.cursor.and_then(|(x, y)| game_tab_at(x, y, tabs)) {
                 Some(tab) => tab,

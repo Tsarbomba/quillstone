@@ -165,6 +165,18 @@ pub fn explore(program: &Program, limit: usize) -> Report {
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
         };
+        // A `call` region comes back to its screen, and with the call stack full the click does nothing:
+        // a label that jumps back to the screen without `::return` (reported like a `::call` that never returns).
+        if state.stack.len() >= crate::MAX_CALL_DEPTH {
+            if let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) {
+                let visible = visible_options(all, &state.vars);
+                let full = inputs.iter().any(|(i, _)| matches!(i, Input::Choose(n) if visible.get(*n).is_some_and(|&k| all[k].area.as_ref().is_some_and(|a| a.call))));
+                if full {
+                    let msg = "a `call` region nests more than 256 deep here (its label jumps back to this screen without `::return`?)";
+                    x.error(state.pc, "deep", msg, Some(id));
+                }
+            }
+        }
         for (input, label) in inputs {
             for (after, trace) in x.outcomes(&state, Some(input)) {
                 if let Some(next) = x.visit(after, trace, Some((id, label.clone()))) {
@@ -729,7 +741,7 @@ fn added_items(program: &Program) -> HashMap<&str, Option<Vec<String>>> {
     }
     for e in all_effects(program) {
         // a name with `{}` parts could add to any list: nothing is known about them
-        if e.var.contains('{') && e.op == quillstone_script::AssignOp::Add {
+        if quillstone_script::is_dynamic(&e.var) && e.op == quillstone_script::AssignOp::Add {
             out.values_mut().for_each(|slot| *slot = None);
         }
         let Some(slot) = out.get_mut(e.var.as_str()) else { continue };
@@ -920,6 +932,13 @@ mod tests {
         assert!(r.errors[0].message.contains("hangs"), "{:?}", messages(&r.errors));
         let r = test("# a\nHi.\n# deep\n::call{to=deep}\n");
         assert!(r.errors[0].message.contains("256 deep"), "{:?}", messages(&r.errors));
+    }
+
+    #[test]
+    fn a_call_region_whose_label_jumps_back_to_its_screen_is_a_deep_error() {
+        let src = "# hub\n::bg{src=map.png}\n::hotspots\n- [Door](#door){rect=0,0,0.3,0.3, call}\n- [Leave](#bye){rect=0.7,0,0.3,0.3}\n::\n# door\nA door.\n::jump{to=hub}\n# bye\nBye.\n";
+        let r = test(src);
+        assert!(r.errors.iter().any(|e| e.message.contains("256 deep")), "{:?}", messages(&r.errors));
     }
 
     #[test]

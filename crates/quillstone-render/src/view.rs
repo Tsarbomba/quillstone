@@ -1611,16 +1611,18 @@ impl View {
         if let Some(ground) = self.imagemap.as_ref().and_then(|m| m.ground.as_deref()) {
             push_image(&mut out, ground, screen, Fit::Stretch, 1.0, image_size);
         }
+        // A hover picture that isn't loaded counts as none: the region keeps its idle picture and its outline.
+        let has_hover = |s: &Spot| s.hover.as_ref().is_some_and(|h| image_size(h).is_some());
         for spot in &self.hotspots {
             let on = hovered_spot.is_some_and(|(h, _)| std::ptr::eq(h, spot));
-            let picture = spot.hover.as_ref().filter(|_| on).or(spot.image.as_ref());
+            let picture = spot.hover.as_ref().filter(|_| on && has_hover(spot)).or(spot.image.as_ref());
             if let (Some(src), Some(rect)) = (picture, self.spot_rect(spot)) {
                 push_image(&mut out, src, rect, Fit::Stretch, 1.0, image_size);
             }
         }
         // An imagemap shows the same rect of its hover picture, unless the region has pictures of its own.
         if let (Some(map), Some((spot, rect))) = (&self.imagemap, hovered_spot) {
-            if spot.image.is_none() && spot.hover.is_none() && image_size(&map.hover).is_some() {
+            if spot.image.is_none() && !has_hover(spot) && image_size(&map.hover).is_some() {
                 if let Some((dest, uv)) = clip(screen, FULL_UV, rect) {
                     out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: 1.0 });
                 }
@@ -1699,7 +1701,8 @@ impl View {
         // A hovered region's tint and outline are over the textbox, so one that
         // reaches under it can be seen (hit-testing gives it the click, too).
         // A picture is the highlight when there is one (a hover picture or an imagemap); the tooltip stays.
-        let outlined = hovered_spot.filter(|(s, _)| s.hover.is_none() && self.imagemap.is_none());
+        let map_hover = self.imagemap.as_ref().is_some_and(|m| image_size(&m.hover).is_some());
+        let outlined = hovered_spot.filter(|(s, _)| !has_hover(s) && !map_hover);
         if let Some((_, rect)) = outlined {
             let [r, g, b, _] = theme.accent_color;
             out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
@@ -2938,6 +2941,19 @@ mod tests {
         assert!(hot.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Door")), "the tooltip stays");
         let hot = v.draw_list_hud(&all_1080p, Some(1), None, HudLook::default());
         assert_eq!(srcs(&hot), ["door.png", "lamp_hover.png"], "a region without an image shows its hover picture when focused");
+    }
+
+    #[test]
+    fn a_hover_picture_that_is_not_loaded_leaves_the_idle_picture_and_the_outline() {
+        let mut v = View::new();
+        let mut door = spot("Door", [0.5, 0.5, 0.1, 0.1], Some("door.png"));
+        door.hover = Some("door_hover.png".into());
+        v.apply(&[Cmd::ShowHotspots { spots: vec![door], map: None }]);
+        let unknown_hover = |s: &str| (s != "door_hover.png").then(|| Size::new(100.0, 100.0));
+        let hot = v.draw_list_hud(&unknown_hover, Some(0), Some((970.0, 560.0)), HudLook::default());
+        let srcs: Vec<_> = images(&hot).iter().map(|(s, _, _)| s.to_string()).collect();
+        assert_eq!(srcs, ["door.png"], "the idle picture stays");
+        assert!(hot.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color != theme().panel_color)), "outlined like a plain region");
     }
 
     #[test]

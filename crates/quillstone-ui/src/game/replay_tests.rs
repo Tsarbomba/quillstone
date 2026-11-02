@@ -397,6 +397,22 @@ fn settings_main_menu_leaves_a_replay_for_extras_and_quit_still_quits() {
     assert!(g.take_requests().contains(&Request::Quit));
 }
 
+#[test]
+fn a_replays_menu_tabs_leave_out_save_and_load_and_tab_cycles_between_settings_and_history() {
+    let p = parse(SRC).unwrap();
+    let storage = Shared::default();
+    let mut g = after_the_roof(&p, &storage);
+    to_scenes(&mut g);
+    click(&mut g, track_rect(0));
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Settings);
+    assert!(!game_tabs(true, true).contains(&GameTab::Save) && !game_tabs(true, true).contains(&GameTab::Load));
+    key(&mut g, Key::Tab);
+    assert_eq!(g.screen(), Screen::Backlog);
+    key(&mut g, Key::Tab);
+    assert_eq!(g.screen(), Screen::Settings, "round again, not stuck on History");
+}
+
 // ---- failures and reloads -----------------------------------------------------------------
 
 #[test]

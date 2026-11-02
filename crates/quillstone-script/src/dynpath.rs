@@ -171,9 +171,15 @@ pub fn name_pieces(name: &str) -> Result<Vec<Piece<'_>>, String> {
     Ok(out)
 }
 
+/// Whether a variable name has `{}` parts (`love.{who}`). A hidden name (`once:<target>:<option text>`)
+/// has a `:` and its braces are the option's text, so it is never dynamic.
+pub fn is_dynamic(name: &str) -> bool {
+    name.contains('{') && !name.contains(':')
+}
+
 /// The variables a name's `{}` parts read (none for a plain name or a malformed one).
 pub fn name_vars(name: &str) -> Vec<&str> {
-    let parts = if name.contains('{') { name_pieces(name).unwrap_or_default() } else { Vec::new() };
+    let parts = if is_dynamic(name) { name_pieces(name).unwrap_or_default() } else { Vec::new() };
     parts.into_iter().filter_map(|p| if let Piece::Var(v) = p { Some(v) } else { None }).collect()
 }
 
@@ -196,7 +202,7 @@ pub fn name_piece(v: &Value) -> Option<String> {
 /// value put in (a text that [`is_name_piece`] allows, or a whole number from 0 up). `None` when a part
 /// is unset, of another kind or not a safe piece.
 pub fn resolve_name<'a>(name: &'a str, vars: &Vars) -> Option<Cow<'a, str>> {
-    if !name.contains('{') {
+    if !is_dynamic(name) {
         return Some(Cow::Borrowed(name));
     }
     let mut out = String::new();

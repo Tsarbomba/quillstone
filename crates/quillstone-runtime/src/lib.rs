@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -759,11 +759,16 @@ fn count_visits(state: &mut State, program: &Program, pc: usize, default: i64, d
 }
 
 /// Whether `after` shows the line a Use or HUD button called from, again, after `before`'s `::return`
-/// (the line is not new: History and the log already have it).
-pub(crate) fn returned_to_line(before: &State, after: &State) -> bool {
+/// (the line is not new: History and the log already have it). `input` is what took `before` to `after`.
+/// The line's frame is the outermost one the return popped (a label may `::call` another). A label with
+/// no line of its own calls and returns within one input, so the stack is no shorter: the same line again.
+pub(crate) fn returned_to_line(before: &State, after: &State, input: &Input) -> bool {
     matches!(after.pending, Some(Cmd::Say { .. }))
-        && after.stack.len() < before.stack.len()
-        && matches!(before.stack.last(), Some(Frame { ret, line: true }) if *ret == after.pc)
+        && (after.stack.len() < before.stack.len()
+            && matches!(before.stack.get(after.stack.len()), Some(Frame { ret, line: true }) if *ret == after.pc)
+            || matches!(input, Input::Use(_) | Input::Hud(_))
+                && matches!(before.pending, Some(Cmd::Say { .. }))
+                && (after.pc, after.stack.len()) == (before.pc, before.stack.len()))
 }
 
 /// `::return`: back to the frame's address. A line call shows its line again, which would count a second visit.
@@ -1119,7 +1124,7 @@ pub fn step(state: &mut State, program: &Program, input: Option<Input>) -> Vec<C
 /// Why `effect` changes nothing, when its name has `{}` parts (`love.{who}`) that don't spell an existing
 /// variable. The value is not in the message (it may be what the player typed).
 fn refused_write(effect: &Effect, vars: &Vars) -> Option<String> {
-    (effect.var.contains('{') && effect.target(vars).is_none()).then(|| {
+    (is_dynamic(&effect.var) && effect.target(vars).is_none()).then(|| {
         format!("`{}` was not changed: its parts don't spell a declared variable (a part is unset or not a plain name).", effect.var)
     })
 }
@@ -1609,11 +1614,11 @@ impl<'p> Session<'p> {
     pub fn input(&mut self, input: Input) -> Vec<Cmd> {
         let before = self.state.clone();
         let mut cmds = step(&mut self.state, self.program, Some(input.clone()));
-        if returned_to_line(&before, &self.state) {
+        if returned_to_line(&before, &self.state, &input) {
             // The line comes back as it was before the Use: its pictures (not its voice) are shown again.
             let at = (self.state.pc, self.state.stack.len());
-            let was = self.history.iter().rev().find(|(s, _)| (s.pc, s.stack.len()) == at && matches!(s.pending, Some(Cmd::Say { .. })));
-            self.state.inline = was.map(|(s, _)| s.inline.clone()).unwrap_or_default();
+            let was = self.history.iter().map(|(s, _)| s).chain([&before]).rev().find(|s| (s.pc, s.stack.len()) == at && matches!(s.pending, Some(Cmd::Say { .. })));
+            self.state.inline = was.map(|s| s.inline.clone()).unwrap_or_default();
             let at = cmds.len().saturating_sub(1);
             for (src, alt) in self.state.inline.iter().rev() {
                 cmds.insert(at, Cmd::ShowImage { src: src.clone(), alt: alt.clone() });

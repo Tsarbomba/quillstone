@@ -130,12 +130,12 @@ impl Session<'_> {
             }
             _ => {}
         };
-        let mut earlier: Option<&crate::State> = None;
+        let mut earlier: Option<(&crate::State, &crate::Input)> = None;
         for (state, input) in &self.history {
-            log(state, Some(input), earlier.is_some_and(|e| crate::returned_to_line(e, state)));
-            earlier = Some(state);
+            log(state, Some(input), earlier.is_some_and(|(e, i)| crate::returned_to_line(e, state, i)));
+            earlier = Some((state, input));
         }
-        log(&self.state, None, earlier.is_some_and(|e| crate::returned_to_line(e, &self.state)));
+        log(&self.state, None, earlier.is_some_and(|(e, i)| crate::returned_to_line(e, &self.state, i)));
         out
     }
 }

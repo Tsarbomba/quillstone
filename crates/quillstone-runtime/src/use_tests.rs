@@ -235,3 +235,29 @@ fn the_line_after_a_use_is_not_logged_again_and_keeps_its_picture() {
     s.input(Input::Advance);
     assert_eq!(log(&s), ["one", "Glug.", "two"]);
 }
+
+fn lines(s: &Session) -> Vec<String> {
+    s.backlog().into_iter().filter_map(|l| if let crate::Logged::Line(l) = l { Some(l.text) } else { None }).collect()
+}
+
+#[test]
+fn a_use_label_with_no_line_logs_the_line_once_and_shows_its_picture_again() {
+    let src = "---\ninventory: bag\nvars: { potions: 2, hp: 0, bag: [] }\n---\n::item{id=potion name=\"Potion\" count=potions use=#drink}\n\
+               ![cat](cat.png)\n**A:** one\n**A:** two\n# drink\n::set{hp += 1}\n::return\n";
+    let p = parse(src).unwrap();
+    let (mut s, _) = Session::start(&p);
+    let back = s.input(Input::Use("potion".into()));
+    assert!(back.iter().any(|c| matches!(c, Cmd::ShowImage { src, .. } if src == "cat.png")), "{back:?}");
+    assert_eq!(lines(&s), ["one"]);
+}
+
+#[test]
+fn a_return_through_a_nested_call_logs_the_line_once() {
+    let src = "---\ninventory: bag\nvars: { potions: 2, bag: [] }\n---\n::item{id=potion name=\"Potion\" count=potions use=#drink}\n\
+               **A:** one\n**A:** two\n# drink\n::call{to=sub}\n::return\n# sub\n**A:** Glug.\n::return\n";
+    let p = parse(src).unwrap();
+    let (mut s, _) = Session::start(&p);
+    s.input(Input::Use("potion".into()));
+    s.input(Input::Advance);
+    assert_eq!(lines(&s), ["one", "Glug."], "the line is in the log once");
+}

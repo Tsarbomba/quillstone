@@ -9,7 +9,7 @@ const STORY: &str = "**A:** one\n**A:** two\n";
 const INVENTORY: &str = "---\ninventory: bag\nvars: { bag: [key] }\n---\n::item{id=key name=\"Key\" text=\"Opens it.\"}\n**A:** one\n::inventory\n**A:** two\n";
 
 fn tab(g: &mut Game, t: GameTab) {
-    let tabs = game_tabs(g.in_story());
+    let tabs = game_tabs(g.in_story(), g.replay.is_some());
     let i = tabs.iter().position(|x| *x == t).expect("the tab is offered");
     click(g, game_tab_rect(i, tabs.len()));
 }
@@ -121,7 +121,7 @@ fn the_main_menu_and_quit_tabs_ask_first() {
 fn from_the_main_menu_there_is_no_save_history_or_main_menu_tab() {
     let p = parse(STORY).unwrap();
     let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
-    assert_eq!(game_tabs(false), [GameTab::Load, GameTab::Settings, GameTab::Quit]);
+    assert_eq!(game_tabs(false, false), [GameTab::Load, GameTab::Settings, GameTab::Quit]);
     g.open_slots(Screen::Load);
     let labels = |g: &Game| -> Vec<String> {
         g.draw_list(&|_| None).into_iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text) } else { None }).collect()

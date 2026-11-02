@@ -250,6 +250,9 @@ fn check(path: &Path) -> Result<(), String> {
     for (line, msg) in replay_warnings(&program) {
         found.push(warning(line, msg));
     }
+    for (line, msg) in call_region_warnings(&program) {
+        found.push(warning(line, msg));
+    }
     if program.id.is_none() && program.title.is_none() {
         found.push((
             false,
@@ -313,6 +316,26 @@ fn replay_warnings(program: &Program) -> Vec<(usize, String)> {
                 replay.label
             );
             out.push((program.lines.get(at).copied().unwrap_or(0), msg));
+        }
+    }
+    out
+}
+
+/// `call` regions whose label can run back to their own screen without a `::return`: each click then adds
+/// a frame to the call stack, and after 256 the regions stop working. `(line, message)`. The same static
+/// scan as [`replay_warnings`] (`Program::ops_ahead`, which stops at a `::return`), so approximate.
+fn call_region_warnings(program: &Program) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (pc, op) in program.ops.iter().enumerate() {
+        let Op::Choice { options, .. } = op else { continue };
+        for o in options.iter().filter(|o| o.area.as_ref().is_some_and(|a| a.call)) {
+            if program.ops_ahead(o.target, program.ops.len() + 1).contains(&pc) {
+                let msg = format!(
+                    "the `call` region \"{}\" can reach its own screen again without a `::return`, so each click adds to the call stack (end its label with `::return`)",
+                    o.text
+                );
+                out.push((program.lines.get(pc).copied().unwrap_or(0), msg));
+            }
         }
     }
     out
@@ -1291,6 +1314,16 @@ mod tests {
         assert!(w[0].1.contains("replay `c`") && w[0].1.contains("run to the end of the game"), "{w:?}");
         assert_eq!(w[0].0, p.lines[p.labels["c"]]);
         assert!(checked("---\nreplays: { a: \"A\" }\n---\n# a\nHi.\n", &[]).is_ok(), "only a warning");
+    }
+
+    #[test]
+    fn check_warns_when_a_call_region_label_can_reach_its_screen_without_a_return() {
+        let front = "# hub\n::bg{src=map.png}\n::hotspots\n- [Door](#door){rect=0,0,0.3,0.3, call}\n- [Exit](#bye){rect=0.7,0,0.3,0.3}\n::\n";
+        let bad = parse(&format!("{front}# door\nA door.\n::jump{{to=hub}}\n# bye\nBye.\n")).unwrap();
+        let w = call_region_warnings(&bad);
+        assert!(w.len() == 1 && w[0].1.contains("\"Door\"") && w[0].1.contains("::return"), "{w:?}");
+        let good = parse(&format!("{front}# door\nA door.\n::return\n# bye\nBye.\n")).unwrap();
+        assert!(call_region_warnings(&good).is_empty());
     }
 
     /// A script in a fresh folder, with the files `(name, bytes)` beside it.

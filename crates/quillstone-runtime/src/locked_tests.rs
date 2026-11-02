@@ -128,3 +128,16 @@ fn the_tester_never_picks_a_locked_option_and_says_one_that_stays_locked_is_neve
     assert!(warnings.iter().any(|m| m.contains("Lift the gate") && m.contains("never offered")), "{warnings:?}");
     assert!(!r.endings.is_empty() && r.errors.is_empty());
 }
+
+#[test]
+fn a_once_option_with_a_brace_in_its_text_is_picked_once_without_a_warning() {
+    for text in ["Talk to {name}", "{color=#f00}Run{/color}"] {
+        let src = format!("---\nvars: {{ name: \"Ann\" }}\n---\n# a\n::choice\n- [{text}](#a){{once}}\n- [Go](#b)\n::\n# b\nB.\n");
+        let p: &'static Program = Box::leak(Box::new(parse(&src).unwrap()));
+        let (mut s, _) = Session::start(p);
+        assert_eq!(choices(&s).0.len(), 2, "{text}: open at first");
+        let cmds = s.input(Input::Choose(0));
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::Warning { .. })), "{text}: no warning: {cmds:?}");
+        assert_eq!(choices(&s).0, ["Go"], "{text}: gone after one pick");
+    }
+}
