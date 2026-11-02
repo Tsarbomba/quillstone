@@ -100,7 +100,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
         "choice" => &["time"],
-        "hotspots" => &["time", "default"],
+        "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through"],
         "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
         "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "fade"],
@@ -2531,10 +2531,26 @@ impl Parser {
         let name = if hot { "::hotspots" } else { "::choice" };
         let mut time = None;
         let mut default_to = None;
+        let mut map = None;
         match Attrs::parse(inner) {
             Ok(mut a) => {
                 let value = a.take("time");
                 let jump = if hot { a.take("default") } else { None };
+                let (ground, hover) = if hot { (a.take("ground"), a.take("hover")) } else { (None, None) };
+                match (ground, hover) {
+                    (None, None) => {}
+                    (ground, Some(hover)) => {
+                        let picture = |key: &str, v: Option<String>| {
+                            let v = v.ok_or_else(|| format!("`{key}=` needs a picture, like `{key}=assets/map.png`"))?;
+                            check_image_path(&v, key, "an imagemap picture")
+                        };
+                        match (ground.map(|g| picture("ground", g)).transpose(), picture("hover", hover)) {
+                            (Ok(ground), Ok(hover)) => map = Some(Imagemap { ground, hover }),
+                            (g, h) => [g.err(), h.err()].into_iter().flatten().for_each(|m| self.err(line, m)),
+                        }
+                    }
+                    (Some(_), None) => self.err(line, "`ground=` needs `hover=` too: the picture shown over a region while it is hovered"),
+                }
                 if let Some(extra) = a.leftover(&[]) {
                     self.err(line, unknown_attr(name.trim_start_matches("::"), extra));
                 }
@@ -2596,7 +2612,7 @@ impl Parser {
             for (k, (label, ln)) in labels.into_iter().enumerate() {
                 self.fixups.push(Fixup { op, option: Some(k), label, line: ln });
             }
-            self.push(Op::Choice { options, time }, line);
+            self.push(Op::Choice { options, time, map }, line);
         }
         j
     }
@@ -2628,6 +2644,7 @@ impl Parser {
         let mut once = false;
         let mut area = None;
         let mut hidden = false;
+        let mut call = false;
         let mut default = false;
         let mut show: Option<String> = None;
         if hot && tail.is_empty() {
@@ -2638,6 +2655,7 @@ impl Parser {
             if hot {
                 let rect = take_attr(&mut inner, "rect");
                 let image = take_attr(&mut inner, "image");
+                let hover = take_attr(&mut inner, "hover");
                 let sprite = take_attr(&mut inner, "sprite");
                 if sprite.as_deref() == Some("") {
                     return Err("`sprite=` needs a sprite name, like `sprite=firefly`".into());
@@ -2652,9 +2670,11 @@ impl Parser {
                 if let Some(id) = &sprite {
                     self.sprite_refs.push((id.clone(), line));
                 }
-                area = Some(Area { rect, sprite, image: image.map(|i| check_hotspot_image(&i)).transpose()?, hidden: false });
-            } else if ["rect", "image", "sprite"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
-                return Err("`rect=`, `image=` and `sprite=` only belong in a `::hotspots` block".into());
+                let image = image.map(|i| check_hotspot_image(&i)).transpose()?;
+                let hover = hover.map(|h| check_image_path(&h, "hover", "a hotspot hover picture")).transpose()?;
+                area = Some(Area { rect, sprite, image, hover, call: false, hidden: false });
+            } else if ["rect", "image", "sprite", "hover"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
+                return Err("`rect=`, `image=`, `hover=` and `sprite=` only belong in a `::hotspots` block".into());
             }
             let inner = inner.as_str();
             for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
@@ -2685,6 +2705,12 @@ impl Parser {
                         return Err("`hidden` only belongs in a `::hotspots` block".into());
                     }
                     hidden = true;
+                } else if item == "call" {
+                    // A `::choice` button would need its own way back to the line; only regions come back to a screen.
+                    if !hot {
+                        return Err("`call` only belongs in a `::hotspots` block".into());
+                    }
+                    call = true;
                 } else {
                     let e = parse_effect(item)?;
                     self.check_effect(&e)?;
@@ -2694,6 +2720,7 @@ impl Parser {
         }
         if let Some(a) = area.as_mut() {
             a.hidden = hidden;
+            a.call = call;
         }
         if show.is_some() && cond.is_none() {
             return Err("`show` needs an `if`: it greys the option out while the condition is false".into());
@@ -3678,7 +3705,7 @@ mod tests {
     #[test]
     fn timed_choices_carry_a_limit_and_one_default_that_combines_with_other_settings() {
         let p = ok("# a\n::choice{time=8}\n- [Speak](#a)\n- [Wait](#a){once, default, calm+=1, if calm < 9}\n::\n");
-        let Op::Choice { options, time } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, time, .. } = &p.ops[0] else { panic!() };
         assert_eq!(*time, Some(8.0));
         assert_eq!(options.iter().map(|o| o.default).collect::<Vec<_>>(), [false, true]);
         assert!(options[1].cond.is_some() && options[1].effects.len() == 2, "if, once and effects all kept");
@@ -3692,7 +3719,7 @@ mod tests {
     #[test]
     fn a_timed_hotspot_screen_adds_a_hidden_option_that_jumps_when_time_runs_out() {
         let p = ok("# a\n::hotspots{time=3 default=#too-slow}\n- [Go](#a){rect=0,0.5,0.5,0.5}\n::\n# too slow\n::end\n");
-        let Op::Choice { options, time } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, time, .. } = &p.ops[0] else { panic!() };
         assert_eq!(*time, Some(3.0));
         assert_eq!(options.len(), 2);
         let late = &options[1];
@@ -3700,7 +3727,7 @@ mod tests {
         assert!(late.area.as_ref().is_some_and(|a| a.hidden && a.rect == [0.0; 4]), "nothing can click it");
         assert!(!options[0].default);
         let plain = ok("# a\n::hotspots\n- [Go](#a){rect=0,0.5,0.5,0.5}\n::\n");
-        assert!(matches!(&plain.ops[0], Op::Choice { time: None, options } if options.len() == 1));
+        assert!(matches!(&plain.ops[0], Op::Choice { time: None, options, .. } if options.len() == 1));
     }
 
     #[test]
@@ -4180,6 +4207,51 @@ mod tests {
     }
 
     #[test]
+    fn a_region_takes_a_hover_picture_and_call_and_a_block_takes_an_imagemap() {
+        let p = ok("# a\n::hotspots{ground=assets/map.png hover=assets/map_hover.png time=3 default=#a}\n- [Door](#a){rect=0,0,0.5,0.5 image=assets/d.png hover=assets/d2.png, call, once}\n- [Hall](#a){rect=0.5,0.5,0.5,0.5 hover=assets/h2.png}\n::\n");
+        let Op::Choice { options, map, time } = &p.ops[0] else { panic!() };
+        assert_eq!(time, &Some(3.0));
+        let map = map.as_ref().unwrap();
+        assert_eq!((map.ground.as_deref(), map.hover.as_str()), (Some("assets/map.png"), "assets/map_hover.png"));
+        let door = options[0].area.as_ref().unwrap();
+        assert_eq!((door.image.as_deref(), door.hover.as_deref(), door.call), (Some("assets/d.png"), Some("assets/d2.png"), true));
+        let hall = options[1].area.as_ref().unwrap();
+        assert_eq!((hall.image.as_deref(), hall.hover.as_deref(), hall.call), (None, Some("assets/h2.png"), false));
+        // `ground` is optional; every picture is an asset, each at its own line
+        let p = ok("# a\n::hotspots{hover=map_hover.png}\n- [Hall](#a){rect=0,0,1,1 hover=h.png}\n::\n");
+        assert!(matches!(&p.ops[0], Op::Choice { map: Some(m), .. } if m.ground.is_none()));
+        let found: Vec<_> = p.assets_with_lines().map(|(l, _, a)| (l, a)).collect();
+        assert_eq!(found, [(3, "h.png"), (2, "map_hover.png")]);
+        assert!(matches!(&ok("# a\n::hotspots\n- [x](#a){rect=0,0,1,1}\n::\n").ops[0], Op::Choice { map: None, .. }));
+    }
+
+    #[test]
+    fn imagemap_hover_and_call_errors_name_the_line() {
+        let line = |src: &str, needle: &str| {
+            let errors = errs(src);
+            errors.iter().find(|e| e.message.contains(needle)).unwrap_or_else(|| panic!("{needle}: {errors:?}")).line
+        };
+        let region = |tail: &str| format!("# a\n::hotspots\n- [x](#a){tail}\n::\n");
+        let block = |attrs: &str| format!("# a\n::hotspots{attrs}\n- [x](#a){{rect=0,0,1,1}}\n::\n");
+        assert_eq!(line(&region("{rect=0,0,1,1 hover=k.gif}"), "bad `hover="), 3);
+        assert_eq!(line(&region("{rect=0,0,1,1 hover=k}"), "bad `hover="), 3);
+        assert_eq!(line(&region("{rect=0,0,1,1 hover=../k.png}"), "inside the game folder"), 3);
+        assert_eq!(line(&block("{ground=map.png}"), "needs `hover=` too"), 2);
+        assert_eq!(line(&block("{hover=map.bmp}"), "bad `hover="), 2);
+        assert_eq!(line(&block("{ground=map hover=m.png}"), "bad `ground="), 2);
+        assert_eq!(line(&block("{hover}"), "`hover=` needs a picture"), 2);
+        // not for a choice
+        let choice = |attrs: &str, tail: &str| format!("# a\n::choice{attrs}\n- [x](#a){tail}\n::\n");
+        assert_eq!(line(&choice("{ground=g.png hover=h.png}", ""), "unknown attribute `ground` for `::choice`"), 2);
+        assert_eq!(line(&choice("{hover=h.png}", ""), "unknown attribute `hover` for `::choice`"), 2);
+        assert_eq!(line(&choice("", "{hover=h.png}"), "only belong in a `::hotspots` block"), 3);
+        assert_eq!(line(&choice("", "{call}"), "`call` only belongs in a `::hotspots` block"), 3);
+        // a call region can't pass the label's parameters
+        let with_params = "# a\n::hotspots\n- [x](#h){rect=0,0,1,1, call}\n::\n# h(n)\n::return\n";
+        assert_eq!(line(with_params, "has parameters"), 3);
+    }
+
+    #[test]
     fn hotspot_errors_name_the_line() {
         let e = |src: &str, needle: &str| {
             let errors = errs(src);
@@ -4202,7 +4274,7 @@ mod tests {
         e("# a\n::choice\n- [x](#a){hidden}\n::\n", "`hidden` only belongs in a `::hotspots`");
         e("# a\n::hotspots\n- [x](#a){rect=0,0,1,1}\n", "never closed");
         e("# a\n::choice\n- [x](#a){rect=0,0,1,1}\n::\n", "only belong in a `::hotspots`");
-        e("# a\n::hotspots{x}\n- [x](#a){rect=0,0,1,1}\n::\n", "unknown attribute `x` for `::hotspots` (it takes: time, default)");
+        e("# a\n::hotspots{x}\n- [x](#a){rect=0,0,1,1}\n::\n", "unknown attribute `x` for `::hotspots` (it takes: time, default, ground, hover)");
         e(&line3("- [x](#nowhere){rect=0,0,1,1}"), "unknown label");
     }
 

@@ -8,7 +8,9 @@ gallery: [assets/scarf.png]
 
 <!-- Clickable regions over the background: a map, a collectible and an exit.
      Regions are x,y,w,h of the screen (0 to 1, or percentages). Without `image=` a
-     region is invisible until the mouse (or the arrow keys) reach it. -->
+     region is invisible until the mouse (or the arrow keys) reach it. `hover=` is the picture
+     shown while a region is hovered; `ground=`/`hover=` on the block make an imagemap (the hovered
+     part of one full-screen picture is shown); `call` comes back to this screen afterwards. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
 
@@ -23,10 +25,11 @@ You stand in a small town at night. Everything is within walking distance.
      regions are the only way on. Any line (or choice) shows the box again by itself. -->
 ::bg{src=assets/night.png}
 ::textbox{hide}
-::hotspots
-- [The rooftop](#rooftop){rect=14%,52%,8%,14% image=assets/gui/pin.png}
+<!-- A real game ships a lit-up copy of the ground as `hover=`; here the other room's picture stands in for it. -->
+::hotspots{ground=assets/night.png hover=assets/rooftop.png}
+- [The rooftop](#rooftop){rect=14%,52%,8%,14% image=assets/gui/pin.png hover=assets/gui/pin_hover.png, call}
 - [The old bridge](#bridge){rect=55%,64%,16%,12%}
-- [The clock tower](#tower){rect=38%,18%,8%,14% image=assets/gui/pin.png, once}
+- [The clock tower](#tower){rect=38%,18%,8%,14% image=assets/gui/pin.png hover=assets/gui/pin_hover.png, once}
 - [A scarf in the grass](#scarf){rect=84%,40%,5%,9%, hidden, found_scarf=true, if not found_scarf}
 - [Leave town](#leave){rect=88%,88%,10%,8%}
 ::
@@ -37,7 +40,11 @@ You stand in a small town at night. Everything is within walking distance.
 ::show{mika neutral x=80% fade=0.3}
 **Mika:** You found my rooftop. Come back any time.
 ::hide{all fade=0.3}
-::jump{to=map}
+<!-- A `call` region comes back to the map when this label returns, so the label puts the picture
+     and the clean look back itself. -->
+::bg{src=assets/night.png fade=0.5}
+::textbox{hide}
+::return
 
 # bridge
 

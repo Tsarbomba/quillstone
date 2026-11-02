@@ -175,7 +175,9 @@ fn build(program: &Program) -> Graph {
                         text += " (default)";
                     }
                     let cond = with(o.cond.as_ref());
-                    add(from, to, Kind::Choice, if cond.is_empty() { text } else { format!("{text} [{cond}]") });
+                    // A `call` region comes back to its screen, like a `::call`: dashed, and no fall-through change.
+                    let kind = if o.area.as_ref().is_some_and(|a| a.call) { Kind::Call } else { Kind::Choice };
+                    add(from, to, kind, if cond.is_empty() { text } else { format!("{text} [{cond}]") });
                 }
             }
             _ => {}
@@ -434,6 +436,15 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
         assert!(m.contains("-->|\"The bug\"|") && m.contains("-->|\"(time out)\"|"), "{m}");
         assert!(d.contains("[label=\"(time out)\"]") && !d.contains("(default)"), "{d}");
         assert!(!m.contains("unreachable"), "the timeout reaches the label: {m}");
+    }
+
+    #[test]
+    fn a_call_region_is_a_dashed_call_edge_and_a_plain_region_stays_a_choice_edge() {
+        let src = "# Map\n::hotspots\n- [Door](#door){rect=0,0,.5,.5, call}\n- [Out](#out){rect=.5,.5,.5,.5}\n::\n# Door\nKnock.\n::return\n# Out\nBye.\n::end\n";
+        let (m, d) = both(src);
+        assert!(m.contains("-.->|\"call, Door\"|") && m.contains("-->|\"Out\"|"), "{m}");
+        assert!(d.contains("[label=\"call, Door\", style=dashed]") && d.contains("[label=\"Out\"]"), "{d}");
+        assert!(!m.contains("unreachable"), "{m}");
     }
 
     #[test]

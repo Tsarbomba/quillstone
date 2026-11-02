@@ -12,7 +12,7 @@ begin elsewhere); `quillstone dump` shows the compiled form; `quillstone package
 ship (see the README). Errors name the file and line.
 `quillstone graph script.quill.md > story.md` writes the story's structure as a flowchart:
 a box per heading (as you wrote it, grouped per `::include`d file), an arrow for running on
-into the next heading, `::jump` (thick), `::call` (dashed), each choice or hotspot (labelled
+into the next heading, `::jump` (thick), `::call` and a hotspot's `call` (dashed), each choice or hotspot (labelled
 with its text) and the inventory's Use. A condition shows as `if ...`, an ending has rounded
 ends and a heading nothing leads to is dashed red. The output is Mermaid, which GitHub and VS
 Code draw as a picture; `--format dot` gives Graphviz and `-o file` writes a file. It reads
@@ -997,6 +997,45 @@ object to find, a point-and-click scene.
   at least one visible region (such as an exit) for those players.
   Example: `- [Old key](#found){rect=60%,70%,5%,8%, hidden, once, found=true}`.
   It is an error in a `::choice`.
+- **Hover pictures.** `hover=assets/door_hover.png` (same kinds of file as `image=`) is
+  drawn into the region instead of `image=` while it is hovered or the keyboard is on it,
+  and with it the outline and tint are off (the picture is the highlight; the tooltip
+  stays). Without an `image=` the region shows nothing until hovered. It works for regions
+  that follow a sprite, `check` tests it as a picture and `package` includes it. A `hidden`
+  region never shows it. Example: `- [Door](#door){rect=10%,20%,8%,30% image=assets/door.png hover=assets/door_hover.png}`.
+- **Imagemaps.** `::hotspots{ground=assets/map.png hover=assets/map_hover.png}`: two
+  full-screen pictures (drawn stretched to the screen, like a background; they should match
+  in size and content, the second one lit up). `ground` is optional when the background
+  already shows the picture. While a region is hovered or focused, the part of the hover
+  picture inside its rect is drawn over it, so the regions need no pictures of their own
+  (one with its own `image=` or `hover=` uses that instead). It combines with `time=` and
+  `default=`; nothing about it is saved, it comes from the script. `::choice` has no
+  `ground=` or `hover=`.
+- **Call regions.** `call` after the rect makes picking the region call its label, like
+  `::call`: the label's `::return` comes back to this same screen, shown again with its
+  `once` and `if` worked out afresh, so a hub of rooms needs no `::jump` back. A region
+  without `call` jumps as before. The label can't take parameters, a rollback or a load
+  inside it comes back to the screen, and a click does nothing while the call stack is full.
+  The screen's own line (if any) is not restored: end the label with `::bg` and
+  `::textbox{hide}` if it changed the picture or said something. `::choice` has no `call`.
+  A two-room map (`examples/hotspots.quill.md` has the same pieces):
+
+  ````markdown
+  # map
+  ::hotspots{ground=assets/map.png hover=assets/map_hover.png}
+  - [Kitchen](#kitchen){rect=10%,20%,25%,30%, call}
+  - [Cellar](#cellar){rect=60%,50%,30%,40%, call, once}
+  - [Leave](#out){rect=90%,2%,8%,8%}
+  ::
+  # kitchen
+  The kettle is still warm.
+  ::textbox{hide}
+  ::return
+  # cellar
+  A cold draught comes up the steps.
+  ::textbox{hide}
+  ::return
+  ````
 - Effects, `if condition` and `once` work as in a `::choice`, and so does the
   `#label` it jumps to. Put the other settings after `rect` and `image`, separated
   by commas. A region that is `once` or whose `if` is false disappears; with none

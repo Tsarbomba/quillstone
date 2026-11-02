@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, Ease, Effect, Expr, Fit, HudAction, HudElem, Op, Particles, Program, ShopEntry, Tint, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -44,6 +44,8 @@ mod locked_tests;
 mod use_tests;
 #[cfg(test)]
 mod hud_button_tests;
+#[cfg(test)]
+mod hotspot_call_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -163,7 +165,8 @@ pub enum Cmd {
     /// Show clickable regions over the background and wait for [`Input::Choose`]
     /// (from a `::hotspots` block). Like choices: only the regions currently
     /// available are listed, and the index refers to this list.
-    ShowHotspots { spots: Vec<Spot> },
+    /// `map` is the block's imagemap pictures, if it has them.
+    ShowHotspots { spots: Vec<Spot>, map: Option<Imagemap> },
     /// Show the inventory screen (from `::inventory`) and wait for [`Input::Advance`]
     /// when the player closes it. What it lists is [`inventory_items`].
     ShowInventory,
@@ -226,6 +229,8 @@ pub struct Spot {
     pub sprite: Option<String>,
     /// Drawn stretched into the region.
     pub image: Option<String>,
+    /// Drawn instead of `image` while the region is hovered or focused; then there is no outline or tint.
+    pub hover: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
 }
@@ -233,7 +238,7 @@ pub struct Spot {
 impl Spot {
     /// The timeout of a timed `::hotspots` screen (see [`Area::timeout`]), which has no text of its own.
     pub fn is_timeout(&self) -> bool {
-        let area = Area { rect: self.rect, sprite: self.sprite.clone(), image: self.image.clone(), hidden: self.hidden };
+        let area = Area { rect: self.rect, sprite: self.sprite.clone(), image: self.image.clone(), hover: self.hover.clone(), call: false, hidden: self.hidden };
         self.label.is_empty() && area.is_timeout()
     }
 }
@@ -396,8 +401,8 @@ pub struct Line {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Frame {
     pub ret: usize,
-    /// A Use or HUD button made the call from a line, so `::return` shows that same line again
-    /// (see [`call_from_line`]).
+    /// A Use or HUD button made the call from a line, or a `call` region from its hotspot screen, so
+    /// `::return` shows that same line or screen again (see [`call_from_line`]).
     pub line: bool,
 }
 
@@ -608,7 +613,7 @@ pub fn choice_timer(state: &State, program: &Program) -> Option<ChoiceTimer> {
     if !matches!(state.pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) {
         return None;
     }
-    let Some(Op::Choice { options, time: Some(seconds) }) = program.ops.get(state.pc) else { return None };
+    let Some(Op::Choice { options, time: Some(seconds), .. }) = program.ops.get(state.pc) else { return None };
     let visible = visible_options(options, &state.vars);
     let open = |&i: &usize| pickable(&options[i], &state.vars);
     let default = visible.iter().position(|i| options[*i].default && open(i)).or_else(|| visible.iter().position(open))?;
@@ -859,7 +864,7 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dy
         Op::Say { speaker, color, text } => {
             Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars) })
         }
-        Op::Choice { options, .. } => Some(choice_cmd(options, &visible_options(options, vars), vars, text)),
+        Op::Choice { options, map, .. } => Some(choice_cmd(options, map, &visible_options(options, vars), vars, text)),
         Op::Inventory => Some(Cmd::ShowInventory),
         Op::Journal => Some(Cmd::ShowJournal),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
@@ -880,17 +885,17 @@ fn show_screen(state: &mut State, program: &Program, op: &Op, out: &mut Vec<Cmd>
 }
 
 /// What a choice op shows for the options at `visible`: buttons, or regions for a `::hotspots` block.
-fn choice_cmd(options: &[ChoiceOption], visible: &[usize], vars: &Vars, text: &dyn Fn(&str) -> String) -> Cmd {
+fn choice_cmd(options: &[ChoiceOption], map: &Option<Imagemap>, visible: &[usize], vars: &Vars, text: &dyn Fn(&str) -> String) -> Cmd {
     if options.iter().any(|o| o.area.is_some()) {
         let spots = visible
             .iter()
             .filter_map(|&i| {
                 let o = &options[i];
                 let area = o.area.as_ref()?;
-                Some(Spot { label: interpolate(&text(&o.text), vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hidden: area.hidden })
+                Some(Spot { label: interpolate(&text(&o.text), vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hover: area.hover.clone(), hidden: area.hidden })
             })
             .collect();
-        Cmd::ShowHotspots { spots }
+        Cmd::ShowHotspots { spots, map: map.clone() }
     } else {
         let locked = visible
             .iter()
@@ -1104,8 +1109,16 @@ pub(crate) fn step_traced(
                 let visible = visible_options(all, &state.vars);
                 let Some(&index) = visible.get(i).filter(|&&k| pickable(&all[k], &state.vars)) else { return Vec::new() };
                 let chosen = &all[index];
+                // A `call` region comes back to this screen; with no room on the call stack the click does nothing.
+                let call = chosen.area.as_ref().is_some_and(|a| a.call);
+                if call && state.stack.len() >= MAX_CALL_DEPTH {
+                    return Vec::new();
+                }
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
+                }
+                if call {
+                    state.stack.push(Frame { ret: state.pc, line: true });
                 }
                 state.pc = chosen.target;
             }
@@ -2234,7 +2247,7 @@ vars: { trust: 0 }
 
     fn spots(cmds: &[Cmd]) -> Option<Vec<Spot>> {
         cmds.iter().find_map(|c| match c {
-            Cmd::ShowHotspots { spots } => Some(spots.clone()),
+            Cmd::ShowHotspots { spots, .. } => Some(spots.clone()),
             _ => None,
         })
     }
@@ -2298,6 +2311,18 @@ vars: { trust: 0 }
         assert_eq!(loaded.state(), game.state());
         assert_eq!(labels(&spots(&cmds).unwrap()), ["Library", "Leave"]);
         assert_eq!(cmds, game.state().redraw());
+    }
+
+    #[test]
+    fn an_imagemap_and_hover_pictures_are_rebuilt_from_the_script_after_a_load() {
+        let src = "# m\n::hotspots{ground=g.png hover=gh.png}\n- [Door](#m){rect=0,0,.5,.5 hover=dh.png}\n::\n";
+        let p = parse(src).unwrap();
+        let (game, _) = Session::start(&p);
+        let text = game.save();
+        assert!(text.contains("pending hotspots") && !text.contains("gh.png") && !text.contains("dh.png"), "script data, not saved");
+        let (_, cmds) = Session::load(&p, &text).unwrap();
+        let Some(Cmd::ShowHotspots { spots, map: Some(map) }) = cmds.last() else { panic!("{cmds:?}") };
+        assert_eq!((map.ground.as_deref(), map.hover.as_str(), spots[0].hover.as_deref()), (Some("g.png"), "gh.png", Some("dh.png")));
     }
 
     #[test]

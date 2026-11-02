@@ -94,7 +94,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                 }
                 let (labels, locked) = match pending {
                     Cmd::ShowChoices { options, locked } => (options.clone(), locked.clone()),
-                    Cmd::ShowHotspots { spots } => {
+                    Cmd::ShowHotspots { spots, .. } => {
                         // A region bound to a sprite that isn't shown can't be clicked (the explorer doesn't know
                         // where sprites are, so a shown one counts); the timeout is told apart by `Spot::is_timeout`.
                         let gone = |s: &Spot| s.sprite.as_ref().filter(|id| !state.sprites.iter().any(|p| &p.id == *id)).map(|_| String::new());

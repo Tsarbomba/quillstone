@@ -814,10 +814,7 @@ impl Program {
         self.ops.iter().enumerate().flat_map(|(i, op)| {
             let op_line = self.lines.get(i).copied().unwrap_or(0);
             let found: Vec<(usize, AssetKind, &str)> = match op {
-                Op::Choice { options, .. } => options
-                    .iter()
-                    .filter_map(|o| Some((o.line, AssetKind::Image, o.area.as_ref()?.image.as_deref()?)))
-                    .collect(),
+                Op::Choice { .. } => op.hotspot_pictures(op_line).into_iter().map(|(l, p)| (l, AssetKind::Image, p)).collect(),
                 _ => op.all_assets().into_iter().map(|(kind, path)| (op_line, kind, path)).collect(),
             };
             found
@@ -1392,14 +1389,26 @@ pub struct Area {
     pub sprite: Option<String>,
     /// Drawn stretched into the region; invisible until hovered without one.
     pub image: Option<String>,
+    /// `hover=`: drawn instead of `image` while the region is hovered or focused (and the default highlight is off).
+    pub hover: Option<String>,
+    /// `call`: picking it calls the label and `::return` comes back to this same screen, instead of jumping.
+    pub call: bool,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
+}
+
+/// `::hotspots{ground=map.png hover=map_hover.png}`: two full-screen pictures; while a region is hovered, the part of
+/// `hover` inside its rect is drawn over `ground` (or over whatever the background shows, without a `ground`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Imagemap {
+    pub ground: Option<String>,
+    pub hover: String,
 }
 
 impl Area {
     /// The stand-in region of a timed `::hotspots` screen's timeout: hidden, empty and on nothing, so nothing can click it.
     pub fn timeout() -> Area {
-        Area { rect: [0.0; 4], sprite: None, image: None, hidden: true }
+        Area { rect: [0.0; 4], sprite: None, image: None, hover: None, call: false, hidden: true }
     }
 
     pub fn is_timeout(&self) -> bool {
@@ -1515,7 +1524,7 @@ pub enum Op {
     /// `area`, to click a region of the screen). With a `time` (seconds, `MIN_CHOICE_TIME` to
     /// `MAX_CHOICE_TIME`) the frontend picks the `default` option when it runs out; the
     /// runtime itself never counts time.
-    Choice { options: Vec<ChoiceOption>, time: Option<f32> },
+    Choice { options: Vec<ChoiceOption>, time: Option<f32>, map: Option<Imagemap> },
     /// The inventory screen; waits until the player closes it.
     Inventory,
     /// The journal screen (`::journal`); waits until the player closes it.
@@ -1568,11 +1577,7 @@ impl Op {
     /// Every asset file the op needs: [`Op::asset`], or a hotspot block's images.
     pub fn all_assets(&self) -> Vec<(AssetKind, &str)> {
         match self {
-            Op::Choice { options, .. } => options
-                .iter()
-                .filter_map(|o| o.area.as_ref()?.image.as_deref())
-                .map(|i| (AssetKind::Image, i))
-                .collect(),
+            Op::Choice { .. } => self.hotspot_pictures(0).into_iter().map(|(_, i)| (AssetKind::Image, i)).collect(),
             Op::Music { src, intro, .. } => {
                 let intro = intro.iter().map(|i| (AssetKind::Audio, i.as_str()));
                 std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()
@@ -1586,6 +1591,17 @@ impl Op {
             Op::Hud { elem, .. } => self.asset().into_iter().chain(elem.hover.iter().map(|h| (AssetKind::Image, h.as_str()))).collect(),
             _ => self.asset().into_iter().collect(),
         }
+    }
+
+    /// The pictures of a `::hotspots` block as `(source line, path)`: each region's `image=` and `hover=` at the
+    /// region's own line, then the imagemap's at `op_line`. Empty for any other op.
+    pub fn hotspot_pictures(&self, op_line: usize) -> Vec<(usize, &str)> {
+        let Op::Choice { options, map, .. } = self else { return Vec::new() };
+        let regions = options.iter().filter_map(|o| Some((o.line, o.area.as_ref()?))).flat_map(|(l, a)| {
+            [a.image.as_deref(), a.hover.as_deref()].into_iter().flatten().map(move |p| (l, p))
+        });
+        let map = map.iter().flat_map(|m| [m.ground.as_deref(), Some(m.hover.as_str())]).flatten().map(|p| (op_line, p));
+        regions.chain(map).collect()
     }
 
     /// The asset file this op needs, if any.

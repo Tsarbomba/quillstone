@@ -404,19 +404,28 @@ const MANY_FRAMES: usize = 64;
 /// A frame bigger than this on a side is more than any screen shows.
 const BIG_FRAME_SIDE: u32 = 2048;
 
-/// `(line, path)` of every hotspot region's image.
+/// `(line, path)` of every hotspot picture: a region's image and hover picture, an imagemap's two.
 fn hotspot_images(program: &Program) -> HashSet<(usize, &str)> {
-    let regions = program.ops.iter().filter_map(|op| match op {
-        Op::Choice { options, .. } => Some(options),
-        _ => None,
-    });
-    regions.flatten().filter_map(|o| Some((o.line, o.area.as_ref()?.image.as_deref()?))).collect()
+    let ops = program.ops.iter().enumerate();
+    ops.flat_map(|(i, op)| op.hotspot_pictures(program.lines.get(i).copied().unwrap_or(0))).collect()
 }
 
 /// Hotspot images (script order, each at its region's own line), then item icons (declaration order):
 /// pictures whatever their extension, at a sensible size.
 fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet<(usize, &str)>) -> Vec<Finding> {
-    let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, "hotspot image"));
+    // An imagemap's pictures are full-screen, so unlike the other hotspot pictures they are not "icons".
+    let screens: HashSet<(usize, &str)> = program
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| match op {
+            Op::Choice { map: Some(m), .. } => Some((program.lines.get(i).copied().unwrap_or(0), m)),
+            _ => None,
+        })
+        .flat_map(|(l, m)| [m.ground.as_deref(), Some(m.hover.as_str())].into_iter().flatten().map(move |p| (l, p)))
+        .collect();
+    let noun = |l: usize, a: &str| if screens.contains(&(l, a)) { "imagemap picture" } else { "hotspot image" };
+    let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, noun(l, a)));
     let icons = program.item_icons().map(|(l, a)| (l, a, "item icon"));
     let frames = program.anim_frames().map(|(l, _, a)| (l, a, "animation frame"));
     let mut out = Vec::new();
@@ -464,7 +473,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: frames beyond {BIG_FRAME_SIDE} px only cost load time and memory (the screen is 1920x1080)"),
             )),
-            (None, Some((w, h))) if noun != "animation frame" && w.max(h) > BIG_ICON_SIDE => out.push((
+            (None, Some((w, h))) if !["animation frame", "imagemap picture"].contains(&noun) && w.max(h) > BIG_ICON_SIDE => out.push((
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
             )),
@@ -567,7 +576,7 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
                     ));
                 }
             }
-            Op::Choice { options, time } => {
+            Op::Choice { options, time, .. } => {
                 if let Some(t) = time.filter(|t| *t < MIN_READABLE_TIME) {
                     out.push((
                         program.lines[pc],
@@ -1159,7 +1168,7 @@ fn print_cmds(cmds: &[Cmd]) {
                     }
                 }
             }
-            Cmd::ShowHotspots { spots } => {
+            Cmd::ShowHotspots { spots, .. } => {
                 println!();
                 for (i, s) in spots.iter().enumerate() {
                     println!("  {}. {}", i + 1, spot_line(s));
@@ -1499,6 +1508,19 @@ mod tests {
             }
             assert!(checked(&script, &[(&format!("assets/k.{ext}"), KEY), (&format!("assets/h.{ext}"), KEY)]).is_err());
         }
+    }
+
+    #[test]
+    fn hover_and_imagemap_pictures_are_checked_as_pictures_on_their_own_lines() {
+        let script = "# m\n::hotspots{ground=assets/g.png hover=assets/gh.png}\n- [One](#m){rect=0,0,.5,.5 hover=assets/oh.png}\n::\n";
+        let program = parse(script).unwrap();
+        let found = in_dir(&[], |dir| picture_findings(&program, &dir.join("s.quill.md"), dir, &hotspot_images(&program)));
+        let named: Vec<(&str, &str)> = found.iter().map(|(_, m)| (m.split(':').nth(1).unwrap(), m.split('`').nth(1).unwrap())).collect();
+        assert_eq!(named, [("3", "assets/oh.png"), ("2", "assets/g.png"), ("2", "assets/gh.png")], "{found:?}");
+        assert!(found[0].1.contains("hotspot image") && found[1].1.contains("imagemap picture") && found[2].1.contains("imagemap picture"), "{found:?}");
+        assert!(found.iter().all(|(error, _)| *error), "{found:?}");
+        let files: Vec<&str> = program.assets().map(|(_, _, a)| a).collect();
+        assert_eq!(files, ["assets/oh.png", "assets/g.png", "assets/gh.png"], "packaged and preloaded like `image=`");
     }
 
     #[test]
@@ -2041,7 +2063,7 @@ mod tests {
         let src = "::show{id=bug src=b.png}\n::hotspots{time=5 default=#slow}\n- [The bug](#a){sprite=bug rect=0.5,0,0.5,0.5}\n- [Door](#a){rect=0,0,.5,.5}\n::\n# A\nHi.\n# Slow\nHi.\n";
         let program = parse(src).unwrap();
         let (_, cmds) = Session::start(&program);
-        let Some(Cmd::ShowHotspots { spots }) = cmds.into_iter().find(|c| matches!(c, Cmd::ShowHotspots { .. })) else { panic!("no hotspots") };
+        let Some(Cmd::ShowHotspots { spots, .. }) = cmds.into_iter().find(|c| matches!(c, Cmd::ShowHotspots { .. })) else { panic!("no hotspots") };
         let lines: Vec<String> = spots.iter().map(spot_line).collect();
         assert_eq!(lines, ["The bug  [follows sprite bug]", "Door  [region 0%,0% 50%x50%]", "(time out)"], "{lines:?}");
     }

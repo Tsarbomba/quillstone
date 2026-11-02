@@ -917,7 +917,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     // Rebuilt from the script at `end` (so `locked` too), like the hotspots.
                     "choices" => Cmd::ShowChoices { options: t[2..].to_vec(), locked: Vec::new() },
                     // Rebuilt from the script at `end`, once the variables are known.
-                    "hotspots" => Cmd::ShowHotspots { spots: Vec::new() },
+                    "hotspots" => Cmd::ShowHotspots { spots: Vec::new(), map: None },
                     "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },
                     "inventory" => Cmd::ShowInventory,
                     "journal" => Cmd::ShowJournal,

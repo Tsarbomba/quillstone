@@ -26,7 +26,7 @@ fn screen_matches_state(s: &Session) {
 fn labels(cmds: &[Cmd]) -> Vec<String> {
     for c in cmds {
         match c {
-            Cmd::ShowHotspots { spots } => return spots.iter().map(|s| s.label.clone()).collect(),
+            Cmd::ShowHotspots { spots, .. } => return spots.iter().map(|s| s.label.clone()).collect(),
             Cmd::ShowChoices { options, .. } => return options.clone(),
             _ => {}
         }
