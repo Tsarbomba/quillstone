@@ -21,6 +21,8 @@ mod review3_tests;
 #[cfg(test)]
 mod anim_tests;
 #[cfg(test)]
+mod dynname_tests;
+#[cfg(test)]
 mod dynpic_tests;
 #[cfg(test)]
 mod layers_tests;
@@ -927,7 +929,22 @@ pub(crate) fn fill_name(template: &str, vars: &Vars) -> String {
     quillstone_script::markup::plain(&interpolate(template, vars))
 }
 
-/// Replace `{name}` with the variable's value. `{name}` for an unknown variable
+/// Where the `}` for the `{` at the start of `text` is: a name may hold `{}` parts (`{love.{who}}`), so
+/// braces are matched in pairs; with no match, the first `}` (a stray brace stays as it was).
+pub(crate) fn brace_end(text: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in text.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 1 => return Some(i),
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    text.find('}')
+}
+
+/// Replace `{name}` (or `{name.{part}}`, see [`quillstone_script::get_var`]) with the variable's value. `{name}` for an unknown variable
 /// is left as written so mistakes are visible. The result is still tagged text
 /// (see `quillstone_script::markup`): values are escaped so they show exactly as
 /// they are, and `\{` stays for the markup to turn into a brace.
@@ -944,10 +961,10 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
             out.push_str(&rest[..2]); // an escape: left for the text tags to read
             rest = escaped;
         } else if rest.starts_with('{') {
-            match rest.find('}') {
+            match brace_end(rest) {
                 Some(end) => {
                     let name = rest[1..end].trim();
-                    match vars.get(name).filter(|_| !matches!(name, "nw" | "p")) {
+                    match quillstone_script::get_var(vars, name).filter(|_| !matches!(name, "nw" | "p")) {
                         Some(v) => out.push_str(&quillstone_script::markup::escape(&v.to_string())),
                         None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` / `{p}` text tags
                     }
@@ -1029,9 +1046,20 @@ pub fn step(state: &mut State, program: &Program, input: Option<Input>) -> Vec<C
     step_traced(state, program, input, &mut |_| {}, None)
 }
 
+/// Why `effect` changes nothing, when its name has `{}` parts (`love.{who}`) that don't spell an existing
+/// variable. The value is not in the message (it may be what the player typed).
+fn refused_write(effect: &Effect, vars: &Vars) -> Option<String> {
+    (effect.var.contains('{') && effect.target(vars).is_none()).then(|| {
+        format!("`{}` was not changed: its parts don't spell a declared variable (a part is unset or not a plain name).", effect.var)
+    })
+}
+
 /// Run one effect. Each `random(lo, hi)` in it is rolled from the state's generator
 /// (the seed advances), or from `hook` when the story tester supplies the values.
-fn run_effect(effect: &Effect, vars: &mut Vars, rng: &mut u64, hook: &mut Option<&mut dyn FnMut(i64, i64) -> i64>) {
+fn run_effect(effect: &Effect, vars: &mut Vars, rng: &mut u64, hook: &mut Option<&mut dyn FnMut(i64, i64) -> i64>, out: &mut Vec<Cmd>) {
+    if let Some(message) = refused_write(effect, vars) {
+        out.push(Cmd::Warning { message });
+    }
     effect.apply_with(vars, &mut |lo, hi| match hook {
         Some(h) => h(lo, hi),
         None => roll(rng, lo, hi),
@@ -1052,6 +1080,7 @@ pub(crate) fn step_traced(
         return Vec::new();
     }
 
+    let mut out = Vec::new();
     if let Some(pending) = state.pending.clone() {
         match (pending, input) {
             (
@@ -1115,7 +1144,7 @@ pub(crate) fn step_traced(
                     return Vec::new();
                 }
                 for effect in &chosen.effects {
-                    run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
+                    run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 }
                 if call {
                     state.stack.push(Frame { ret: state.pc, line: true });
@@ -1132,7 +1161,6 @@ pub(crate) fn step_traced(
         return Vec::new();
     }
 
-    let mut out = Vec::new();
     for n in 0..=MAX_SILENT_OPS {
         if n == MAX_SILENT_OPS {
             let reason = format!("the story ran {MAX_SILENT_OPS} steps without showing anything (an endless loop?)");
@@ -1417,7 +1445,7 @@ pub(crate) fn step_traced(
                 None => break, // `::return` outside a `::call` ends the story
             },
             Op::Set(effect) => {
-                run_effect(effect, &mut state.vars, &mut state.rng, &mut draw);
+                run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 state.pc += 1;
             }
             Op::EndReplay => {

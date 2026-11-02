@@ -1,11 +1,12 @@
 //! The compiled form of a Quillstone script.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Component, Path};
 
-use crate::dynpath::is_device_name;
+use crate::dynpath::{is_device_name, name_piece, name_vars, resolve_name};
 
 /// A script value. Booleans compare as 0/1; unset variables read as `Int(0)`.
 ///
@@ -52,6 +53,12 @@ impl fmt::Display for Value {
 
 /// Script variables.
 pub type Vars = BTreeMap<String, Value>;
+
+/// The value of a variable by name; a name with `{}` parts (`love.{who}`) is the variable those
+/// parts spell now, and one that can't be spelled (see [`resolve_name`]) is unset.
+pub fn get_var<'a>(vars: &'a Vars, name: &str) -> Option<&'a Value> {
+    resolve_name(name, vars).and_then(|n| vars.get(n.as_ref()))
+}
 
 /// Hidden variables `seen:<label>` count how often the story passed a label
 /// (see `seen(label)` in conditions). Real variable names can't contain `:`.
@@ -283,7 +290,7 @@ impl Expr {
     pub fn eval_with(&self, vars: &Vars, draw: &mut dyn FnMut(i64, i64) -> i64) -> Value {
         match self {
             Expr::Lit(v) => v.clone(),
-            Expr::Var(name) => vars.get(name).cloned().unwrap_or(Value::Int(0)),
+            Expr::Var(name) => get_var(vars, name).cloned().unwrap_or(Value::Int(0)),
             Expr::Not(e) => Value::Bool(!e.eval_with(vars, draw).truthy()),
             Expr::And(a, b) => Value::Bool(a.eval_with(vars, draw).truthy() && b.eval_with(vars, draw).truthy()),
             Expr::Or(a, b) => Value::Bool(a.eval_with(vars, draw).truthy() || b.eval_with(vars, draw).truthy()),
@@ -291,7 +298,7 @@ impl Expr {
                 let a = a.eval_with(vars, draw);
                 Value::Bool(compare(&a, *op, &b.eval_with(vars, draw)))
             }
-            Expr::Has(name, item) => Value::Bool(match (vars.get(name), item.eval_with(vars, draw)) {
+            Expr::Has(name, item) => Value::Bool(match (get_var(vars, name), item.eval_with(vars, draw)) {
                 (Some(Value::List(items)), Value::Str(s)) => items.contains(&s),
                 _ => false,
             }),
@@ -309,7 +316,7 @@ impl Expr {
                     Func::Abs => first.saturating_abs(),
                 })
             }
-            Expr::Count(name) => Value::Int(match vars.get(name) {
+            Expr::Count(name) => Value::Int(match get_var(vars, name) {
                 Some(Value::List(items)) => items.len() as i64,
                 _ => 0,
             }),
@@ -325,22 +332,34 @@ impl Expr {
         self.eval(vars).truthy()
     }
 
-    /// Every variable the expression reads, in order (with repeats).
+    /// Every variable the expression reads, in order (with repeats). A name with `{}` parts
+    /// (`love.{who}`) reads the variables in its parts; which variable it names is only known at run time.
     pub fn vars_read<'a>(&'a self, out: &mut Vec<&'a str>) {
+        let name = |out: &mut Vec<&'a str>, n: &'a String| if n.contains('{') { out.extend(name_vars(n)) } else { out.push(n) };
         match self {
             Expr::Lit(_) => {}
-            Expr::Var(name) | Expr::Count(name) => out.push(name),
+            Expr::Var(n) | Expr::Count(n) => name(out, n),
             Expr::Not(e) | Expr::Neg(e) => e.vars_read(out),
             Expr::And(a, b) | Expr::Or(a, b) | Expr::Cmp(a, _, b) | Expr::Bin(a, _, b) | Expr::Random(a, b) => {
                 a.vars_read(out);
                 b.vars_read(out);
             }
-            Expr::Has(name, item) => {
-                out.push(name);
+            Expr::Has(n, item) => {
+                name(out, n);
                 item.vars_read(out);
             }
             Expr::Func(_, args) => args.iter().for_each(|a| a.vars_read(out)),
         }
+    }
+
+    /// Every variable name with `{}` parts (`love.{who}`) the expression reads.
+    pub fn dynamic_names<'a>(&'a self, out: &mut Vec<&'a str>) {
+        if let Expr::Var(n) | Expr::Count(n) | Expr::Has(n, _) = self {
+            if n.contains('{') {
+                out.push(n);
+            }
+        }
+        self.children().into_iter().for_each(|c| c.dynamic_names(out));
     }
 
     /// The expressions directly inside this one.
@@ -407,6 +426,14 @@ pub struct Effect {
 }
 
 impl Effect {
+    /// The variable this changes. A name with `{}` parts (`love.{who}`) must spell a variable that
+    /// already exists (declared, or made by an earlier plain `::set`): a typed value can't make new
+    /// ones, so the number of variables stays what the script's own targets allow. `None`: not changed.
+    pub fn target<'a>(&'a self, vars: &Vars) -> Option<Cow<'a, str>> {
+        let name = resolve_name(&self.var, vars)?;
+        (!self.var.contains('{') || vars.contains_key(name.as_ref())).then_some(name)
+    }
+
     pub fn apply(&self, vars: &mut Vars) {
         self.apply_with(vars, &mut |lo, _| lo);
     }
@@ -414,8 +441,10 @@ impl Effect {
     /// [`Effect::apply`], with `draw(lo, hi)` supplying each `random(lo, hi)`.
     pub fn apply_with(&self, vars: &mut Vars, draw: &mut dyn FnMut(i64, i64) -> i64) {
         let rhs = self.value.eval_with(vars, draw);
+        let Some(target) = self.target(vars) else { return };
+        let target = target.as_ref();
         // A list changes only by `+=` / `-=` of text; anything else leaves it alone.
-        if let Some(Value::List(items)) = vars.get_mut(&self.var) {
+        if let Some(Value::List(items)) = vars.get_mut(target) {
             match (self.op, rhs) {
                 (AssignOp::Add, Value::Str(s)) if !s.is_empty() && items.len() < MAX_LIST_ITEMS && !items.contains(&s) => {
                     items.push(s);
@@ -429,11 +458,11 @@ impl Effect {
             AssignOp::Set => {
                 // lists only come from the front matter, never from an assignment
                 if !matches!(rhs, Value::List(_)) {
-                    vars.insert(self.var.clone(), rhs);
+                    vars.insert(target.to_string(), rhs);
                 }
             }
             AssignOp::Add => {
-                let new = match (vars.get(&self.var), &rhs) {
+                let new = match (vars.get(target), &rhs) {
                     (_, Value::List(_)) => None,
                     // appending text builds a string (an unset variable counts as empty)
                     (Some(Value::Str(s)), r) => Some(Value::Str(format!("{s}{r}"))),
@@ -447,13 +476,13 @@ impl Effect {
                     }
                 };
                 if let Some(v) = new {
-                    vars.insert(self.var.clone(), v);
+                    vars.insert(target.to_string(), v);
                 }
             }
             AssignOp::Sub => {
-                let a = vars.get(&self.var).map_or(Some(0), Value::as_int);
+                let a = vars.get(target).map_or(Some(0), Value::as_int);
                 if let (Some(a), Some(b)) = (a, rhs.as_int()) {
-                    vars.insert(self.var.clone(), Value::Int(a.saturating_sub(b)));
+                    vars.insert(target.to_string(), Value::Int(a.saturating_sub(b)));
                 }
             }
         }
@@ -836,6 +865,73 @@ impl Program {
             })
             .sum();
         from_ops + self.counted.values().map(Vec::len).sum::<usize>()
+    }
+
+    /// The values `var` can ever hold when the script only gives it literals (its declared start, `::set`
+    /// and choice assignments with `=`, `::call` arguments); `None` when anything else can set it
+    /// (a computed value, `+=`, an `::input` answer, a timing bar or key test).
+    fn literal_values(&self, var: &str) -> Option<Vec<Value>> {
+        let mut out: Vec<Value> = self.vars.get(var).cloned().into_iter().collect();
+        let mut note = |e: &Expr| -> Option<()> {
+            let Expr::Lit(v) = e else { return None };
+            if !out.contains(v) {
+                out.push(v.clone());
+            }
+            Some(())
+        };
+        for op in &self.ops {
+            match op {
+                Op::Input { var: v, .. } | Op::Timing { var: v, .. } | Op::Press { var: v, .. } if v == var => return None,
+                Op::Call { args, .. } => {
+                    for (_, e) in args.iter().filter(|(k, _)| k == var) {
+                        note(e)?;
+                    }
+                }
+                _ => {}
+            }
+            for e in op.effects().into_iter().filter(|e| e.var == var) {
+                if e.op != AssignOp::Set {
+                    return None;
+                }
+                note(&e.value)?;
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Variable names with `{}` parts (`love.{who}`) that can name an undeclared variable, where every
+    /// variable in the parts only ever holds literals (see `literal_values`): `(op index, name, the
+    /// undeclared names it can spell)`. A name whose parts can't be known is left out; so are the
+    /// ones a part's value can't spell (not a safe piece).
+    pub fn undeclared_names(&self) -> Vec<(usize, String, Vec<String>)> {
+        let mut out = Vec::new();
+        for (at, op) in self.ops.iter().enumerate() {
+            let mut names: Vec<&str> = op.effects().into_iter().map(|e| e.var.as_str()).filter(|n| n.contains('{')).collect();
+            op.exprs().into_iter().for_each(|e| e.dynamic_names(&mut names));
+            for name in names {
+                let Ok(pieces) = crate::name_pieces(name) else { continue };
+                if out.iter().any(|(a, n, _): &(usize, String, Vec<String>)| *a == at && n == name) {
+                    continue;
+                }
+                // every combination of the parts' values (a variable used twice has one value), at most 256
+                let mut combos: Vec<Vec<(&str, String)>> = vec![Vec::new()];
+                for v in name_vars(name).into_iter().collect::<BTreeSet<_>>() {
+                    let values: Vec<String> = self.literal_values(v).iter().flatten().filter_map(name_piece).collect();
+                    combos = combos.iter().flat_map(|c| values.iter().map(move |x| [c.clone(), vec![(v, x.clone())]].concat())).take(256).collect();
+                }
+                let spelled = combos.iter().map(|c| {
+                    pieces.iter().map(|p| match p {
+                        crate::Piece::Lit(l) => l.to_string(),
+                        crate::Piece::Var(v) => c.iter().find(|(k, _)| k == v).map(|(_, x)| x.clone()).unwrap_or_default(),
+                    }).collect::<String>()
+                });
+                let missing: Vec<String> = spelled.into_iter().filter(|n| !self.vars.contains_key(n)).collect();
+                if !missing.is_empty() {
+                    out.push((at, name.to_string(), missing));
+                }
+            }
+        }
+        out
     }
 
     /// Literal item texts that name no `::item`, where the inventory or journal lists are
@@ -1559,6 +1655,15 @@ pub enum Op {
 
 impl Op {
     /// Every expression in the op (conditions, and the values of assignments).
+    /// The assignments the op makes (`::set`, a choice's effects).
+    pub fn effects(&self) -> Vec<&Effect> {
+        match self {
+            Op::Set(e) => vec![e],
+            Op::Choice { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn exprs(&self) -> Vec<&Expr> {
         match self {
             Op::Jump { cond: Some(c), .. } => vec![c],

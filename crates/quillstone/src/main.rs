@@ -214,6 +214,14 @@ fn check(path: &Path) -> Result<(), String> {
             format!("\"{text}\" is not a declared `::item` (it will show under that name, with no picture; a typo?)"),
         ));
     }
+    for (pc, name, missing) in program.undeclared_names() {
+        let shown: Vec<String> = missing.iter().take(3).map(|m| format!("`{m}`")).collect();
+        let more = if missing.len() > 3 { format!(" and {} more", missing.len() - 3) } else { String::new() };
+        found.push(warning(
+            program.lines[pc],
+            format!("`{name}` can be {}{more}, which isn't a declared variable (declare it in the front matter `vars`; until then it reads 0 and can't be set)", shown.join(", ")),
+        ));
+    }
     match &theme_file {
         Some(Ok(t)) => {
             found.extend(theme_problems(t, root).into_iter().map(|msg| (true, msg)));

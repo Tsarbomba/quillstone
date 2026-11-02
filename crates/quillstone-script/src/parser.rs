@@ -803,9 +803,27 @@ impl Parser {
         let mut tests = Vec::new();
         e.has_tests(&mut tests);
         for (name, _) in tests {
-            self.need_list(name, &format!("`{name} has ...`"))?;
+            // a name with `{}` parts spells its variable only at run time, so it can't be checked
+            if !name.contains('{') {
+                self.need_list(name, &format!("`{name} has ...`"))?;
+            }
         }
+        let mut dynamic = Vec::new();
+        e.dynamic_names(&mut dynamic);
+        dynamic.into_iter().try_for_each(|n| self.check_parts(n))?;
         self.check_numbers(e)
+    }
+
+    /// The `{}` parts of a variable name (`love.{who}`) must hold text or a number: a declared yes/no or
+    /// list variable can't. An undeclared one is allowed, like in picture names (a `::call` parameter or
+    /// an `::input` answer is one); `quillstone test` warns when nothing sets it.
+    fn check_parts(&self, name: &str) -> Result<(), String> {
+        for v in crate::name_vars(name) {
+            if let Some(Value::Bool(_) | Value::List(_)) = self.program.vars.get(v) {
+                return Err(format!("`{name}`: `{v}` must be a text or number variable (its value is put into the name)"));
+            }
+        }
+        Ok(())
     }
 
     fn check_numbers(&self, e: &Expr) -> Result<(), String> {
@@ -842,7 +860,7 @@ impl Parser {
                 number(a, "`random`")?;
                 number(b, "`random`")?;
             }
-            Expr::Count(name) => self.need_list(name, &format!("`count({name})`"))?,
+            Expr::Count(name) if !name.contains('{') => self.need_list(name, &format!("`count({name})`"))?,
             _ => {}
         }
         e.children().into_iter().try_for_each(|c| self.check_numbers(c))
@@ -864,6 +882,7 @@ impl Parser {
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
         self.check_expr(&e.value)?;
         self.not_a_list_value(&e.value, "the right side of an assignment")?;
+        self.check_parts(&e.var)?;
         if !self.is_list(&e.var) {
             return Ok(());
         }

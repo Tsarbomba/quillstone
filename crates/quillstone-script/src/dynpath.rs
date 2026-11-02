@@ -8,6 +8,8 @@
 //!
 //! Braces are not allowed in game file names; there is no escape for them.
 
+use std::borrow::Cow;
+
 use crate::{is_inside, is_ident, normal_path, Value, Vars};
 
 /// What the game carries for a picture whose name could not be built. It is a
@@ -130,6 +132,81 @@ pub fn unsafe_reason(value: &str) -> Option<&'static str> {
         return Some("a name Windows keeps for devices");
     }
     None
+}
+
+/// Split a variable name that has `{variable}` parts (`love.{who}`, `grid.{x}.{y}`) into literal text
+/// and the variables to put in. A part follows a dot, is followed by a dot or the end, and names a plain
+/// or dotted variable; at most [`MAX_PATTERN_VARS`] of them. A name with no braces is one literal.
+pub fn name_pieces(name: &str) -> Result<Vec<Piece<'_>>, String> {
+    let bad = |why: &str| format!("`{name}` isn't a variable name: {why}");
+    let (mut out, mut shape, mut rest) = (Vec::new(), String::new(), name);
+    while let Some(pos) = rest.find(['{', '}']) {
+        let after = &rest[pos + 1..];
+        let end = after.find(['{', '}']).filter(|&e| rest[pos..].starts_with('{') && after[e..].starts_with('}'));
+        let Some(end) = end else { return Err(bad("braces must pair up, like `love.{who}`")) };
+        let var = &after[..end];
+        let tail = &after[end + 1..];
+        if !is_ident(var) {
+            return Err(bad(&format!("`{{{var}}}` must name a variable (letters, digits and `_`, with dots between parts)")));
+        }
+        if !rest[..pos].ends_with('.') || !(tail.is_empty() || tail.starts_with('.')) {
+            return Err(bad("a `{}` part goes after a dot and before a dot or the end, like `love.{who}.max`"));
+        }
+        shape.push_str(&rest[..pos]);
+        shape.push('x');
+        out.extend([Piece::Lit(&rest[..pos]), Piece::Var(var)]);
+        rest = tail;
+    }
+    shape.push_str(rest);
+    if !is_ident(&shape) {
+        return Err(bad("it needs plain parts joined by dots, like `love.{who}`"));
+    }
+    if !rest.is_empty() {
+        out.push(Piece::Lit(rest));
+    }
+    let vars = out.iter().filter(|p| matches!(p, Piece::Var(_))).count();
+    if vars > MAX_PATTERN_VARS {
+        return Err(bad(&format!("it has {vars} `{{}}` parts; at most {MAX_PATTERN_VARS}")));
+    }
+    Ok(out)
+}
+
+/// The variables a name's `{}` parts read (none for a plain name or a malformed one).
+pub fn name_vars(name: &str) -> Vec<&str> {
+    let parts = if name.contains('{') { name_pieces(name).unwrap_or_default() } else { Vec::new() };
+    parts.into_iter().filter_map(|p| if let Piece::Var(v) = p { Some(v) } else { None }).collect()
+}
+
+/// Whether a text can be one part of a variable name: 1 to [`MAX_FRAGMENT`] letters, digits or `_` (so a
+/// typed value can't add a dot, reach a hidden `seen:` variable, or make a name the script can't write).
+pub fn is_name_piece(s: &str) -> bool {
+    !s.is_empty() && s.chars().count() <= MAX_FRAGMENT && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// What a value adds to a variable name: a text that [`is_name_piece`] allows, or a whole number from 0 up.
+pub fn name_piece(v: &Value) -> Option<String> {
+    match v {
+        Value::Str(s) if is_name_piece(s) => Some(s.clone()),
+        Value::Int(n) if *n >= 0 => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// The variable a name stands for right now: a plain name as it is, `love.{who}` with each part's
+/// value put in (a text that [`is_name_piece`] allows, or a whole number from 0 up). `None` when a part
+/// is unset, of another kind or not a safe piece.
+pub fn resolve_name<'a>(name: &'a str, vars: &Vars) -> Option<Cow<'a, str>> {
+    if !name.contains('{') {
+        return Some(Cow::Borrowed(name));
+    }
+    let mut out = String::new();
+    for p in name_pieces(name).ok()? {
+        match p {
+            Piece::Lit(l) => out.push_str(l),
+            Piece::Var(v) => out.push_str(&name_piece(vars.get(v)?)?),
+        }
+    }
+    Some(Cow::Owned(out))
 }
 
 /// Whether Windows treats `part` (one file or folder name) as a device: the stem (up

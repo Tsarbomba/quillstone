@@ -7,7 +7,7 @@
 //! `+ -`, `* / %`, unary `-`, and literals, variables, function calls
 //! (`min max abs count random`), `seen(label)` and `( ... )`.
 //! Literals: whole numbers, `true` / `false`, and "text" or 'text'.
-//! Variable names may have dotted parts: `hero.love`.
+//! Variable names may have dotted parts: `hero.love`, and parts named by a variable: `love.{who}`.
 //! `seen(label)` is how many times the story has passed that label (0: never);
 //! it reads the hidden variable `seen:label`, which the runtime counts up.
 
@@ -66,10 +66,12 @@ pub fn is_plain_ident(s: &str) -> bool {
     }
 }
 
-/// A valid variable name: plain names joined by single dots (`trust`, `hero.love`,
-/// `stats.hp.max`); no empty part, so no leading, trailing or doubled dot.
+/// A valid variable name: a plain name, then more parts joined by single dots (`trust`, `hero.love`,
+/// `stats.hp.max`); no empty part, so no leading, trailing or doubled dot. Parts after the first may start
+/// with a digit (`slot.0`, `grid.1.2`), so a name spelled from a number (`slot.{i}`) can be declared.
 pub fn is_ident(s: &str) -> bool {
-    s.split('.').all(is_plain_ident)
+    let mut parts = s.split('.');
+    parts.next().is_some_and(is_plain_ident) && parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'))
 }
 
 /// Words expressions give a meaning of their own, so they can't name a variable.
@@ -208,14 +210,24 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
                     if at(i) != Some('.') {
                         break;
                     }
-                    if at(i + 1).is_some_and(|d| d.is_alphabetic() || d == '_') {
+                    if at(i + 1).is_some_and(|d| d.is_alphanumeric() || d == '_') {
                         i += 1;
+                    } else if at(i + 1) == Some('{') {
+                        // a part named by a variable: `love.{who}`, checked as a whole below
+                        let close = (i..chars.len()).find(|&k| chars[k] == '}').ok_or_else(|| format!("`{{` without a closing `}}` in `{}`", s.trim()))?;
+                        i = close + 1;
+                        if at(i).is_some_and(|d| d.is_alphanumeric() || d == '_') {
+                            return Err(format!("a `{{}}` part must be followed by a dot or the end of the name, in `{}`", s.trim()));
+                        }
                     } else {
                         let text: String = chars[start..=i].iter().collect();
                         return Err(format!("`{text}` is not a valid name (a dot goes between two parts, like `hero.love`)"));
                     }
                 }
                 let word: String = chars[start..i].iter().collect();
+                if word.contains('{') {
+                    crate::name_pieces(&word)?;
+                }
                 // `seen(label)`: the label is read as written (it may have dashes).
                 let mut j = i;
                 while at(j).is_some_and(char::is_whitespace) {
@@ -536,9 +548,11 @@ pub fn parse_list(s: &str) -> Result<Value, String> {
 pub fn parse_effect(s: &str) -> Result<Effect, String> {
     let s = s.trim();
     let bad = || format!("bad assignment `{s}` (expected `name+=1`, `name-=1` or `name=value`)");
-    let var_len = s.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(s.len());
+    let var_len = s.find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '{' | '}'))).unwrap_or(s.len());
     let var = &s[..var_len];
-    if !is_ident(var) {
+    if var.contains(['{', '}']) {
+        crate::name_pieces(var)?;
+    } else if !is_ident(var) {
         return Err(bad());
     }
     if is_keyword(var) {
@@ -893,10 +907,10 @@ mod tests {
 
     #[test]
     fn dotted_names() {
-        for good in ["hero.love", "stats.hp.max", "a.b_c.d1", "é.ü", "_x._y"] {
+        for good in ["hero.love", "stats.hp.max", "a.b_c.d1", "é.ü", "_x._y", "slot.0", "grid.1.2", "a.1x"] {
             assert!(is_ident(good), "{good}");
         }
-        for bad in ["", ".a", "a.", "a..b", "a.1", "1.a", "a. b", "a-b.c", "."] {
+        for bad in ["", ".a", "a.", "a..b", "1.a", "a.-1", "a. b", "a-b.c", "."] {
             assert!(!is_ident(bad), "{bad}");
         }
         assert!(is_plain_ident("hero") && !is_plain_ident("hero.love"));

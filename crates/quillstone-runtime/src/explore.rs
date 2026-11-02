@@ -528,6 +528,7 @@ impl Explorer<'_> {
             match op {
                 Op::Set(effect) => {
                     set.insert(&effect.var);
+                    read.extend(quillstone_script::name_vars(&effect.var).into_iter().map(|n| (at, n, false)));
                 }
                 // A call sets its label's parameters, from the values it passes.
                 Op::Call { args, .. } => set.extend(args.iter().map(|(param, _)| param.as_str())),
@@ -559,6 +560,7 @@ impl Explorer<'_> {
                 Op::Choice { options, .. } => {
                     for o in options {
                         set.extend(o.effects.iter().map(|e| e.var.as_str()));
+                        read.extend(o.effects.iter().flat_map(|e| quillstone_script::name_vars(&e.var)).map(|n| (at, n, false)));
                         read.extend(braces(&o.text).into_iter().map(|n| (at, n, true)));
                     }
                 }
@@ -726,6 +728,10 @@ fn added_items(program: &Program) -> HashMap<&str, Option<Vec<String>>> {
         }
     }
     for e in all_effects(program) {
+        // a name with `{}` parts could add to any list: nothing is known about them
+        if e.var.contains('{') && e.op == quillstone_script::AssignOp::Add {
+            out.values_mut().for_each(|slot| *slot = None);
+        }
         let Some(slot) = out.get_mut(e.var.as_str()) else { continue };
         if e.op != quillstone_script::AssignOp::Add {
             continue;
@@ -822,13 +828,15 @@ fn braces(text: &str) -> Vec<&str> {
         rest = &rest[pos..];
         if let Some(after) = rest.strip_prefix("\\{") {
             rest = after;
-        } else if let Some(after) = rest.strip_prefix('{') {
-            let Some(end) = after.find('}') else { break };
-            let name = after[..end].trim();
+        } else if rest.starts_with('{') {
+            let Some(end) = crate::brace_end(rest) else { break };
+            let name = rest[1..end].trim();
             if is_ident(name) && !matches!(name, "nw" | "p") {
                 out.push(name);
+            } else if name.contains('{') {
+                out.extend(quillstone_script::name_vars(name)); // `{love.{who}}` reads `who`
             }
-            rest = &after[end + 1..];
+            rest = &rest[end + 1..];
         } else {
             rest = &rest[1..];
         }

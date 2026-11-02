@@ -290,6 +290,29 @@ functions. A variable may share a function's name (`count += 1` still works).
 
 A command is one whole line: text after its closing `}` is an error, so write remarks as `<!-- comments -->`.
 
+### Looking up by a variable
+
+A name may hold other variables in `{}` after a dot. `love.{who}` is the variable `love.mia` while `who` holds the text `"mia"`: that is how you keep one stat per character and pick the one in the scene. It works wherever a variable name is read or assigned, and in text:
+
+````markdown
+---
+vars: { who: "mia", love.mia: 0, love.zoe: 0, slot.0: 5, slot.1: 9, i: 1 }
+---
+::set{love.{who} += 1}
+::if{love.{who} > 3}
+You have {love.{who}} points with {who}, and {slot.{i}} in slot {i}.
+::endif
+::choice
+- [Hug](#hug){if love.{who} >= 2, love.{who} += 1}
+::
+````
+
+- A `{}` part holds the name of a **text or number variable** (a yes/no or list variable is an error; an undeclared one is allowed, like a `::call` parameter or an `::input` answer). A text spells its piece as it is, a whole number from 0 up as its digits (`slot.{i}` is `slot.1`), so a list read by position is a set of variables named `slot.0`, `slot.1`... (parts after the first may start with a digit).
+- A part goes after a dot and before a dot or the end, and a name may have up to 8: `grid.{x}.{y}`. Not at the start, not inside another `{}`, and not in `::input{var=...}`, `::shop` or other attributes that take a plain variable name.
+- The value must be a safe piece: 1 to 64 letters, digits or `_`. Anything else (a dot, slash, space, empty, a negative number, a yes/no, an unset variable) names nothing, which matters because players can type into variables. A name that names nothing, or a variable that isn't declared, reads as an unset variable (`0`; in text the `{...}` stays as written); an assignment to it does **nothing** and a warning appears once per run (the developer console reports it). A typed value can therefore never make new variables: declare every `love.zoe` in `vars:`.
+- `quillstone check` warns when the parts can only hold values the script gives them as literals (`who = "kim"`, the declared start, `::call` arguments) and one combination names an undeclared variable: "`love.{who}` can be `love.kim`, which isn't a declared variable". Nothing is said when a value is typed, computed or otherwise unknown.
+- Values are ordinary variables, so saves, rollback and `quillstone test` need nothing special; `quillstone graph` prints the condition as written.
+
 ### Random numbers
 
 `random(lo, hi)` picks a whole number from `lo` to `hi`, both included. It can only be

@@ -1,6 +1,6 @@
 ---
 title: Stats Demo
-vars: { hero.hp: 12, hero.max_hp: 12, hero.gold: 20, base: 8, discount: 2, cost: 0, dmg: 0, roll: 0, gap: 0, items: 0, inventory: [] }
+vars: { hero.hp: 12, hero.max_hp: 12, hero.gold: 20, base: 8, discount: 2, cost: 0, dmg: 0, roll: 0, gap: 0, items: 0, inventory: [], companion: "mia", bond.mia: 0, bond.zoe: 0 }
 ---
 
 <!-- Variables may have dotted names (`hero.hp`): they are ordinary variables, the
@@ -8,7 +8,8 @@ vars: { hero.hp: 12, hero.max_hp: 12, hero.gold: 20, base: 8, discount: 2, cost:
      `min`, `max`, `abs`, and `count(list)`. `random(lo, hi)` picks a whole number
      and may only be assigned to a variable first (`dmg = random(2, 5)`), never
      used in a condition. Text always shows a variable (`{dmg}`), never a sum, so
-     the results are stored first. -->
+     the results are stored first. A `{}` in a name looks a variable up by another
+     one: `bond.{companion}` is `bond.mia` while `companion` holds "mia". -->
 
 # start
 
@@ -29,6 +30,7 @@ You sit at the camp: {hero.hp} of {hero.max_hp} hit points, {hero.gold} gold.
 # rest
 
 The fire warms you. You are at {hero.hp} of {hero.max_hp} now.
+::set{bond.{companion} = 1}
 ::jump{to=camp}
 
 # cave
@@ -84,6 +86,10 @@ A trader waves you over.
 ::jump{to=trader}
 
 # home
+
+::if{bond.{companion} > 0}
+{companion} stays close after the night at the fire.
+::endif
 
 ::if{count(inventory) >= 2}
 With a lantern and a rope you are ready for the deep caves, and you have {hero.gold} gold to spare.

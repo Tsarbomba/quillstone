@@ -128,7 +128,14 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                 i += 1;
             }
             '{' => {
-                let close = (i + 1..chars.len()).find(|&k| chars[k] == '}').expect("checked just above");
+                let first = (i + 1..chars.len()).find(|&k| chars[k] == '}').expect("checked just above");
+                // a name may hold `{}` parts (`{love.{who}}`): the `}` that pairs with this `{`, else the first
+                let mut depth = 0;
+                let paired = (i..chars.len()).find(|&k| {
+                    depth += i32::from(chars[k] == '{') - i32::from(chars[k] == '}');
+                    depth == 0
+                });
+                let close = paired.filter(|&k| chars[k] == '}').unwrap_or(first);
                 let inner: String = chars[i + 1..close].iter().collect();
                 let tag = inner.trim();
                 if tag == "/color" {
@@ -172,7 +179,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                         out.text.push('\n');
                         shown += 1;
                     }
-                } else if is_ident(tag) {
+                } else if is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok() {
                     // An unknown `{name}`, left as written by interpolation.
                     out.text.push_str(&format!("{{{inner}}}"));
                     shown += inner.chars().count() + 2;

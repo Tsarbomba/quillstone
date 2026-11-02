@@ -4,7 +4,7 @@
 
 use quillstone_script::{parse_effect, slug, Program, Value};
 
-use crate::{refresh_pending, run_effect, step, Cmd, Input, Session, State};
+use crate::{refresh_pending, refused_write, run_effect, step, Cmd, Input, Session, State};
 
 /// What the command line asks for: where a new game starts and which variables it starts with.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -67,10 +67,14 @@ fn typed(declared: &Value, raw: &str) -> Result<Value, String> {
 /// refusing to change the type of a variable the script declares (or already holds).
 fn set_checked(program: &Program, state: &mut State, src: &str) -> Result<(), String> {
     let effect = parse_effect(src)?;
-    let var = &effect.var;
+    if let Some(message) = refused_write(&effect, &state.vars) {
+        return Err(message);
+    }
+    // the variable a name with `{}` parts spells now
+    let var = &effect.target(&state.vars).map_or_else(|| effect.var.clone(), |t| t.into_owned());
     let was = state.vars.get(var).or_else(|| program.vars.get(var)).cloned();
     let (mut vars, mut rng) = (state.vars.clone(), state.rng);
-    run_effect(&effect, &mut vars, &mut rng, &mut None);
+    run_effect(&effect, &mut vars, &mut rng, &mut None, &mut Vec::new());
     let now = vars.get(var);
     match (&was, now) {
         (Some(Value::List(_)), _) if matches!(effect.op, quillstone_script::AssignOp::Set) => {
