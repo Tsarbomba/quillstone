@@ -13,7 +13,6 @@ title: Staging
 # stage
 
 ::bg{src=assets/rooftop.png fade=0.5}
-::sfx{src=assets/calm.ogg loop volume=0.4 fade=1}
 ::show{mika neutral x=0.3 scale=0.8 fade=0.4}
 **Mika:** Sprites stand on the bottom edge. That is `y=bottom` (`y=1`), the default.
 
@@ -109,7 +108,11 @@ The screen is black, and this narration is still readable: the dialogue box is n
 ::bg{src=assets/rooftop.png fade=2 mask=assets/masks/clock.png}
 **Mika:** That was a clock wipe: `mask=` made the new background appear where a greyscale picture is dark first. A different mask gives ink spreading or any shape you draw.
 
-**Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
+::sfx{src=assets/calm.ogg loop volume=0.4 fade=1}
+**Mika:** Hear that quiet pad? It is a looping `::sfx`: it plays on by itself, line after line, and keeps playing across rollback.
+
+::sfx{stop=assets/calm.ogg fade=1.5}
+**Mika:** And an `::sfx` with `stop=` and the file name fades it out again.
 
 <!-- A CG moment: the dialogue box is hidden for a few seconds (a click goes on). The next line shows it again by itself. -->
 ::textbox{hide fade=0.4}
@@ -123,7 +126,6 @@ The screen is black, and this narration is still readable: the dialogue box is n
 
 **Mika:** This line moves on by itself once it is typed, with no click...{nw}
 
-::sfx{stop=assets/calm.ogg fade=1.5}
 ::choice
 - [Replay the staging](#stage)
 - [That's all](#done)

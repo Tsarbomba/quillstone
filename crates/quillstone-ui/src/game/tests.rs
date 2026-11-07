@@ -315,8 +315,7 @@ fn skip_mode_and_auto_forward_need_nothing_special_for_no_wait() {
 fn the_staging_demo_plays_through() {
     let p = parse(include_str!("../../../../examples/staging.quill.md")).unwrap();
     let mut g = new_game(&p, instant());
-    let first = g.take_audio();
-    assert!(first.iter().any(|a| matches!(a, Action::PlaySfxLoop { src, .. } if src == "assets/calm.ogg")), "{first:?}");
+    let mut audio = g.take_audio();
     let (mut flashed, mut broke, mut dark_line, mut flipped, mut stretched) = (false, false, false, false, false);
     for _ in 0..80 {
         if !g.view().choices.is_empty() {
@@ -330,15 +329,17 @@ fn the_staging_demo_plays_through() {
         stretched |= g.view().sprites.iter().any(|s| s.xscale > 1.0 && s.yscale < 1.0);
         key(&mut g, Key::Space);
         g.tick(0.0, false); // the `{nw}` line goes on by itself
+        audio.extend(g.take_audio());
     }
+    assert!(audio.iter().any(|a| matches!(a, Action::PlaySfxLoop { src, .. } if src == "assets/calm.ogg")), "{audio:?}");
+    assert!(audio.iter().any(|a| matches!(a, Action::StopSfx { src: Some(s), .. } if s == "assets/calm.ogg")));
     assert!(flashed && broke, "the demo flashes and has a line with a {{p}} break");
     assert!(dark_line, "a line of narration shows over the black screen");
     assert!(flipped && stretched, "a sprite is flipped and a sprite is stretched");
     g.tick(2.0, false);
     assert_eq!(cover_alpha(&g), 0.0, "the dip is over by the end");
     assert_eq!(g.view().choices.len(), 2);
-    assert!(g.take_audio().iter().any(|a| matches!(a, Action::StopSfx { src: Some(s), .. } if s == "assets/calm.ogg")));
-    assert!(!g.mixer.has_sfx_loops());
+    assert!(!g.mixer.has_sfx_loops(), "the pad was stopped where it is talked about");
     assert_eq!(line(&g), "This line moves on by itself once it is typed, with no click...");
     // two sprites, with Mika drawn over Ren (her z is higher by then)
     assert!(g.view().sprites.iter().all(|s| s.y <= 1.0 && s.z >= 0));
