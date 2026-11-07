@@ -243,6 +243,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         put(&d, "huge.txt", &"x".repeat(MAX_FILE_BYTES + 1));
         assert!(a.read_to_string("huge.txt").is_err());
+        std::fs::remove_dir_all(&d).unwrap(); // 8 MB: don't leave it in the temp folder after every run
     }
 
     #[test]
