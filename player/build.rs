@@ -9,7 +9,8 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     match (target_os.as_str(), target_env.as_str()) {
-        ("linux", _) => println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN"),
+        // RPATH, not RUNPATH: it also applies to the libraries those libraries load (libavcodec needs libswresample).
+        ("linux", _) => println!("cargo:rustc-link-arg-bins=-Wl,--disable-new-dtags,-rpath,$ORIGIN"),
         ("windows", "msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
         ("windows", "gnu") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
         _ => {}

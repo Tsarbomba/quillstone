@@ -387,9 +387,12 @@ fn exe_name(title: Option<&str>) -> String {
 
 /// Whether a file is one of FFmpeg's shared libraries we need: `avcodec-62.dll`
 /// (Windows), `libavcodec.so.62` (Linux), `libavcodec.62.dylib` (macOS).
+/// On Linux only the name the loader asks for counts: `libavcodec.so` and `libavcodec.so.62.11.100`
+/// are the same library under other names, and copying them too ships it three times.
 fn is_ffmpeg_lib(file: &str) -> bool {
     let base = file.strip_prefix("lib").unwrap_or(file);
-    let shared = file.ends_with(".dll") || file.ends_with(".dylib") || file.contains(".so");
+    let soname = file.split_once(".so.").is_some_and(|(_, v)| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+    let shared = file.ends_with(".dll") || file.ends_with(".dylib") || soname;
     shared
         && FFMPEG_LIBS.iter().any(|lib| {
             base.strip_prefix(lib).is_some_and(|rest| rest.starts_with(['-', '.']))
@@ -638,10 +641,12 @@ mod tests {
 
     #[test]
     fn ffmpeg_libraries_are_recognised_on_every_platform() {
-        for yes in ["avcodec-62.dll", "swscale-9.dll", "libavformat.so.62", "libavutil.so.60.8.100", "libswresample.6.dylib"] {
+        for yes in ["avcodec-62.dll", "swscale-9.dll", "libavformat.so.62", "libavutil.so.60", "libswresample.6.dylib"] {
             assert!(is_ffmpeg_lib(yes), "{yes}");
         }
-        for no in ["avfilter-11.dll", "avdevice-62.dll", "avcodec.lib", "ffmpeg.exe", "libavcodec.a", "avcodecx.dll"] {
+        // the other names of a Linux library are the same file again
+        for no in ["avfilter-11.dll", "avdevice-62.dll", "avcodec.lib", "ffmpeg.exe", "libavcodec.a", "avcodecx.dll",
+            "libavcodec.so", "libavutil.so.60.8.100", "libavfilter.so.11"] {
             assert!(!is_ffmpeg_lib(no), "{no}");
         }
     }
