@@ -34,8 +34,8 @@ translations, gamepad support and hot reload. The full language is in
 ## Get started
 
 You don't need to install or compile anything. Download the kit for Windows or Linux from the
-[Releases page](https://github.com/Tsarbomba/quillstone/releases) and unzip it. It holds the
-`quillstone` tool, the player, FFmpeg's libraries and the examples.
+[Releases page](https://github.com/Tsarbomba/quillstone/releases) and unpack it (Windows: right-click, Extract
+All; Linux: `tar xzf quillstone-*-linux.tar.gz`). You get a folder `quillstone-<version>-<os>` that holds the `quillstone` tool, the player, FFmpeg's libraries and the examples.
 
 Windows may show "Windows protected your PC" the first time, because the programs aren't signed:
 click **More info**, then **Run anyway**. The Linux kit needs glibc 2.35 or newer (Ubuntu 22.04 or newer).
@@ -220,7 +220,7 @@ doesn't have yet is simply added (a voice recording in the voice folder, say).
 that archive. (It is `mods`, not `game`, on purpose: a `game/` folder is what `--folder`
 releases ship, and one left over from an older release must not win over a newer archive.)
 
-**Smaller games.** The FFmpeg libraries in the kit carry every codec FFmpeg has (~130 MB). A slimmer build with only what Quillstone plays can be made with `tools/build-ffmpeg.sh`: see [BUILDING.md](BUILDING.md). Package with `--libs <its bin or lib folder>`.
+**Smaller games.** The kit's FFmpeg libraries are already a slim build with only what Quillstone plays (VP8/VP9 video in WebM, Vorbis and Opus sound). A full FFmpeg (~130 MB of DLLs) works too: package with `--libs <its bin or lib folder>`. To build the slim one yourself, see `tools/build-ffmpeg.sh` and [BUILDING.md](BUILDING.md).
 
 A shipped game (the kit's player has no console window) shows no messages; if it can't start or crashes, the reason
 is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's

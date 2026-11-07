@@ -416,8 +416,14 @@ fn ffmpeg_libs(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The LGPL asks that players are told FFmpeg is inside and can get its source.
-/// FFmpeg builds usually carry their licence one folder up from `bin/` (or beside it).
+/// FFmpeg builds usually carry their licence one folder up from `bin/` (or beside it). The kit and every
+/// packaged game already hold the finished notice in `licenses/FFmpeg.txt` beside the libraries: that is reused.
 fn write_ffmpeg_notice(lib_dir: &Path, licenses: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(licenses).map_err(|e| format!("cannot create {}: {e}", licenses.display()))?;
+    let ready = lib_dir.join("licenses/FFmpeg.txt");
+    if ready.is_file() {
+        return copy(&ready, &licenses.join("FFmpeg.txt")).map(|_| ());
+    }
     let mut notice = String::from(
         "This game uses libraries from the FFmpeg project (https://ffmpeg.org), licensed under the\n\
          GNU Lesser General Public License (LGPL) version 2.1 or later. They are the separate\n\
@@ -438,7 +444,6 @@ fn write_ffmpeg_notice(lib_dir: &Path, licenses: &Path) -> Result<(), String> {
             lib_dir.display()
         ),
     }
-    std::fs::create_dir_all(licenses).map_err(|e| format!("cannot create {}: {e}", licenses.display()))?;
     std::fs::write(licenses.join("FFmpeg.txt"), notice).map_err(|e| format!("cannot write the FFmpeg notice: {e}"))
 }
 
@@ -637,6 +642,17 @@ mod tests {
         assert_eq!(exe_name(Some("...")), "game");
         assert_eq!(exe_name(None), "game");
         assert_eq!(exe_name(Some("../../evil")), "evil", "--name can't leave the output folder");
+    }
+
+    #[test]
+    fn the_kits_ffmpeg_notice_is_reused() {
+        let base = std::env::temp_dir().join(format!("quillstone-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("kit/licenses")).unwrap();
+        std::fs::write(base.join("kit/licenses/FFmpeg.txt"), "the full notice with the LGPL").unwrap();
+        write_ffmpeg_notice(&base.join("kit"), &base.join("out/licenses")).unwrap();
+        assert_eq!(std::fs::read_to_string(base.join("out/licenses/FFmpeg.txt")).unwrap(), "the full notice with the LGPL");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

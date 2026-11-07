@@ -79,6 +79,9 @@ cd "ffmpeg-$FFMPEG_VERSION"
     "${extra[@]}"
 make -j"$JOBS"
 make install
+# MSVC links against lib/<name>.lib, but FFmpeg's makefile installs the import libraries
+# into bin/ (so the player can be built against this output, like the full download).
+[ "$os" = windows ] && mv "$OUT"/bin/*.lib "$OUT/lib/"
 
 # The licence players must be shown (`quillstone package` copies it into the
 # game's licenses/FFmpeg.txt).

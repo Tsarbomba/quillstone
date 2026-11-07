@@ -709,6 +709,12 @@ impl ApplicationHandler for App {
             .with_position(PhysicalPosition::new(pos.0, pos.1))
             .with_maximized(self.window_maximized)
             .with_fullscreen(fullscreen(self.game.settings().fullscreen));
+        // The window icon is Windows' small one (title bar); the taskbar draws the big one.
+        #[cfg(windows)]
+        let attributes = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes.with_taskbar_icon(self.icon.clone())
+        };
         let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
 
         self.gfx = Some(Gfx::new(event_loop, window.clone(), std::mem::take(&mut self.fonts)));

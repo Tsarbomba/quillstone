@@ -19,12 +19,10 @@ jobs:
           - os: windows
             runner: windows-latest
             exe: .exe
-            ffmpeg: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
           # 22.04 on purpose: the kit runs on any distro with glibc 2.35 or newer.
           - os: linux
             runner: ubuntu-22.04
             exe: ""
-            ffmpeg: ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz
     defaults:
       run:
         shell: bash
@@ -46,7 +44,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev libasound2-dev pkg-config clang libclang-dev
+          sudo apt-get install -y libudev-dev libasound2-dev pkg-config clang libclang-dev nasm
 
       - name: Find LLVM (Windows)
         if: matrix.os == 'windows'
@@ -55,19 +53,34 @@ jobs:
           [ -f "C:/Program Files/LLVM/bin/libclang.dll" ] || choco install llvm -y --no-progress
           echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
 
-      - name: Download FFmpeg 8.1 (LGPL, shared)
+      # Our own slim LGPL FFmpeg (tools/build-ffmpeg.sh); rebuilt only when the script changes.
+      - name: Cache FFmpeg
+        id: ffmpeg
+        uses: actions/cache@v6
+        with:
+          path: ffmpeg-slim
+          key: ffmpeg-slim-${{ runner.os }}-${{ hashFiles('tools/build-ffmpeg.sh') }}
+
+      - name: Set up MSYS2 (Windows)
+        if: matrix.os == 'windows' && steps.ffmpeg.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          install: curl make diffutils tar xz mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm
+
+      - name: Build FFmpeg (Windows)
+        if: matrix.os == 'windows' && steps.ffmpeg.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: tools/build-ffmpeg.sh ffmpeg-slim
+
+      - name: Build FFmpeg (Linux)
+        if: matrix.os == 'linux' && steps.ffmpeg.outputs.cache-hit != 'true'
+        run: tools/build-ffmpeg.sh ffmpeg-slim
+
+      - name: Point the build at FFmpeg
         run: |
-          base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
-          mkdir -p "$RUNNER_TEMP/ffmpeg-dl"
-          cd "$RUNNER_TEMP/ffmpeg-dl"
-          curl -fsSL -O "$base/${{ matrix.ffmpeg }}"
-          sha256sum "${{ matrix.ffmpeg }}" | tee ffmpeg.sha256
-          if [ "${{ matrix.os }}" = windows ]; then 7z x -y "${{ matrix.ffmpeg }}" >/dev/null; else tar xf "${{ matrix.ffmpeg }}"; fi
-          dir=$(echo ffmpeg-n8.1-latest-*-lgpl-shared-8.1)
-          [ -d "$dir/lib" ] || { echo "unexpected FFmpeg archive layout"; ls; exit 1; }
           here=$(pwd -W 2>/dev/null || pwd) # Windows-style path for cargo
-          echo "FFMPEG_DIR=$here/$dir" >> "$GITHUB_ENV"
-          echo "FFMPEG_SHA256=$(cut -d' ' -f1 ffmpeg.sha256)" >> "$GITHUB_ENV"
+          echo "FFMPEG_DIR=$here/ffmpeg-slim" >> "$GITHUB_ENV"
 
       - name: Build the command line tool
         run: cargo build --release -p quillstone
@@ -95,41 +108,43 @@ jobs:
           cp LICENSE-MIT LICENSE-APACHE "$kit/licenses/"
 
           # Smoke test: package the demo with the kit's own tools (the player is found beside quillstone).
-          # --libs points at FFmpeg's own folder so the notice includes its LGPL text.
+          # --libs points at FFmpeg's own folder so the notice includes its LGPL text (LICENSE.txt beside it).
           libs="$FFMPEG_DIR/${{ matrix.os == 'windows' && 'bin' || 'lib' }}"
           "$kit/quillstone${{ matrix.exe }}" package examples/demo.quill.md --out "$RUNNER_TEMP/smoke" --libs "$libs"
-          cp "$RUNNER_TEMP/smoke/licenses/FFmpeg.txt" "$kit/licenses/FFmpeg.txt"
-          grep -q "licence text that came with" "$kit/licenses/FFmpeg.txt" || { echo "LGPL text missing"; exit 1; }
+          # licenses/FFmpeg.txt: where the libraries' source is, then package's notice with the LGPL text.
+          # Games packaged from the kit copy this file as it is.
+          ver=$(sed -n 's/^FFMPEG_VERSION=${FFMPEG_VERSION:-\(.*\)}$/\1/p' tools/build-ffmpeg.sh)
+          sha=$(sed -n 's/.*FFMPEG_SHA256:-\([0-9a-f]*\)}$/\1/p' tools/build-ffmpeg.sh)
+          {
+            cat <<EOF
+          The FFmpeg libraries (avcodec, avformat, avutil, swscale, swresample) were built from the
+          unmodified FFmpeg $ver source, a slim build with only VP8/VP9, Vorbis, Opus, WebM/Matroska
+          and Ogg:
+            https://ffmpeg.org/releases/ffmpeg-$ver.tar.xz
+            (sha256 $sha)
+          The configure options and build steps are in tools/build-ffmpeg.sh:
+            https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/tools/build-ffmpeg.sh
 
-          cat > "$kit/FFMPEG-SOURCE.txt" <<EOF
-          This kit includes the FFmpeg shared libraries avcodec, avformat, avutil, swscale and
-          swresample, licensed under the GNU LGPL version 2.1 or later (see licenses/FFmpeg.txt).
-          They are unmodified FFmpeg 8.1 binaries from the BtbN FFmpeg-Builds project,
-          file ${{ matrix.ffmpeg }}
-          (sha256 $FFMPEG_SHA256).
-
-          FFmpeg's source code: https://ffmpeg.org/download.html (release 8.1, git tag n8.1)
-          How these binaries were built: https://github.com/BtbN/FFmpeg-Builds
-
-          You may replace the library files with other builds of the same FFmpeg version.
           EOF
+            cat "$RUNNER_TEMP/smoke/licenses/FFmpeg.txt"
+          } > "$kit/licenses/FFmpeg.txt"
+          grep -q "licence text that came with" "$kit/licenses/FFmpeg.txt" || { echo "LGPL text missing"; exit 1; }
 
           cd "$RUNNER_TEMP"
           if [ "${{ matrix.os }}" = windows ]; then
-            7z a -tzip "$name.zip" "$name" >/dev/null
+            7z a -tzip "$name.zip" "$name" >/dev/null # one folder inside, named like the archive
             echo "file=$RUNNER_TEMP/$name.zip" >> "$GITHUB_OUTPUT"
           else
             # The player must find FFmpeg beside itself, with no LD_LIBRARY_PATH.
             if ldd "$kit/quillstone-player" | grep "not found"; then echo "player has unresolved libraries"; exit 1; fi
-            tar czf "$name.tar.gz" "$name"
+            tar czf "$name.tar.gz" "$name" # one folder inside, named like the archive
             echo "file=$RUNNER_TEMP/$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@v7
         with:
-          name: kit-${{ matrix.os }}
           path: ${{ steps.kit.outputs.file }}
-          compression-level: 0
+          archive: false # the artifact is the kit file itself, named after it
           if-no-files-found: error
 
   release:
@@ -142,9 +157,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: kit-*
+          pattern: quillstone-*
           path: kits
           merge-multiple: true
+          skip-decompress: true # keep the .zip a zip
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: kits/*
