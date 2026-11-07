@@ -12,6 +12,8 @@
 //!     theme.txt, assets/  only the files the script and theme use
 //! ```
 //!
+//! The icon (front matter `icon:`) is written into the renamed exe when that is a Windows executable.
+//!
 //! The player finds `game.qsa` (or `game/`) by itself when double-clicked. A `mods/` folder beside
 //! `game.qsa` holds loose files that replace the archive's copies (patches and mods). It is not
 //! `game/`, so a folder release unzipped over an archive one (or the reverse) cannot override it.
@@ -32,6 +34,8 @@ pub struct Options<'a> {
     pub libs: Option<&'a Path>,
     /// Write the game files loose under `game/` instead of one `game.qsa`.
     pub folder: bool,
+    /// Also write `<out>.zip` beside the output folder, holding it under one top-level folder of the same name.
+    pub zip: bool,
 }
 
 /// The files to ship, each once, in the order the game first needs them (so a playthrough reads forward).
@@ -78,6 +82,8 @@ fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files
             ));
         }
     }
+    // The window icon is set at startup.
+    files.extend(program.icon.iter().map(|(_, icon)| icon.clone()));
     // The theme and its pictures and fonts are read at startup, so they come first.
     if let Some(theme_file) = &program.theme {
         files.insert(theme_file.clone());
@@ -165,6 +171,10 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
     }
     require_new(opts.out)?;
+    let zip_path = if opts.zip { Some(zip_path(opts.out)?) } else { None };
+    if zip_path.as_ref().is_some_and(|z| z.exists()) {
+        return Err(format!("`{}` already exists; pick another folder or remove it", zip_path.unwrap().display()));
+    }
 
     let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
     let files = used_files(root, script_name, program)?;
@@ -194,7 +204,17 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
 
     let name = exe_name(opts.name.or(program.title.as_deref()));
     let ext = opts.player.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    bytes += copy(opts.player, &opts.out.join(format!("{name}{ext}")))?;
+    let exe = opts.out.join(format!("{name}{ext}"));
+    bytes += copy(opts.player, &exe)?;
+    match &program.icon {
+        Some((_, icon)) => {
+            let picture = std::fs::read(root.join(icon)).map_err(|e| format!("cannot read the icon `{icon}`: {e}"))?;
+            embed_icon(&exe, &picture)?;
+        }
+        None => {
+            embed_icon(&exe, DEFAULT_ICON)?;
+        }
+    }
 
     let lib_dir = opts.libs.or(opts.player.parent()).unwrap_or_else(|| Path::new("."));
     let libs = ffmpeg_libs(lib_dir);
@@ -220,7 +240,119 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         opts.out.display(),
         bytes as f64 / 1e6
     );
+    if let Some(zip) = zip_path {
+        zip_folder(opts.out, &zip)?;
+        println!("zipped it as {}", zip.display());
+    }
     Ok(())
+}
+
+/// `<out>.zip`, beside the output folder.
+fn zip_path(out: &Path) -> Result<PathBuf, String> {
+    let name = out.file_name().ok_or_else(|| format!("--zip needs --out to be a named folder, not `{}`", out.display()))?;
+    Ok(out.with_file_name(format!("{}.zip", name.to_string_lossy())))
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &std::fs::Metadata) -> u32 {
+    std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777
+}
+
+#[cfg(not(unix))]
+fn file_mode(_: &std::fs::Metadata) -> u32 {
+    0o644
+}
+
+/// Zip the folder's files (sorted, deflated) under one top-level folder of the same name, with their file modes.
+/// A zip that already exists is never overwritten.
+fn zip_folder(dir: &Path, zip: &Path) -> Result<(), String> {
+    let top = dir.file_name().expect("checked by zip_path").to_string_lossy().into_owned();
+    let mut files = Vec::new();
+    let mut stack = vec![String::new()];
+    while let Some(sub) = stack.pop() {
+        let read = std::fs::read_dir(dir.join(&sub)).map_err(|e| format!("cannot read {}: {e}", dir.join(&sub).display()))?;
+        for entry in read.filter_map(Result::ok) {
+            let path = format!("{sub}{}", entry.file_name().to_string_lossy());
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(format!("{path}/")),
+                Ok(t) if t.is_file() => files.push(path),
+                _ => {}
+            }
+        }
+    }
+    files.sort();
+    let err = |e: &dyn std::fmt::Display| format!("cannot write {}: {e}", zip.display());
+    let file = std::fs::File::create_new(zip).map_err(|e| err(&e))?;
+    let mut writer = zip::ZipWriter::new(file);
+    for path in files {
+        let mut from = std::fs::File::open(dir.join(&path)).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let meta = from.metadata().map_err(|e| format!("cannot read {path}: {e}"))?;
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(file_mode(&meta))
+            .large_file(meta.len() > u32::MAX as u64);
+        writer.start_file(format!("{top}/{path}"), options).map_err(|e| err(&e))?;
+        std::io::copy(&mut from, &mut writer).map_err(|e| err(&e))?;
+    }
+    writer.finish().map_err(|e| err(&e))?;
+    Ok(())
+}
+
+/// The Quillstone icon (256x256) a game without `icon:` gets.
+const DEFAULT_ICON: &[u8] = include_bytes!("../../../assets/quillstone-icon-256.png");
+
+/// The sizes the exe's icon has; Explorer, the taskbar and the desktop each pick the nearest.
+const ICON_SIZES: [u32; 4] = [16, 32, 48, 256];
+
+/// An `.ico` of [`ICON_SIZES`] made from a picture (PNG, JPEG or WebP), each size stored as a PNG. A picture that
+/// isn't square sits centred on a transparent square instead of being squashed.
+fn build_ico(picture: &[u8]) -> Result<Vec<u8>, String> {
+    use image::{imageops, ImageFormat, RgbaImage};
+    let src = image::load_from_memory(picture).map_err(|e| format!("cannot read the icon picture: {e}"))?.to_rgba8();
+    let side = src.width().max(src.height());
+    let mut square = RgbaImage::new(side, side);
+    imageops::overlay(&mut square, &src, i64::from((side - src.width()) / 2), i64::from((side - src.height()) / 2));
+    let mut pngs = Vec::new();
+    for size in ICON_SIZES {
+        let mut png = std::io::Cursor::new(Vec::new());
+        let mut small = imageops::resize(&square, size, size, imageops::FilterType::Lanczos3);
+        if size <= 48 {
+            small = imageops::unsharpen(&small, 0.6, 1); // small sizes come out soft
+        }
+        small.write_to(&mut png, ImageFormat::Png).map_err(|e| format!("cannot encode the icon: {e}"))?;
+        pngs.push(png.into_inner());
+    }
+    // ICONDIR, then one 16-byte entry per size (0 stands for 256), then the images.
+    let mut ico = vec![0, 0, 1, 0];
+    ico.extend((pngs.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * pngs.len() as u32;
+    for (size, png) in ICON_SIZES.iter().zip(&pngs) {
+        let side = (*size % 256) as u8;
+        ico.extend([side, side, 0, 0, 1, 0, 32, 0]);
+        ico.extend((png.len() as u32).to_le_bytes());
+        ico.extend(offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    pngs.iter().for_each(|png| ico.extend(png));
+    Ok(ico)
+}
+
+/// Write the picture into the file as its main icon (replacing one it has) when the file is a Windows executable,
+/// found by its content so a Windows build can be packaged on any system. Another kind of file is left alone.
+/// Returns whether the icon went in.
+fn embed_icon(exe: &Path, picture: &[u8]) -> Result<bool, String> {
+    let bytes = std::fs::read(exe).map_err(|e| format!("cannot read {}: {e}", exe.display()))?;
+    if !bytes.starts_with(b"MZ") {
+        return Ok(false);
+    }
+    let fail = |what: &str, e: &dyn std::fmt::Display| format!("cannot put the icon into {}: {what}: {e}", exe.display());
+    let mut pe = editpe::Image::parse(bytes).map_err(|e| fail("not a valid Windows executable", &e))?;
+    let mut resources = pe.resource_directory().cloned().unwrap_or_default();
+    resources.remove_main_icon().map_err(|e| fail("its old icon", &e))?;
+    resources.set_main_icon(build_ico(picture)?.as_slice()).map_err(|e| fail("the icon", &e))?;
+    pe.set_resource_directory(resources).map_err(|e| fail("the resources", &e))?;
+    pe.write_file(exe).map_err(|e| fail("writing", &e))?;
+    Ok(true)
 }
 
 /// `quillstone unpack`: write every file of a game archive under `out` (a new or empty folder).
@@ -312,6 +444,165 @@ fn copy(from: &Path, to: &Path) -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    /// A PE32+ file with one empty section and no resources: the smallest thing editpe will take as an executable.
+    fn tiny_pe() -> Vec<u8> {
+        let mut pe = vec![0u8; 0x400];
+        let mut put = |at: usize, bytes: &[u8]| pe[at..at + bytes.len()].copy_from_slice(bytes);
+        put(0, b"MZ");
+        put(0x3c, &0x40u32.to_le_bytes());
+        put(0x40, b"PE\0\0");
+        put(0x44, &[0x64, 0x86, 1, 0]); // x86-64, one section
+        put(0x54, &240u16.to_le_bytes()); // optional header size
+        put(0x56, &0x22u16.to_le_bytes()); // executable, large address aware
+        put(0x58, &0x20bu16.to_le_bytes()); // PE32+
+        put(0x68, &0x1000u32.to_le_bytes()); // entry point
+        put(0x70, &0x1_4000_0000u64.to_le_bytes()); // image base
+        put(0x78, &0x1000u32.to_le_bytes()); // section alignment
+        put(0x7c, &0x200u32.to_le_bytes()); // file alignment
+        put(0x88, &6u16.to_le_bytes()); // subsystem version
+        put(0x90, &0x2000u32.to_le_bytes()); // size of image
+        put(0x94, &0x200u32.to_le_bytes()); // size of headers
+        put(0x9c, &2u16.to_le_bytes()); // GUI subsystem
+        put(0xc4, &16u32.to_le_bytes()); // data directories
+        put(0x148, b".text"); // the section table follows the optional header
+        put(0x150, &0x10u32.to_le_bytes());
+        put(0x154, &0x1000u32.to_le_bytes());
+        put(0x158, &0x200u32.to_le_bytes());
+        put(0x15c, &0x200u32.to_le_bytes());
+        put(0x16c, &0x6000_0020u32.to_le_bytes());
+        pe
+    }
+
+    /// A picture of the given size, as PNG bytes.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(w, h, image::Rgba([200, 30, 30, 255])).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn the_icon_goes_into_a_windows_exe_with_four_sizes_and_replaces_an_old_one() {
+        let dir = std::env::temp_dir().join(format!("quillstone-package-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("g.exe");
+        std::fs::write(&exe, tiny_pe()).unwrap();
+        // 300x200 is not square: it is padded, so the sizes are still square
+        assert!(embed_icon(&exe, &png(300, 200)).unwrap());
+        assert!(embed_icon(&exe, &png(256, 256)).unwrap(), "a second icon replaces the first");
+        let pe = editpe::Image::parse_file(&exe).unwrap();
+        let resources = pe.resource_directory().unwrap();
+        use editpe::ResourceEntryName as Name;
+        let groups = resources.root().get(Name::ID(14)).and_then(|e| e.as_table()).expect("icon groups");
+        assert_eq!(groups.entries().len(), 1, "one group");
+        let group = groups.get(Name::from_string("MAINICON")).and_then(|e| e.as_table()).expect("MAINICON");
+        let group = group.get(Name::ID(0x409)).and_then(|e| e.as_data()).expect("its data").data();
+        // ICONDIR: reserved, type 1, count; then 14-byte entries (width, height, ..., icon id)
+        assert_eq!(&group[..4], [0, 0, 1, 0]);
+        let count = u16::from_le_bytes([group[4], group[5]]) as usize;
+        let sizes: Vec<u8> = (0..count).map(|i| group[6 + i * 14]).collect();
+        assert_eq!(sizes, [16, 32, 48, 0], "0 is 256");
+        let images = resources.root().get(Name::ID(3)).and_then(|e| e.as_table()).unwrap();
+        assert_eq!(images.entries().len(), 4, "the first icon's images are gone");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_no_windows_exe_is_left_unchanged() {
+        let path = std::env::temp_dir().join(format!("quillstone-package-elf-{}", std::process::id()));
+        let elf = b"\x7fELF not windows".to_vec();
+        std::fs::write(&path, &elf).unwrap();
+        assert!(!embed_icon(&path, &png(64, 64)).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), elf);
+        std::fs::write(&path, b"MZ but nothing else").unwrap();
+        assert!(embed_icon(&path, &png(64, 64)).is_err());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn packaging_with_an_icon_leaves_the_player_alone_and_ships_the_icon() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-icon-game-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        std::fs::write(src.join("assets/icon.png"), png(256, 256)).unwrap();
+        let script = "---\ntitle: G\nicon: assets/icon.png\n---\nHi.\n";
+        std::fs::write(src.join("g.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), tiny_pe()).unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
+        package(&opts, &program).unwrap();
+        assert_eq!(std::fs::read(base.join("player.exe")).unwrap(), tiny_pe());
+        let pe = editpe::Image::parse_file(out.join("G.exe")).unwrap();
+        assert!(pe.resource_directory().unwrap().get_main_icon().unwrap().is_some());
+        assert!(out.join("game/assets/icon.png").is_file());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_game_without_an_icon_gets_the_quillstone_icon() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-default-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("g.quill.md"), "Hi.\n").unwrap();
+        std::fs::write(base.join("player.exe"), tiny_pe()).unwrap();
+        let program = quillstone_script::parse("Hi.\n").unwrap();
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: Some("G"), libs: None, folder: true, zip: false };
+        package(&opts, &program).unwrap();
+        let pe = editpe::Image::parse_file(out.join("G.exe")).unwrap();
+        assert!(pe.resource_directory().unwrap().get_main_icon().unwrap().is_some());
+        assert_eq!(image::load_from_memory(DEFAULT_ICON).unwrap().width(), 256);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn small_icon_sizes_are_sharpened_and_the_big_one_is_not() {
+        use image::imageops::{resize, FilterType::Lanczos3};
+        let edges = image::RgbaImage::from_fn(256, 256, |x, y| {
+            image::Rgba(if (x / 20 + y / 20) % 2 == 0 { [255, 255, 255, 255] } else { [0, 0, 0, 255] })
+        });
+        let mut src = std::io::Cursor::new(Vec::new());
+        edges.write_to(&mut src, image::ImageFormat::Png).unwrap();
+        let ico = build_ico(src.get_ref()).unwrap();
+        let entry = |i: usize| {
+            let e = &ico[6 + 16 * i..22 + 16 * i];
+            let (len, at) = (u32::from_le_bytes(e[8..12].try_into().unwrap()), u32::from_le_bytes(e[12..16].try_into().unwrap()));
+            image::load_from_memory(&ico[at as usize..(at + len) as usize]).unwrap().to_rgba8()
+        };
+        for (i, size) in ICON_SIZES.into_iter().enumerate() {
+            let plain = resize(&edges, size, size, Lanczos3);
+            assert_eq!(entry(i) == plain, size == 256, "size {size}");
+        }
+    }
+
+    #[test]
+    fn zip_holds_the_folder_under_its_own_name_and_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("MyGame"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("g.quill.md"), "Hi.\n").unwrap();
+        std::fs::write(base.join("player"), "player bytes").unwrap();
+        let program = quillstone_script::parse("Hi.\n").unwrap();
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player"), out: &out, name: Some("G"), libs: None, folder: true, zip: true };
+        package(&opts, &program).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(base.join("MyGame.zip")).unwrap()).unwrap();
+        let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["MyGame/G", "MyGame/game/g.quill.md"]);
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("MyGame/G").unwrap(), &mut text).unwrap();
+        assert_eq!(text, "player bytes");
+        #[cfg(unix)]
+        assert_eq!(zip.by_name("MyGame/G").unwrap().unix_mode().unwrap() & 0o777, 0o644, "the player's own mode");
+        // the zip is there, so a second run is refused before anything is written
+        let again = Options { out: &base.join("Other"), ..opts };
+        let again = Options { out: &out, ..again };
+        assert!(package(&again, &program).unwrap_err().contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     #[test]
     fn two_spellings_of_one_asset_ship_one_file() {
         let program = quillstone_script::parse("::bg{src=./assets/bg.png}\n::bg{src=assets/bg.png}\nHi.\n").unwrap();
@@ -351,7 +642,7 @@ mod tests {
         std::fs::write(src.join("anim.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("anim.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("anim.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         for f in ["o.png", "c.png", "rain1.png", "rain2.png"] {
             assert!(out.join("game/assets").join(f).is_file(), "{f}");
@@ -373,7 +664,7 @@ mod tests {
         std::fs::write(src.join("p.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/petal.png").is_file());
         assert!(!out.join("game/assets/unused.png").exists());
@@ -393,7 +684,7 @@ mod tests {
         std::fs::write(src.join("g.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/clip.webm").is_file());
         assert!(!out.join("game/assets/unused.webm").exists());
@@ -413,7 +704,7 @@ mod tests {
         std::fs::write(src.join("g.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/thumb.png").is_file());
         assert!(!out.join("game/assets/unused.png").exists());
@@ -457,6 +748,7 @@ mod tests {
             name: None,
             libs: Some(&libs),
             folder: true,
+            zip: false,
         };
         package(&opts, &program).unwrap();
 
@@ -487,7 +779,7 @@ mod tests {
         std::fs::write(src.join("l.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         for f in ["body_casual", "body_formal", "eyes_open", "mouth_smile", "mouth_open", "open", "closed"] {
             assert!(out.join("game/a").join(format!("{f}.png")).is_file(), "{f} ships");
@@ -511,7 +803,7 @@ mod tests {
         std::fs::write(src.join("p.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         for f in ["places/rooftop.png", "places/night.png", "mika_happy.png", "mika_sad.png"] {
             assert!(out.join("game/assets").join(f).is_file(), "{f} ships");
@@ -522,7 +814,7 @@ mod tests {
         // A pattern that matches nothing can't be packaged.
         let lonely = "::bg{src=\"assets/nowhere/{p}.png\"}\nHi.\n";
         std::fs::write(src.join("l.quill.md"), lonely).unwrap();
-        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None, folder: true, zip: false };
         let err = package(&opts, &quillstone_script::parse(lonely).unwrap()).unwrap_err();
         assert!(err.contains("matches no file"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
@@ -541,7 +833,7 @@ mod tests {
         std::fs::write(src.join("n.quill.md"), script).unwrap();
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let program = quillstone_script::parse(script).unwrap();
-        let opts = Options { script: &src.join("n.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &src.join("n.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         assert!(out.join("game/assets/room_1.png").is_file() && out.join("game/assets/room_2.png").is_file());
         assert!(!out.join("game/assets/hall_1.png").exists());
@@ -566,7 +858,7 @@ mod tests {
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let script = src.join("main.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         for f in ["main.quill.md", "chapters/one.quill.md", "chapters/deep/two.quill.md", "assets/bg.png"] {
             assert!(out.join("game").join(f).is_file(), "{f}");
@@ -588,14 +880,14 @@ mod tests {
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let script = src.join("story.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         assert!(package(&opts, &program).unwrap_err().contains("main.quill.md"));
         assert!(!out.exists());
         // as main.quill.md it is fine
         std::fs::rename(&script, src.join("main.quill.md")).unwrap();
         let script = src.join("main.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
         package(&opts, &program).unwrap();
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -618,7 +910,7 @@ mod tests {
         std::fs::write(base.join("player.exe"), "exe").unwrap();
         let script = src.join("main.quill.md");
         let program = crate::load(&script).unwrap();
-        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: false };
+        let opts = Options { script: &script, player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: false, zip: false };
         package(&opts, &program).unwrap();
         assert!(out.join("game.qsa").is_file() && out.join("Packed.exe").is_file() && !out.join("game").exists());
 

@@ -665,6 +665,8 @@ pub struct Program {
     pub title: Option<String>,
     /// The `id:` front matter key: the name of the player's save folder (see `title`, the fallback).
     pub id: Option<String>,
+    /// Front matter `icon:`: `(line, path)` of the picture used as the window and exe icon.
+    pub icon: Option<(usize, String)>,
     /// The theme file named in the front matter (`theme: theme.txt`), relative to the script.
     pub theme: Option<String>,
     /// Initial variable values from the front matter.

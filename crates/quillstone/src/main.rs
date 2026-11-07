@@ -41,12 +41,13 @@ USAGE:
     quillstone run   <script> [--start <label>] [--set var=value]...
                                 play the script in the terminal; --start begins at a label and
                                 --set (repeatable) gives variables their starting values
-    quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder]
+    quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder] [--zip]
                                 build a folder players can unzip and run: the player
                                 (renamed after the title, or --name), FFmpeg's libraries
                                 (from beside the player, or --libs) and the files the game uses,
                                 packed into game.qsa (or, with --folder, loose in game/). Loose files in a
-                                `mods` folder beside game.qsa replace the ones inside it
+                                `mods` folder beside game.qsa replace the ones inside it. The game's `icon:`
+                                goes into the exe when it is a Windows one. --zip also writes <folder>.zip
     quillstone unpack <game.qsa> --out <folder>
                                 write the files inside a game archive into a new folder
 ";
@@ -207,6 +208,7 @@ fn check(path: &Path) -> Result<(), String> {
         }
     }
     found.extend(picture_findings(&program, path, root, &hot));
+    found.extend(icon_findings(&program, path, root));
     found.extend(layer_size_findings(&program, path, root));
     for (pc, text) in program.unknown_items() {
         found.push(warning(
@@ -512,6 +514,34 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
         }
     }
     out
+}
+
+/// The game icon is a picture inside the game folder; a desktop shows it at up to 256 px, square.
+const ICON_SIDE: u32 = 256;
+
+/// The `icon:` front matter: missing, not a picture or outside the folder is an error; not square or under
+/// 256 px is a warning. `(is an error, message)`, like [`picture_findings`].
+fn icon_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> {
+    let Some((line, icon)) = &program.icon else { return Vec::new() };
+    let at = at(program, script, *line);
+    let mut size = (0, 0);
+    let problem = asset_problem(root, icon, "icon", "can't be the icon", |f| match picture::read_picture(f) {
+        Ok(s) => {
+            size = s;
+            None
+        }
+        Err(why) => Some(why),
+    });
+    let (w, h) = size;
+    if let Some(msg) = problem {
+        vec![(true, format!("{at}: error: {msg}"))]
+    } else if w != h {
+        vec![(false, format!("{at}: warning: the icon `{icon}` is {w}x{h}: an icon should be square, or it sits small on a transparent square"))]
+    } else if w < ICON_SIDE {
+        vec![(false, format!("{at}: warning: the icon `{icon}` is {w}x{h}: under {ICON_SIDE}x{ICON_SIDE} it looks blurry on the desktop"))]
+    } else {
+        Vec::new()
+    }
 }
 
 /// The pictures of a character's layers must all have the canvas size of the first one (they are drawn
@@ -961,12 +991,16 @@ fn test(path: &Path, limit: usize) -> Result<Explored, String> {
 
 fn package_cmd(script: &Path, flags: &[&str]) -> Result<(), String> {
     let (mut player, mut out, mut name, mut libs) = (None, None, None, None);
-    let mut folder = false;
+    let (mut folder, mut zip) = (false, false);
     let mut it = flags.iter();
     while let Some(&flag) = it.next() {
         let slot = match flag {
             "--folder" => {
                 folder = true;
+                continue;
+            }
+            "--zip" => {
+                zip = true;
                 continue;
             }
             "--player" => &mut player,
@@ -988,6 +1022,7 @@ fn package_cmd(script: &Path, flags: &[&str]) -> Result<(), String> {
         name,
         libs: libs.map(Path::new),
         folder,
+        zip,
     };
     package::package(&opts, &load(script)?)
 }
@@ -1362,6 +1397,43 @@ mod tests {
         let result = check(&dir.join("s.quill.md"));
         std::fs::remove_dir_all(&dir).unwrap();
         result
+    }
+
+    #[test]
+    fn check_judges_the_game_icon() {
+        let png = |w: u32, h: u32| {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(w, h).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        let script = "---\nicon: assets/icon.png\n---\nHi.\n";
+        let findings = |files: &[(&str, &[u8])]| {
+            let dir = std::env::temp_dir().join(format!("quillstone-check-icon-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("assets")).unwrap();
+            for (name, bytes) in files {
+                std::fs::write(dir.join(name), bytes).unwrap();
+            }
+            std::fs::write(dir.join("s.quill.md"), script).unwrap();
+            let program = load(&dir.join("s.quill.md")).unwrap();
+            let found = icon_findings(&program, &dir.join("s.quill.md"), &dir);
+            std::fs::remove_dir_all(&dir).unwrap();
+            found
+        };
+        assert!(findings(&[("assets/icon.png", &png(256, 256))]).is_empty());
+        assert!(findings(&[("assets/icon.png", &png(512, 512))]).is_empty());
+        let f = findings(&[]);
+        assert!(f.len() == 1 && f[0].0 && f[0].1.contains(":2:") && f[0].1.contains("missing icon"), "{f:?}");
+        let f = findings(&[("assets/icon.png", b"not a picture")]);
+        assert!(f.len() == 1 && f[0].0, "{f:?}");
+        let f = findings(&[("assets/icon.png", &png(300, 256))]);
+        assert!(f.len() == 1 && !f[0].0 && f[0].1.contains("square"), "{f:?}");
+        let f = findings(&[("assets/icon.png", &png(128, 128))]);
+        assert!(f.len() == 1 && !f[0].0 && f[0].1.contains("blurry"), "{f:?}");
+        let err = checked("---\nicon: ../icon.png\n---\nHi.\n", &[]).unwrap_err();
+        assert!(err.contains("inside the game folder"), "{err}");
+        let err = checked("---\nicon: assets/icon.webm\n---\nHi.\n", &[]).unwrap_err();
+        assert!(err.contains("must be a picture"), "{err}");
     }
 
     #[test]

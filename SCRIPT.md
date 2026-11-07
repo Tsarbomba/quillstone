@@ -44,7 +44,12 @@ She looks away.
 - **Front matter** (optional, between `---` lines): `title:` (also shown on the
   main menu), `id:` (the name of the folder the player keeps saves in, e.g. `id: my-story`: 1 to 64 lowercase
   letters, digits and `-`; set it once and the saves survive a new title; without it the folder is named after the
-  title, or the script file), `theme:` (a theme file, see [Themes](#themes)), `vars:`,
+  title, or the script file), `icon:` (the game's icon: a PNG, JPEG or WebP picture in the game folder, like
+  `icon: assets/icon.png`; without it the game has the Quillstone icon. Use a square picture, 256x256 or larger,
+  with a transparent background; small sizes are sharpened automatically. It is the window's icon, and
+  `quillstone package` also puts it on the Windows `.exe`; `check` warns about one that isn't square or is smaller
+  than 256x256),
+  `theme:` (a theme file, see [Themes](#themes)), `vars:`,
   `voice:` (see [Auto-voice](#auto-voice)), `inventory:` (see [Inventory](#inventory)), `journal:` and `journal_done:` (see [Journal](#journal)), `languages:` (see [Translating a game](#translating-a-game)), and `persistent:`, `gallery:`,
   `music_room:` and `replays:` (see [Kept across playthroughs](#kept-across-playthroughs)
   and [Scene replays](#scene-replays)). `sprite_size:` and `art_scale:` set how big sprites are drawn (see

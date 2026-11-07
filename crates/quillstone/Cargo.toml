@@ -13,3 +13,7 @@ quillstone-runtime.workspace = true
 quillstone-render.workspace = true
 quillstone-video.workspace = true
 quillstone-ui.workspace = true
+# Only `package` uses these: the exe's icon (editpe), the icon's sizes (image) and the --zip release (zip).
+editpe = { version = "0.2.4", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+zip = { version = "9.4", default-features = false, features = ["deflate-flate2"] }

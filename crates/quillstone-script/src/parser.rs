@@ -627,6 +627,13 @@ impl Parser {
                     Err(m) => self.err(line, m),
                 },
                 "theme" => self.err(line, "`theme` needs a file name, like `theme: theme.txt`"),
+                "icon" => match check_inside("icon", unquote(val)) {
+                    Ok(_) if kind_from_path(unquote(val)) != AssetKind::Image => {
+                        self.err(line, format!("the `icon` `{}` must be a picture (PNG, JPEG or WebP)", unquote(val)))
+                    }
+                    Ok(p) => self.program.icon = Some((line, p)),
+                    Err(m) => self.err(line, m),
+                },
                 "vars" => self.front_vars(line, val, false),
                 "persistent" => self.front_vars(line, val, true),
                 "gallery" | "music_room" => self.front_list(line, key, val),
@@ -3500,6 +3507,15 @@ mod tests {
             let e = errs(src);
             assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
         }
+    }
+
+    #[test]
+    fn front_matter_can_name_an_icon() {
+        assert_eq!(ok("---\ntitle: T\nicon: ./assets/icon.png\n---\nHi.\n").icon, Some((3, "assets/icon.png".into())));
+        assert_eq!(ok("Hi.\n").icon, None);
+        assert!(has_err("---\nicon: ../icon.png\n---\nHi.\n", "inside the game folder"));
+        assert!(has_err("---\nicon: icon_{n}.png\n---\nHi.\n", "braces"));
+        assert!(has_err("---\nicon: clip.webm\n---\nHi.\n", "must be a picture"));
     }
 
     #[test]

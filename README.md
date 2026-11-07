@@ -66,7 +66,7 @@ All commands (`<script>` is a `.quill.md` file; the script's folder is the game 
 | `quillstone dump <script>` | print the compiled ops and labels |
 | `quillstone voices <script>` | list every line's voice file name, speaker and text (tab-separated, for the actors) |
 | `quillstone lang export <script> <code>` | create or update `lang/<code>.txt` for a language the script lists |
-| `quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder]` | build a game folder to ship (see "Ship a game") |
+| `quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder] [--zip]` | build a game folder to ship (see "Ship a game") |
 | `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
 
 `test` plays every choice branch and reports, with the choices that lead there:
@@ -205,10 +205,18 @@ another), FFmpeg's five DLLs (avcodec, avformat, avutil, swscale, swresample;
 never avfilter or avdevice), `licenses/FFmpeg.txt` (the LGPL notice FFmpeg
 requires) and `game.qsa`: the script and only the files it and its theme use, packed
 into one file (stored as they are, not compressed or scrambled, so it is only a
-tidy way to ship them). Zip the folder; players unzip it and double-click the exe.
+tidy way to ship them). Add `--zip` to also get `MyGame.zip` beside the folder (it unzips to `MyGame/`);
+players unzip it and double-click the exe.
 The script is checked first (it also warns about unused asset files, which `package` leaves out), assets outside the script's folder are refused, and
 an existing non-empty `--out` folder is never overwritten. Without `--libs`, the
 DLLs are taken from beside the player.
+
+**Game icon.** A game gets the Quillstone icon. To use your own, set `icon: assets/icon.png` in the front matter
+(a square PNG, JPEG or WebP, 256x256 or larger with a transparent background; `check` warns when it isn't square
+or is smaller). The window shows the icon, and when the player is a Windows `.exe`, `package` also writes it into
+the renamed exe (sizes 16, 32, 48 and 256; the small ones are sharpened automatically), so Explorer, the desktop
+and the taskbar show it; this works from any system. The player you built is never changed, only the copy in
+`--out`.
 
 Add `--folder` to get a `game/` folder of loose files instead of `game.qsa`.
 `quillstone unpack MyGame/game.qsa --out look-inside` writes the files of an

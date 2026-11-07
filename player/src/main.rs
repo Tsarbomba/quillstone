@@ -18,6 +18,7 @@ mod gamepad;
 mod images;
 mod reload;
 mod gfx;
+mod icon;
 mod setup;
 mod text;
 mod video;
@@ -46,6 +47,8 @@ use setup::{load_fonts, load_theme};
 
 struct App {
     title: String,
+    /// The window's icon (front matter `icon:`).
+    icon: Option<winit::window::Icon>,
     game: Game<'static>,
     gamepads: gamepad::Gamepads,
     /// Where the game's files come from (a folder, or an archive with loose files over it).
@@ -194,6 +197,7 @@ fn main() {
     }
     let mut app = App {
         title: game.title(),
+        icon: icon::load_icon(program, &assets),
         game,
         gamepads: gamepad::Gamepads::new(),
         watch: if reloadable { reload::Watch::new(&path, program, &root) } else { reload::Watch::none() },
@@ -700,6 +704,7 @@ impl ApplicationHandler for App {
         let (size, pos) = window_placement(self.window_size, self.window_pos, &monitors);
         let attributes = Window::default_attributes()
             .with_title(&self.title)
+            .with_window_icon(self.icon.clone())
             .with_inner_size(PhysicalSize::new(size.0, size.1))
             .with_position(PhysicalPosition::new(pos.0, pos.1))
             .with_maximized(self.window_maximized)
