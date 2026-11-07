@@ -260,15 +260,11 @@ pub fn thumbnail(scene: &View, image_size: &dyn Fn(&str) -> Option<Size>, into: 
     let scale = into.w / VIRTUAL.w;
     let mut out = vec![Draw::Rect { rect: into, color: [0.0, 0.0, 0.0, 1.0] }];
     for draw in scene.draw_list(image_size, None) {
-        match draw {
-            Draw::Image { src, dest, uv, alpha, shade, blur } => {
-                let dest = Rect::new(into.x + dest.x * scale, into.y + dest.y * scale, dest.w * scale, dest.h * scale);
-                if let Some((dest, uv)) = clip(dest, uv, into) {
-                    out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
-                }
+        if let Draw::Image { src, dest, uv, alpha, shade, blur, additive } = draw {
+            let dest = Rect::new(into.x + dest.x * scale, into.y + dest.y * scale, dest.w * scale, dest.h * scale);
+            if let Some((dest, uv)) = clip(dest, uv, into) {
+                out.push(Draw::Image { src, dest, uv, alpha, shade, blur: blur * scale, additive });
             }
-            tint @ (Draw::Tint(_) | Draw::Additive(_)) => out.push(tint), // a tinted or glowing sprite keeps its look in the thumbnail
-            _ => {}
         }
     }
     out
@@ -431,5 +427,16 @@ mod tests {
                 assert!(dest.y >= into.y && dest.y + dest.h <= into.y + into.h + 1e-3);
             }
         }
+    }
+
+    #[test]
+    fn a_thumbnail_blurs_in_proportion_to_its_size() {
+        let p = parse("::bg{src=bg.png blur=20}\n**A:** hi\n").unwrap();
+        let (_, cmds) = Session::start(&p);
+        let mut view = View::new().with_speed(0.0);
+        view.apply(&cmds);
+        let draws = thumbnail(&view, &|_| Some(Size::new(1920.0, 1080.0)), Rect::new(0.0, 0.0, 192.0, 108.0));
+        let blur = draws.iter().find_map(|d| if let Draw::Image { blur, .. } = d { Some(*blur) } else { None }).unwrap();
+        assert!((blur - 2.0).abs() < 1e-3, "{blur}");
     }
 }

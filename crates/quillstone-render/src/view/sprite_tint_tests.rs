@@ -1,4 +1,4 @@
-//! `tint` on sprites in the view: a marker round the sprite's pictures, eased per channel by moves, the whole
+//! `tint` on sprites in the view: the shade of the sprite's pictures, eased per channel by moves, the whole
 //! stack of a layered sprite, and the quad colour it ends up as (times the speaker shade).
 
 use super::*;
@@ -22,14 +22,13 @@ fn leg(tint: [f32; 3], time: f32, queued: bool) -> Cmd {
     Cmd::MoveSprite { id: "m".into(), flip: false, to, queued }
 }
 
-/// What the stage draws, as `bg`, `tint(..)` and `end` markers around picture names.
+/// What the stage draws: picture names, with the shade (tint) of the tinted ones.
 fn shape(v: &View) -> Vec<String> {
     v.draw_list(&img, None)
         .iter()
         .filter_map(|d| match d {
-            Draw::Image { src, .. } => Some(src.clone()),
-            Draw::Tint(Some(t)) => Some(format!("tint{t:?}")),
-            Draw::Tint(None) => Some("end".into()),
+            Draw::Image { src, shade, .. } if *shade == [1.0; 3] => Some(src.clone()),
+            Draw::Image { src, shade, .. } => Some(format!("{src}{shade:?}")),
             _ => None,
         })
         .collect()
@@ -40,19 +39,19 @@ fn background(src: &str) -> Cmd {
 }
 
 #[test]
-fn only_the_tinted_sprites_pictures_are_bracketed() {
+fn only_the_tinted_sprites_pictures_are_shaded() {
     let mut v = View::new().with_speed(0.0);
     v.apply(&[background("b.png"), show("m", &[], [0.5, 0.25, 1.0]), show("j", &[], [1.0; 3])]);
-    assert_eq!(shape(&v), ["b.png", "tint[0.5, 0.25, 1.0]", "m.png", "end", "j.png"]);
+    assert_eq!(shape(&v), ["b.png", "m.png[0.5, 0.25, 1.0]", "j.png"]);
     v.apply(&[show("m", &[], [1.0; 3])]);
-    assert_eq!(shape(&v), ["b.png", "m.png", "j.png"], "white is no marker at all");
+    assert_eq!(shape(&v), ["b.png", "m.png", "j.png"], "white is no shade at all");
 }
 
 #[test]
 fn a_layered_sprite_is_tinted_as_one_stack() {
     let mut v = View::new().with_speed(0.0);
     v.apply(&[show("m", &[("body", "body.png"), ("eyes", "eyes.png")], [0.0; 3])]);
-    assert_eq!(shape(&v), ["tint[0.0, 0.0, 0.0]", "body.png", "eyes.png", "end"]);
+    assert_eq!(shape(&v), ["body.png[0.0, 0.0, 0.0]", "eyes.png[0.0, 0.0, 0.0]"]);
 }
 
 #[test]
@@ -90,7 +89,4 @@ fn the_quad_colour_is_the_tint_times_the_speaker_shade() {
     let frame = build_frame(&v.draw_list(&img, None), Size::new(1920.0, 1080.0));
     assert_eq!(frame.quads.len(), 1);
     assert_eq!(frame.quads[0].color, [0.25, 0.125, 0.5, 1.0]);
-    // the marker ends with the sprite: what follows is not tinted
-    let after = build_frame(&[Draw::Tint(Some([0.0; 3])), Draw::Tint(None), Draw::Rect { rect: Rect::new(0.0, 0.0, 1.0, 1.0), color: [1.0; 4] }], Size::new(1920.0, 1080.0));
-    assert_eq!(after.quads[0].color, [1.0; 4]);
 }

@@ -271,7 +271,7 @@ mod real {
             }
             buffer.shape_until_scroll(&mut self.fonts, false);
             let wide = buffer.layout_runs().map(|run| run.line_w).fold(0.0, f32::max);
-            let left = (centre - wide / 2.0).max(0.0);
+            let left = (centre - wide / 2.0).min(size.0 as f32 - wide).max(0.0);
             for run in buffer.layout_runs() {
                 for glyph in run.glyphs.iter() {
                     let physical = glyph.physical((left, 0.0), 1.0);
@@ -593,6 +593,27 @@ mod tests {
         let mut at = |tagged: &str, n| renderer.rasterize(&typed(tagged, n)).unwrap().rgba;
         assert_eq!(at(real, 3), at(blank, 3), "only `ab ` is typed");
         assert_ne!(at(real, 4), at(blank, 4), "`c` is typed");
+    }
+
+    #[test]
+    fn a_reading_wider_than_its_text_at_the_right_edge_stays_inside() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): ruby edge test did not run");
+            return;
+        }
+        // the reading's own pixels: the same line with a reading that draws nothing, subtracted
+        let mut reading = |tagged: &str, align| {
+            let mut ink = |tagged: &str| {
+                let r = rich(tagged);
+                let draw = Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect: Rect::new(0.0, 0.0, 1200.0, 400.0), size: 40.0, color: [1.0; 4], align, outline: None };
+                lit(&renderer.rasterize(&build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)).unwrap())
+            };
+            ink(tagged) - ink(&tagged.replace("xyxyxyxyxy", "\u{200B}"))
+        };
+        let inside = reading("ab {ruby=xyxyxyxyxy}i{/ruby} cd", Align::Left);
+        let at_edge = reading("{ruby=xyxyxyxyxy}i{/ruby}", Align::Right);
+        assert!(at_edge * 100 >= inside * 95, "the whole reading is drawn: {at_edge} vs {inside}");
     }
 
     #[test]

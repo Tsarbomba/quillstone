@@ -82,7 +82,8 @@ fn dev_set_changes_variables_and_refuses_type_changes() {
     assert_eq!(s.state().vars["bag"], Value::List(vec!["k".into(), "m".into()]));
     s.dev_set("bag = []").unwrap();
     assert_eq!(s.state().vars["bag"], Value::List(vec![]), "a list literal sets or clears a list");
-    assert!(s.dev_set("gold = [\"k\"]").is_ok() && s.state().vars["gold"] == Value::Int(11), "a number is left alone");
+    assert!(s.dev_set("gold = [\"k\"]").unwrap_err().contains("not a list"));
+    assert_eq!(s.state().vars["gold"], Value::Int(11), "a number is left alone");
     assert!(s.dev_set("gold ==").is_err());
     assert_eq!(s.state().vars["gold"], Value::Int(11), "a refused change leaves the value");
 }

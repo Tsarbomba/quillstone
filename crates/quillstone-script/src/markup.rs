@@ -148,7 +148,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                 let close = paired.filter(|&k| chars[k] == '}').unwrap_or(first);
                 let inner: String = chars[i + 1..close].iter().collect();
                 let tag = inner.trim();
-                let plain_name = !matches!(tag, "p" | "nw") && (is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok());
+                let plain_name = !matches!(tag, "p" | "nw" | "u") && (is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok());
                 if ruby.is_some() && tag != "/ruby" && !plain_name {
                     return Err(IN_RUBY.into());
                 }
@@ -166,6 +166,9 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     }
                     if reading.is_empty() {
                         return Err("`{ruby=}` needs the reading to show above the text".into());
+                    }
+                    if reading.contains('{') {
+                        return Err("a `{ruby=...}` reading is plain text: it can't hold `{`".into());
                     }
                     close_run(out.text.len(), style, &ruby);
                     ruby = Some((reading.to_string(), out.text.len()));
@@ -573,6 +576,8 @@ mod tests {
             ("{ruby=a}{u}x{/u}{/ruby}", "only plain words"),
             ("{ruby=a}x{w=1}{/ruby}", "only plain words"),
             ("{ruby=a}x{p}{/ruby}", "only plain words"),
+            ("{ruby=a}x{u}y{/ruby}z{/u}", "only plain words"),
+            ("{ruby={r}}x{/ruby}", "reading is plain text"),
         ] {
             let e = parse_markup(src).unwrap_err();
             assert!(e.contains(needle), "{src}: {e}");

@@ -12,7 +12,7 @@ const STORY: &str = "::character{id=mika name=Mika}\n::character{id=jo name=Jo}\
 /// The brightness of the mika and jo sprites.
 fn shades(g: &Game) -> Vec<f32> {
     let any = |_: &str| Some(Size::new(500.0, 1000.0));
-    g.draw_list(&any).into_iter().filter_map(|d| if let Draw::Image { shade, .. } = d { Some(shade) } else { None }).collect()
+    g.draw_list(&any).into_iter().filter_map(|d| if let Draw::Image { shade, .. } = d { Some(shade[0]) } else { None }).collect()
 }
 
 fn game(p: &Program) -> Game<'_> {

@@ -10,7 +10,7 @@ fn stage(highlight: f32) -> View {
 /// The brightness each sprite is drawn at, in the order of `mika`, `jo`.
 fn shades(v: &View) -> Vec<f32> {
     let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
-    list.iter().filter_map(|d| if let Draw::Image { shade, .. } = d { Some(*shade) } else { None }).collect()
+    list.iter().filter_map(|d| if let Draw::Image { shade, .. } = d { Some(shade[0]) } else { None }).collect()
 }
 
 #[test]

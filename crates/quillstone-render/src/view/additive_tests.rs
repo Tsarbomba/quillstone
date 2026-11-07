@@ -1,4 +1,4 @@
-//! `blend=add` on sprites in the view: a marker round the sprite's pictures, kept through moves, and the
+//! `blend=add` on sprites in the view: the flag on the sprite's pictures, kept through moves, and the
 //! quads it ends up as.
 
 use super::*;
@@ -20,20 +20,20 @@ fn shape(v: &View) -> Vec<String> {
     v.draw_list(&img, None)
         .iter()
         .filter_map(|d| match d {
+            Draw::Image { src, additive: true, .. } => Some(format!("{src}+")),
             Draw::Image { src, .. } => Some(src.clone()),
-            Draw::Additive(on) => Some(format!("add={on}")),
             _ => None,
         })
         .collect()
 }
 
 #[test]
-fn only_the_additive_sprites_pictures_are_bracketed() {
+fn only_the_additive_sprites_pictures_are_flagged() {
     let mut v = View::new().with_speed(0.0);
     v.apply(&[show("a", false), show("glow", true), show("b", false)]);
-    assert_eq!(shape(&v), ["a.png", "add=true", "glow.png", "add=false", "b.png"]);
+    assert_eq!(shape(&v), ["a.png", "glow.png+", "b.png"]);
     v.apply(&[show("glow", false)]);
-    assert_eq!(shape(&v), ["a.png", "glow.png", "b.png"], "normal is no marker at all");
+    assert_eq!(shape(&v), ["a.png", "glow.png", "b.png"], "normal is no flag");
 }
 
 #[test]

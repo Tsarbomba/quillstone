@@ -71,19 +71,15 @@ pub struct Outline {
 /// draw in list order, back to front.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
-    /// `shade` multiplies the picture's colour (1 as it is, less is darker; a dimmed sprite). `blur` is a blur radius
-    /// in virtual pixels (0 is sharp).
-    Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: f32, blur: f32 },
+    /// `shade` multiplies the picture's colour (1 as it is, less is darker; a dimmed or tinted sprite). `blur` is a
+    /// blur radius in virtual pixels (0 is sharp). `additive`: drawn as light (`dst + src`) instead of source-over.
+    Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: [f32; 3], blur: f32, additive: bool },
     Rect { rect: Rect, color: [f32; 4] },
     /// Dark edges: the vignette picture (white, alpha rising outwards) over `rect`, shown through the window
     /// `zoom` of it across (see [`crate::pixels::vignette_zoom`]) and multiplied by `color`.
     Vignette { rect: Rect, color: [f32; 4], zoom: f32 },
     /// From here on the pictures that follow (the stage) get this colour matrix; `None` ends it.
     Filter(Option<ColorMatrix>),
-    /// The pictures that follow (one sprite's) are multiplied by this colour; `None` ends it.
-    Tint(Option<[f32; 3]>),
-    /// The pictures that follow (one sprite's) are drawn additively (`true`, light) instead of source-over; `false` ends it.
-    Additive(bool),
     /// The pictures that follow (the new background) appear where this greyscale picture is dark first: `(mask picture,
     /// reveal)` with `reveal` from [`crate::pixels::mask_reveal`]; `None` ends it. The mask is laid over the stage.
     Mask(Option<(String, f32)>),
@@ -745,64 +741,112 @@ struct Cover {
     fade: Fade,
 }
 
-/// The colour wash over the stage (`::tint`), easing from where it was to `color`/`alpha`.
-#[derive(Debug, Clone, PartialEq)]
-struct TintFade {
-    from: ([f32; 3], f32),
-    to: ([f32; 3], f32),
-    /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
-    progress: Fade,
+/// A value that can ease: the tint, vignette and filter over the stage.
+trait Eased: Copy + PartialEq {
+    fn mix(a: Self, b: Self, t: f32) -> Self;
+    /// The same look at nothing: what it eases from when none was showing, and to when it is removed.
+    fn cleared(self) -> Self;
+    /// Whether it changes the picture.
+    fn shown(&self) -> bool;
 }
 
-impl TintFade {
-    fn current(&self) -> ([f32; 3], f32) {
-        let (a, b, t) = (self.from, self.to, self.progress.alpha);
-        let mix = |x: f32, y: f32| x + (y - x) * t;
-        ([mix(a.0[0], b.0[0]), mix(a.0[1], b.0[1]), mix(a.0[2], b.0[2])], mix(a.1, b.1))
+fn lerp(x: f32, y: f32, t: f32) -> f32 {
+    x + (y - x) * t
+}
+
+/// The colour wash (`::tint`): colour and opacity.
+impl Eased for ([f32; 3], f32) {
+    fn mix(a: Self, b: Self, t: f32) -> Self {
+        ([lerp(a.0[0], b.0[0], t), lerp(a.0[1], b.0[1], t), lerp(a.0[2], b.0[2], t)], lerp(a.1, b.1, t))
+    }
+    fn cleared(self) -> Self {
+        (self.0, 0.0)
+    }
+    fn shown(&self) -> bool {
+        self.1 > 0.0
     }
 }
 
-/// The dark edges of the screen (`::vignette`), easing from where they were to `to`.
-#[derive(Debug, Clone, PartialEq)]
-struct VignetteFade {
-    from: Vignette,
-    to: Vignette,
-    /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
-    progress: Fade,
-}
-
-impl VignetteFade {
-    fn current(&self) -> Vignette {
-        let (a, b, t) = (self.from, self.to, self.progress.alpha);
-        let mix = |x: f32, y: f32| x + (y - x) * t;
+/// The dark edges (`::vignette`).
+impl Eased for Vignette {
+    fn mix(a: Self, b: Self, t: f32) -> Self {
         Vignette {
-            color: [mix(a.color[0], b.color[0]), mix(a.color[1], b.color[1]), mix(a.color[2], b.color[2])],
-            strength: mix(a.strength, b.strength),
-            size: mix(a.size, b.size),
+            color: [lerp(a.color[0], b.color[0], t), lerp(a.color[1], b.color[1], t), lerp(a.color[2], b.color[2], t)],
+            strength: lerp(a.strength, b.strength, t),
+            size: lerp(a.size, b.size, t),
         }
+    }
+    fn cleared(self) -> Self {
+        Vignette { strength: 0.0, ..self }
+    }
+    fn shown(&self) -> bool {
+        self.strength > 0.0
     }
 }
 
-/// The colour filter over the stage (`::filter`), easing from where it was to `to`.
+/// The colour filter (`::filter`).
+impl Eased for Filter {
+    fn mix(a: Self, b: Self, t: f32) -> Self {
+        Filter {
+            gray: lerp(a.gray, b.gray, t),
+            sepia: lerp(a.sepia, b.sepia, t),
+            brightness: lerp(a.brightness, b.brightness, t),
+            contrast: lerp(a.contrast, b.contrast, t),
+            saturation: lerp(a.saturation, b.saturation, t),
+        }
+    }
+    fn cleared(self) -> Self {
+        Filter::default()
+    }
+    fn shown(&self) -> bool {
+        *self != Filter::default()
+    }
+}
+
+/// An effect over the stage easing from where it was to `to`.
 #[derive(Debug, Clone, PartialEq)]
-struct FilterFade {
-    from: Filter,
-    to: Filter,
+struct Fading<T> {
+    from: T,
+    to: T,
     /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
     progress: Fade,
 }
 
-impl FilterFade {
-    fn current(&self) -> Filter {
-        let (a, b, t) = (self.from, self.to, self.progress.alpha);
-        let mix = |x: f32, y: f32| x + (y - x) * t;
-        Filter {
-            gray: mix(a.gray, b.gray),
-            sepia: mix(a.sepia, b.sepia),
-            brightness: mix(a.brightness, b.brightness),
-            contrast: mix(a.contrast, b.contrast),
-            saturation: mix(a.saturation, b.saturation),
+impl<T: Eased> Fading<T> {
+    fn current(&self) -> T {
+        T::mix(self.from, self.to, self.progress.alpha)
+    }
+
+    /// What shows right now, if anything.
+    fn showing(slot: &Option<Self>) -> Option<T> {
+        slot.as_ref().map(Self::current).filter(T::shown)
+    }
+
+    /// Ease `slot` to `set` (`None`: to nothing) from what it is now, or from clear.
+    fn set(slot: &mut Option<Self>, set: Option<T>, fade: f32) {
+        let now = Self::showing(slot);
+        let Some(to) = set.or(now.map(T::cleared)) else { return };
+        let from = now.unwrap_or(to.cleared());
+        let rate = Fade::rate_over(fade);
+        *slot = Some(Fading { from, to, progress: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } });
+        Self::drop_cleared(slot);
+    }
+
+    fn drop_cleared(slot: &mut Option<Self>) {
+        if slot.as_ref().is_some_and(|e| e.progress.done() && !e.to.shown()) {
+            *slot = None;
         }
+    }
+
+    fn tick(slot: &mut Option<Self>, dt: f32) {
+        if let Some(e) = slot {
+            e.progress.tick(dt);
+        }
+        Self::drop_cleared(slot);
+    }
+
+    fn busy(slot: &Option<Self>) -> bool {
+        slot.as_ref().is_some_and(|e| !e.progress.done())
     }
 }
 
@@ -832,9 +876,9 @@ pub struct View {
     cover: Option<Cover>,
     hud: HudLayer,
     particles: ParticleLayer,
-    tint: Option<TintFade>,
-    vignette: Option<VignetteFade>,
-    filter: Option<FilterFade>,
+    tint: Option<Fading<([f32; 3], f32)>>,
+    vignette: Option<Fading<Vignette>>,
+    filter: Option<Fading<Filter>>,
     /// `::textbox{hide}` is in effect, and how visible the box is now (0..1, fading).
     box_hidden: bool,
     box_fade: Fade,
@@ -1203,9 +1247,12 @@ impl View {
             return;
         }
         self.previous_blur = self.background.as_ref().map_or(0.0, |b| b.blur);
+        let previous_src = self.background.as_ref().map(|b| b.src.clone());
         self.previous_background = if fade > 0.0 { self.background.take().map(|b| b.src) } else { None };
         self.previous_bg_clock = self.bg_clock;
-        self.bg_clock = 0.0;
+        if previous_src.as_deref() != Some(src) {
+            self.bg_clock = 0.0; // the same clip with a new blur carries on from where it is
+        }
         self.background = Some(Background { src: src.to_string(), fade, wipe, mask, sound, blur, elapsed: 0.0 });
     }
 
@@ -1275,76 +1322,32 @@ impl View {
 
     /// Ease the tint to `set` (`None`: to nothing) from what it is now, or from clear.
     fn set_tint(&mut self, set: Option<([f32; 3], f32)>, fade: f32) {
-        let now = self.tint();
-        let to = match (set, now) {
-            (Some(to), _) => to,
-            (None, Some((color, _))) => (color, 0.0),
-            (None, None) => return,
-        };
-        let from = now.unwrap_or((to.0, 0.0));
-        let rate = Fade::rate_over(fade);
-        self.tint = Some(TintFade { from, to, progress: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } });
-        self.drop_cleared_tint();
-    }
-
-    fn drop_cleared_tint(&mut self) {
-        if self.tint.as_ref().is_some_and(|t| t.progress.done() && t.to.1 <= 0.0) {
-            self.tint = None;
-        }
+        Fading::set(&mut self.tint, set, fade);
     }
 
     /// The colour and opacity of the tint right now, if there is one showing.
     pub fn tint(&self) -> Option<([f32; 3], f32)> {
-        self.tint.as_ref().map(TintFade::current).filter(|(_, alpha)| *alpha > 0.0)
+        Fading::showing(&self.tint)
     }
 
     /// Ease the vignette to `set` (`None`: to nothing) from what it is now, or from clear.
     fn set_vignette(&mut self, set: Option<Vignette>, fade: f32) {
-        let now = self.vignette();
-        let to = match (set, now) {
-            (Some(to), _) => to,
-            (None, Some(v)) => Vignette { strength: 0.0, ..v },
-            (None, None) => return,
-        };
-        let from = now.unwrap_or(Vignette { strength: 0.0, ..to });
-        let rate = Fade::rate_over(fade);
-        self.vignette = Some(VignetteFade { from, to, progress: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } });
-        self.drop_cleared_vignette();
-    }
-
-    fn drop_cleared_vignette(&mut self) {
-        if self.vignette.as_ref().is_some_and(|v| v.progress.done() && v.to.strength <= 0.0) {
-            self.vignette = None;
-        }
+        Fading::set(&mut self.vignette, set, fade);
     }
 
     /// The dark edges right now, if there are any showing.
     pub fn vignette(&self) -> Option<Vignette> {
-        self.vignette.as_ref().map(VignetteFade::current).filter(|v| v.strength > 0.0)
+        Fading::showing(&self.vignette)
     }
 
     /// Ease the filter to `set` (`None`: to nothing) from what it is now, or from none.
     fn set_filter(&mut self, set: Option<Filter>, fade: f32) {
-        let now = self.filter();
-        if set.is_none() && now.is_none() {
-            return;
-        }
-        let from = now.unwrap_or_default();
-        let rate = Fade::rate_over(fade);
-        let progress = Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate };
-        self.filter = Some(FilterFade { from, to: set.unwrap_or_default(), progress });
-        self.drop_cleared_filter();
-    }
-
-    fn drop_cleared_filter(&mut self) {
-        if self.filter.as_ref().is_some_and(|f| f.progress.done() && f.to == Filter::default()) {
-            self.filter = None;
-        }
+        Fading::set(&mut self.filter, set, fade);
     }
 
     /// The filter right now, if there is one showing.
     pub fn filter(&self) -> Option<Filter> {
-        self.filter.as_ref().map(FilterFade::current).filter(|f| *f != Filter::default())
+        Fading::showing(&self.filter)
     }
 
     /// The colour and opacity the stage is covered with right now, if it is.
@@ -1471,18 +1474,9 @@ impl View {
                 self.cover = None;
             }
         }
-        if let Some(t) = &mut self.tint {
-            t.progress.tick(dt);
-        }
-        self.drop_cleared_tint();
-        if let Some(v) = &mut self.vignette {
-            v.progress.tick(dt);
-        }
-        self.drop_cleared_vignette();
-        if let Some(f) = &mut self.filter {
-            f.progress.tick(dt);
-        }
-        self.drop_cleared_filter();
+        Fading::tick(&mut self.tint, dt);
+        Fading::tick(&mut self.vignette, dt);
+        Fading::tick(&mut self.filter, dt);
         self.sprites.retain(|s| !s.is_gone());
         self.hud.tick(dt);
         self.particles.tick(dt, animate);
@@ -1509,9 +1503,9 @@ impl View {
             || self.flash.is_some()
             || self.notice.is_some()
             || self.cover.as_ref().is_some_and(|c| !c.fade.done())
-            || self.tint.as_ref().is_some_and(|t| !t.progress.done())
-            || self.vignette.as_ref().is_some_and(|v| !v.progress.done())
-            || self.filter.as_ref().is_some_and(|f| !f.progress.done())
+            || Fading::busy(&self.tint)
+            || Fading::busy(&self.vignette)
+            || Fading::busy(&self.filter)
             || self.hud.fading()
             || !self.box_fade.done()
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
@@ -1593,29 +1587,15 @@ impl View {
         self.push_sprite_pictures(stage, s, image_size);
         let (dx, dy) = s.current_offset();
         let tint = s.current_tint();
-        // A white tint is no marker at all, so a plain scene draws what it always drew.
-        let tinted = tint != [1.0; 3] && stage.len() > first;
-        if tinted {
-            stage.insert(first, Draw::Tint(Some(tint)));
-        }
-        let additive = s.additive && stage.len() > first;
-        if additive {
-            stage.insert(first, Draw::Additive(true));
-        }
         for d in &mut stage[first..] {
-            if let Draw::Image { shade, dest, blur, .. } = d {
-                *shade = s.shade;
+            if let Draw::Image { shade, dest, blur, additive, .. } = d {
+                *shade = [s.shade * tint[0], s.shade * tint[1], s.shade * tint[2]];
+                *additive = s.additive;
                 *blur = s.current_blur();
                 // The offset comes after placement, in pixels of the stage (VIRTUAL).
                 dest.x += dx;
                 dest.y += dy;
             }
-        }
-        if tinted {
-            stage.push(Draw::Tint(None));
-        }
-        if additive {
-            stage.push(Draw::Additive(false));
         }
     }
 
@@ -1716,9 +1696,9 @@ impl View {
             }
             for draw in picture {
                 match (draw, bg.revealed()) {
-                    (Draw::Image { src, dest, uv, alpha, shade, blur }, Some(part)) => {
+                    (Draw::Image { src, dest, uv, alpha, shade, blur, additive }, Some(part)) => {
                         if let Some((dest, uv)) = clip(dest, uv, part) {
-                            stage.push(Draw::Image { src, dest, uv, alpha, shade, blur });
+                            stage.push(Draw::Image { src, dest, uv, alpha, shade, blur, additive });
                         }
                     }
                     (Draw::Rect { rect, color }, Some(part)) => {
@@ -1753,16 +1733,16 @@ impl View {
         let sprites = stage.split_off(bg_end);
         let view = self.stage_transform();
         let place = |out: &mut Vec<Draw>, draw: Draw| match draw {
-            Draw::Image { src, dest, uv, alpha, shade, blur } => {
+            Draw::Image { src, dest, uv, alpha, shade, blur, additive } => {
                 let zoomed = view(dest);
                 let blur = if dest.w > 0.0 { blur * zoomed.w / dest.w } else { blur }; // a zoomed-in camera blurs as much more
                 if let Some((dest, uv)) = clip(zoomed, uv, screen) {
-                    out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
+                    out.push(Draw::Image { src, dest, uv, alpha, shade, blur, additive });
                 }
             }
             // A solid colour fills the screen whatever the camera and shake do.
             rect @ Draw::Rect { .. } => out.push(rect),
-            tint @ (Draw::Tint(_) | Draw::Additive(_) | Draw::Mask(_)) => out.push(tint),
+            mask @ Draw::Mask(_) => out.push(mask),
             Draw::Text { .. } | Draw::Filter(_) | Draw::Vignette { .. } => {}
         };
         for draw in stage {
@@ -1825,7 +1805,7 @@ impl View {
         if let (Some(map), Some((spot, rect))) = (&self.imagemap, hovered_spot) {
             if spot.image.is_none() && !has_hover(spot) && image_size(&map.hover).is_some() {
                 if let Some((dest, uv)) = clip(screen, FULL_UV, rect) {
-                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
+                    out.push(Draw::Image { src: map.hover.clone(), dest, uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
                 }
             }
         }
@@ -2140,7 +2120,7 @@ fn push_image(
     }
     if let Some(size) = image_size(src) {
         let p = place(size, container, fit);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: 1.0, blur: 0.0 });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
     }
 }
 
@@ -2179,7 +2159,7 @@ fn push_sprite(
     // A mirrored sprite reads its texture right to left: the clip below carries the
     // negative width along, so cropping at the screen edge stays right.
     let uv = if look.flip { Rect::new(1.0, 0.0, -1.0, 1.0) } else { FULL_UV };
-    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha, shade: 1.0, blur: 0.0 });
+    out.push(Draw::Image { src: src.to_string(), dest: Rect::new(place_axis(x, VIRTUAL.w, w), place_axis(y, VIRTUAL.h, h), w, h), uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
 }
 
 #[cfg(test)]

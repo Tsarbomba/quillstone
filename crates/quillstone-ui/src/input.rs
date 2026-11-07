@@ -138,7 +138,7 @@ pub(crate) fn screen() -> Rect {
 /// `dest` filled with the theme picture `pic` when it is loaded, else with `color`.
 pub(crate) fn picture_or_rect(out: &mut Vec<Draw>, pic: Option<&str>, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
     match pic.filter(|src| image_size(src).is_some()) {
-        Some(src) => out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0, shade: 1.0, blur: 0.0 }),
+        Some(src) => out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false }),
         None => out.push(Draw::Rect { rect: dest, color }),
     }
 }

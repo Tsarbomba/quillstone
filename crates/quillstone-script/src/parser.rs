@@ -899,6 +899,11 @@ impl Parser {
                 number(b, "`random`")?;
             }
             Expr::Count(name) if !is_dynamic(name) => self.need_list(name, &format!("`count({name})`"))?,
+            Expr::Pick(args) if args.len() > 1 => {
+                if let Some(Expr::Var(n)) = args.iter().find(|a| matches!(a, Expr::Var(n) if self.is_list(n))) {
+                    return Err(format!("`pick` can't mix the list `{n}` with other values: use `pick({n})` alone"));
+                }
+            }
             _ => {}
         }
         e.children().into_iter().try_for_each(|c| self.check_numbers(c))
@@ -1276,17 +1281,14 @@ impl Parser {
                 let mask = match a.take("mask") {
                     None => None,
                     Some(None) => return Err("`mask=` needs a picture file, like `mask=assets/masks/ink.png`".into()),
-                    Some(Some(m)) => Some(m),
+                    Some(Some(m)) => Some(check_inside("mask", &m)?),
                 };
-                if let Some(m) = &mask {
+                if mask.is_some() {
                     if fade <= 0.0 {
                         return Err("a mask needs a duration: add `fade=` (seconds)".into());
                     }
                     if wipe.is_some() {
                         return Err("`mask` and `wipe` can't be combined: pick one transition".into());
-                    }
-                    if m.contains('{') {
-                        return Err("`mask=` is a plain picture file name (no `{variable}` in it)".into());
                     }
                 }
                 let through = match a.take("through") {
@@ -2504,17 +2506,25 @@ impl Parser {
         Ok(Op::Particles { set: Some(Particles { kind, amount, speed, wind, back }), fade })
     }
 
-    /// `::tint{color=#203060 alpha=0.35 fade=1}` sets the wash; `::tint{none}` (or `off`) removes it.
-    fn tint(a: &mut Attrs) -> Result<Op, String> {
+    /// The start of `::tint`, `::vignette` and `::filter`: `(fade, none, given)`: the `fade=` (at most 10 s), whether
+    /// `none`/`off` removes the effect (then none of its `keys` may be given), and whether any of `keys` is.
+    fn fade_or_none(a: &mut Attrs, cmd: &str, keys: &[&str]) -> Result<(f32, bool, bool), String> {
         let (none, off) = (a.flag("none"), a.flag("off"));
         let fade = Self::seconds(a, "fade", 0.0)?;
         if fade > 10.0 {
             return Err(format!("`fade={fade}` must be at most 10 seconds"));
         }
-        if none || off {
-            if let Some(extra) = ["color", "alpha"].into_iter().find(|k| a.0.iter().any(|(x, _)| x == k)) {
-                return Err(format!("`::tint{{none}}` takes only `fade=`, not `{extra}=`"));
-            }
+        let given = keys.iter().find(|k| a.0.iter().any(|(x, _)| x == *k));
+        if let Some(extra) = given.filter(|_| none || off) {
+            return Err(format!("`::{cmd}{{none}}` takes only `fade=`, not `{extra}=`"));
+        }
+        Ok((fade, none || off, given.is_some()))
+    }
+
+    /// `::tint{color=#203060 alpha=0.35 fade=1}` sets the wash; `::tint{none}` (or `off`) removes it.
+    fn tint(a: &mut Attrs) -> Result<Op, String> {
+        let (fade, none, _) = Self::fade_or_none(a, "tint", &["color", "alpha"])?;
+        if none {
             return Ok(Op::Tint { set: None, fade });
         }
         let Some(c) = a.value("color") else {
@@ -2529,19 +2539,11 @@ impl Parser {
     /// `::vignette{none}` (or `off`) removes them.
     fn vignette(a: &mut Attrs) -> Result<Op, String> {
         const KEYS: [&str; 3] = ["strength", "size", "color"];
-        let (none, off) = (a.flag("none"), a.flag("off"));
-        let fade = Self::seconds(a, "fade", 0.0)?;
-        if fade > 10.0 {
-            return Err(format!("`fade={fade}` must be at most 10 seconds"));
-        }
-        let given = KEYS.into_iter().find(|k| a.0.iter().any(|(x, _)| x == k));
-        if none || off {
-            if let Some(extra) = given {
-                return Err(format!("`::vignette{{none}}` takes only `fade=`, not `{extra}=`"));
-            }
+        let (fade, none, given) = Self::fade_or_none(a, "vignette", &KEYS)?;
+        if none {
             return Ok(Op::Vignette { set: None, fade });
         }
-        if given.is_none() {
+        if !given {
             return Err("`::vignette` needs `strength=`, `size=` or `color=` (or `none` to remove it)".into());
         }
         let color = a.value("color").map_or(Ok([0.0; 3]), |c| parse_color(&c))?;
@@ -2553,19 +2555,11 @@ impl Parser {
     /// `::filter{gray=1 fade=2}` sets the filter (what is left out is neutral); `::filter{none}` (or `off`) removes it.
     fn filter(a: &mut Attrs) -> Result<Op, String> {
         const KEYS: [&str; 5] = ["gray", "sepia", "brightness", "contrast", "saturation"];
-        let (none, off) = (a.flag("none"), a.flag("off"));
-        let fade = Self::seconds(a, "fade", 0.0)?;
-        if fade > 10.0 {
-            return Err(format!("`fade={fade}` must be at most 10 seconds"));
-        }
-        let given = KEYS.into_iter().find(|k| a.0.iter().any(|(x, _)| x == k));
-        if none || off {
-            if let Some(extra) = given {
-                return Err(format!("`::filter{{none}}` takes only `fade=`, not `{extra}=`"));
-            }
+        let (fade, none, given) = Self::fade_or_none(a, "filter", &KEYS)?;
+        if none {
             return Ok(Op::Filter { set: None, fade });
         }
-        if given.is_none() {
+        if !given {
             return Err("`::filter` needs `gray`, `sepia`, `brightness`, `contrast` or `saturation` (or `none` to remove the filter)".into());
         }
         let n = Filter::default();
@@ -4907,6 +4901,8 @@ mod tests {
             ("::if{pick(\"a\", \"b\") == \"a\"}\nHi.\n::endif\n", "only be used on the right of an assignment"),
             ("::set{who = pick()}\n", "takes at least 1"),
             ("::set{who = pick(random(1, 2))}\n", "assign it to a variable first"),
+            ("::set{who = pick(inv, \"A\")}\n", "use `pick(inv)` alone"),
+            ("# a\n::choice\n- [Go](#a){who = pick(\"A\", inv)}\n::\n", "use `pick(inv)` alone"),
         ] {
             assert!(has_err(&format!("{head}{tail}"), needle), "{tail}: {:?}", errs(&format!("{head}{tail}")));
         }
@@ -5359,6 +5355,8 @@ mod tests {
         let p = ok("::bg{src=b.png fade=1.5 mask=assets/masks/ink.png}\n::bg{color=#fff fade=1 mask=m.png}\n");
         assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.5, wipe: None, sound: false, blur: 0.0, mask: Some("assets/masks/ink.png".into()) });
         assert!(matches!(&p.ops[1], Op::Bg { mask: Some(m), .. } if m == "m.png"));
+        let dotted = ok("::bg{src=b.png fade=1 mask=./assets/ink.png}\n");
+        assert!(matches!(&dotted.ops[0], Op::Bg { mask: Some(m), .. } if m == "assets/ink.png"), "{:?}", dotted.ops[0]);
         let files: Vec<_> = p.assets().map(|(_, k, a)| (k, a)).collect();
         assert_eq!(files, [(AssetKind::Image, "b.png"), (AssetKind::Image, "assets/masks/ink.png"), (AssetKind::Image, "m.png")]);
         for (src, needle) in [
@@ -5366,7 +5364,8 @@ mod tests {
             ("::bg{src=a.png fade=1 mask}\n", "needs a picture file"),
             ("::bg{src=a.png fade=1 mask=m.png wipe=left}\n", "`mask` and `wipe` can't be combined"),
             ("::bg{src=a.png fade=1 mask=m.png through=#fff}\n", "`through` and `mask` can't be combined"),
-            ("::bg{src=a.png fade=1 mask=m_{x}.png}\n", "plain picture file name"),
+            ("::bg{src=a.png fade=1 mask=m_{x}.png}\n", "braces can't be part of a file name"),
+            ("::bg{src=a.png fade=1 mask=../x.png}\n", "inside the game folder"),
         ] {
             let e = errs(&format!("Hi.\n{src}"));
             assert_eq!(e.len(), 1, "{src}: {e:?}");

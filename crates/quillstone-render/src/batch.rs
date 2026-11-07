@@ -128,23 +128,19 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
     let mut frame = Frame { quads: Vec::with_capacity(draws.len()), texts: Vec::new() };
 
     let mut filter = IDENTITY;
-    let mut tint = [1.0; 3];
-    let mut additive = false;
     let mut mask: Option<&(String, f32)> = None;
     for draw in draws {
         match draw {
             Draw::Filter(m) => filter = m.unwrap_or(IDENTITY),
-            Draw::Tint(c) => tint = c.unwrap_or([1.0; 3]),
-            Draw::Additive(on) => additive = *on,
             Draw::Mask(m) => mask = m.as_ref(),
-            Draw::Image { src, dest, uv, alpha, shade, blur } => frame.quads.push(Quad {
+            Draw::Image { src, dest, uv, alpha, shade, blur, additive } => frame.quads.push(Quad {
                 texture: Tex::Image(src.clone()),
                 rect: to_ndc(to_window(*dest, lb), window),
                 uv: [uv.x, uv.y, uv.x + uv.w, uv.y + uv.h],
-                color: [shade * tint[0], shade * tint[1], shade * tint[2], *alpha],
+                color: [shade[0], shade[1], shade[2], *alpha],
                 blur: blur.max(0.0) * scale,
                 filter,
-                additive,
+                additive: *additive,
                 mask: quad_mask(mask, *dest),
             }),
             Draw::Rect { rect, color } => frame.quads.push(Quad {
@@ -154,7 +150,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                 color: *color,
                 blur: 0.0,
                 filter,
-                additive,
+                additive: false,
                 mask: quad_mask(mask, *rect),
             }),
             Draw::Vignette { rect, color, zoom } => {
@@ -216,7 +212,7 @@ mod tests {
     }
 
     fn image(src: &str, uv: Rect, alpha: f32) -> Draw {
-        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: 1.0, blur: 0.0 }
+        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false }
     }
 
     fn text(s: &str, visible: usize, rect: Rect) -> Draw {
@@ -246,7 +242,7 @@ mod tests {
 
     #[test]
     fn blur_is_scaled_to_window_pixels() {
-        let blurred = Draw::Image { src: "a.png".into(), dest: screen(), uv: UNIT, alpha: 1.0, shade: 1.0, blur: 10.0 };
+        let blurred = Draw::Image { src: "a.png".into(), dest: screen(), uv: UNIT, alpha: 1.0, shade: [1.0; 3], blur: 10.0, additive: false };
         assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(1920.0, 1080.0)).quads[0].blur, 10.0);
         assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(960.0, 540.0)).quads[0].blur, 5.0);
         let f = build_frame(&[image("a.png", UNIT, 1.0), Draw::Rect { rect: screen(), color: [0.0; 4] }], Size::new(960.0, 540.0));
@@ -441,14 +437,16 @@ mod tests {
     }
 
     #[test]
-    fn additive_brackets_set_the_quad_flag_in_order() {
+    fn additive_images_set_the_quad_flag_in_order() {
+        let glow = |src| match image(src, UNIT, 0.5) {
+            Draw::Image { src, dest, uv, alpha, shade, blur, .. } => Draw::Image { src, dest, uv, alpha, shade, blur, additive: true },
+            d => d,
+        };
         let draws = [
             image("a.png", UNIT, 1.0),
-            Draw::Additive(true),
-            image("glow.png", UNIT, 0.5),
+            glow("glow.png"),
             Draw::Filter(Some(IDENTITY)),
-            image("glow2.png", UNIT, 0.5),
-            Draw::Additive(false),
+            glow("glow2.png"),
             image("b.png", UNIT, 1.0),
             text("hi", 2, screen()),
         ];

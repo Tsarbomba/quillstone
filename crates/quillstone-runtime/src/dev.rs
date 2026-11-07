@@ -59,7 +59,7 @@ fn typed(declared: &Value, raw: &str) -> Result<Value, String> {
         Value::Str(_) => Value::Str(unquoted.to_string()),
         Value::Int(_) => Value::Int(raw.parse().map_err(|_| format!("`{raw}` is not a whole number"))?),
         Value::Bool(_) => Value::Bool(raw.parse().map_err(|_| format!("`{raw}` is not true or false"))?),
-        Value::List(_) => return Err("a list changes only with `set name += \"item\"`".into()),
+        Value::List(_) => return Err("a list can't be given here: change it in the console with `set name += \"item\"` or `set name = [\"a\", \"b\"]`".into()),
     })
 }
 
@@ -79,6 +79,9 @@ fn set_checked(program: &Program, state: &mut State, src: &str) -> Result<(), St
     match (&was, now) {
         (Some(Value::List(_)), _) if matches!(effect.op, quillstone_script::AssignOp::Set) && !matches!(effect.value, Expr::Lit(Value::List(_))) => {
             return Err(format!("`{var}` is a list: change it with `{var} += \"item\"`, `{var} -= \"item\"` or `{var} = [\"a\", \"b\"]`"));
+        }
+        (Some(w), _) if !matches!(w, Value::List(_)) && matches!(effect.value, Expr::Lit(Value::List(_))) => {
+            return Err(format!("`{var}` holds {}, not a list, so `= [..]` can't set it", kind(w)));
         }
         (Some(w), Some(n)) if std::mem::discriminant(w) != std::mem::discriminant(n) => {
             return Err(format!("`{var}` holds {}; it can't be changed to {}", kind(w), kind(n)));

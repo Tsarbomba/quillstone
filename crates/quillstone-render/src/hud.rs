@@ -190,7 +190,7 @@ impl HudLayer {
                 // the place of the normal one under the mouse once it is.
                 let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
                 let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
-                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: 1.0, blur: 0.0 });
+                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
                 Some(dest)
             }
         }

@@ -166,7 +166,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
                     let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
                     if let Some(size) = image_size(pic) {
                         let p = place(size, inner, Fit::Cover);
-                        out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
+                        out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
                     }
                 } else {
                     // No thumbnail decoding: a dark tile with a play glyph and the clip's name.
@@ -214,7 +214,7 @@ pub fn draw_picture(out: &mut Vec<Draw>, theme: &Theme, src: &str, image_size: &
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 1.0] });
     if let Some(size) = image_size(src) {
         let p = place(size, screen(), Fit::Contain);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: 1.0, blur: 0.0 });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
     }
     let hint = "Click or Esc to go back  \u{00B7}  Left/Right for the others";
     text(out, hint, Rect::new(0.0, VIRTUAL.h - 44.0, VIRTUAL.w, 32.0), 22.0, theme.dim_color, Align::Center);

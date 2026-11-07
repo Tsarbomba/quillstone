@@ -486,3 +486,13 @@ fn alpha_dims_the_sprite_and_a_pixel_offset_shifts_it_after_placement() {
     v.tick(0.5);
     assert!(close(v.sprites[0].opacity(), 0.5 * 0.875), "{}", v.sprites[0].opacity());
 }
+
+#[test]
+fn re_blurring_a_background_animation_does_not_restart_it() {
+    let mut v = view();
+    v.apply(&[bg("anim:bgloop", 0.0)]);
+    v.tick(1.6);
+    assert_eq!(files(&v), ["night.png"]);
+    v.apply(&[Cmd::SetBackground { src: "anim:bgloop".into(), fade: 1.0, wipe: None, sound: false, blur: 8.0, mask: None }]);
+    assert!(files(&v).iter().all(|f| f == "night.png"), "{:?}", files(&v));
+}

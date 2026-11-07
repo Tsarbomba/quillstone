@@ -181,7 +181,7 @@ fn picture(l: &Layer, i: u32, src: &str, size: Size, out: &mut Vec<Draw>) {
     let vy = 55.0 + 70.0 * unit(i, 1);
     let (x, y) = place(l, i, vy, 60.0 + 60.0 * near, 25.0 + 55.0 * unit(i, 4), w.max(h));
     if let Some((dest, uv)) = clip(Rect::new(x, y, w, h), FULL_UV, SCREEN) {
-        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha, shade: 1.0, blur: 0.0 });
+        out.push(Draw::Image { src: src.to_string(), dest, uv, alpha: (0.75 + 0.25 * near) * l.fade.alpha, shade: [1.0; 3], blur: 0.0, additive: false });
     }
 }
 
@@ -274,7 +274,7 @@ mod tests {
                                 assert!(color.iter().all(|c| (0.0..=1.0).contains(c)));
                             }
                             Draw::Image { dest, uv, .. } => assert!(inside(dest) && uv.w > 0.0 && uv.x >= 0.0 && uv.x + uv.w <= 1.001),
-                            Draw::Text { .. } | Draw::Filter(_) | Draw::Tint(_) | Draw::Additive(_) | Draw::Mask(_) | Draw::Vignette { .. } => panic!("no text"),
+                            Draw::Text { .. } | Draw::Filter(_) | Draw::Mask(_) | Draw::Vignette { .. } => panic!("no text"),
                         }
                     }
                 }
