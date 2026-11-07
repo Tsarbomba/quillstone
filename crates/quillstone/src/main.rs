@@ -1138,6 +1138,23 @@ fn spot_line(s: &quillstone_runtime::Spot) -> String {
     format!("{}  [region {x:.0}%,{y:.0}% {w:.0}%x{h:.0}%]", plain(&s.label))
 }
 
+/// The `quillstone run` text of a filter: the settings that are not neutral.
+fn filter_text(f: &quillstone_script::Filter) -> String {
+    let n = quillstone_script::Filter::default();
+    let parts: Vec<String> = [
+        ("gray", f.gray, n.gray),
+        ("sepia", f.sepia, n.sepia),
+        ("brightness", f.brightness, n.brightness),
+        ("contrast", f.contrast, n.contrast),
+        ("saturation", f.saturation, n.saturation),
+    ]
+    .iter()
+    .filter(|(_, v, d)| v != d)
+    .map(|(k, v, _)| format!("{k}={v}"))
+    .collect();
+    if parts.is_empty() { "neutral".into() } else { parts.join(" ") }
+}
+
 fn print_cmds(cmds: &[Cmd]) {
     for cmd in cmds {
         match cmd {
@@ -1182,6 +1199,10 @@ fn print_cmds(cmds: &[Cmd]) {
                 println!("[tint: #{r:02x}{g:02x}{b:02x}]");
             }
             Cmd::Tint { set: None, .. } => println!("[tint off]"),
+            Cmd::Vignette { set: Some(v), .. } => println!("[vignette: strength={} size={}]", v.strength, v.size),
+            Cmd::Vignette { set: None, .. } => println!("[vignette off]"),
+            Cmd::Filter { set: Some(f), .. } => println!("[filter: {}]", filter_text(f)),
+            Cmd::Filter { set: None, .. } => println!("[filter off]"),
             Cmd::Camera { camera, .. } => println!("[camera: {}x on {:.0}%, {:.0}%]", camera.zoom, camera.x * 100.0, camera.y * 100.0),
             Cmd::PlayMusic { src, .. } => println!("[music: {src}]"),
             Cmd::StopMusic { .. } => println!("[music stops]"),
@@ -1620,12 +1641,45 @@ mod tests {
     }
 
     #[test]
+    fn run_prints_only_the_filter_settings_that_change_something() {
+        let f = quillstone_script::Filter { gray: 1.0, contrast: 1.1, ..Default::default() };
+        assert_eq!(filter_text(&f), "gray=1 contrast=1.1");
+        assert_eq!(filter_text(&quillstone_script::Filter::default()), "neutral");
+    }
+
+    #[test]
+    fn check_reports_filter_mistakes_with_their_line() {
+        assert!(checked("::filter{gray=1 fade=1}\nHi.\n::filter{none fade=1}\n", &[]).is_ok());
+        let err = checked("Hi.\n::filter{gray=2}\n", &[]).unwrap_err();
+        assert!(err.contains(":2:") && err.contains("gray=2"), "{err}");
+        let err = checked("::filter{}\n", &[]).unwrap_err();
+        assert!(err.contains(":1:") && err.contains("needs"), "{err}");
+    }
+
+    #[test]
     fn check_reports_tint_mistakes_with_their_line() {
         assert!(checked("::tint{color=#203060 alpha=0.35 fade=1}\nHi.\n::tint{none fade=1}\n", &[]).is_ok());
         let err = checked("Hi.\n::tint{color=#203060 alpha=2}\n", &[]).unwrap_err();
         assert!(err.contains(":2:") && err.contains("alpha=2"), "{err}");
         let err = checked("::tint{none color=#fff}\n", &[]).unwrap_err();
         assert!(err.contains(":1:") && err.contains("takes only"), "{err}");
+    }
+
+    #[test]
+    fn check_reports_vignette_mistakes_with_their_line() {
+        assert!(checked("::vignette{strength=0.6 color=#600000 fade=1}\nHi.\n::vignette{none fade=1}\n", &[]).is_ok());
+        let err = checked("Hi.\n::vignette{size=2}\n", &[]).unwrap_err();
+        assert!(err.contains(":2:") && err.contains("size=2"), "{err}");
+        let err = checked("::vignette{}\n", &[]).unwrap_err();
+        assert!(err.contains(":1:") && err.contains("needs"), "{err}");
+    }
+
+    #[test]
+    fn check_reports_blend_mistakes_with_their_line() {
+        let ok = checked("::show{src=assets/g.png id=glow blend=add}\nHi.\n::show{src=assets/g.png id=glow blend=normal}\n", &[("assets/g.png", KEY)]);
+        assert!(ok.is_ok(), "{ok:?}");
+        let err = checked("Hi.\n::show{src=assets/g.png id=glow blend=screen}\n", &[("assets/g.png", KEY)]).unwrap_err();
+        assert!(err.contains(":2:") && err.contains("blend=screen"), "{err}");
     }
 
     #[test]
@@ -1722,6 +1776,14 @@ mod tests {
         let mut files = files.to_vec();
         files.push(("t.txt", theme.as_bytes()));
         in_dir(&files, |dir| quick_menu_warnings(&ThemeFile::read(&dir.join("t.txt")).unwrap(), dir, inventory, journal))
+    }
+
+    #[test]
+    fn check_validates_a_mask_picture_like_any_picture() {
+        let script = "::bg{color=#fff}\n::bg{color=#000 fade=1 mask=m.png}\nHi.\n";
+        assert!(checked(script, &[("m.png", KEY)]).is_ok());
+        assert!(checked(script, &[]).is_err(), "missing");
+        assert!(checked(script, &[("m.png", b"not a picture")]).is_err());
     }
 
     #[test]

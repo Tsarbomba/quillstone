@@ -11,17 +11,17 @@ fn img(_: &str) -> Option<Size> {
 fn show(blur: f32) -> Cmd {
     Cmd::ShowSprite {
         id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0,
-        alpha: 1.0, dx: 0.0, dy: 0.0, blur, fade: 0.0,
+        alpha: 1.0, dx: 0.0, dy: 0.0, blur, tint: [1.0; 3], additive: false, fade: 0.0,
     }
 }
 
 fn leg(blur: f32, time: f32, queued: bool) -> Cmd {
-    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur, time, ease: Ease::Linear, wait: 0.0 };
+    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur, tint: [1.0; 3], time, ease: Ease::Linear, wait: 0.0 };
     Cmd::MoveSprite { id: "m".into(), flip: false, to, queued }
 }
 
 fn bg(src: &str, fade: f32, blur: f32) -> Cmd {
-    Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur }
+    Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur, mask: None }
 }
 
 /// (picture, blur) of every image drawn, back to front.

@@ -96,7 +96,7 @@ fn alpha_and_offsets_survive_a_save_and_hostile_values_are_clamped() {
     let s = &loaded.state().sprites[0];
     assert_eq!((s.alpha, s.dx, s.dy), (1.0, 3840.0, -3840.0));
     // an older save stops after `yscale`
-    let old: String = text.lines().map(|l| if l.starts_with("sprite ") { l.rsplitn(5, ' ').last().unwrap().to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
+    let old: String = text.lines().map(|l| if l.starts_with("sprite ") { l.rsplitn(8, ' ').last().unwrap().to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
     let (loaded, _) = Session::load(&p, &old).unwrap();
     let s = &loaded.state().sprites[0];
     assert_eq!((s.alpha, s.dx, s.dy), (1.0, 0.0, 0.0));

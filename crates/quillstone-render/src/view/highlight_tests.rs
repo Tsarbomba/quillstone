@@ -2,7 +2,7 @@ use super::*;
 
 fn stage(highlight: f32) -> View {
     let mut v = View::new().with_theme(Theme { speaker_highlight: highlight, ..Theme::default() });
-    let sprite = |id: &str, x: f32| Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 };
+    let sprite = |id: &str, x: f32| Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 };
     v.apply(&[sprite("mika", 0.2), sprite("jo", 0.8)]);
     v
 }
@@ -65,7 +65,7 @@ fn a_sprite_that_has_just_appeared_is_dim_at_once_and_a_redraw_is_never_a_fade()
     v.set_speaker(Some("mika".into()), false);
     assert_eq!(shades(&v), [1.0, 0.6], "both new: no ramp from full brightness");
     v.tick(1.0);
-    v.apply(&[Cmd::ClearScene, Cmd::ShowSprite { id: "mika".into(), src: "mika.png".into(), layers: vec![], x: 0.2, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
+    v.apply(&[Cmd::ClearScene, Cmd::ShowSprite { id: "mika".into(), src: "mika.png".into(), layers: vec![], x: 0.2, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }]);
     v.set_speaker(Some("jo".into()), true);
     assert_eq!(shades(&v), [1.0], "jo is not on stage after the redraw: nobody dims");
 }

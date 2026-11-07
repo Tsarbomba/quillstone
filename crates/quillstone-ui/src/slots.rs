@@ -260,11 +260,15 @@ pub fn thumbnail(scene: &View, image_size: &dyn Fn(&str) -> Option<Size>, into: 
     let scale = into.w / VIRTUAL.w;
     let mut out = vec![Draw::Rect { rect: into, color: [0.0, 0.0, 0.0, 1.0] }];
     for draw in scene.draw_list(image_size, None) {
-        if let Draw::Image { src, dest, uv, alpha, shade, blur } = draw {
-            let dest = Rect::new(into.x + dest.x * scale, into.y + dest.y * scale, dest.w * scale, dest.h * scale);
-            if let Some((dest, uv)) = clip(dest, uv, into) {
-                out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
+        match draw {
+            Draw::Image { src, dest, uv, alpha, shade, blur } => {
+                let dest = Rect::new(into.x + dest.x * scale, into.y + dest.y * scale, dest.w * scale, dest.h * scale);
+                if let Some((dest, uv)) = clip(dest, uv, into) {
+                    out.push(Draw::Image { src, dest, uv, alpha, shade, blur });
+                }
             }
+            tint @ (Draw::Tint(_) | Draw::Additive(_)) => out.push(tint), // a tinted or glowing sprite keeps its look in the thumbnail
+            _ => {}
         }
     }
     out
@@ -413,14 +417,14 @@ mod tests {
 
     #[test]
     fn thumbnails_are_scaled_pictures_without_text() {
-        let p = parse("::bg{src=bg.png}\n::show{src=s.png id=s x=12%}\n**A:** hi\n").unwrap();
+        let p = parse("::bg{src=bg.png}\n::show{src=s.png id=s x=12%}\n::vignette{strength=0.9}\n**A:** hi\n").unwrap();
         let (_, cmds) = Session::start(&p);
         let mut view = View::new().with_speed(0.0);
         view.apply(&cmds);
         let into = Rect::new(100.0, 100.0, 192.0, 108.0);
         let draws = thumbnail(&view, &|_| Some(Size::new(1000.0, 1000.0)), into);
         assert!(draws.iter().all(|d| !matches!(d, Draw::Text { .. })));
-        assert_eq!(draws.len(), 3); // backdrop, background, sprite
+        assert_eq!(draws.len(), 3); // backdrop, background, sprite: no vignette, as with a tint
         for d in &draws {
             if let Draw::Image { dest, .. } = d {
                 assert!(dest.x >= into.x && dest.x + dest.w <= into.x + into.w + 1e-3);

@@ -3,8 +3,8 @@ title: Staging
 ---
 
 <!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{u}`, `{ruby}`, `{p}` and `{nw}`
-     text tags, `blur=` on the background and on a sprite, `::flash`, a looping `::sfx` that is started and later stopped, a shake along
-     one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash and a timed choice.
+     text tags, `blur=` on the background and on a sprite, `tint=` on a sprite, a light overlay (`blend=add`), `::flash`, a looping `::sfx` that is started and later stopped, a shake along
+     one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash, a `::vignette`, a `::filter` and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
@@ -68,7 +68,21 @@ The screen is black, and this narration is still readable: the dialogue box is n
 **Mika:** And this is `::tint`: a night wash over the whole picture, eased in over a second. It stays until it is removed, and the text box is never tinted.
 
 ::tint{none fade=1}
-**Mika:** Gone again. A grey or sepia tint makes a decent flashback, but it only lays a colour over the picture: it does not drain it.
+**Mika:** Gone again. A tint only lays a colour over the picture: it does not drain it.
+
+<!-- `::vignette` darkens the edges and corners and leaves the middle clear. It stays until `none`, and the text box is never darkened. -->
+::vignette{strength=0.7 size=0.6 color=#400000 fade=1}
+**Mika:** Whoa, the room is closing in. That is `::vignette`: dark edges, here a deep red, for a dizzy moment or an injury.
+
+::vignette{none fade=1}
+**Mika:** Better. The edges open up again.
+
+<!-- `::filter` really changes the colours: gray, sepia, brightness, contrast, saturation. The textbox is never filtered. -->
+::filter{gray=1 fade=1}
+**Mika:** This is `::filter` with `gray=1`: the colour is truly gone, not covered, and the text box kept its colours. A tint would sit on top of it.
+
+::filter{none fade=1}
+**Mika:** And back, easing out over a second.
 
 <!-- `blur=` softens a picture; the radius is in pixels of the stage (0 to 64). A `::bg` is sharp unless it says `blur=`. -->
 ::bg{src=assets/rooftop.png blur=16 fade=1}
@@ -77,7 +91,23 @@ The screen is black, and this narration is still readable: the dialogue box is n
 ::move{mika blur=12 time=0.6 then blur=0 time=0.6}
 **Mika:** And I just went out of focus and back with `blur=12` in a `::move`, and `blur=0` in the `then` step after it.
 
-::bg{src=assets/rooftop.png fade=1}
+<!-- `tint=` multiplies one sprite's colours: `#ffffff` is unchanged, `#000000` a silhouette, `none` takes it off. -->
+::move{mika tint=#6070a0 time=0.6}
+**Mika:** Now only I have a night-blue tint, with `tint=#6070a0` in a `::move`. The background is untouched.
+
+::move{mika tint=none time=0.6}
+**Mika:** And `tint=none` brings my colours back.
+
+<!-- `blend=add` adds a picture to what is under it: a lamp glow drawn on transparent, bright in the middle. -->
+::show{src=assets/lamp_glow.png id=glow x=75% y=45% scale=1.2 blend=add alpha=0.9 z=5 fade=0.5}
+::move{glow alpha=0.5 time=0.3 ease=inout loop}
+**Mika:** That warm glow is a light overlay: `blend=add` adds the picture to the scene, and a looping `::move` of its `alpha` makes it flicker.
+
+::hide{glow fade=0.5}
+
+<!-- `mask=` changes the background following a greyscale picture: dark parts show the new picture first, white parts last. -->
+::bg{src=assets/rooftop.png fade=2 mask=assets/masks/clock.png}
+**Mika:** That was a clock wipe: `mask=` made the new background appear where a greyscale picture is dark first. A different mask gives ink spreading or any shape you draw.
 
 **Mika:** The quiet pad under us is a looping `::sfx`. It keeps playing across rollback, and it will stop at the end of this scene.
 

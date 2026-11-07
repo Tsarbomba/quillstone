@@ -1117,6 +1117,39 @@ pub struct Tint {
     pub alpha: f32,
 }
 
+/// Allowed `strength=` and `size=` of `::vignette`, and their defaults.
+pub const VIGNETTE_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+pub const DEFAULT_VIGNETTE: f32 = 0.5;
+
+/// The dark edges of the screen (`::vignette`): `strength` is how dark the corners get, `size` how far in it
+/// reaches, `color` what it is dark with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vignette {
+    pub color: [f32; 3],
+    pub strength: f32,
+    pub size: f32,
+}
+
+/// Allowed `gray=` and `sepia=` of `::filter`; `brightness=`, `contrast=` and `saturation=` take `FILTER_GAIN`.
+pub const FILTER_AMOUNT: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+pub const FILTER_GAIN: std::ops::RangeInclusive<f32> = 0.0..=3.0;
+
+/// The colour filter over the stage (`::filter`). `Default` changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Filter {
+    pub gray: f32,
+    pub sepia: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Filter { gray: 0.0, sepia: 0.0, brightness: 1.0, contrast: 1.0, saturation: 1.0 }
+    }
+}
+
 /// What falls in `::particles`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParticleKind {
@@ -1546,15 +1579,18 @@ pub struct MoveStep {
     pub dx: Option<f32>,
     pub dy: Option<f32>,
     pub blur: Option<f32>,
+    /// The colour the sprite's picture is multiplied by (white is none).
+    pub tint: Option<[f32; 3]>,
     pub time: f32,
     pub ease: Ease,
     pub wait: f32,
 }
 
 impl MoveStep {
-    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur: the values the step sets.
-    pub fn props(&self) -> [Option<f32>; 9] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur]
+    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue: the values the step sets.
+    pub fn props(&self) -> [Option<f32>; 12] {
+        let t = |k: usize| self.tint.map(|c| c[k]);
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur, t(0), t(1), t(2)]
     }
 
     /// Sets nothing and waits for nothing.
@@ -1572,8 +1608,9 @@ pub enum Op {
     Image { src: String, alt: String },
     /// Background. `src` may be a video (the backend plays it looped). With a
     /// `wipe`, the new picture is revealed from one side over `fade` seconds. `sound`: a video
-    /// background plays its own sound (otherwise it is muted). `blur`: how blurred it is, in stage pixels (0 sharp).
-    Bg { src: String, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32 },
+    /// background plays its own sound (otherwise it is muted). `blur`: how blurred it is, in stage pixels (0 sharp). `mask`: a greyscale picture the new
+    /// background follows over `fade` seconds (dark first) instead of a plain fade.
+    Bg { src: String, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32, mask: Option<String> },
     /// Show (or change the pose of) a sprite. `x` and `y` place it (see [`POSITION`]): the point that
     /// fraction across (down) the sprite is that fraction across (down) the screen, so 0..1 keeps it on
     /// screen; beyond that it slides off by whole screens. `None` keeps the current position; a new sprite is centred on the bottom edge (0.5, 1.0).
@@ -1603,6 +1640,10 @@ pub enum Op {
         dy: Option<f32>,
         /// Blur radius in stage pixels (0 sharp); keeps the current value when `None` (0 for a new sprite).
         blur: Option<f32>,
+        /// Colour the picture is multiplied by (`tint=none` is white); keeps the current one when `None` (white for a new sprite).
+        tint: Option<[f32; 3]>,
+        /// Additive blending (`blend=add`, light overlays) or normal; keeps the current one when `None` (normal for a new sprite).
+        additive: Option<bool>,
         fade: f32,
     },
     /// Hide one sprite, or all of them when `id` is `None`.
@@ -1629,6 +1670,12 @@ pub enum Op {
     /// Set (`Some`) or remove (`None`) the colour wash over the stage, easing over `fade`
     /// seconds from what it is now. Doesn't wait.
     Tint { set: Option<Tint>, fade: f32 },
+    /// Set (`Some`) or remove (`None`) the dark edges of the screen, easing over `fade`
+    /// seconds from what they are now. Doesn't wait.
+    Vignette { set: Option<Vignette>, fade: f32 },
+    /// Set (`Some`) or remove (`None`) the colour filter over the stage, easing over `fade`
+    /// seconds from what it is now. Doesn't wait.
+    Filter { set: Option<Filter>, fade: f32 },
     /// Background music. With an `intro`, that file plays once and `src` then loops.
     Music { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
@@ -1746,6 +1793,7 @@ impl Op {
                 .filter(|(_, l)| !l.is_empty() && anim_id(l).is_none())
                 .map(|(_, l)| (AssetKind::Image, l.as_str()))
                 .collect(),
+            Op::Bg { mask: Some(m), .. } => self.asset().into_iter().chain([(AssetKind::Image, m.as_str())]).collect(),
             Op::Hud { elem, .. } => self.asset().into_iter().chain(elem.hover.iter().map(|h| (AssetKind::Image, h.as_str()))).collect(),
             _ => self.asset().into_iter().collect(),
         }
@@ -1964,9 +2012,9 @@ mod tests {
 
     #[test]
     fn asset_kinds_follow_the_extension() {
-        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 };
+        let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, additive: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into(), volume: 1.0 }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

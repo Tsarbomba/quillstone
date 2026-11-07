@@ -402,6 +402,7 @@ mod tests {
                         match d {
                             Draw::Rect { rect, .. } | Draw::Text { rect, .. } => assert!(inside_screen(*rect), "{rect:?} for {t:?}"),
                             Draw::Image { dest, .. } => assert!(inside_screen(*dest), "{dest:?}"),
+                            Draw::Filter(_) | Draw::Tint(_) | Draw::Additive(_) | Draw::Mask(_) | Draw::Vignette { .. } => {}
                         }
                     }
                 }

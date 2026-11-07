@@ -274,7 +274,7 @@ mod tests {
                                 assert!(color.iter().all(|c| (0.0..=1.0).contains(c)));
                             }
                             Draw::Image { dest, uv, .. } => assert!(inside(dest) && uv.w > 0.0 && uv.x >= 0.0 && uv.x + uv.w <= 1.001),
-                            Draw::Text { .. } => panic!("no text"),
+                            Draw::Text { .. } | Draw::Filter(_) | Draw::Tint(_) | Draw::Additive(_) | Draw::Mask(_) | Draw::Vignette { .. } => panic!("no text"),
                         }
                     }
                 }
@@ -397,7 +397,7 @@ mod tests {
     fn the_layer_decides_whether_they_are_behind_the_sprites() {
         let mut v = View::new();
         let sprite = Cmd::ShowSprite {
-            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0,
+            id: "a".into(), src: "petal.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0,
         };
         let order = |v: &View| -> Vec<&'static str> {
             let mut o: Vec<&'static str> = v
@@ -412,7 +412,7 @@ mod tests {
             o.dedup();
             o
         };
-        let bg = Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 };
+        let bg = Cmd::SetBackground { src: "bg.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None };
         v.apply(&[bg.clone(), sprite.clone(), cmd(set(ParticleKind::Snow, 20), 0.0)]);
         assert_eq!(order(&v), ["bg", "sprite", "particle"]);
         v.apply(&[Cmd::ClearScene, bg, sprite, cmd(Particles { back: true, ..set(ParticleKind::Snow, 20) }, 0.0)]);

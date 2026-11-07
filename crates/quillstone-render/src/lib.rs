@@ -8,6 +8,7 @@
 //!   animates backgrounds and the typewriter text, and produces a [`Draw`] list.
 //! - [`batch`]: converts a draw list into clip-space [`Quad`]s for a window size.
 //! - [`theme`]: colours, font, sizes and images of a game, from its theme file.
+//! - [`filter`]: the `::filter` settings as a colour matrix for the GPU.
 //! - [`particles`]: ambient snow, rain or a picture falling, from the time alone.
 //! - [`pixels`]: prepares decoded images for upload (alpha bleeding, mipmaps).
 //! - [`image_probe`]: whether an image file is one the player can show.
@@ -18,6 +19,7 @@
 
 pub mod batch;
 mod fade;
+pub mod filter;
 pub mod hud;
 pub mod image_probe;
 pub mod layout;
@@ -27,6 +29,7 @@ pub mod theme;
 pub mod view;
 
 pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
+pub use filter::ColorMatrix;
 pub use layout::{
     clip, estimate_lines, estimate_lines_styled, letterbox, line_height, one_row, place, to_ndc, to_virtual, to_window, Placement, Rect, Size, FULL_UV, VIRTUAL,
 };

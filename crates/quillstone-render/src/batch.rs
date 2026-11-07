@@ -5,6 +5,7 @@
 //! rasterizes into a texture (text quads point at their job). A video frame will
 //! just be another quad whose texture is updated every frame.
 
+use crate::filter::{ColorMatrix, IDENTITY};
 use crate::layout::{letterbox, to_ndc, to_window, Rect, Size, VIRTUAL};
 use crate::view::{Align, Draw, Outline, TextRun};
 
@@ -13,6 +14,8 @@ use crate::view::{Align, Draw, Outline, TextRun};
 pub enum Tex {
     /// A 1x1 white texture; the quad's colour is the fill.
     Solid,
+    /// The generated vignette picture (white, alpha rising outwards; `pixels::vignette_level`).
+    Vignette,
     /// A loaded image, by the path used in the script.
     Image(String),
     /// The rasterized text of `Frame::texts[i]`.
@@ -31,6 +34,23 @@ pub struct Quad {
     pub color: [f32; 4],
     /// Blur radius in window pixels (0 is sharp): the backend averages the picture over a disc this wide.
     pub blur: f32,
+    /// The stage's colour filter (`rgb' = M * rgb + offset`, the GPU clamps the result); the identity elsewhere.
+    pub filter: ColorMatrix,
+    /// Drawn additively (`dst + src * alpha`, a light) instead of source-over.
+    pub additive: bool,
+    /// A mask transition: the quad's alpha is multiplied by the coverage of the mask picture where it lies.
+    pub mask: Option<QuadMask>,
+}
+
+/// The mask of a quad (see [`crate::pixels::mask_coverage`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuadMask {
+    /// The mask picture, by script path (its red channel is the mask).
+    pub src: String,
+    /// `[u0, v0, u1, v1]` into the mask: where the quad's corners lie on the stage (the mask covers all of it).
+    pub uv: [f32; 4],
+    /// The threshold of the transition (`pixels::mask_reveal`).
+    pub reveal: f32,
 }
 
 /// Text to rasterize, in window pixels (already scaled to the letterboxed screen).
@@ -91,6 +111,15 @@ pub struct Frame {
     pub texts: Vec<TextJob>,
 }
 
+/// The mask of a quad at `r` (virtual pixels) during a mask transition.
+fn quad_mask(mask: Option<&(String, f32)>, r: Rect) -> Option<QuadMask> {
+    mask.map(|(src, reveal)| QuadMask {
+        src: src.clone(),
+        uv: [r.x / VIRTUAL.w, r.y / VIRTUAL.h, (r.x + r.w) / VIRTUAL.w, (r.y + r.h) / VIRTUAL.h],
+        reveal: *reveal,
+    })
+}
+
 /// Convert draws (virtual 1920x1080 space) into quads and text jobs for a window
 /// of `window` pixels. Order is preserved (back to front).
 pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
@@ -98,14 +127,25 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
     let scale = lb.w / VIRTUAL.w;
     let mut frame = Frame { quads: Vec::with_capacity(draws.len()), texts: Vec::new() };
 
+    let mut filter = IDENTITY;
+    let mut tint = [1.0; 3];
+    let mut additive = false;
+    let mut mask: Option<&(String, f32)> = None;
     for draw in draws {
         match draw {
+            Draw::Filter(m) => filter = m.unwrap_or(IDENTITY),
+            Draw::Tint(c) => tint = c.unwrap_or([1.0; 3]),
+            Draw::Additive(on) => additive = *on,
+            Draw::Mask(m) => mask = m.as_ref(),
             Draw::Image { src, dest, uv, alpha, shade, blur } => frame.quads.push(Quad {
                 texture: Tex::Image(src.clone()),
                 rect: to_ndc(to_window(*dest, lb), window),
                 uv: [uv.x, uv.y, uv.x + uv.w, uv.y + uv.h],
-                color: [*shade, *shade, *shade, *alpha],
+                color: [shade * tint[0], shade * tint[1], shade * tint[2], *alpha],
                 blur: blur.max(0.0) * scale,
+                filter,
+                additive,
+                mask: quad_mask(mask, *dest),
             }),
             Draw::Rect { rect, color } => frame.quads.push(Quad {
                 texture: Tex::Solid,
@@ -113,7 +153,23 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: *color,
                 blur: 0.0,
+                filter,
+                additive,
+                mask: quad_mask(mask, *rect),
             }),
+            Draw::Vignette { rect, color, zoom } => {
+                let (lo, hi) = (0.5 - zoom / 2.0, 0.5 + zoom / 2.0);
+                frame.quads.push(Quad {
+                    texture: Tex::Vignette,
+                    rect: to_ndc(to_window(*rect, lb), window),
+                    uv: [lo, lo, hi, hi],
+                    color: *color,
+                    blur: 0.0,
+                    filter: IDENTITY,
+                    additive: false,
+                    mask: None,
+                });
+            }
             Draw::Text { text, runs, visible_chars, rect, size, color, align, outline } => {
                 let total = text.chars().count();
                 let visible = (*visible_chars).min(total);
@@ -130,6 +186,9 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                     uv: [0.0, 0.0, 1.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     blur: 0.0,
+                    filter,
+                    additive: false,
+                    mask: None,
                 });
                 frame.texts.push(TextJob {
                     text: text.clone(),
@@ -174,6 +233,16 @@ mod tests {
     }
 
     const UNIT: Rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+
+    #[test]
+    fn a_vignette_is_the_generated_picture_shown_through_a_window_of_it() {
+        let v = Draw::Vignette { rect: screen(), color: [1.0, 0.0, 0.0, 0.6], zoom: 0.8 };
+        let f = build_frame(&[Draw::Filter(Some([[0.5; 4]; 3])), v], Size::new(960.0, 540.0));
+        let q = &f.quads[0];
+        assert_eq!((&q.texture, q.color, q.rect), (&Tex::Vignette, [1.0, 0.0, 0.0, 0.6], [-1.0, 1.0, 1.0, -1.0]));
+        assert!(q.uv.iter().zip([0.1, 0.1, 0.9, 0.9]).all(|(a, b)| (a - b).abs() < 1e-6), "{:?}", q.uv);
+        assert_eq!(q.filter, IDENTITY, "a filter never reaches it");
+    }
 
     #[test]
     fn blur_is_scaled_to_window_pixels() {
@@ -369,5 +438,40 @@ mod tests {
         assert_eq!(f.texts.len(), 2);
         assert_eq!(f.texts[0].text, "b");
         assert_eq!(f.quads[1].texture, Tex::Text(1));
+    }
+
+    #[test]
+    fn additive_brackets_set_the_quad_flag_in_order() {
+        let draws = [
+            image("a.png", UNIT, 1.0),
+            Draw::Additive(true),
+            image("glow.png", UNIT, 0.5),
+            Draw::Filter(Some(IDENTITY)),
+            image("glow2.png", UNIT, 0.5),
+            Draw::Additive(false),
+            image("b.png", UNIT, 1.0),
+            text("hi", 2, screen()),
+        ];
+        let f = build_frame(&draws, Size::new(1920.0, 1080.0));
+        let flags: Vec<bool> = f.quads.iter().map(|q| q.additive).collect();
+        assert_eq!(flags, [false, true, true, false, false]);
+    }
+
+    #[test]
+    fn stage_quads_carry_the_filter_and_everything_else_gets_the_identity() {
+        let m: ColorMatrix = [[0.5, 0.0, 0.0, 0.1], [0.0, 0.5, 0.0, 0.1], [0.0, 0.0, 0.5, 0.1]];
+        let draws = [
+            image("ui-before.png", UNIT, 1.0),
+            Draw::Filter(Some(m)),
+            image("a.png", UNIT, 1.0),
+            Draw::Rect { rect: screen(), color: [1.0; 4] },
+            Draw::Filter(None),
+            Draw::Rect { rect: screen(), color: [0.0, 0.0, 1.0, 0.4] },
+            text("hi", 2, screen()),
+        ];
+        let f = build_frame(&draws, Size::new(1920.0, 1080.0));
+        let carried: Vec<bool> = f.quads.iter().map(|q| q.filter == m).collect();
+        assert_eq!(carried, [false, true, true, false, false]);
+        assert!(f.quads.iter().filter(|q| q.filter != m).all(|q| q.filter == IDENTITY));
     }
 }

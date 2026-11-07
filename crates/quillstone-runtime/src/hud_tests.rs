@@ -181,8 +181,8 @@ fn a_colour_background_is_scene_state() {
     let p = program();
     let (game, first) = Session::start(&p);
     assert_eq!(game.state().background.as_deref(), Some("color:#102030"));
-    assert!(first.contains(&Cmd::SetBackground { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
-    assert!(game.state().redraw().contains(&Cmd::SetBackground { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 }));
+    assert!(first.contains(&Cmd::SetBackground { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None }));
+    assert!(game.state().redraw().contains(&Cmd::SetBackground { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None }));
     assert_eq!(bg_color(game.state().background.as_deref().unwrap()), Some([16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0]));
 }
 
@@ -208,7 +208,7 @@ fn a_colour_through_a_dip_changes_after_the_fade_out() {
     let cmds = game.input(Input::Advance);
     assert_eq!(cmds[0], Cmd::FadeOut { time: 0.5, color: [0.0; 3] });
     let cmds = game.input(Input::Advance);
-    assert_eq!(cmds[0], Cmd::SetBackground { src: "color:#0000ff".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 });
+    assert_eq!(cmds[0], Cmd::SetBackground { src: "color:#0000ff".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None });
 }
 
 #[test]

@@ -52,6 +52,49 @@ pub fn bleed_alpha(rgba: &mut [u8], width: u32, height: u32) {
     }
 }
 
+/// Side of the vignette picture, in pixels.
+pub const VIGNETTE_SIZE: u32 = 256;
+/// Distance from the centre (1 is the middle of an edge) where the vignette picture starts to darken; it is
+/// fully opaque from 1 outwards, so a window larger than the picture can clamp at its edge.
+const VIGNETTE_START: f32 = 0.5;
+
+/// The vignette picture: white, its alpha 0 round the centre and rising smoothly to 1 at distance 1 from
+/// it (an edge's middle) and beyond (a circle in the picture, an ellipse once stretched over the screen).
+pub fn vignette_level() -> Level {
+    let n = VIGNETTE_SIZE as usize;
+    let mut rgba = vec![255u8; n * n * 4];
+    for y in 0..n {
+        for x in 0..n {
+            let at = |i: usize| (i as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let t = ((at(x).hypot(at(y)) - VIGNETTE_START) / (1.0 - VIGNETTE_START)).clamp(0.0, 1.0);
+            rgba[(y * n + x) * 4 + 3] = (t * t * (3.0 - 2.0 * t) * 255.0).round() as u8;
+        }
+    }
+    Level { width: VIGNETTE_SIZE, height: VIGNETTE_SIZE, rgba }
+}
+
+/// How much of the vignette picture (its width and height, the centre staying put) the screen shows for a
+/// `size` of 0..1: 0 darkens little but the corners, 1 reaches in from every edge. Corners are always opaque.
+pub fn vignette_zoom(size: f32) -> f32 {
+    std::f32::consts::FRAC_1_SQRT_2 + 0.5 * size.clamp(0.0, 1.0)
+}
+
+/// How soft the edge of a mask transition is, as a share of the mask's range (`shader.wgsl` has the same number).
+pub const MASK_EDGE: f32 = 0.1;
+
+/// The `reveal` threshold of a mask transition `progress` (0..1) of the way: 0 covers nothing and 1 everything,
+/// the soft edge included at both ends.
+pub fn mask_reveal(progress: f32) -> f32 {
+    progress.clamp(0.0, 1.0) * (1.0 + MASK_EDGE)
+}
+
+/// How much of the new picture shows where the mask reads `mask` (0 dark .. 1 white): dark places go first.
+/// `reveal` above 1 + [`MASK_EDGE`] shows everything.
+pub fn mask_coverage(mask: f32, reveal: f32) -> f32 {
+    let t = ((reveal - mask) / MASK_EDGE).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Number of levels in a full mip chain for this size (down to 1x1).
 pub fn mip_level_count(width: u32, height: u32) -> u32 {
     32 - width.max(height).max(1).leading_zeros()
@@ -191,5 +234,40 @@ mod tests {
         let img = [255, 0, 0, 255, 0, 0, 0, 0].to_vec();
         let chain = mip_chain(2, 1, img);
         assert_eq!(px(&chain[1].rgba, 1, 0, 0), [255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn the_vignette_is_clear_in_the_middle_and_opaque_at_the_corners_and_never_dips() {
+        let l = vignette_level();
+        let n = VIGNETTE_SIZE as usize;
+        let alpha = |x: usize, y: usize| l.rgba[(y * n + x) * 4 + 3];
+        assert_eq!((alpha(n / 2, n / 2), alpha(n / 3, n / 2), alpha(0, 0), alpha(n - 1, n - 1)), (0, 0, 255, 255));
+        assert!(l.rgba.chunks(4).all(|p| p[..3] == [255; 3]), "white, so the quad colour tints it");
+        // Smooth along a row from the middle to the edge: rising, in steps of a few levels at most.
+        let row: Vec<u8> = (n / 2..n).map(|x| alpha(x, n / 2)).collect();
+        assert!(row.windows(2).all(|w| w[0] <= w[1] && w[1] - w[0] <= 8), "{row:?}");
+        assert_eq!(alpha(n - 1, n / 2), 255, "an edge's middle is at distance 1");
+        assert_eq!(alpha(0, 5), alpha(n - 1, 5), "symmetric");
+    }
+
+    #[test]
+    fn the_zoom_grows_with_size_and_keeps_the_corners_opaque() {
+        assert!(vignette_zoom(0.0) < vignette_zoom(0.5) && vignette_zoom(0.5) < vignette_zoom(1.0));
+        // A screen corner is at (zoom, zoom) in picture units: at least distance 1.
+        assert!(vignette_zoom(0.0) * 2f32.sqrt() >= 1.0 - 1e-6);
+        assert_eq!(vignette_zoom(9.0), vignette_zoom(1.0), "clamped");
+    }
+
+    #[test]
+    fn a_mask_shows_nothing_at_the_start_and_everything_at_the_end_whatever_the_picture() {
+        for m in [0.0, 0.3, 1.0] {
+            assert_eq!(mask_coverage(m, mask_reveal(0.0)), 0.0, "{m}");
+            assert_eq!(mask_coverage(m, mask_reveal(1.0)), 1.0, "{m}");
+        }
+        // half way: the dark part is in, the white part is not, in between it is soft
+        let half = mask_reveal(0.5);
+        assert_eq!((mask_coverage(0.0, half), mask_coverage(1.0, half)), (1.0, 0.0));
+        assert!(mask_coverage(0.5, half) > 0.0 && mask_coverage(0.5, half) < 1.0);
+        assert!(mask_coverage(0.2, half) >= mask_coverage(0.4, half), "darker first");
     }
 }

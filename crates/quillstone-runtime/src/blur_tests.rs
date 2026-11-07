@@ -67,18 +67,18 @@ fn blur_survives_a_save_and_hostile_or_missing_values_are_clamped() {
     let p = parse(SRC).unwrap();
     let (mut game, _) = Session::start(&p);
     let text = game.save();
-    assert!(text.contains(" blur 12") && text.contains(" 8\n"), "{text}");
+    assert!(text.contains(" blur 12") && text.contains(" 8 1 1 1\n"), "{text}");
     let (loaded, cmds) = Session::load(&p, &text).unwrap();
     assert_eq!((loaded.state().background_blur, loaded.state().sprites[0].blur), (12.0, 8.0));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SetBackground { blur, .. } if *blur == 12.0)));
-    let wild = text.replace(" blur 12", " blur 9999").replace(" 8\n", " -5\n");
+    let wild = text.replace(" blur 12", " blur 9999").replace(" 8 1 1 1\n", " -5 1 1 1\n");
     let (loaded, _) = Session::load(&p, &wild).unwrap();
     assert_eq!((loaded.state().background_blur, loaded.state().sprites[0].blur), (64.0, 0.0));
     // a save from before blur has neither word
     let old: String = text
         .lines()
         .map(|l| match l {
-            l if l.starts_with("sprite ") => l.rsplitn(2, ' ').last().unwrap().to_string(),
+            l if l.starts_with("sprite ") => l.rsplitn(5, ' ').last().unwrap().to_string(),
             l if l.starts_with("bg ") => l.replace(" blur 12", ""),
             l => l.to_string(),
         })

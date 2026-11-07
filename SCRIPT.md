@@ -391,11 +391,12 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | --- | --- |
 | `::bg{src=... fade=1}` | Background; crossfades over `fade`. May be a **video** file (plays looped, muted). |
 | `::bg{src=clip.webm sound}` | A looping **video** background that plays its own sound (an error for a picture, a colour or an animation). The sound uses the music volume, like a cutscene's; it starts with the picture and stops when the background is replaced. Rollback and saves keep the flag. |
-| `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
-| `::bg{anim=rain fade=1}` | An **animation** (see "Frame animations" below) as the background, instead of `src=`/`color=`: exactly one of the three. `fade`, `wipe` and `through` work as for a picture. |
+| `::bg{color=#102030 fade=0.5}` | A **solid colour** instead of a picture, exactly one of `src=` and `color=` (`#rrggbb` or `#rgb`). `fade`, `wipe`, `mask` and `through` work as for a picture, and a colour crossfades to or from a picture or another colour. It needs no file. Use it where you would otherwise show a plain black picture: `::bg{color=#000000}`. Rollback, saves and hot reload keep it. |
+| `::bg{anim=rain fade=1}` | An **animation** (see "Frame animations" below) as the background, instead of `src=`/`color=`: exactly one of the three. `fade`, `wipe`, `mask` and `through` work as for a picture. |
 | `::bg{src=... fade=1 through=#000000}` | Change the background **through a colour**: the stage fades to the colour over half of `fade`, the picture is swapped (no crossfade) and the colour fades away over the other half. It waits for the first half like `::fade{out}` does. `through` on its own is black; `through` needs a `fade` above 0 and can't be combined with `wipe`. Sprites are not touched: use the explicit `::fade` pair below when sprites change too. Use it on an uncovered screen: it ends uncovered. |
 | `::bg{src=room.png blur=12 fade=1}` | **Blur** the background: `blur` is a radius in pixels of the 1920x1080 stage, 0 (sharp, the default) to 64. A `::bg` is sharp unless it says `blur=`, so to blur or sharpen the picture that is already there, give `::bg` again with the same `src` and a new `blur`: with a `fade` the two looks crossfade, without one it changes at once. Works for pictures and animations (a video background blurs too, but more roughly; a solid colour has nothing to blur). The blur is part of the scene: rollback, saves and hot reload keep it. |
 | `::bg{src=... fade=1 wipe=right}` | Wipe instead of crossfading: the new picture slides in from one side over `fade` seconds. `wipe`: `left`, `right`, `up`, `down` (the direction the edge travels). |
+| `::bg{src=forest.png fade=1.2 mask=assets/masks/ink.png}` | Change the background following a **mask**, a greyscale picture: over `fade` seconds the new picture appears first where the mask is darkest and last where it is white, with a soft edge between (see "Drawing a mask" below). The mask is stretched over the whole stage and stays put when the camera moves. Works for pictures, colours and animations like `wipe`. `mask` needs a `fade` above 0, can't be combined with `wipe` or `through`, and is a plain picture file name (no `{variable}`); `quillstone check` reads it like any picture and `package` ships it. Like a wipe it runs by itself while the story goes on; rollback and loading show the finished background. |
 | `::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}` | Declare a character: name-plate text and colour, and a sprite path where `{pose}` is filled in. Declare before use. `**Mika:**` lines pick up the name and colour automatically. |
 | `::character{id=hero name="{hero.name}" color=#9cc8ff}` | The name may hold `{variable}`s of declared variables (an unknown one is an error). The name plate, History and the text-mode output show the variable's value at that line, so a character the player named (see `::input`) is shown by the typed name, and earlier lines keep the name they had after a rollback or a variable change. What the player typed never becomes formatting. Write `**hero:**` or the name text exactly as declared, `**{hero.name}:**`, before a line. In a translation file the `@ Speaker` context for such a character is the name as written in the script (`@ {hero.name}`), and the name's own entry is `> {hero.name}`. Auto-voice file names do not depend on the variable. |
 | `::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}` | A character drawn from **layers** (see "Layered sprites" below): `layers` lists the layer ids back to front (at most 8), `layer_sprites` is where each layer's pictures are (`{layer}` is the layer id, `{value}` what is shown on it). A character may have `sprites=` poses, layers, or both. |
@@ -405,6 +406,8 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::show{mika happy flip xscale=1.5 yscale=0.8}` | `flip` mirrors the sprite left to right (`flip=false` turns it back). `xscale` and `yscale` (each 0.05 to 10, default 1) stretch it along one axis, on top of `scale`; it keeps its `x` and `y` placement, worked out again for its new size. Showing a sprite again keeps its flip, `xscale` and `yscale` unless you give them. |
 | `::show{mika happy alpha=0.5 xoffset=40 yoffset=-20}` | `alpha` (0 to 1, default 1) makes the sprite see-through, on top of `fade=` (which fades it in and out by itself); `xoffset` and `yoffset` shift it by pixels of the 1920x1080 stage (negative: left, up) **after** `x` and `y` have placed it, so `x=left xoffset=-100` puts it 100 px past the edge. Each is from -3840 to 3840 and kept like the other values when a later `::show` doesn't give it. `::move` can animate all three (see "Move sequences" below). |
 | `::show{mika happy blur=8}` | **Blur** the sprite: a radius in pixels of the 1920x1080 stage (0 sharp, the default; at most 64), whatever the sprite's size. The blur stays inside the picture's own frame (nothing glows past it), so leave a few transparent pixels round the art of a sprite you blur: a figure that touches the edge of its file stays sharp there. Kept like the other values when a later `::show` doesn't give it. `::move` can animate it (see "Move sequences" below). Use it for a dreamlike flashback, or to put a character out of focus while another speaks. |
+| `::show{mika happy tint=#6070a0}` | **Tint** the sprite: its colours are multiplied by the colour (`#rrggbb` or `#rgb`), so `#ffffff` leaves it as it is and `#000000` makes a black silhouette (transparency is kept). `tint=none` takes it off. Use it to make one character match the scene (night, sunset); `::tint` washes the whole stage. It works for every kind of sprite, and for a layered sprite it covers the whole stack. Kept like the other values when a later `::show` doesn't give it, and combines with the dimming of `speaker_highlight` and with `::filter`. `::move` can animate it. |
+| `::show{glow src=assets/lamp_glow.png blend=add}` | **Light**: with `blend=add` the sprite's picture is added to what is under it instead of covering it, so it only ever brightens (`blend=normal`, the default, switches back). Use it for lamps, fire, god rays and neon: see "Light overlays". Kept like the other values when a later `::show` doesn't give it, and it works with everything else a sprite has (`alpha`, `z`, `fade`, `::move`, `tint=`, `blur=`, `::hide`). It is a switch, so `::move` cannot animate it. |
 | `::show{src=assets/ghost.png id=ghost x=center}` | A sprite that isn't a character. |
 | `::show{mika anim=blink x=20%}` | A sprite whose picture is an **animation** (see "Frame animations" below). `mika` is the sprite's name (a character's name finds that character's sprite); the character's `sprites=` pattern and poses aren't used, so `anim=` can't be combined with a pose or with `src=`. Everything else (`x`, `scale`, `flip`, `y`, `z`, `fade`, `::move`, `::hide`) works as for any sprite. |
 | `::hide{mika fade=0.5}` / `::hide{all}` | Remove one sprite or all. |
@@ -414,6 +417,7 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::move{mika xscale=1.4 yscale=0.7 time=0.5}` | Stretch it along one axis (as for `::show`); combines with `x`, `y` and `scale`. `flip` (or `flip=false`) can be added to a move too, but a mirror can't be animated: it switches at the **start** of the move. |
 | `::move{mika alpha=0 xoffset=-60 time=0.5}` | Fade the sprite to an opacity and/or slide it by pixels, as `::show` sets them (`alpha` 0 to 1; `xoffset`, `yoffset` in stage pixels). The sprite stays on stage at `alpha=0`: `::hide` it when it should be gone. |
 | `::move{mika blur=16 time=0.8}` | Go out of focus (or `blur=0`: back to sharp) over the time, as `::show{blur=}` sets it. Blur costs a few extra texture reads per screen pixel it covers, so it is fine for a sprite or a background but not worth covering the whole screen with many blurred layers. |
+| `::move{mika tint=#000000 time=1}` | Fade the sprite's tint to the colour over the time (each of red, green and blue eases on its own); `tint=none` goes back to the natural colours. |
 | `::move{eve x=30% time=1 then x=70% time=1 wait=0.5 then alpha=0 time=0.5}` | A **sequence**: steps that run one after another (see "Move sequences" below). |
 | `::move{mika y=0.85 time=1.2 ease=inout loop}` | A **looping move**: the sprite goes to the target, back to where it started, and forth again, until something else moves it. See "Looping moves" below. |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | Pan and zoom the stage (background and sprites; the textbox and menus stay put). `zoom` 1 to 4; `x`, `y` place the view over the stage the same way as a sprite (`left` `center` `right`, `top` `center` `bottom`, a number or `N%`, but only 0 to 100%: the view never leaves the stage). Anything left out stays as it is; `ease=` as for `::move`. Doesn't wait. |
@@ -427,8 +431,21 @@ values; a longer list is tried at its first, middle and last item, with a warnin
 | `::fade{in time=0.5}` | Fade the cover away over `time` seconds. Doesn't wait. With nothing covering the screen it does nothing. |
 | `::particles{snow}` / `{rain}` / `{src=assets/petal.png}` | Ambient weather over the picture: snow, rain, or any small picture of yours falling and drifting. `{none}` (or `{off}`) stops it. Settings: `amount=` (how many are on screen, 1 to 1000, default 60), `speed=` (0.2 to 5, default 1), `wind=` (-2 to 2, default 0; negative blows left) and `fade=` (seconds to ease in or out, 0 to 10, default 1), and `layer=back` to put it behind the sprites (`layer=front`, over them, is the default). Doesn't wait. See [Ambient particles](#ambient-particles). |
 | `::tint{color=#203060 alpha=0.35 fade=1}` | A colour wash over the whole stage that **stays** until it is changed or removed: `::tint{none}` (or `{off}`) takes it away. `color` is `#rrggbb` or `#rgb` (required); `alpha` is how strong it is, 0 to 0.9 (default 0.4; it never goes higher so the story stays visible; `35%` also works); `fade` is the seconds to ease from the current tint (or from none), 0 to 10 (default 0: at once). `{none}` takes only `fade`. Doesn't wait. See "Colour wash". |
+| `::vignette{strength=0.6 fade=1}` | Dark edges and corners with a clear middle, for tension, a dream, a memory or someone passing out. It **stays** until it is changed or removed: `::vignette{none}` (or `{off}`) takes it away. At least one of `strength` (how dark the corners get, 0 to 1, default 0.5), `size` (how far in from the edges it reaches, 0 to 1, default 0.5: 0 darkens little more than the corners, 1 reaches in from every edge) and `color` (`#rrggbb` or `#rgb`, default black: red for an injury, white for a dream) is required; `fade` is the seconds to ease from the vignette on screen (all three) or from none, 0 to 10 (default 0: at once). What you leave out goes back to its default: a new vignette replaces the old one. `{none}` takes only `fade`. Doesn't wait. See "Vignette". |
+| `::filter{gray=1 fade=2}` | A colour filter over the whole stage that **stays** until it is changed or removed: `::filter{none}` (or `{off}`) takes it away. At least one of `gray` and `sepia` (0 to 1, default 0: how far to drain the colour or turn it brown), `brightness`, `contrast` and `saturation` (0 to 3, default 1: no change) is required; `fade` is the seconds to ease from the current filter (or from none), 0 to 10 (default 0: at once). What you leave out goes back to its default: a new filter replaces the old one. `{none}` takes only `fade`. Doesn't wait. See "Colour filter". |
 | `::textbox{hide}` / `::textbox{show fade=0.5}` | Hide the whole dialogue box (textbox, name plate, line and quick menu) for a clean picture, or show it again. `fade` is a number of seconds above 0, up to 10 (default: at once). Doesn't wait. A hidden box comes back by itself with the next line or choice, so the story never moves on unseen; clicks still advance while it is hidden. On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either, which gives a clean map: show it again with `::textbox{show}` or just say a line. Rollback, saves and hot reload keep it. |
 | `![alt](assets/x.png)` | An inline image. It appears **with the next line that waits** and disappears when the player advances, so put it *before* the line it illustrates. (`![](x.webm)` plays a video.) |
+
+### Drawing a mask
+
+A mask is an ordinary greyscale picture (PNG, JPEG or WebP; only its brightness counts). Where it is
+**dark** the new background appears **first**, where it is **white** it appears **last**. Smooth gradients
+give soft spreads: a radial gradient opens like an iris, an angle gradient around the centre is a clock wipe,
+blotchy noise looks like ink spreading. A hard-edged picture gives shapes, such as stripes or a shatter
+pattern in several greys, which appear one after the other. Every pixel goes from the old picture to the new
+one over a short stretch of the transition (a tenth of it), so even a hard edge is slightly soft. To run a
+mask the other way round, invert the picture. It is stretched over the whole stage, so draw it at the stage's
+16:9 shape (a small one like 512x288 is enough).
 
 ### Placing things: `x` and `y`
 
@@ -512,7 +529,7 @@ art_scale: 1.5
 ## Colour wash
 
 `::tint` lays a translucent colour over the whole picture and keeps it there, for night, dusk, a
-sick green or a sepia memory.
+sick green or a sepia memory. To colour a single sprite instead, give it `tint=` (see `::show`).
 
 ```
 ::tint{color=#203060 alpha=0.35 fade=1}
@@ -520,9 +537,9 @@ sick green or a sepia memory.
 ::tint{none fade=1}
 ```
 
-- It is one flat colour at `alpha` opacity, so it is **not** a filter: a grey or sepia tint gives
-  a flashback look, but the picture is not truly drained of colour, and bright parts stay bright.
-  There are no blend modes.
+- It is one flat colour at `alpha` opacity, so it does not remove colour: a grey or sepia tint gives
+  a flashback look, but the picture is not truly drained, and bright parts stay bright. For that, use
+  `::filter` (next section). There are no blend modes.
 - A new `::tint` eases from the one on screen (colour and strength), or from nothing, over
   `fade`. `::tint{none fade=1}` eases the wash away. Removing a tint that isn't there does nothing.
 - It is drawn over the background, sprites, particles, inline images and video, and under the
@@ -531,6 +548,86 @@ sick green or a sepia memory.
 - The colour and strength are saved, so rollback, saves and replays bring the tint back at once
   (without its fade). A save from before `::tint` loads without one. `{variable}` isn't supported in it.
 - `quillstone run` prints `[tint: #203060]` and `[tint off]`.
+
+## Colour filter
+
+`::filter` changes the colours of the whole picture and keeps them changed, for a black-and-white
+flashback, a faded memory or a scene that is slowly drained of colour.
+
+```
+::filter{gray=1 fade=2}
+::filter{sepia=0.8 contrast=1.1}
+::filter{saturation=0.4 brightness=0.8 fade=1}
+::filter{none fade=1}
+```
+
+- `gray` and `sepia` go from 0 (none) to 1 (full); `brightness`, `contrast` and `saturation` go from
+  0 to 3, where 1 changes nothing (`saturation=0` is the same as `gray=1`, `brightness=0` is black,
+  `contrast=0` is flat grey). They are applied in that order, gray first. At least one is required;
+  the ones you leave out take their default, so a new `::filter` **replaces** the old one rather than
+  adding to it. A number can also be a percentage (`gray=50%`). `fade` is in seconds, 0 to 10.
+- A new `::filter` eases from the one on screen over `fade` (each setting moves on its own), or from
+  none. `::filter{none fade=1}` eases the colours back. Removing a filter that isn't there does nothing.
+- It covers the background (pictures and solid colours), sprites, particles, inline images, video and
+  hotspot art. It does **not** cover a `::tint`, the `::fade` cover, `::flash`, the HUD, the textbox,
+  choices or menus, so the text keeps its colours and a tint sits on top of the filter: a gray filter
+  with a blue `::tint` is a valid look. The camera and `::shake` move the pictures, not the filter.
+- The settings are saved, so rollback, saves and replays bring the filter back at once (without its
+  fade). A save from before `::filter` loads without one. `{variable}` isn't supported in it. The
+  small thumbnails of a save slot are not filtered.
+- `quillstone run` prints `[filter: gray=1]` (only the settings that are not at their default) and
+  `[filter off]`.
+
+## Light overlays
+
+A picture shown with `blend=add` is added to the colours under it instead of covering them, so a
+soft glow brightens the scene the way a lamp, a fire or a neon sign does. Draw the picture on black
+or on a transparent background, bright where the light is: black adds nothing, and the brighter a
+pixel, the more it lights what is behind it.
+
+```
+::show{glow src=assets/lamp_glow.png x=70% y=40% blend=add alpha=0.8 z=5}
+::move{glow alpha=0.5 time=0.3 ease=inout loop}
+```
+
+- A light is a sprite like any other, so `x`, `y`, `scale`, `z`, `fade`, `alpha`, `::move` (also with
+  `then` and `loop`, which is how a flicker is made), `blur=`, `tint=` and `::hide` work on it. `alpha`
+  is how strong the light is; `tint=` changes its colour. Give it a `z` above the pictures it should
+  light, and below the ones it should not (a character in front of the lamp).
+- The colours never go beyond white, so several lights on the same spot saturate rather than wrap.
+- `blend=` is kept like the other sprite values when a later `::show` doesn't give it, and it is
+  saved, so rollback, saves and replays bring the light back at once. A save from before `blend=`
+  loads with normal sprites.
+- `::filter` colours a light like any other picture, and the small thumbnails of a save slot show the
+  light too.
+
+## Vignette
+
+`::vignette` darkens the edges and corners of the picture and leaves the middle clear, for tension, a
+dream, a memory or a character passing out.
+
+```
+::vignette{strength=0.6 fade=1}
+::vignette{strength=0.8 size=0.7 color=#600000 fade=0.5}
+::vignette{none fade=2}
+```
+
+- `strength` is how dark the corners get (0 is none, 1 is solid colour). The middle of each edge is
+  lighter than a corner, and the dark fades out smoothly towards the centre, following the shape of
+  the screen. `size` is how far in it reaches: at 0 only the corners are touched and the rest of the
+  picture is clear, at 1 the dark comes in a long way from every edge.
+  `color` is what it is dark with: black by default, red for an injury, white for a dream.
+- A new `::vignette` replaces the old one: what you leave out goes back to its default. It eases from
+  the one on screen (all three settings), or from nothing, over `fade`. `::vignette{none fade=2}`
+  eases it away. Removing a vignette that isn't there does nothing.
+- It is drawn over the background, sprites, particles, inline images, video, lights and the
+  `::tint` wash, and under the `::fade` cover, `::flash`, the HUD, the textbox, choices and every
+  menu. It belongs to the screen: the camera and `::shake` don't move it, and `::filter` does not
+  colour it.
+- The settings are saved, so rollback, saves and replays bring the vignette back at once (without its
+  fade). A save from before `::vignette` loads without one. `{variable}` isn't supported in it. The
+  small thumbnails of a save slot don't show it.
+- `quillstone run` prints `[vignette: strength=0.6 size=0.5]` and `[vignette off]`.
 
 ## Picture names from variables
 
@@ -708,19 +805,20 @@ Put `then` between the steps of one `::move` and they run one after another, in 
 ```
 
 - Each step is a small `::move` of its own: it names what it animates (`x`, `y`, `scale`, `xscale`, `yscale`,
-  `alpha`, `xoffset`, `yoffset`, `blur`), a `time` (default 0.5) and an `ease`, and starts from where the step before it ended.
+  `alpha`, `xoffset`, `yoffset`, `blur`, `tint`), a `time` (default 0.5) and an `ease`, and starts from where the step before it ended.
   A property a step leaves out stays as it is. Separate steps with spaces and `then` (commas are not separators).
 - `wait=` (seconds, default 0) waits **before** the step starts; a step may be just a pause (`then wait=2`). A `wait=`
   on the first step delays the whole move.
 - `flip` belongs in the first step (it switches at the start, as in any move). At most 32 steps.
 - `alpha` runs from 0 (invisible) to 1; it multiplies with the fade of `::show{fade=}` and `::hide{fade=}`. `xoffset` and
   `yoffset` are pixels of the 1920x1080 stage added after the placement of `x` and `y`. `blur` is the radius in stage pixels
-  (0 to 64): `::move{eve blur=20 time=1 then blur=0 time=1}` goes out of focus and back.
-- A new `::move` (or a `::show` that sets position, size, `alpha`, an offset or `blur`, or `::hide`) cuts a running sequence short; the sprite
+  (0 to 64): `::move{eve blur=20 time=1 then blur=0 time=1}` goes out of focus and back. `tint` is a colour, as in
+  `::show`: `::move{eve tint=#000000 time=1}` darkens her to a silhouette.
+- A new `::move` (or a `::show` that sets position, size, `alpha`, an offset, `blur` or `tint`, or `::hide`) cuts a running sequence short; the sprite
   glides on from where it is. Without `then` a move is the one-step sequence it always was.
 - It never waits: the next line shows at once. The values are part of the scene: a rollback, a redraw (changing the
   language, loading a save) and skip mode put the sprite at the **end** of the sequence with no animation, the same as for any move.
-  A save also keeps the sprite's `alpha`, offsets and `blur` (an older save loads with 1, 0 and 0).
+  A save also keeps the sprite's `alpha`, offsets, `blur` and `tint` (an older save loads with 1, 0, 0 and no tint).
 
 ## Looping moves
 
@@ -735,7 +833,7 @@ Add `loop` to a `::move` and the sprite keeps going back and forth:
   then to the target again, for ever. `time` is the time of **one leg** (it must be above
   0), and `ease` applies to each leg.
 - `loop` alone and `loop=pingpong` mean the same; there is no other kind of loop.
-- It animates any mix of `x`, `y`, `scale`, `xscale`, `yscale`, `alpha`, `xoffset`, `yoffset` and `blur`; a move that changes
+- It animates any mix of `x`, `y`, `scale`, `xscale`, `yscale`, `alpha`, `xoffset`, `yoffset`, `blur` and `tint`; a move that changes
   none of them (only `flip`, say) can't loop. `flip` may be added: it switches at the start.
 - With `then` steps, `loop` (put it anywhere, the end reads best) repeats **all** the steps, in order, for ever:
   `::move{lamp alpha=0.4 time=1 then alpha=1 time=1 wait=0.5 loop}` pulses a lamp. The repeat starts from
@@ -1746,7 +1844,7 @@ per text.
 ## What rollback restores
 
 Going back one step restores variables, the random seed (so a roll repeats), the call stack, background, sprites and
-their positions, heights, depths, sizes, stretch, mirroring, `alpha` and pixel offsets, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the colour wash of `::tint`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
+their positions, heights, depths, sizes, stretch, mirroring, `alpha` and pixel offsets, `blend=add`, layers, animations and looping moves (from the start of their cycle), the camera, the colour cover of `::fade{out}`, the ambient particles' settings, the colour wash of `::tint`, the dark edges of `::vignette`, the colour filter of `::filter`, the HUD elements, music (an intro is not resumed part-way), looping sound effects, the inline images and voice of the line, and the line
 itself. One-shot sound effects, shakes and flashes are not replayed.
 
 Rollback (and roll forward, the redo after a rollback) keeps the last 500 steps;
@@ -2086,5 +2184,5 @@ For trying a story, not for players: a game you ship has none of this unless it 
 ## Not (yet) in the language
 
 Pasting into a text input,
-character voices per speaker, and transitions other than fades and wipes.
+character voices per speaker, and transitions other than fades, wipes and masks.
 The runtime is built so these slot in without changing what is written above.

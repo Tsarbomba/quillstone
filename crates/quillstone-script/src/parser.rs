@@ -98,7 +98,7 @@ pub const SPRITE_BLUR: RangeInclusive<f32> = 0.0..=64.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -110,11 +110,11 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "shop" => &["pay", "into"],
         "choice" => &["time"],
         "hotspots" => &["time", "default", "ground", "hover"],
-        "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur"],
+        "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur", "mask"],
         "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
-        "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "fade"],
+        "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "blend", "fade"],
         "hide" => &["all", "fade"],
-        "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "time", "ease", "wait", "loop", "then"],
+        "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "time", "ease", "wait", "loop", "then"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "notify" => &["text", "time"],
@@ -123,6 +123,8 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
         "particles" => &["snow", "rain", "none", "off", "src", "amount", "speed", "wind", "fade", "layer"],
         "tint" => &["none", "off", "color", "alpha", "fade"],
+        "vignette" => &["none", "off", "strength", "size", "color", "fade"],
+        "filter" => &["none", "off", "gray", "sepia", "brightness", "contrast", "saturation", "fade"],
         "textbox" => &["hide", "show", "fade"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
@@ -1271,6 +1273,22 @@ impl Parser {
                 if wipe.is_some() && fade <= 0.0 {
                     return Err("a wipe needs a duration: add `fade=` (seconds)".into());
                 }
+                let mask = match a.take("mask") {
+                    None => None,
+                    Some(None) => return Err("`mask=` needs a picture file, like `mask=assets/masks/ink.png`".into()),
+                    Some(Some(m)) => Some(m),
+                };
+                if let Some(m) = &mask {
+                    if fade <= 0.0 {
+                        return Err("a mask needs a duration: add `fade=` (seconds)".into());
+                    }
+                    if wipe.is_some() {
+                        return Err("`mask` and `wipe` can't be combined: pick one transition".into());
+                    }
+                    if m.contains('{') {
+                        return Err("`mask=` is a plain picture file name (no `{variable}` in it)".into());
+                    }
+                }
                 let through = match a.take("through") {
                     None => None,
                     Some(None) => Some([0.0; 3]),
@@ -1283,13 +1301,16 @@ impl Parser {
                     if wipe.is_some() {
                         return Err("`through` and `wipe` can't be combined: a wipe is a transition of its own".into());
                     }
+                    if mask.is_some() {
+                        return Err("`through` and `mask` can't be combined: a mask is a transition of its own".into());
+                    }
                     // Fade out for half the time, change the picture (no crossfade), fade in.
                     let half = fade / 2.0;
                     self.push(Op::FadeOut { time: half, color }, line);
                     self.trailing.push(Op::FadeIn { time: half });
-                    return Ok((Op::Bg { src, fade: 0.0, wipe: None, sound, blur }, None));
+                    return Ok((Op::Bg { src, fade: 0.0, wipe: None, sound, blur, mask: None }, None));
                 }
-                Ok((Op::Bg { src, fade, wipe, sound, blur }, None))
+                Ok((Op::Bg { src, fade, wipe, sound, blur, mask }, None))
             }
             "show" => self.show(a),
             "hud" => self.hud(line, a),
@@ -1442,6 +1463,8 @@ impl Parser {
             }
             "particles" => Self::particles(a).map(|op| (op, None)),
             "tint" => Self::tint(a).map(|op| (op, None)),
+            "vignette" => Self::vignette(a).map(|op| (op, None)),
+            "filter" => Self::filter(a).map(|op| (op, None)),
             "textbox" => {
                 let (hide, show) = (a.flag("hide"), a.flag("show"));
                 let fade = Self::short_seconds(a, "fade", 0.0)?;
@@ -1748,8 +1771,29 @@ impl Parser {
         let dx = Self::number(a, "xoffset", SPRITE_OFFSET)?;
         let dy = Self::number(a, "yoffset", SPRITE_OFFSET)?;
         let blur = Self::number(a, "blur", SPRITE_BLUR)?;
+        let tint = Self::sprite_tint(a)?;
+        let additive = Self::blend(a)?;
         let fade = Self::fade(a)?;
-        Ok((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, fade }, None))
+        Ok((Op::Show { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, tint, additive, fade }, None))
+    }
+
+    /// `tint=#6070a0`: the colour a sprite is multiplied by; `none` is white (no tint).
+    fn sprite_tint(a: &mut Attrs) -> Result<Option<[f32; 3]>, String> {
+        match a.value("tint") {
+            None => Ok(None),
+            Some(v) if v == "none" => Ok(Some([1.0; 3])),
+            Some(v) => parse_color(&v).map(Some),
+        }
+    }
+
+    /// `blend=add` (additive light) or `blend=normal`.
+    fn blend(a: &mut Attrs) -> Result<Option<bool>, String> {
+        match a.value("blend").as_deref() {
+            None => Ok(None),
+            Some("add") => Ok(Some(true)),
+            Some("normal") => Ok(Some(false)),
+            Some(v) => Err(format!("`blend={v}` must be `add` or `normal`")),
+        }
     }
 
     /// One step of a `::move`: the properties to animate, `time=`, `ease=` and `wait=`.
@@ -1764,6 +1808,7 @@ impl Parser {
             dx: Self::number(a, "xoffset", SPRITE_OFFSET)?,
             dy: Self::number(a, "yoffset", SPRITE_OFFSET)?,
             blur: Self::number(a, "blur", SPRITE_BLUR)?,
+            tint: Self::sprite_tint(a)?,
             time: 0.0,
             ease: Self::ease(a)?,
             wait: Self::seconds(a, "wait", 0.0)?,
@@ -2478,6 +2523,60 @@ impl Parser {
         let color = parse_color(&c)?;
         let alpha = Self::number(a, "alpha", TINT_ALPHA)?.unwrap_or(DEFAULT_TINT_ALPHA);
         Ok(Op::Tint { set: Some(Tint { color, alpha }), fade })
+    }
+
+    /// `::vignette{strength=0.6 size=0.5 color=#000 fade=1}` sets the dark edges (what is left out is the default);
+    /// `::vignette{none}` (or `off`) removes them.
+    fn vignette(a: &mut Attrs) -> Result<Op, String> {
+        const KEYS: [&str; 3] = ["strength", "size", "color"];
+        let (none, off) = (a.flag("none"), a.flag("off"));
+        let fade = Self::seconds(a, "fade", 0.0)?;
+        if fade > 10.0 {
+            return Err(format!("`fade={fade}` must be at most 10 seconds"));
+        }
+        let given = KEYS.into_iter().find(|k| a.0.iter().any(|(x, _)| x == k));
+        if none || off {
+            if let Some(extra) = given {
+                return Err(format!("`::vignette{{none}}` takes only `fade=`, not `{extra}=`"));
+            }
+            return Ok(Op::Vignette { set: None, fade });
+        }
+        if given.is_none() {
+            return Err("`::vignette` needs `strength=`, `size=` or `color=` (or `none` to remove it)".into());
+        }
+        let color = a.value("color").map_or(Ok([0.0; 3]), |c| parse_color(&c))?;
+        let strength = Self::number(a, "strength", VIGNETTE_RANGE)?.unwrap_or(DEFAULT_VIGNETTE);
+        let size = Self::number(a, "size", VIGNETTE_RANGE)?.unwrap_or(DEFAULT_VIGNETTE);
+        Ok(Op::Vignette { set: Some(Vignette { color, strength, size }), fade })
+    }
+
+    /// `::filter{gray=1 fade=2}` sets the filter (what is left out is neutral); `::filter{none}` (or `off`) removes it.
+    fn filter(a: &mut Attrs) -> Result<Op, String> {
+        const KEYS: [&str; 5] = ["gray", "sepia", "brightness", "contrast", "saturation"];
+        let (none, off) = (a.flag("none"), a.flag("off"));
+        let fade = Self::seconds(a, "fade", 0.0)?;
+        if fade > 10.0 {
+            return Err(format!("`fade={fade}` must be at most 10 seconds"));
+        }
+        let given = KEYS.into_iter().find(|k| a.0.iter().any(|(x, _)| x == k));
+        if none || off {
+            if let Some(extra) = given {
+                return Err(format!("`::filter{{none}}` takes only `fade=`, not `{extra}=`"));
+            }
+            return Ok(Op::Filter { set: None, fade });
+        }
+        if given.is_none() {
+            return Err("`::filter` needs `gray`, `sepia`, `brightness`, `contrast` or `saturation` (or `none` to remove the filter)".into());
+        }
+        let n = Filter::default();
+        let set = Filter {
+            gray: Self::number(a, "gray", FILTER_AMOUNT)?.unwrap_or(n.gray),
+            sepia: Self::number(a, "sepia", FILTER_AMOUNT)?.unwrap_or(n.sepia),
+            brightness: Self::number(a, "brightness", FILTER_GAIN)?.unwrap_or(n.brightness),
+            contrast: Self::number(a, "contrast", FILTER_GAIN)?.unwrap_or(n.contrast),
+            saturation: Self::number(a, "saturation", FILTER_GAIN)?.unwrap_or(n.saturation),
+        };
+        Ok(Op::Filter { set: Some(set), fade })
     }
 
     /// `result=` of `::timing` / `::press`: a text variable declared in the front matter.
@@ -3353,8 +3452,8 @@ mod tests {
     #[test]
     fn animation_commands() {
         let p = ok("::bg{src=b.png fade=1 wipe=right}\n::move{mika scale=1.2 ease=out}\n::shake\n::shake{time=1 strength=40}\n::camera{zoom=1.5 x=30% time=2 ease=linear}\n::camera{reset time=1}\n");
-        assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false, blur: 0.0 });
-        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: None, scale: Some(1.2), xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, time: 0.5, ease: Ease::Out, wait: 0.0 }], looped: false });
+        assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false, blur: 0.0, mask: None });
+        assert_eq!(p.ops[1], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: None, scale: Some(1.2), xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, time: 0.5, ease: Ease::Out, wait: 0.0 }], looped: false });
         assert_eq!(p.ops[2], Op::Shake { time: 0.4, strength: 20.0, axis: Axis::Both });
         assert_eq!(p.ops[3], Op::Shake { time: 1.0, strength: 40.0, axis: Axis::Both });
         assert_eq!(
@@ -3493,7 +3592,7 @@ mod tests {
     #[test]
     fn background_music_video_attributes() {
         let p = ok("::bg{src=a.webp fade=0.5}\n::video{src=\"my clip.webm\" fit=cover loop skippable}\n::music{stop fade=2}\n");
-        assert_eq!(p.ops[0], Op::Bg { src: "a.webp".into(), fade: 0.5, wipe: None, sound: false, blur: 0.0 });
+        assert_eq!(p.ops[0], Op::Bg { src: "a.webp".into(), fade: 0.5, wipe: None, sound: false, blur: 0.0, mask: None });
         assert_eq!(
             p.ops[1],
             Op::Video { src: "my clip.webm".into(), fit: Fit::Cover, looped: true, skippable: true }
@@ -3582,12 +3681,12 @@ mod tests {
         let p = ok(&format!("{MIKA}::show{{mika happy x=left fade=0.4 scale=0.9}}\n::show{{mika}}\n"));
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], x: Some(0.0), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, fade: 0.4 }
+            Op::Show { id: "mika".into(), src: "art/mika_happy.png".into(), layers: vec![], x: Some(0.0), y: None, z: None, scale: Some(0.9), flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, additive: None, fade: 0.4 }
         );
         // default pose, keeps position
         assert_eq!(
             p.ops[1],
-            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, fade: 0.0 }
+            Op::Show { id: "mika".into(), src: "art/mika_default.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, additive: None, fade: 0.0 }
         );
     }
 
@@ -3596,7 +3695,7 @@ mod tests {
         let p = ok("::show{src=art/ghost.png id=ghost x=0.3}\n::show{src=art/x.png x=25%}\n");
         assert_eq!(
             p.ops[0],
-            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], x: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, fade: 0.0 }
+            Op::Show { id: "ghost".into(), src: "art/ghost.png".into(), layers: vec![], x: Some(0.3), y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, additive: None, fade: 0.0 }
         );
         assert!(matches!(&p.ops[1], Op::Show { id, x: Some(a), .. } if id == "art/x.png" && (a - 0.25).abs() < 1e-6));
     }
@@ -3614,7 +3713,7 @@ mod tests {
         assert_eq!(show(1), (Some(0.9), Some(-100)));
         assert_eq!(show(2), (Some(-0.5), Some(100)));
         assert_eq!(show(3), (Some(1.5), None));
-        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.9), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, time: 0.3, ease: Ease::Out, wait: 0.0 }], looped: false });
+        assert_eq!(p.ops[4], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.9), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, time: 0.3, ease: Ease::Out, wait: 0.0 }], looped: false });
         assert!(matches!(&p.ops[5], Op::Move { steps, .. } if steps[0].x.is_some() && steps[0].y == Some(1.5)));
         // not given: `None`, so the sprite keeps its own
         let q = ok(&format!("{MIKA}::show{{mika}}\n"));
@@ -3641,6 +3740,34 @@ mod tests {
     }
 
     #[test]
+    fn blend_parses_on_show_and_keeps_when_not_given() {
+        let p = ok("::show{src=a.png id=a blend=add}\n::show{src=a.png id=a blend=normal}\n::show{src=a.png id=a}\n");
+        let want = [Some(true), Some(false), None];
+        for (op, want) in p.ops.iter().zip(want) {
+            assert!(matches!(op, Op::Show { additive, .. } if *additive == want), "{op:?}");
+        }
+        for bad in ["::show{src=a.png blend=screen}\n", "::show{src=a.png blend={c}}\n", "::move{a blend=add}\n"] {
+            assert_eq!(errs(&format!("\n{bad}"))[0].line, 2, "{bad}");
+        }
+        assert!(has_err("::show{src=a.png blend=screen}\n", "`blend=screen` must be `add` or `normal`"));
+    }
+
+    #[test]
+    fn tint_parses_on_show_and_move_and_none_is_white() {
+        let p = ok("::show{src=a.png id=a tint=#6070a0}\n::show{src=a.png id=a tint=#fff}\n::show{src=a.png id=a tint=none}\n::show{src=a.png id=a}\n::move{a tint=#000 time=1 then tint=none}\n");
+        assert!(matches!(&p.ops[0], Op::Show { tint: Some(t), .. } if (t[0] - 0x60 as f32 / 255.0).abs() < 1e-6 && (t[2] - 0xa0 as f32 / 255.0).abs() < 1e-6));
+        assert!(matches!(&p.ops[1], Op::Show { tint: Some(t), .. } if *t == [1.0; 3]));
+        assert!(matches!(&p.ops[2], Op::Show { tint: Some(t), .. } if *t == [1.0; 3]));
+        assert!(matches!(&p.ops[3], Op::Show { tint: None, .. }), "a show keeps the tint it has");
+        assert!(matches!(&p.ops[4], Op::Move { steps, .. } if steps[0].tint == Some([0.0; 3]) && steps[1].tint == Some([1.0; 3]) && steps[1].x.is_none()));
+        for bad in ["::show{src=a.png tint=red}\n", "::show{src=a.png tint=#12}\n", "::move{a tint=#gg0000}\n", "::show{src=a.png tint={c}}\n"] {
+            let e = errs(&format!("\n{bad}"));
+            assert_eq!(e[0].line, 2, "{bad}");
+        }
+        assert!(has_err("::move{a tint=blue}\n", "bad colour `blue`"));
+    }
+
+    #[test]
     fn blur_parses_on_show_move_and_bg() {
         let p = ok("::show{src=a.png id=a blur=8}\n::move{a blur=24 time=1 then blur=0 time=0.5}\n::bg{src=b.png blur=12.5 fade=1}\n::bg{src=c.png}\n::bg{src=d.png blur=4 fade=2 through}\n");
         assert!(matches!(&p.ops[0], Op::Show { blur: Some(b), .. } if *b == 8.0));
@@ -3659,8 +3786,8 @@ mod tests {
         let p = ok(&format!("{MIKA}::hide{{mika fade=0.5}}\n::hide{{all}}\n::move{{mika x=right time=1}}\n::move{{mika x=0.1}}\n"));
         assert_eq!(p.ops[0], Op::Hide { id: Some("mika".into()), fade: 0.5 });
         assert_eq!(p.ops[1], Op::Hide { id: None, fade: 0.0 });
-        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(1.0), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, time: 1.0, ease: Ease::InOut, wait: 0.0 }], looped: false });
-        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(0.1), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, time: 0.5, ease: Ease::InOut, wait: 0.0 }], looped: false });
+        assert_eq!(p.ops[2], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(1.0), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, time: 1.0, ease: Ease::InOut, wait: 0.0 }], looped: false });
+        assert_eq!(p.ops[3], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: Some(0.1), y: None, scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, time: 0.5, ease: Ease::InOut, wait: 0.0 }], looped: false });
     }
 
     #[test]
@@ -3776,7 +3903,7 @@ mod tests {
         assert_eq!(e.len(), 1, "the unread `wipe` isn't reported: {e:?}");
         let e = errs("::bg{src=a.png fade=abc wipee=left}\n");
         assert!(e.iter().any(|e| e.message.contains("unknown attribute `wipee`")), "a real typo still is");
-        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, anim, fade, wipe, through, blur)"));
+        assert!(has_err("::bg{src=a.png wipee=left}\n", "(it takes: src, color, anim, fade, wipe, through, blur, mask)"));
         assert!(has_err("::frobnicate\n", "shake, flash, notify, unlock, fade, camera"));
     }
 
@@ -5199,14 +5326,14 @@ mod tests {
     fn bg_through_is_a_fade_out_a_cut_and_a_fade_in() {
         let p = ok("::bg{src=a.png fade=1 through=#ff0000}\n::bg{src=b.png fade=2 through}\n::bg{src=c.png fade=1}\n");
         assert_eq!(p.ops[0], Op::FadeOut { time: 0.5, color: [1.0, 0.0, 0.0] });
-        assert_eq!(p.ops[1], Op::Bg { src: "a.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 });
+        assert_eq!(p.ops[1], Op::Bg { src: "a.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None });
         assert_eq!(p.ops[2], Op::FadeIn { time: 0.5 });
         // bare `through` is black, and each half is fade/2
         assert_eq!(p.ops[3], Op::FadeOut { time: 1.0, color: [0.0; 3] });
-        assert_eq!(p.ops[4], Op::Bg { src: "b.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 });
+        assert_eq!(p.ops[4], Op::Bg { src: "b.png".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None });
         assert_eq!(p.ops[5], Op::FadeIn { time: 1.0 });
         // without `through` it is the old crossfade, one op
-        assert_eq!(p.ops[6], Op::Bg { src: "c.png".into(), fade: 1.0, wipe: None, sound: false, blur: 0.0 });
+        assert_eq!(p.ops[6], Op::Bg { src: "c.png".into(), fade: 1.0, wipe: None, sound: false, blur: 0.0, mask: None });
         assert!(matches!(p.ops[7], Op::End) && p.ops.len() == 8);
         // every op of the sugar reports the command's line
         assert_eq!(&p.lines[..3], &[1, 1, 1]);
@@ -5219,6 +5346,27 @@ mod tests {
             ("::bg{src=a.png through=#fff fade=0}\n", "needs a duration"),
             ("::bg{src=a.png fade=1 through=#fff wipe=left}\n", "can't be combined"),
             ("::bg{src=a.png fade=1 through=blue}\n", "bad colour"),
+        ] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e.len(), 1, "{src}: {e:?}");
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn bg_mask_follows_a_picture_over_the_fade() {
+        let p = ok("::bg{src=b.png fade=1.5 mask=assets/masks/ink.png}\n::bg{color=#fff fade=1 mask=m.png}\n");
+        assert_eq!(p.ops[0], Op::Bg { src: "b.png".into(), fade: 1.5, wipe: None, sound: false, blur: 0.0, mask: Some("assets/masks/ink.png".into()) });
+        assert!(matches!(&p.ops[1], Op::Bg { mask: Some(m), .. } if m == "m.png"));
+        let files: Vec<_> = p.assets().map(|(_, k, a)| (k, a)).collect();
+        assert_eq!(files, [(AssetKind::Image, "b.png"), (AssetKind::Image, "assets/masks/ink.png"), (AssetKind::Image, "m.png")]);
+        for (src, needle) in [
+            ("::bg{src=a.png mask=m.png}\n", "needs a duration"),
+            ("::bg{src=a.png fade=1 mask}\n", "needs a picture file"),
+            ("::bg{src=a.png fade=1 mask=m.png wipe=left}\n", "`mask` and `wipe` can't be combined"),
+            ("::bg{src=a.png fade=1 mask=m.png through=#fff}\n", "`through` and `mask` can't be combined"),
+            ("::bg{src=a.png fade=1 mask=m_{x}.png}\n", "plain picture file name"),
         ] {
             let e = errs(&format!("Hi.\n{src}"));
             assert_eq!(e.len(), 1, "{src}: {e:?}");
@@ -5487,9 +5635,9 @@ mod tests {
 
     #[test]
     fn a_solid_colour_background() {
-        assert_eq!(ok("::bg{color=#102030}\n").ops[0], Op::Bg { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0 });
-        assert_eq!(ok("::bg{color=#fff fade=0.5}\n").ops[0], Op::Bg { src: "color:#ffffff".into(), fade: 0.5, wipe: None, sound: false, blur: 0.0 });
-        assert_eq!(ok("::bg{color=#000 fade=1 wipe=left}\n").ops[0], Op::Bg { src: "color:#000000".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false, blur: 0.0 });
+        assert_eq!(ok("::bg{color=#102030}\n").ops[0], Op::Bg { src: "color:#102030".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None });
+        assert_eq!(ok("::bg{color=#fff fade=0.5}\n").ops[0], Op::Bg { src: "color:#ffffff".into(), fade: 0.5, wipe: None, sound: false, blur: 0.0, mask: None });
+        assert_eq!(ok("::bg{color=#000 fade=1 wipe=left}\n").ops[0], Op::Bg { src: "color:#000000".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false, blur: 0.0, mask: None });
         let p = ok("::bg{color=#fff fade=1 through=#000}\n");
         assert!(matches!(p.ops[0], Op::FadeOut { .. }) && matches!(p.ops[1], Op::Bg { fade, .. } if fade == 0.0) && matches!(p.ops[2], Op::FadeIn { .. }));
         assert_eq!(p.assets().count(), 0, "a colour is no file");
@@ -5576,7 +5724,7 @@ mod tests {
         assert_eq!(shows[0], ("mika", "anim:blink", Some(0.0), Some(0.9), Some(2), Some(0.8), Some(true), 0.5));
         assert_eq!((shows[1].0, shows[1].1), ("ghost", "anim:blink"), "any name makes a sprite");
         assert_eq!(shows[2].0, "mika", "a character's name finds the character's sprite");
-        assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false, blur: 0.0 }));
+        assert!(p.ops.contains(&Op::Bg { src: "anim:blink".into(), fade: 1.0, wipe: Some(Wipe::Left), sound: false, blur: 0.0, mask: None }));
         assert!(p.ops.iter().any(|o| matches!(o, Op::FadeOut { .. })));
         assert_eq!(anim_id("anim:blink"), Some("blink"));
         assert_eq!((anim_id("anim:"), anim_id("blink"), anim_id("anim:a b"), anim_id("color:#fff")), (None, None, None, None));
@@ -5644,7 +5792,7 @@ mod tests {
     #[test]
     fn a_move_may_loop_forever() {
         let p = ok("::character{id=mika sprites=m_{pose}.png}\n::move{mika y=0.97 time=1.2 ease=inout loop}\n::move{mika scale=1.1 loop=pingpong}\n::move{mika x=left y=0.9 loop time=2}\n::move{loop mika x=right flip}\n::move{mika y=0.9}\n");
-        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.97), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, time: 1.2, ease: Ease::InOut, wait: 0.0 }], looped: true });
+        assert_eq!(p.ops[0], Op::Move { id: "mika".into(), flip: None, steps: vec![MoveStep { x: None, y: Some(0.97), scale: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, time: 1.2, ease: Ease::InOut, wait: 0.0 }], looped: true });
         assert!(matches!(&p.ops[1], Op::Move { looped: true, steps, .. } if steps[0].scale == Some(1.1) && steps[0].time == 0.5));
         assert!(matches!(&p.ops[2], Op::Move { looped: true, steps, .. } if steps[0].x.is_some() && steps[0].y.is_some() && steps[0].time == 2.0));
         assert!(matches!(&p.ops[3], Op::Move { id, flip: Some(true), looped: true, steps } if id == "mika" && steps[0].x.is_some()), "a flip may come along");

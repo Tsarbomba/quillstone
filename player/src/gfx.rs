@@ -23,10 +23,20 @@ struct Vertex {
     color: [f32; 4],
     /// Blur radius in window pixels.
     blur: f32,
+    /// The stage's colour filter, one row per output channel: `[r, g, b, offset]`.
+    filter: [[f32; 4]; 3],
+    /// Where the vertex lies on the mask picture of a mask transition, and its threshold (`NO_MASK`: none).
+    mask_uv: [f32; 2],
+    reveal: f32,
 }
 
-const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
+const VERTEX_ATTRS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+    0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+    7 => Float32x2, 8 => Float32
+];
+
+/// A threshold that shows everything whatever the mask (the soft edge makes 1.1 enough).
+const NO_MASK: f32 = 2.0;
 
 const VERTS_PER_QUAD: usize = 6;
 const INITIAL_QUADS: usize = 256;
@@ -45,11 +55,14 @@ pub struct Gfx {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    additive_pipeline: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
     vertex_capacity: usize, // in quads
     white: GpuTexture,
+    /// The generated picture of `Tex::Vignette`.
+    vignette: GpuTexture,
     images: HashMap<String, GpuTexture>,
     /// Size of each video texture (in `images`), to reuse it for the next frame.
     frame_sizes: HashMap<String, (u32, u32)>,
@@ -149,7 +162,7 @@ impl Gfx {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("quad pipeline layout"),
-            bind_group_layouts: &[Some(&bind_layout)],
+            bind_group_layouts: &[Some(&bind_layout), Some(&bind_layout)], // the picture, the mask
             immediate_size: 0,
         });
 
@@ -159,34 +172,55 @@ impl Gfx {
             attributes: &VERTEX_ATTRS,
         })];
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("quad pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &vertex_buffers,
-                compilation_options: Default::default(),
+        let make_pipeline = |label, blend| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make_pipeline("quad pipeline", wgpu::BlendState::ALPHA_BLENDING);
+        // Light: dst + src * alpha; the surface's own alpha stays as it is.
+        let additive_pipeline = make_pipeline(
+            "additive quad pipeline",
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
 
         let vertex_buffer = make_vertex_buffer(&device, INITIAL_QUADS);
         let white = upload_texture(&device, &queue, &bind_layout, &sampler, 1, 1, &[&[255, 255, 255, 255]]);
+        let dark = quillstone_render::pixels::vignette_level();
+        let vignette = upload_texture(&device, &queue, &bind_layout, &sampler, dark.width, dark.height, &[&dark.rgba]);
 
         Gfx {
             instance,
@@ -196,11 +230,13 @@ impl Gfx {
             device,
             queue,
             pipeline,
+            additive_pipeline,
             bind_layout,
             sampler,
             vertex_buffer,
             vertex_capacity: INITIAL_QUADS,
             white,
+            vignette,
             images: HashMap::new(),
             frame_sizes: HashMap::new(),
             texts: HashMap::new(),
@@ -317,10 +353,11 @@ impl Gfx {
 
         // 2. Build vertices for the quads we can actually draw.
         let mut vertices: Vec<Vertex> = Vec::with_capacity(frame.quads.len() * VERTS_PER_QUAD);
-        let mut draws: Vec<&wgpu::BindGroup> = Vec::with_capacity(frame.quads.len());
+        let mut draws: Vec<(&wgpu::BindGroup, &wgpu::BindGroup, bool)> = Vec::with_capacity(frame.quads.len());
         for quad in &frame.quads {
             let texture = match &quad.texture {
                 Tex::Solid => Some(&self.white),
+                Tex::Vignette => Some(&self.vignette),
                 Tex::Image(src) => self.images.get(src),
                 Tex::Text(i) => text_keys.get(*i).and_then(|k| self.texts.get(k)),
             };
@@ -328,17 +365,31 @@ impl Gfx {
 
             let [l, t, r, b] = quad.rect;
             let [u0, v0, u1, v1] = quad.uv;
-            let (color, blur) = (quad.color, quad.blur);
-            let v = |x: f32, y: f32, u: f32, w: f32| Vertex { pos: [x, y], uv: [u, w], color, blur };
+            let (color, blur, filter) = (quad.color, quad.blur, quad.filter);
+            // A mask picture that isn't loaded (yet) shows the quad whole.
+            let masked = quad.mask.as_ref().and_then(|m| Some((self.images.get(&m.src)?, m)));
+            let (mask_group, [mu0, mv0, mu1, mv1], reveal) = match masked {
+                Some((tex, m)) => (&tex.bind_group, m.uv, m.reveal),
+                None => (&self.white.bind_group, [0.0; 4], NO_MASK),
+            };
+            let v = |x: f32, y: f32, u: f32, w: f32, mu: f32, mw: f32| Vertex {
+                pos: [x, y],
+                uv: [u, w],
+                color,
+                blur,
+                filter,
+                mask_uv: [mu, mw],
+                reveal,
+            };
             vertices.extend_from_slice(&[
-                v(l, t, u0, v0),
-                v(l, b, u0, v1),
-                v(r, t, u1, v0),
-                v(r, t, u1, v0),
-                v(l, b, u0, v1),
-                v(r, b, u1, v1),
+                v(l, t, u0, v0, mu0, mv0),
+                v(l, b, u0, v1, mu0, mv1),
+                v(r, t, u1, v0, mu1, mv0),
+                v(r, t, u1, v0, mu1, mv0),
+                v(l, b, u0, v1, mu0, mv1),
+                v(r, b, u1, v1, mu1, mv1),
             ]);
-            draws.push(&texture.bind_group);
+            draws.push((&texture.bind_group, mask_group, quad.additive));
         }
 
         if draws.len() > self.vertex_capacity {
@@ -397,8 +448,14 @@ impl Gfx {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            for (i, bind_group) in draws.iter().enumerate() {
+            let mut additive = false;
+            for (i, (bind_group, mask_group, light)) in draws.iter().enumerate() {
+                if *light != additive {
+                    additive = *light;
+                    pass.set_pipeline(if additive { &self.additive_pipeline } else { &self.pipeline });
+                }
                 pass.set_bind_group(0, Some(*bind_group), &[]);
+                pass.set_bind_group(1, Some(*mask_group), &[]);
                 let first = (i * VERTS_PER_QUAD) as u32;
                 pass.draw(first..first + VERTS_PER_QUAD as u32, 0..1);
             }

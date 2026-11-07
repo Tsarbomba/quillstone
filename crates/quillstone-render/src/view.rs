@@ -13,9 +13,11 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, Anim, Axis, Ease, Fit, Imagemap, Wipe};
+use quillstone_script::{anim_id, Anim, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
 
 use crate::fade::Fade;
+use crate::pixels::vignette_zoom;
+use crate::filter::ColorMatrix;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
 use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, FULL_UV, VIRTUAL};
@@ -73,6 +75,18 @@ pub enum Draw {
     /// in virtual pixels (0 is sharp).
     Image { src: String, dest: Rect, uv: Rect, alpha: f32, shade: f32, blur: f32 },
     Rect { rect: Rect, color: [f32; 4] },
+    /// Dark edges: the vignette picture (white, alpha rising outwards) over `rect`, shown through the window
+    /// `zoom` of it across (see [`crate::pixels::vignette_zoom`]) and multiplied by `color`.
+    Vignette { rect: Rect, color: [f32; 4], zoom: f32 },
+    /// From here on the pictures that follow (the stage) get this colour matrix; `None` ends it.
+    Filter(Option<ColorMatrix>),
+    /// The pictures that follow (one sprite's) are multiplied by this colour; `None` ends it.
+    Tint(Option<[f32; 3]>),
+    /// The pictures that follow (one sprite's) are drawn additively (`true`, light) instead of source-over; `false` ends it.
+    Additive(bool),
+    /// The pictures that follow (the new background) appear where this greyscale picture is dark first: `(mask picture,
+    /// reveal)` with `reveal` from [`crate::pixels::mask_reveal`]; `None` ends it. The mask is laid over the stage.
+    Mask(Option<(String, f32)>),
     /// `text` is the *full* string so wrapping stays stable; show only the first
     /// `visible_chars` characters (the typewriter effect) without re-wrapping.
     /// `runs`: bold / italic / coloured stretches (empty: all in `color`).
@@ -95,6 +109,8 @@ pub struct Background {
     pub fade: f32,
     /// Reveal the picture from one side instead of fading it in.
     pub wipe: Option<Wipe>,
+    /// Reveal the picture following this greyscale picture (dark first) instead of fading it in.
+    pub mask: Option<String>,
     /// A video background plays its own sound.
     pub sound: bool,
     /// Blur radius in stage pixels (0 is sharp).
@@ -112,13 +128,19 @@ impl Background {
         }
     }
 
-    /// Opacity: rises with the transition, except for a wipe (which is opaque).
+    /// Opacity: rises with the transition, except for a wipe or a mask (which are opaque).
     pub fn alpha(&self) -> f32 {
-        if self.wipe.is_some() {
+        if self.wipe.is_some() || self.mask.is_some() {
             1.0
         } else {
             self.progress()
         }
+    }
+
+    /// The mask picture and its threshold while the mask transition runs; `None` otherwise.
+    pub fn masked(&self) -> Option<(String, f32)> {
+        let m = self.mask.as_ref().filter(|_| self.progress() < 1.0)?;
+        Some((m.clone(), crate::pixels::mask_reveal(self.progress())))
     }
 
     /// The part of the screen showing this picture during a wipe; `None` for all of it.
@@ -212,18 +234,22 @@ pub struct SpriteView {
     pub dy: f32,
     /// Target blur radius in stage pixels.
     pub blur: f32,
+    /// Target colour the picture is multiplied by (white is none).
+    pub tint: [f32; 3],
+    /// Drawn with additive blending (`blend=add`).
+    pub additive: bool,
     pub hiding: bool,
     fade: f32,
     elapsed: f32,
-    /// Where the current leg of a move started: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
-    from: [f32; 9],
+    /// Where the current leg of a move started: x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue.
+    from: [f32; 12],
     move_time: f32,
     /// Seconds into the current leg; negative while it still waits (`wait=`).
     move_elapsed: f32,
     move_ease: Ease,
     /// A looping move: the other end of the oscillation (same order as `from`);
     /// the sprite rests at `x`, `y`, ... The current leg heads for it while `out`.
-    loop_far: Option<[f32; 9]>,
+    loop_far: Option<[f32; 12]>,
     /// A sequence of moves: the legs still to run after the current one, every leg of it, and whether the
     /// legs start over once the last is done (`loop` with `then`).
     queue: VecDeque<SpriteStep>,
@@ -239,7 +265,7 @@ pub struct SpriteView {
 }
 
 impl SpriteView {
-    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 4], fade: f32) -> SpriteView {
+    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 7], fade: f32) -> SpriteView {
         SpriteView {
             id: id.to_string(),
             src: src.to_string(),
@@ -257,10 +283,12 @@ impl SpriteView {
             dx: fx[1],
             dy: fx[2],
             blur: fx[3],
+            tint: [fx[4], fx[5], fx[6]],
+            additive: look.additive,
             hiding: false,
             fade,
             elapsed: 0.0,
-            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3]],
+            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3], fx[4], fx[5], fx[6]],
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
@@ -306,21 +334,21 @@ impl SpriteView {
         plain.chain(layers).chain(self.previous_layers.iter().map(|(p, _)| p.as_str()))
     }
 
-    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
-    fn target(&self) -> [f32; 9] {
+    /// Where the current leg of a move (or loop) is heading: x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue.
+    fn target(&self) -> [f32; 12] {
         match (&self.loop_far, self.out) {
             (Some(far), true) => *far,
             _ => self.rest(),
         }
     }
 
-    /// The resting pose: x, y, scale, xscale, yscale, alpha, dx, dy, blur.
-    fn rest(&self) -> [f32; 9] {
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur]
+    /// The resting pose: x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue.
+    fn rest(&self) -> [f32; 12] {
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur, self.tint[0], self.tint[1], self.tint[2]]
     }
 
     /// The values the sprite rests at for good: where a looping sequence's last leg ends, else `rest`.
-    fn home(&self) -> [f32; 9] {
+    fn home(&self) -> [f32; 12] {
         match self.legs.last() {
             Some(last) if self.cycle => last.values(),
             _ => self.rest(),
@@ -333,10 +361,10 @@ impl SpriteView {
     }
 
     /// Start a leg of a move from `from`; the sprite's own values become the leg's.
-    fn start_leg(&mut self, from: [f32; 9], to: &SpriteStep) {
+    fn start_leg(&mut self, from: [f32; 12], to: &SpriteStep) {
         self.from = from;
-        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur) =
-            (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy, to.blur);
+        (self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha_to, self.dx, self.dy, self.blur, self.tint) =
+            (to.x, to.y, to.scale, to.xscale, to.yscale, to.alpha, to.dx, to.dy, to.blur, to.tint);
         self.move_time = to.time;
         self.move_elapsed = -to.wait;
         self.move_ease = to.ease;
@@ -354,7 +382,7 @@ impl SpriteView {
         self.loop_far.is_some() || self.cycle
     }
 
-    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale, 5 alpha, 6 dx, 7 dy, 8 blur) right now.
+    /// The value `k` (0 x, 1 y, 2 scale, 3 xscale, 4 yscale, 5 alpha, 6 dx, 7 dy, 8 blur, 9-11 tint) right now.
     fn now(&self, k: usize) -> f32 {
         let (from, to) = (self.from[k], self.target()[k]);
         from + (to - from) * self.move_progress()
@@ -372,7 +400,7 @@ impl SpriteView {
     }
 
     /// All the animated values right now.
-    fn here(&self) -> [f32; 9] {
+    fn here(&self) -> [f32; 12] {
         std::array::from_fn(|k| self.now(k))
     }
 
@@ -393,7 +421,7 @@ impl SpriteView {
 
     /// Size, stretch and mirroring right now.
     fn look(&self) -> Look {
-        Look { scale: self.current_scale(), xscale: self.current_xscale(), yscale: self.current_yscale(), flip: self.flip }
+        Look { scale: self.current_scale(), xscale: self.current_xscale(), yscale: self.current_yscale(), flip: self.flip, additive: self.additive }
     }
 
     /// How opaque the sprite is right now: the fade in or out of showing and hiding times `alpha=` (which moves can animate).
@@ -409,6 +437,11 @@ impl SpriteView {
     /// The blur radius in stage pixels right now.
     pub fn current_blur(&self) -> f32 {
         self.now(8).clamp(0.0, *quillstone_script::SPRITE_BLUR.end())
+    }
+
+    /// The colour the picture is multiplied by right now (eased per channel).
+    pub fn current_tint(&self) -> [f32; 3] {
+        std::array::from_fn(|k| self.now(9 + k).clamp(0.0, 1.0))
     }
 
     /// Fade progress as opacity: rising when showing, falling when hiding.
@@ -499,6 +532,7 @@ pub struct Look {
     pub xscale: f32,
     pub yscale: f32,
     pub flip: bool,
+    pub additive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -728,6 +762,50 @@ impl TintFade {
     }
 }
 
+/// The dark edges of the screen (`::vignette`), easing from where they were to `to`.
+#[derive(Debug, Clone, PartialEq)]
+struct VignetteFade {
+    from: Vignette,
+    to: Vignette,
+    /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
+    progress: Fade,
+}
+
+impl VignetteFade {
+    fn current(&self) -> Vignette {
+        let (a, b, t) = (self.from, self.to, self.progress.alpha);
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        Vignette {
+            color: [mix(a.color[0], b.color[0]), mix(a.color[1], b.color[1]), mix(a.color[2], b.color[2])],
+            strength: mix(a.strength, b.strength),
+            size: mix(a.size, b.size),
+        }
+    }
+}
+
+/// The colour filter over the stage (`::filter`), easing from where it was to `to`.
+#[derive(Debug, Clone, PartialEq)]
+struct FilterFade {
+    from: Filter,
+    to: Filter,
+    /// Its `alpha` is the progress: 0 at the start of the ease, 1 when it has arrived.
+    progress: Fade,
+}
+
+impl FilterFade {
+    fn current(&self) -> Filter {
+        let (a, b, t) = (self.from, self.to, self.progress.alpha);
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        Filter {
+            gray: mix(a.gray, b.gray),
+            sepia: mix(a.sepia, b.sepia),
+            brightness: mix(a.brightness, b.brightness),
+            contrast: mix(a.contrast, b.contrast),
+            saturation: mix(a.saturation, b.saturation),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct View {
     pub background: Option<Background>,
@@ -755,6 +833,8 @@ pub struct View {
     hud: HudLayer,
     particles: ParticleLayer,
     tint: Option<TintFade>,
+    vignette: Option<VignetteFade>,
+    filter: Option<FilterFade>,
     /// `::textbox{hide}` is in effect, and how visible the box is now (0..1, fading).
     box_hidden: bool,
     box_fade: Fade,
@@ -807,6 +887,8 @@ impl View {
             hud: HudLayer::default(),
             particles: ParticleLayer::default(),
             tint: None,
+            vignette: None,
+            filter: None,
             box_hidden: false,
             box_fade: Fade::at(1.0),
             hide_ui: false,
@@ -973,6 +1055,8 @@ impl View {
                     self.hud.clear_all();
                     self.particles.clear();
                     self.tint = None;
+                    self.vignette = None;
+                    self.filter = None;
                     self.box_hidden = false;
                     self.box_fade = Fade::at(1.0);
                 }
@@ -984,10 +1068,10 @@ impl View {
                         self.box_fade.alpha = self.box_fade.target;
                     }
                 }
-                Cmd::SetBackground { src, fade, wipe, sound, blur } => self.set_background(src, *fade, *wipe, *sound, *blur),
-                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, fade } => {
-                    let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip };
-                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy, *blur], *fade)
+                Cmd::SetBackground { src, fade, wipe, sound, blur, mask } => self.set_background(src, *fade, *wipe, *sound, *blur, mask.clone()),
+                Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, tint, additive, fade } => {
+                    let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip, additive: *additive };
+                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy, *blur, tint[0], tint[1], tint[2]], *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
                 Cmd::LoopSprite { id, flip, to } => {
@@ -1051,6 +1135,8 @@ impl View {
                 Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } => self.hud.apply(cmd),
                 Cmd::Particles { set, fade } => self.particles.apply(set, *fade),
                 Cmd::Tint { set, fade } => self.set_tint(set.map(|t| (t.color, t.alpha)), *fade),
+                Cmd::Vignette { set, fade } => self.set_vignette(*set, *fade),
+                Cmd::Filter { set, fade } => self.set_filter(*set, *fade),
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
@@ -1109,7 +1195,7 @@ impl View {
         }
     }
 
-    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32) {
+    fn set_background(&mut self, src: &str, fade: f32, wipe: Option<Wipe>, sound: bool, blur: f32, mask: Option<String>) {
         // The same clip keeps playing: only its sound is turned on or off, and a blur that changes
         // crossfades from the old look when there is a `fade` (else it just changes).
         if let Some(b) = self.background.as_mut().filter(|b| b.src == src && (b.blur == blur || fade <= 0.0)) {
@@ -1120,7 +1206,7 @@ impl View {
         self.previous_background = if fade > 0.0 { self.background.take().map(|b| b.src) } else { None };
         self.previous_bg_clock = self.bg_clock;
         self.bg_clock = 0.0;
-        self.background = Some(Background { src: src.to_string(), fade, wipe, sound, blur, elapsed: 0.0 });
+        self.background = Some(Background { src: src.to_string(), fade, wipe, mask, sound, blur, elapsed: 0.0 });
     }
 
     /// Start moving the camera from wherever it is now.
@@ -1212,6 +1298,55 @@ impl View {
         self.tint.as_ref().map(TintFade::current).filter(|(_, alpha)| *alpha > 0.0)
     }
 
+    /// Ease the vignette to `set` (`None`: to nothing) from what it is now, or from clear.
+    fn set_vignette(&mut self, set: Option<Vignette>, fade: f32) {
+        let now = self.vignette();
+        let to = match (set, now) {
+            (Some(to), _) => to,
+            (None, Some(v)) => Vignette { strength: 0.0, ..v },
+            (None, None) => return,
+        };
+        let from = now.unwrap_or(Vignette { strength: 0.0, ..to });
+        let rate = Fade::rate_over(fade);
+        self.vignette = Some(VignetteFade { from, to, progress: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } });
+        self.drop_cleared_vignette();
+    }
+
+    fn drop_cleared_vignette(&mut self) {
+        if self.vignette.as_ref().is_some_and(|v| v.progress.done() && v.to.strength <= 0.0) {
+            self.vignette = None;
+        }
+    }
+
+    /// The dark edges right now, if there are any showing.
+    pub fn vignette(&self) -> Option<Vignette> {
+        self.vignette.as_ref().map(VignetteFade::current).filter(|v| v.strength > 0.0)
+    }
+
+    /// Ease the filter to `set` (`None`: to nothing) from what it is now, or from none.
+    fn set_filter(&mut self, set: Option<Filter>, fade: f32) {
+        let now = self.filter();
+        if set.is_none() && now.is_none() {
+            return;
+        }
+        let from = now.unwrap_or_default();
+        let rate = Fade::rate_over(fade);
+        let progress = Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate };
+        self.filter = Some(FilterFade { from, to: set.unwrap_or_default(), progress });
+        self.drop_cleared_filter();
+    }
+
+    fn drop_cleared_filter(&mut self) {
+        if self.filter.as_ref().is_some_and(|f| f.progress.done() && f.to == Filter::default()) {
+            self.filter = None;
+        }
+    }
+
+    /// The filter right now, if there is one showing.
+    pub fn filter(&self) -> Option<Filter> {
+        self.filter.as_ref().map(FilterFade::current).filter(|f| *f != Filter::default())
+    }
+
     /// The colour and opacity the stage is covered with right now, if it is.
     pub fn cover(&self) -> Option<([f32; 3], f32)> {
         self.cover.as_ref().filter(|c| c.fade.alpha > 0.0).map(|c| (c.color, c.fade.alpha))
@@ -1223,7 +1358,7 @@ impl View {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 4], fade: f32) {
+    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 7], fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
@@ -1240,20 +1375,22 @@ impl View {
                     s.fade = fade;
                 }
                 // A new pose that leaves the resting values alone does not disturb a loop.
-                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3]];
+                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3], fx[4], fx[5], fx[6]];
                 if (s.loop_far.is_some() || s.cycle) && s.home() == values {
                     s.z = z;
                     s.flip = look.flip;
+                    s.additive = look.additive;
                     return;
                 }
                 s.loop_far = None;
                 s.end_sequence();
                 s.out = false;
                 s.from = values;
-                (s.alpha_to, s.dx, s.dy, s.blur) = (fx[0], fx[1], fx[2], fx[3]);
+                (s.alpha_to, s.dx, s.dy, s.blur, s.tint) = (fx[0], fx[1], fx[2], fx[3], [fx[4], fx[5], fx[6]]);
                 s.x = x;
                 s.y = y;
                 s.z = z;
+                s.additive = look.additive;
                 s.move_time = 0.0;
                 s.move_elapsed = 0.0;
                 s.scale = look.scale;
@@ -1338,6 +1475,14 @@ impl View {
             t.progress.tick(dt);
         }
         self.drop_cleared_tint();
+        if let Some(v) = &mut self.vignette {
+            v.progress.tick(dt);
+        }
+        self.drop_cleared_vignette();
+        if let Some(f) = &mut self.filter {
+            f.progress.tick(dt);
+        }
+        self.drop_cleared_filter();
         self.sprites.retain(|s| !s.is_gone());
         self.hud.tick(dt);
         self.particles.tick(dt, animate);
@@ -1365,6 +1510,8 @@ impl View {
             || self.notice.is_some()
             || self.cover.as_ref().is_some_and(|c| !c.fade.done())
             || self.tint.as_ref().is_some_and(|t| !t.progress.done())
+            || self.vignette.as_ref().is_some_and(|v| !v.progress.done())
+            || self.filter.as_ref().is_some_and(|f| !f.progress.done())
             || self.hud.fading()
             || !self.box_fade.done()
             || self.dialogue.as_ref().is_some_and(|d| !d.is_complete())
@@ -1445,6 +1592,16 @@ impl View {
         let first = stage.len();
         self.push_sprite_pictures(stage, s, image_size);
         let (dx, dy) = s.current_offset();
+        let tint = s.current_tint();
+        // A white tint is no marker at all, so a plain scene draws what it always drew.
+        let tinted = tint != [1.0; 3] && stage.len() > first;
+        if tinted {
+            stage.insert(first, Draw::Tint(Some(tint)));
+        }
+        let additive = s.additive && stage.len() > first;
+        if additive {
+            stage.insert(first, Draw::Additive(true));
+        }
         for d in &mut stage[first..] {
             if let Draw::Image { shade, dest, blur, .. } = d {
                 *shade = s.shade;
@@ -1453,6 +1610,12 @@ impl View {
                 dest.x += dx;
                 dest.y += dy;
             }
+        }
+        if tinted {
+            stage.push(Draw::Tint(None));
+        }
+        if additive {
+            stage.push(Draw::Additive(false));
         }
     }
 
@@ -1530,6 +1693,12 @@ impl View {
         let mut out = Vec::new();
         let screen = Rect::new(0.0, 0.0, VIRTUAL.w, VIRTUAL.h);
 
+        // The filter covers everything up to the tint (stage, particles, inline images, video, hotspot art).
+        let filter = self.filter().and_then(|f| crate::filter::matrix_unless_neutral(&f));
+        if filter.is_some() {
+            out.push(Draw::Filter(filter));
+        }
+
         // The stage: background and sprites, seen through the camera and shake.
         let mut stage = Vec::new();
         if let Some(prev) = &self.previous_background {
@@ -1540,6 +1709,11 @@ impl View {
             let mut picture = Vec::new();
             push_backdrop(&mut picture, self.picture(&bg.src, self.bg_clock), screen, bg.alpha(), image_size);
             blur_all(&mut picture, bg.blur);
+            let masked = bg.masked();
+            if let Some((mask, _)) = &masked {
+                image_size(mask); // asks for the mask picture (the frame waits until it is loaded)
+                stage.push(Draw::Mask(masked.clone()));
+            }
             for draw in picture {
                 match (draw, bg.revealed()) {
                     (Draw::Image { src, dest, uv, alpha, shade, blur }, Some(part)) => {
@@ -1554,6 +1728,9 @@ impl View {
                     }
                     (draw, _) => stage.push(draw),
                 }
+            }
+            if masked.is_some() {
+                stage.push(Draw::Mask(None));
             }
         }
         let bg_end = stage.len();
@@ -1585,7 +1762,8 @@ impl View {
             }
             // A solid colour fills the screen whatever the camera and shake do.
             rect @ Draw::Rect { .. } => out.push(rect),
-            Draw::Text { .. } => {}
+            tint @ (Draw::Tint(_) | Draw::Additive(_) | Draw::Mask(_)) => out.push(tint),
+            Draw::Text { .. } | Draw::Filter(_) | Draw::Vignette { .. } => {}
         };
         for draw in stage {
             place(&mut out, draw);
@@ -1652,10 +1830,16 @@ impl View {
             }
         }
 
-        // The tint, the cover and the flash are over the whole picture (stage, particles, inline images,
+        if filter.is_some() {
+            out.push(Draw::Filter(None));
+        }
+        // The tint, the vignette, the cover and the flash are over the whole picture (stage, particles, inline images,
         // video and hotspot art), in that order, but under the textbox and the UI.
         if let Some(([r, g, b], alpha)) = self.tint() {
             out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] });
+        }
+        if let Some(Vignette { color: [r, g, b], strength, size }) = self.vignette() {
+            out.push(Draw::Vignette { rect: screen, color: [r, g, b, strength], zoom: vignette_zoom(size) });
         }
         if let Some((color, alpha)) = self.cover() {
             let [r, g, b] = color;
@@ -2003,6 +2187,16 @@ mod anim_tests;
 #[cfg(test)]
 mod blur_tests;
 #[cfg(test)]
+mod additive_tests;
+#[cfg(test)]
+mod sprite_tint_tests;
+#[cfg(test)]
+mod filter_tests;
+#[cfg(test)]
+mod vignette_tests;
+#[cfg(test)]
+mod mask_tests;
+#[cfg(test)]
 mod highlight_tests;
 #[cfg(test)]
 mod layers_tests;
@@ -2018,15 +2212,15 @@ mod tests {
     }
 
     fn bg(src: &str, fade: f32) -> Cmd {
-        Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur: 0.0 }
+        Cmd::SetBackground { src: src.into(), fade, wipe: None, sound: false, blur: 0.0, mask: None }
     }
 
     fn show(id: &str, src: &str, x: f32, fade: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade }
+        Cmd::ShowSprite { id: id.into(), src: src.into(), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade }
     }
 
     fn slide(id: &str, x: f32, scale: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y: 1.0, scale, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease, wait: 0.0 }, queued: false }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y: 1.0, scale, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], time, ease, wait: 0.0 }, queued: false }
     }
 
     fn images(list: &[Draw]) -> Vec<(&str, Rect, Rect)> {
@@ -2350,7 +2544,7 @@ mod tests {
     #[test]
     fn x_and_y_put_the_point_that_far_across_a_sprite_that_far_across_the_screen() {
         let mut v = View::new();
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }]);
         // a 1:2 picture at half scale: 470 tall, 235 wide
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         let Draw::Image { dest, uv, alpha, .. } = &list[0] else { panic!("expected a sprite") };
@@ -2366,7 +2560,7 @@ mod tests {
     }
 
     fn sprite(id: &str, x: f32, y: f32, z: i32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y, z, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }
     }
 
     fn drawn_order(v: &View) -> Vec<String> {
@@ -2425,7 +2619,7 @@ mod tests {
     }
 
     fn slide_y(id: &str, x: f32, y: f32, time: f32, ease: Ease) -> Cmd {
-        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time, ease, wait: 0.0 }, queued: false }
+        Cmd::MoveSprite { id: id.into(), flip: false, to: SpriteStep { x, y, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], time, ease, wait: 0.0 }, queued: false }
     }
 
     #[test]
@@ -2506,7 +2700,7 @@ mod tests {
     fn a_wipe_reveals_the_new_background_from_one_side() {
         let mut v = View::new();
         v.apply(&[bg("a.png", 0.0)]);
-        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false, blur: 0.0 }]);
+        v.apply(&[Cmd::SetBackground { src: "b.png".into(), fade: 1.0, wipe: Some(Wipe::Right), sound: false, blur: 0.0, mask: None }]);
         v.tick(0.25);
         let list = v.draw_list(&all_1080p, None);
         let shown = images(&list);
@@ -3074,7 +3268,7 @@ mod tests {
         assert_eq!(v.hotspot_at(old.0, old.1), None, "its old place misses");
         assert_eq!(v.hotspot_at(drawn.x + drawn.w / 2.0, drawn.y + drawn.h / 2.0), Some(0));
         // scale, stretch and flip are the sprite's own
-        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }], false);
+        v.apply_each(&[Cmd::ShowSprite { id: "fly".into(), src: "fly.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 0.5, flip: true, xscale: 2.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }], false);
         v.tick(10.0);
         let (drawn, spot) = drawn_and_spot(&v, &size);
         assert_eq!(spot, drawn);
@@ -3107,7 +3301,7 @@ mod tests {
         let size = |s: &str| Some(if s == "body.png" { Size::new(500.0, 1000.0) } else { Size::new(100.0, 100.0) });
         let mut v = View::new();
         let layers = vec![("body".to_string(), "body.png".to_string()), ("face".to_string(), "face.png".to_string())];
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: String::new(), layers, x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }, follower("m", [0.0, 0.0, 1.0, 1.0])]);
         let drawn: Vec<Rect> = images(&v.draw_list(&size, None)).iter().map(|(_, r, _)| *r).collect();
         assert_eq!(drawn.len(), 2, "{drawn:?}");
         let (l, t) = (drawn.iter().map(|r| r.x).fold(f32::MAX, f32::min), drawn.iter().map(|r| r.y).fold(f32::MAX, f32::min));
@@ -3767,7 +3961,7 @@ mod tests {
     // ---- flip and per-axis scale ------------------------------------------------------------
 
     fn look_show(id: &str, flip: bool, xscale: f32, yscale: f32, x: f32) -> Cmd {
-        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }
+        Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }
     }
 
     #[test]
@@ -3813,7 +4007,7 @@ mod tests {
         assert!(close(dest.y + dest.h, VIRTUAL.h), "still standing on the bottom edge");
         assert!(close(dest.x, 0.25 * (VIRTUAL.w - dest.w)), "still placed by x on its new size");
         // multiplied with scale
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 0.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x: 0.25, y: 1.0, z: 0, scale: 0.5, flip: false, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0 }]);
         let list = v.draw_list(&|_| Some(Size::new(500.0, 1000.0)), None);
         assert!(close(images(&list)[0].1.w, 470.0) && close(images(&list)[0].1.h, 235.0));
     }
@@ -3822,7 +4016,7 @@ mod tests {
     fn a_move_animates_the_scales_and_switches_flip_at_its_start() {
         let mut v = View::new();
         v.apply(&[look_show("m", false, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
+        v.apply(&[Cmd::MoveSprite { id: "m".into(), flip: true, to: SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 2.0, yscale: 0.5, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], time: 1.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
         let size = |_: &str| Some(Size::new(500.0, 1000.0));
         let at = |v: &View| {
             let list = v.draw_list(&size, None);
@@ -3868,7 +4062,7 @@ mod tests {
     fn a_pose_change_crossfade_keeps_the_flip_for_both_poses() {
         let mut v = View::new();
         v.apply(&[look_show("m", true, 1.0, 1.0, 0.5)]);
-        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, fade: 1.0 }]);
+        v.apply(&[Cmd::ShowSprite { id: "m".into(), src: "m2.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: true, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 1.0 }]);
         v.tick(0.5);
         let list = v.draw_list(&all_1080p, None);
         let flipped: Vec<_> = images(&list).into_iter().map(|(_, _, uv)| uv.w < 0.0).collect();

@@ -10,7 +10,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, POSITION, TINT_ALPHA, Value, Vars};
+use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, Vignette, VIGNETTE_RANGE, Filter, FILTER_AMOUNT, FILTER_GAIN, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
 use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_OFFSET};
@@ -514,9 +514,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     }
     for sp in &s.sprites {
         // New fields are appended: `y` and `z` came after the first four, then `flip`,
-        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`, then `blur`; an older save has fewer and loads with the defaults.
+        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`, then `blur`, then the three `tint` numbers; an older save has fewer and loads with the defaults.
         w(format!(
-            "sprite {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "sprite {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             q(&sp.id),
             q(&sp.src),
             sp.x,
@@ -529,20 +529,27 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.alpha,
             sp.dx,
             sp.dy,
-            sp.blur
+            sp.blur,
+            sp.tint[0],
+            sp.tint[1],
+            sp.tint[2]
         ));
         // The layers of a layered sprite (its `src` is empty) are records of their own; a save
         // without them (every save from before layers) loads as plain sprites.
         for (layer, picture) in &sp.layers {
             w(format!("layer {} {} {}", q(&sp.id), q(layer), q(picture)));
         }
+        // Additive blending is a record of its own (absent: normal), so older saves and readers are unaffected.
+        if sp.additive {
+            w(format!("additive {}", q(&sp.id)));
+        }
         // A looping move is a record of its own, so older saves and readers are unaffected.
         if let Some(l) = &sp.looped {
-            w(format!("loop {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy, l.blur));
+            w(format!("loop {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy, l.blur, l.tint[0], l.tint[1], l.tint[2]));
         }
         // So is each leg of a looping sequence.
         for l in &sp.cycle {
-            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur));
+            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur, l.tint[0], l.tint[1], l.tint[2]));
         }
     }
     if s.camera != Camera::default() {
@@ -560,6 +567,14 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     // Saves from before `::tint` existed have no such record: they load without one.
     if let Some(t) = &s.tint {
         w(format!("tint {} {}", color(Some(t.color)), t.alpha));
+    }
+    // Saves from before `::vignette` existed have no such record: they load without one.
+    if let Some(v) = &s.vignette {
+        w(format!("vignette {} {} {}", color(Some(v.color)), v.strength, v.size));
+    }
+    // Saves from before `::filter` existed have no such record: they load without one.
+    if let Some(f) = &s.filter {
+        w(format!("filter {} {} {} {} {}", f.gray, f.sepia, f.brightness, f.contrast, f.saturation));
     }
     // Saves from before `::textbox` existed have no such record: they load with the box shown.
     if s.textbox_hidden {
@@ -712,6 +727,13 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
         let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: `{line}` is too short"));
         let f = |i: usize| -> Result<f32, String> { num(arg(i)?, n) };
         let b = |i: usize| -> Result<bool, String> { num(arg(i)?, n) };
+        // A tint is three numbers from `i`; an older save has none (no tint).
+        let tint = |i: usize| -> Result<[f32; 3], String> {
+            if t.len() < i + 3 {
+                return Ok([1.0; 3]);
+            }
+            Ok([sane(f(i)?, 0.0, 1.0, 1.0), sane(f(i + 1)?, 0.0, 1.0, 1.0), sane(f(i + 2)?, 0.0, 1.0, 1.0)])
+        };
         // Saves are shared between players, so a path in one must not reach outside the game folder.
         let path = |i: usize| -> Result<String, String> {
             let p = arg(i)?;
@@ -816,6 +838,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 dx: if t.len() > 11 { sane(f(11)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
                 dy: if t.len() > 12 { sane(f(12)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
                 blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
+                tint: tint(14)?,
+                additive: false,
                 looped: None,
                 cycle: Vec::new(),
             }),
@@ -846,6 +870,14 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     }
                 }
             }
+            "additive" => {
+                let id = arg(1)?;
+                match s.sprites.iter_mut().find(|sp| sp.id == id) {
+                    Some(sprite) => sprite.additive = true,
+                    None if dropped.iter().any(|d| d == id) => {}
+                    None => return Err(format!("line {n}: an `additive` for the sprite `{id}`, which is not on stage")),
+                }
+            }
             "loop" => {
                 let id = arg(1)?;
                 let Some(sprite) = s.sprites.iter_mut().find(|sp| sp.id == id) else {
@@ -865,6 +897,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     dx: if t.len() > 10 { sane(f(10)?, lo, hi, 0.0) } else { 0.0 },
                     dy: if t.len() > 11 { sane(f(11)?, lo, hi, 0.0) } else { 0.0 },
                     blur: if t.len() > 12 { sane(f(12)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
+                    tint: tint(13)?,
                     time: sane(f(7)?, 0.02, MAX_LOOP_LEG, 1.0),
                     ease: Ease::parse(arg(8)?).unwrap_or_default(),
                     wait: 0.0,
@@ -893,6 +926,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     dx: sane(f(8)?, lo, hi, 0.0),
                     dy: sane(f(9)?, lo, hi, 0.0),
                     blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
+                    tint: tint(14)?,
                     time: sane(f(10)?, 0.0, MAX_LOOP_LEG, 0.0),
                     ease: Ease::parse(arg(11)?).unwrap_or_default(),
                     wait: sane(f(12)?, 0.0, MAX_LOOP_LEG, 0.0),
@@ -924,6 +958,23 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 let color = parse_rgb(arg(1)?, n)?;
                 let alpha = sane(f(2)?, *TINT_ALPHA.start(), *TINT_ALPHA.end(), 0.0);
                 s.tint = Some(Tint { color, alpha });
+            }
+            "vignette" => {
+                let color = parse_rgb(arg(1)?, n)?;
+                let unit = |i, default| Ok::<_, String>(sane(f(i)?, *VIGNETTE_RANGE.start(), *VIGNETTE_RANGE.end(), default));
+                s.vignette = Some(Vignette { color, strength: unit(2, 0.0)?, size: unit(3, 0.5)? });
+            }
+            "filter" => {
+                let d = Filter::default();
+                let amount = |i, default| Ok::<_, String>(sane(f(i)?, *FILTER_AMOUNT.start(), *FILTER_AMOUNT.end(), default));
+                let gain = |i, default| Ok::<_, String>(sane(f(i)?, *FILTER_GAIN.start(), *FILTER_GAIN.end(), default));
+                s.filter = Some(Filter {
+                    gray: amount(1, d.gray)?,
+                    sepia: amount(2, d.sepia)?,
+                    brightness: gain(3, d.brightness)?,
+                    contrast: gain(4, d.contrast)?,
+                    saturation: gain(5, d.saturation)?,
+                });
             }
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {
