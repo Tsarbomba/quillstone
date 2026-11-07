@@ -396,6 +396,12 @@ fn is_ffmpeg_lib(file: &str) -> bool {
         })
 }
 
+/// The player that ships beside `quillstone` in the downloadable kit.
+pub fn default_player(exe_dir: &Path) -> Option<PathBuf> {
+    let player = exe_dir.join(if cfg!(windows) { "quillstone-player.exe" } else { "quillstone-player" });
+    player.is_file().then_some(player)
+}
+
 fn ffmpeg_libs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut libs: Vec<PathBuf> = entries
@@ -608,6 +614,17 @@ mod tests {
         let program = quillstone_script::parse("::bg{src=./assets/bg.png}\n::bg{src=assets/bg.png}\nHi.\n").unwrap();
         let files = used_files(Path::new("."), "s.quill.md", &program).unwrap();
         assert_eq!(files.list, ["s.quill.md", "assets/bg.png"]);
+    }
+
+    #[test]
+    fn the_default_player_is_the_one_beside_the_executable() {
+        let dir = std::env::temp_dir().join(format!("qs-default-player-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(default_player(&dir), None);
+        let name = if cfg!(windows) { "quillstone-player.exe" } else { "quillstone-player" };
+        std::fs::write(dir.join(name), "exe").unwrap();
+        assert_eq!(default_player(&dir), Some(dir.join(name)));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

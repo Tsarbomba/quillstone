@@ -31,92 +31,58 @@ translations, gamepad support and hot reload. The full language is in
 
 <p align="center"><a href="https://ko-fi.com/quillstone"><img src="https://img.shields.io/badge/Buy%20me%20a%20sausage-72a4f2?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Buy me a sausage on Ko-fi"></a></p>
 
-## Set up Rust (one time)
+## Get started
 
-**Windows**
-1. Download and run `rustup-init.exe` from <https://rustup.rs>.
-2. If it asks for the Visual Studio C++ Build Tools, accept. In the installer,
-   tick **Desktop development with C++** (this is the linker Rust needs).
-3. Open a *new* terminal and check: `cargo --version`
+You don't need to install or compile anything. Download the kit for Windows or Linux from the
+[Releases page](https://github.com/Tsarbomba/quillstone/releases) and unzip it. It holds the
+`quillstone` tool, the player, FFmpeg's libraries and the examples.
 
-**Linux / macOS**
-```
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-(Linux also needs a C compiler: `sudo apt install build-essential`. macOS: `xcode-select --install`.)
+Windows may show "Windows protected your PC" the first time, because the programs aren't signed:
+click **More info**, then **Run anyway**. The Linux kit needs glibc 2.35 or newer (Ubuntu 22.04 or newer).
 
-## Try it
+Play the demo from the kit's folder:
 
 ```
-cargo test --workspace                          # run all tests
-cargo run -- run   examples/demo.quill.md       # play the demo in the terminal
-cargo run -- dump  examples/demo.quill.md       # show the compiled ops
-cargo run -- check examples/demo.quill.md       # validate script + assets
-cargo run -- test  examples/demo.quill.md       # play every branch, report story bugs
+quillstone-player examples/demo.quill.md
 ```
 
-All commands (`<script>` is a `.quill.md` file; the script's folder is the game folder):
+(In PowerShell, the usual Windows terminal, put `.\` in front of the program: `.\quillstone-player examples/demo.quill.md`,
+`.\quillstone check ...`.)
 
-| Command | What it does |
-| --- | --- |
-| `quillstone check <script>` | validate the script, its theme, translations and that every file exists; warns about unused files |
-| `quillstone test <script> [--limit <n>] [--allow-partial]` | play every branch and report story bugs (below) |
-| `quillstone graph <script> [--format mermaid\|dot] [-o <file>]` | draw the story as a flowchart (Mermaid by default, to the screen unless `-o` names a file) |
-| `quillstone run <script> [--start <label>] [--set var=value]...` | play in the terminal; `--start` begins at a label and `--set` (repeatable) gives variables a starting value |
-| `quillstone dump <script>` | print the compiled ops and labels |
-| `quillstone voices <script>` | list every line's voice file name, speaker and text (tab-separated, for the actors) |
-| `quillstone lang export <script> <code>` | create or update `lang/<code>.txt` for a language the script lists |
-| `quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder] [--zip]` | build a game folder to ship (see "Ship a game") |
-| `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
+Then make your first game. Make a folder `mygame/` and put this in `mygame/mygame.quill.md`:
 
-`test` plays every choice branch and reports, with the choices that lead there:
-endless loops that never show anything, places the story can never end from,
-labels and lines no branch reaches, choice options whose condition is never
-true, and variables that are read but never set (usually typos). It exits with
-an error only for the first two; the rest are warnings.
+````markdown
+---
+title: My First Game
+---
+::character{id=mika name=Mika color=#ffd98c}
 
-Exit codes: `0` when it finished and found no error, `1` for a real problem, and
-`2` when it stopped at the `--limit` (how many situations it explores, 100000 by default; variables that keep growing can make the
-story endless), because then only part of the story was played. Raise `--limit`,
-or pass `--allow-partial` if a partial run is fine for you (the exit code is then `0`).
+# start
+**Mika:** Hello! This is my first game.
 
-## Set up FFmpeg for video (one time)
+::choice
+- [Say hello](#hello)
+- [Say nothing](#quiet)
+::
 
-The player plays video with FFmpeg. Building it needs an FFmpeg 8.x *shared*
-build (use an **LGPL** one so games can ship it) and libclang.
+# hello
+**Mika:** Nice to meet you.
+::end
 
-**Windows**
-1. Download `ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip` from
-   <https://github.com/BtbN/FFmpeg-Builds/releases> and unzip it to `C:\ffmpeg`
-   (so `C:\ffmpeg\include` and `C:\ffmpeg\lib` exist).
-2. Install LLVM: `winget install LLVM.LLVM`.
-3. Set two variables, then open a *new* terminal:
-   `setx FFMPEG_DIR C:\ffmpeg` and `setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"`.
-4. At run time the FFmpeg DLLs must be found: add `C:\ffmpeg\bin` to `PATH`, or
-   copy its `.dll` files next to `quillstone-player.exe` (that is also how a game ships).
+# quiet
+**Mika:** Shy, are you? That's fine.
+````
 
-**Linux / WSL**: the same, with `ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz`;
-install libclang (`sudo apt install libclang-dev`), `export FFMPEG_DIR=...`, and
-`export LD_LIBRARY_PATH=$FFMPEG_DIR/lib` to run.
+Run it with `quillstone-player mygame/mygame.quill.md`. Leave it running, change a line, and save:
+the game updates within half a second, at the same spot (hot reload). Every command, choice,
+variable and effect is in [SCRIPT.md](SCRIPT.md); `quillstone check mygame/mygame.quill.md` tells you
+what is wrong, with the line.
 
-**macOS**: `brew install ffmpeg pkg-config llvm`, then
-`export LIBCLANG_PATH=$(brew --prefix llvm)/lib` (FFmpeg is found through
-pkg-config, no `FFMPEG_DIR` needed). Homebrew's FFmpeg is a GPL build: fine for
-developing, but ship an LGPL build with a game.
-
-No FFmpeg? Build without video: `cargo run --release --no-default-features --features text,audio -- ...`
-(videos then show a placeholder).
-
-## Run the player
-
-The player is its own small project so the engine crates stay dependency-free:
+## Playing
 
 ```
-cd player
-cargo run --release -- ../examples/demo.quill.md
+quillstone-player examples/demo.quill.md
 ```
-
-The first build downloads and compiles wgpu, winit, cosmic-text and kira (a few minutes).
 
 **Hot reload:** leave the game running while you write (this works when the player runs a script, not a `game.qsa`). Saving the script (or
 a file it includes, or its theme) updates the game within half a second, at the same spot, the way a
@@ -156,8 +122,7 @@ double-click the exe. If it can't start, the reason is also written to
 confirms, B or Start is Esc (in the story it opens the save screen, with its row of tabs; elsewhere it closes the screen), X rolls back, Y
 opens the history, LB toggles auto-forward, RB toggles skip, holding RT skips,
 LT and Back open the load and save screens, and the D-pad or left stick moves
-around. Building on Linux needs libudev's development files for this
-(`sudo apt install libudev-dev`), or build with `--no-default-features --features text,audio,video`.
+around.
 
 The game opens at a main menu (Start, Continue, Load, Extras when the game has a
 gallery, music room or scene replays, Settings, Quit) and
@@ -177,31 +142,55 @@ full-screen or maximised state (in `settings.txt`) and restores them, kept on sc
 `--start <label>` and `--set var=value` (repeatable) to begin a new game there; see "Developer tools" in SCRIPT.md.
 Only the flag turns it on, so a shipped game has none of it.
 Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations and timed
-choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (see above). `QUILLSTONE_TEST_VIDEO=1` plays a test
+choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (the kit includes it). `QUILLSTONE_TEST_VIDEO=1` plays a test
 pattern in place of every video, to check the pipeline without FFmpeg.
 
 **Troubleshooting**
-- The player has optional features (`text`, `audio`, `video`, `gamepad`; all on
-  by default), so you can narrow a problem down. For example,
-  `cargo run --release --no-default-features --features text -- ../examples/demo.quill.md`
-  runs without sound or video, and `--no-default-features` alone shows just the
-  window and images.
 - No sound device? The player prints a warning and runs silent.
-- Build errors about FFmpeg: see [Set up FFmpeg](#set-up-ffmpeg-for-video-one-time).
+- The player can also run with parts turned off, to narrow a problem down: see [BUILDING.md](BUILDING.md).
+
+## Check and test a story
+
+```
+quillstone check examples/demo.quill.md                 # validate script + assets
+quillstone test  examples/demo.quill.md                 # play every branch, report story bugs
+quillstone run   examples/demo.quill.md                 # play in the terminal
+quillstone dump  examples/demo.quill.md                 # show the compiled ops
+```
+
+All commands (`<script>` is a `.quill.md` file; the script's folder is the game folder). Run them from the kit's folder, or put it on your `PATH`:
+
+| Command | What it does |
+| --- | --- |
+| `quillstone check <script>` | validate the script, its theme, translations and that every file exists; warns about unused files |
+| `quillstone test <script> [--limit <n>] [--allow-partial]` | play every branch and report story bugs (below) |
+| `quillstone graph <script> [--format mermaid\|dot] [-o <file>]` | draw the story as a flowchart (Mermaid by default, to the screen unless `-o` names a file) |
+| `quillstone run <script> [--start <label>] [--set var=value]...` | play in the terminal; `--start` begins at a label and `--set` (repeatable) gives variables a starting value |
+| `quillstone dump <script>` | print the compiled ops and labels |
+| `quillstone voices <script>` | list every line's voice file name, speaker and text (tab-separated, for the actors) |
+| `quillstone lang export <script> <code>` | create or update `lang/<code>.txt` for a language the script lists |
+| `quillstone package <script> --out <folder> [--player <exe>] [--name <name>] [--libs <folder>] [--folder] [--zip]` | build a game folder to ship (see "Ship a game"); `--player` defaults to the `quillstone-player` beside `quillstone` |
+| `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
+
+`test` plays every choice branch and reports, with the choices that lead there:
+endless loops that never show anything, places the story can never end from,
+labels and lines no branch reaches, choice options whose condition is never
+true, and variables that are read but never set (usually typos). It exits with
+an error only for the first two; the rest are warnings.
+
+Exit codes: `0` when it finished and found no error, `1` for a real problem, and
+`2` when it stopped at the `--limit` (how many situations it explores, 100000 by default; variables that keep growing can make the
+story endless), because then only part of the story was played. Raise `--limit`,
+or pass `--allow-partial` if a partial run is fine for you (the exit code is then `0`).
 
 ## Ship a game
 
-Build the player once without a console window, then package the script:
-
 ```
-cd player
-cargo build --release --features no-console
-cd ..
-cargo run --release -p quillstone -- package examples/demo.quill.md --player player/target/release/quillstone-player.exe --libs C:\ffmpeg\bin --out MyGame
+quillstone package mygame.quill.md --out MyGame --zip
 ```
 
 `MyGame/` then holds `Quillstone Demo.exe` (named after the title; `--name` picks
-another), FFmpeg's five DLLs (avcodec, avformat, avutil, swscale, swresample;
+another), FFmpeg's five libraries (DLLs on Windows: avcodec, avformat, avutil, swscale, swresample;
 never avfilter or avdevice), `licenses/FFmpeg.txt` (the LGPL notice FFmpeg
 requires) and `game.qsa`: the script and only the files it and its theme use, packed
 into one file (stored as they are, not compressed or scrambled, so it is only a
@@ -209,7 +198,8 @@ tidy way to ship them). Add `--zip` to also get `MyGame.zip` beside the folder (
 players unzip it and double-click the exe.
 The script is checked first (it also warns about unused asset files, which `package` leaves out), assets outside the script's folder are refused, and
 an existing non-empty `--out` folder is never overwritten. Without `--libs`, the
-DLLs are taken from beside the player.
+libraries are taken from beside the player. Without `--player`, the `quillstone-player` beside the `quillstone`
+program is used (so the kit needs neither).
 
 **Game icon.** A game gets the Quillstone icon. To use your own, set `icon: assets/icon.png` in the front matter
 (a square PNG, JPEG or WebP, 256x256 or larger with a transparent background; `check` warns when it isn't square
@@ -230,22 +220,9 @@ doesn't have yet is simply added (a voice recording in the voice folder, say).
 that archive. (It is `mods`, not `game`, on purpose: a `game/` folder is what `--folder`
 releases ship, and one left over from an older release must not win over a newer archive.)
 
-**Slim FFmpeg for shipping.** The full FFmpeg download carries every codec FFmpeg
-has (~130 MB of DLLs). `tools/build-ffmpeg.sh` builds one with only what Quillstone
-plays (VP8 and VP9 video in WebM, Vorbis and Opus sound, and `.opus` sound files) and
-only the five libraries the player loads. On Windows, run it in the MSYS2 **UCRT64**
-shell (the packages to install are listed at the top of the script):
+**Smaller games.** The FFmpeg libraries in the kit carry every codec FFmpeg has (~130 MB). A slimmer build with only what Quillstone plays can be made with `tools/build-ffmpeg.sh`: see [BUILDING.md](BUILDING.md). Package with `--libs <its bin or lib folder>`.
 
-```
-cd /c/Users/you/path/to/quillstone
-tools/build-ffmpeg.sh ffmpeg-slim
-```
-
-Then package with `--libs ffmpeg-slim\bin` (Linux: `ffmpeg-slim/lib`). The player
-doesn't need rebuilding: the slim DLLs replace the full ones as long as the FFmpeg
-version matches (8.1). Keep developing against the full download.
-
-A `no-console` game shows no messages; if it can't start or crashes, the reason
+A shipped game (the kit's player has no console window) shows no messages; if it can't start or crashes, the reason
 is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
 `.so` files from its own folder, so the same layout works there.
 
@@ -289,27 +266,10 @@ The `examples/` folder has a script for each area:
 | `chapters.quill.md` + `chapters/` | a story split over several files with `::include` |
 | `lang.quill.md` + `lang/sv.txt` | a game in English and Swedish |
 
-## Layout
-
-| Crate | Job |
-| --- | --- |
-| `quillstone-script` | parser/compiler (values, expressions, ops), no dependencies |
-| `quillstone-runtime` | pure state machine; scene, call stack and variables in `State`; rollback (`Session`) |
-| `quillstone-video` | `Decoder` trait, decoder threads + frame queue (`Clip`), which clips play (`Videos`), a test-pattern decoder |
-| `quillstone-render` | virtual 1920x1080 screen, letterboxing, `View` (sprites, fades, typewriter) + `Draw` list, `build_frame` (quads + text jobs), image prep (mipmaps, alpha bleeding) |
-| `quillstone-audio` | `Mixer`: runtime commands -> audio actions (music crossfades, voice per line, rollback-safe) on music/sfx/voice channels |
-| `quillstone` | the CLI (`check`, `test`, `graph`, `voices`, `lang export`, `dump`, `package`, `unpack`, text-mode `run`) |
-| `quillstone-ui` | `Game`: input routing per screen, settings (+ file), backlog, quick menu, auto-forward, skip mode, save/load slots, confirm dialogs |
-| `player/` | the window: winit + wgpu draws the frame, cosmic-text rasterizes text, kira plays sound, FFmpeg decodes video |
-
-The renderer is split on purpose: `View` turns runtime commands into a plain
-list of `Draw` items (images, rectangles, text), and a backend only has to
-execute that list. A video frame is one more textured quad.
-
 ## Contributing
 
 Bug reports and feature ideas are welcome as GitHub issues. Pull requests aren't
-being taken yet.
+being taken yet. To build Quillstone from source, see [BUILDING.md](BUILDING.md).
 
 ## License
 

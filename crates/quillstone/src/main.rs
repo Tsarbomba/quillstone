@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use quillstone_runtime::{Cmd, Input, Session};
@@ -41,8 +41,9 @@ USAGE:
     quillstone run   <script> [--start <label>] [--set var=value]...
                                 play the script in the terminal; --start begins at a label and
                                 --set (repeatable) gives variables their starting values
-    quillstone package <script> --player <exe> --out <folder> [--name <name>] [--libs <folder>] [--folder] [--zip]
+    quillstone package <script> --out <folder> [--player <exe>] [--name <name>] [--libs <folder>] [--folder] [--zip]
                                 build a folder players can unzip and run: the player
+                                (--player, else the quillstone-player beside this program)
                                 (renamed after the title, or --name), FFmpeg's libraries
                                 (from beside the player, or --libs) and the files the game uses,
                                 packed into game.qsa (or, with --folder, loose in game/). Loose files in a
@@ -1011,13 +1012,21 @@ fn package_cmd(script: &Path, flags: &[&str]) -> Result<(), String> {
         };
         *slot = Some(*it.next().ok_or(format!("`{flag}` needs a value"))?);
     }
-    let (Some(player), Some(out)) = (player, out) else {
-        return Err(format!("package needs --player and --out\n\n{USAGE}"));
+    let Some(out) = out else {
+        return Err(format!("package needs --out\n\n{USAGE}"));
+    };
+    let player = match player {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|exe| package::default_player(exe.parent()?))
+            .ok_or("no player found: pass --player <exe>, or run `quillstone` from a folder that holds quillstone-player \
+                    (the downloaded kit does)")?,
     };
     check(script).map_err(|e| format!("{e}\nfix these before packaging"))?;
     let opts = package::Options {
         script,
-        player: Path::new(player),
+        player: &player,
         out: Path::new(out),
         name,
         libs: libs.map(Path::new),
