@@ -75,6 +75,9 @@ pub const DEFAULT_OPTIONS_TEXT_SIZE: f32 = 36.0;
 /// and the least size of the stack (the buttons and their labels scale with its height).
 pub const DEFAULT_MENU_RECT: [f32; 4] = [750.0, 400.0, 420.0, 556.0];
 pub const MIN_MENU_RECT: [f32; 2] = [200.0, 240.0];
+/// The Save and Load screens' area (title, page tabs, 3x2 slots, Back) and the least size of it.
+pub const DEFAULT_SLOTS_RECT: [f32; 4] = [200.0, 40.0, 1520.0, 990.0];
+pub const MIN_SLOTS_RECT: [f32; 2] = [760.0, 495.0];
 pub const DEFAULT_MENU_TITLE_RECT: [f32; 4] = [0.0, 180.0, 1920.0, 160.0];
 
 /// How a cell of the inventory and shop grid is filled: a colour or a picture.
@@ -195,6 +198,8 @@ pub struct Theme {
     pub menu_rect: [f32; 4],
     pub menu_title_rect: [f32; 4],
     pub menu_title: bool,
+    /// Save and Load: the area the title, page tabs, slot grid and Back button are laid out in.
+    pub slots_rect: [f32; 4],
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -291,6 +296,7 @@ impl Default for Theme {
             menu_rect: DEFAULT_MENU_RECT,
             menu_title_rect: DEFAULT_MENU_TITLE_RECT,
             menu_title: true,
+            slots_rect: DEFAULT_SLOTS_RECT,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -455,6 +461,10 @@ impl Theme {
                 },
                 "menu_rect" => match rect(Some(MIN_MENU_RECT)) {
                     Ok(r) => t.menu_rect = r,
+                    Err(m) => bad(m),
+                },
+                "slots_rect" => match rect(Some(MIN_SLOTS_RECT)) {
+                    Ok(r) => t.slots_rect = r,
                     Err(m) => bad(m),
                 },
                 "menu_title_rect" => match rect(None) {
@@ -1011,6 +1021,24 @@ mod tests {
         let (t, problems) = Theme::parse("menu_rect = 120, 420, 360, 480\nmenu_title_rect = 10, 20, 800, 100\nmenu_title = hide\n");
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!((t.menu_rect, t.menu_title_rect, t.menu_title), ([120.0, 420.0, 360.0, 480.0], [10.0, 20.0, 800.0, 100.0], false));
+    }
+
+    #[test]
+    fn the_slots_rect_defaults_to_the_fixed_layout_and_is_read() {
+        assert_eq!(Theme::default().slots_rect, [200.0, 40.0, 1520.0, 990.0]);
+        let (t, problems) = Theme::parse("slots_rect = 300, 100, 900, 600\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(t.slots_rect, [300.0, 100.0, 900.0, 600.0]);
+    }
+
+    #[test]
+    fn bad_slots_rect_values_are_reported_with_their_line() {
+        let (t, problems) = Theme::parse("slots_rect = 0, 0, 759, 900\nslots_rect = 0, 0, 900, 494\nslots_rect = 1200, 0, 900, 600\nslots_rect = x\n");
+        assert_eq!(t, Theme::default());
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
+        }
     }
 
     #[test]

@@ -720,20 +720,20 @@ fn saving_to_a_slot_then_overwriting_it_asks_first() {
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Char('s'));
     assert_eq!(g.screen(), Screen::Save);
-    click_at(&mut g, centre(slot_rect(0)));
+    click_at(&mut g, centre(slot_rect(0, &Theme::default())));
     assert!(has_file(&g, "1-1.save"));
     assert_eq!(g.slots[0].as_ref().unwrap().preview, "A: one");
 
     key(&mut g, Key::Escape);
     key(&mut g, Key::Space); // now on "two"
     key(&mut g, Key::Char('s'));
-    click_at(&mut g, centre(slot_rect(0)));
+    click_at(&mut g, centre(slot_rect(0, &Theme::default())));
     assert!(g.confirm.is_some(), "the slot is taken");
     key(&mut g, Key::Space);
     assert!(g.confirm.is_some(), "a confirm dialog swallows other keys");
     key(&mut g, Key::Char('n'));
     assert_eq!(g.slots[0].as_ref().unwrap().preview, "A: one", "No keeps the old save");
-    click_at(&mut g, centre(slot_rect(0)));
+    click_at(&mut g, centre(slot_rect(0, &Theme::default())));
     click_at(&mut g, centre(confirm_button_rect(true)));
     assert_eq!(g.slots[0].as_ref().unwrap().preview, "A: two");
 }
@@ -743,7 +743,7 @@ fn loading_a_slot_restores_the_game() {
     let p = parse("::show{src=s.png id=s}\n**A:** one\n::hide{s}\n**A:** two\n**A:** three\n").unwrap();
     let mut g = new_game(&p, instant());
     key(&mut g, Key::Char('s'));
-    click_at(&mut g, centre(slot_rect(2)));
+    click_at(&mut g, centre(slot_rect(2, &Theme::default())));
     key(&mut g, Key::Escape);
     key(&mut g, Key::Space);
     key(&mut g, Key::Space);
@@ -751,7 +751,7 @@ fn loading_a_slot_restores_the_game() {
     assert!(g.view().sprites.is_empty());
 
     key(&mut g, Key::Char('l'));
-    click_at(&mut g, centre(slot_rect(2)));
+    click_at(&mut g, centre(slot_rect(2, &Theme::default())));
     click_at(&mut g, centre(confirm_button_rect(true)));
     assert_eq!(g.screen(), Screen::Story);
     assert_eq!(line(&g), "one");
@@ -767,8 +767,8 @@ fn clicking_an_empty_or_damaged_slot_on_the_load_screen_does_nothing() {
     let mut g = new_game(&p, instant());
     g.storage.write("1-2.save", "garbage").unwrap();
     key(&mut g, Key::Char('l'));
-    click_at(&mut g, centre(slot_rect(0)));
-    click_at(&mut g, centre(slot_rect(1)));
+    click_at(&mut g, centre(slot_rect(0, &Theme::default())));
+    click_at(&mut g, centre(slot_rect(1, &Theme::default())));
     assert!(g.confirm.is_none());
     assert_eq!(g.screen(), Screen::Load);
 }
@@ -815,7 +815,7 @@ fn reaching_a_choice_and_quitting_save_automatically() {
     key(&mut g, Key::Char('l'));
     let tabs = g.slot_tabs();
     assert_eq!(tabs[0], Page::Auto);
-    click_at(&mut g, centre(tab_rect(0, tabs.len())));
+    click_at(&mut g, centre(tab_rect(0, tabs.len(), &Theme::default())));
     assert_eq!(g.page, Page::Auto);
     assert!(g.slots[0].is_some() && g.slots[1].is_some());
     key(&mut g, Key::Escape);
@@ -846,12 +846,27 @@ fn slot_screens_draw_thumbnails_and_dialogs_on_top() {
     key(&mut g, Key::Char('s'));
     let sizes = |_: &str| Some(Size::new(1920.0, 1080.0));
     let list = g.draw_list(&sizes);
-    let thumb = thumb_rect(0);
+    let thumb = thumb_rect(0, &Theme::default());
     assert!(list.iter().any(|d| matches!(d, Draw::Image { dest, .. } if *dest == thumb)));
-    click_at(&mut g, centre(slot_rect(0)));
+    click_at(&mut g, centre(slot_rect(0, &Theme::default())));
     let list = g.draw_list(&sizes);
     let yes = list.iter().rposition(|d| matches!(d, Draw::Text { text, .. } if text == "Yes")).unwrap();
     assert!(yes > list.iter().position(|d| matches!(d, Draw::Image { .. })).unwrap());
+}
+
+#[test]
+fn a_moved_slot_screen_takes_the_clicks_and_the_old_place_takes_none() {
+    let p = parse("**A:** one\n").unwrap();
+    let mut g = new_game(&p, instant());
+    let theme = Theme::parse("slots_rect = 300, 100, 760, 495\n").0;
+    g.set_theme(theme.clone());
+    key(&mut g, Key::Char('s'));
+    click_at(&mut g, centre(slots_back_rect(&Theme::default())));
+    assert_eq!(g.screen(), Screen::Save, "nothing at the old place");
+    click_at(&mut g, centre(slot_rect(0, &theme)));
+    assert!(g.newest_save.is_some(), "saved by the click where the grid now is");
+    click_at(&mut g, centre(slots_back_rect(&theme)));
+    assert_eq!(g.screen(), Screen::Story);
 }
 
 // ---- skip mode -------------------------------------------------------------------------------
@@ -1147,7 +1162,7 @@ fn screens_opened_from_the_menu_return_to_it() {
     let load = buttons.iter().position(|b| *b == MenuButton::Load).unwrap();
     click_at(&mut g, centre(menu_button_rect(load, &Theme::default())));
     assert_eq!(g.screen(), Screen::Load);
-    click_at(&mut g, centre(slots_back_rect()));
+    click_at(&mut g, centre(slots_back_rect(&Theme::default())));
     assert_eq!(g.screen(), Screen::MainMenu);
 
     click_at(&mut g, centre(menu_button_rect(settings, &Theme::default())));
@@ -2117,7 +2132,7 @@ fn escape_and_right_click_in_a_shop_open_the_save_screen_and_closing_it_returns_
         if how < 2 {
             open(&mut g); // the same key closes Save
         } else {
-            click_at(&mut g, centre(crate::screens::slots_back_rect()));
+            click_at(&mut g, centre(crate::screens::slots_back_rect(&Theme::default())));
         }
         assert_eq!(g.screen(), Screen::Shop, "how {how}: back at the shop");
         assert_eq!((g.bag.page, g.bag.focus), (page, focus));

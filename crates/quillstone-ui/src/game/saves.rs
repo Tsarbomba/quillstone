@@ -126,7 +126,7 @@ impl Game<'_> {
         match event {
             Event::Press(Button::Left) => {
                 let tabs = self.slot_tabs();
-                match self.cursor.and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len())) {
+                match self.cursor.and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len(), self.theme())) {
                     Some(SlotHit::Tab(page)) => {
                         self.page = page;
                         self.refresh_slots();

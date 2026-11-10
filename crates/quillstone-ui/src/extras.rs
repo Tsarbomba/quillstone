@@ -7,7 +7,7 @@ use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::input::{screen, text};
 use crate::texts::Tr;
-use crate::screens::{fit_value, slots_back_rect};
+use crate::screens::{fit_value, extras_back_rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -108,7 +108,7 @@ pub fn hit(x: f32, y: f32, tabs: &[Tab], tab: Tab, on_page: usize, page: usize, 
     if page + 1 < pages && next_rect().contains(x, y) {
         return Some(Hit::Next);
     }
-    slots_back_rect().contains(x, y).then_some(Hit::Back)
+    extras_back_rect().contains(x, y).then_some(Hit::Back)
 }
 
 /// A track's display name: its file name without folder or extension, tidied
@@ -205,7 +205,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen,
         let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
         text(out, label, Rect::new(0.0, 912.0, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
     }
-    let back = slots_back_rect();
+    let back = extras_back_rect();
     out.push(Draw::Rect { rect: back, color: lit(s.hover == Some(Hit::Back)) });
     text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
 }
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn the_grid_fits_above_the_back_button_and_is_hit_testable() {
         let last = cell_rect(GALLERY_PAGE - 1);
-        assert!(last.y + last.h < slots_back_rect().y - 20.0 && last.x + last.w < VIRTUAL.w);
+        assert!(last.y + last.h < extras_back_rect().y - 20.0 && last.x + last.w < VIRTUAL.w);
         assert!(track_rect(MUSIC_PAGE - 1).y + 72.0 < 912.0, "tracks clear the page label");
         let tabs = tabs_for(1, 1, 0);
         let c = cell_rect(5);

@@ -823,7 +823,7 @@ impl<'p> Game<'p> {
             Screen::Backlog => draw_backlog(&mut out, theme, tr, &self.backlog, self.backlog_scroll, image_size),
             Screen::Save | Screen::Load => {
                 let tabs = self.slot_tabs();
-                let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len()));
+                let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len(), self.theme()));
                 let hover = hover.or(self.slot_focus.map(SlotHit::Slot));
                 let title = tr.t(if self.screen == Screen::Save { "Save" } else { "Load" });
                 let view = SlotScreen { title, tabs: &tabs, page: self.page, slots: &self.slots, hover };

@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::theme::{QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
+use quillstone_render::theme::{DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
@@ -893,35 +893,63 @@ const SLOT_H: f32 = 330.0;
 /// Slots per row on the save and load screens.
 pub const SLOT_COLUMNS: usize = 3;
 
-pub fn tab_rect(i: usize, count: usize) -> Rect {
-    let total = count as f32 * TAB_W + (count.max(1) - 1) as f32 * TAB_GAP;
-    Rect::new((VIRTUAL.w - total) / 2.0 + i as f32 * (TAB_W + TAB_GAP), 130.0, TAB_W, 56.0)
+/// The scale from the area the slot screens' layout was made for ([`DEFAULT_SLOTS_RECT`]) to the theme's
+/// `slots_rect`: across, down, and for text the smaller of the two (1, 1, 1 at the default).
+fn slots_scale(t: &Theme) -> (f32, f32, f32) {
+    let [_, _, w, h] = t.slots_rect;
+    let (kx, ky) = (w / DEFAULT_SLOTS_RECT[2], h / DEFAULT_SLOTS_RECT[3]);
+    (kx, ky, kx.min(ky))
 }
 
-pub fn slot_rect(i: usize) -> Rect {
+/// A rect of the default layout, moved and scaled into the theme's `slots_rect`.
+fn slots_map(r: Rect, t: &Theme) -> Rect {
+    let (kx, ky, _) = slots_scale(t);
+    let [x, y, ..] = t.slots_rect;
+    Rect::new(x + (r.x - DEFAULT_SLOTS_RECT[0]) * kx, y + (r.y - DEFAULT_SLOTS_RECT[1]) * ky, r.w * kx, r.h * ky)
+}
+
+pub fn tab_rect(i: usize, count: usize, t: &Theme) -> Rect {
+    let total = count as f32 * TAB_W + (count.max(1) - 1) as f32 * TAB_GAP;
+    slots_map(Rect::new((VIRTUAL.w - total) / 2.0 + i as f32 * (TAB_W + TAB_GAP), 130.0, TAB_W, 56.0), t)
+}
+
+pub fn slot_rect(i: usize, t: &Theme) -> Rect {
     let x0 = (VIRTUAL.w - (SLOT_COLUMNS as f32 * SLOT_W + (SLOT_COLUMNS - 1) as f32 * 40.0)) / 2.0;
     let (col, row) = (i % SLOT_COLUMNS, i / SLOT_COLUMNS);
-    Rect::new(x0 + col as f32 * (SLOT_W + 40.0), 220.0 + row as f32 * (SLOT_H + 36.0), SLOT_W, SLOT_H)
+    slots_map(Rect::new(x0 + col as f32 * (SLOT_W + 40.0), 220.0 + row as f32 * (SLOT_H + 36.0), SLOT_W, SLOT_H), t)
 }
 
-/// The 16:9 picture area of a slot.
-pub fn thumb_rect(i: usize) -> Rect {
-    let r = slot_rect(i);
-    Rect::new(r.x + 16.0, r.y + 16.0, r.w - 32.0, (r.w - 32.0) * 9.0 / 16.0)
+/// The area a slot's picture may use: the slot inset by 16, 448x252 at the default size.
+fn thumb_box(i: usize, t: &Theme) -> Rect {
+    let r = slot_rect(i, t);
+    let (kx, ky, _) = slots_scale(t);
+    Rect::new(r.x + 16.0 * kx, r.y + 16.0 * ky, r.w - 32.0 * kx, (SLOT_W - 32.0) * 9.0 / 16.0 * ky)
 }
 
-pub fn slots_back_rect() -> Rect {
+/// The 16:9 picture area of a slot: the biggest 16:9 rect in [`thumb_box`], at its top, centred across.
+pub fn thumb_rect(i: usize, t: &Theme) -> Rect {
+    let b = thumb_box(i, t);
+    let (w, h) = (b.w.min(b.h * 16.0 / 9.0), b.h.min(b.w * 9.0 / 16.0));
+    Rect::new(b.x + (b.w - w) / 2.0, b.y, w, h)
+}
+
+/// Back on the slot screens, and on Extras, which doesn't move with the theme.
+pub fn extras_back_rect() -> Rect {
     Rect::new((VIRTUAL.w - 240.0) / 2.0, 960.0, 240.0, 70.0)
 }
 
-pub fn slots_at(x: f32, y: f32, tabs: &[Page], slot_count: usize) -> Option<SlotHit> {
-    if let Some(i) = (0..tabs.len()).find(|&i| tab_rect(i, tabs.len()).contains(x, y)) {
+pub fn slots_back_rect(t: &Theme) -> Rect {
+    slots_map(extras_back_rect(), t)
+}
+
+pub fn slots_at(x: f32, y: f32, tabs: &[Page], slot_count: usize, t: &Theme) -> Option<SlotHit> {
+    if let Some(i) = (0..tabs.len()).find(|&i| tab_rect(i, tabs.len(), t).contains(x, y)) {
         return Some(SlotHit::Tab(tabs[i]));
     }
-    if let Some(i) = (0..slot_count).find(|&i| slot_rect(i).contains(x, y)) {
+    if let Some(i) = (0..slot_count).find(|&i| slot_rect(i, t).contains(x, y)) {
         return Some(SlotHit::Slot(i));
     }
-    slots_back_rect().contains(x, y).then_some(SlotHit::Back)
+    slots_back_rect(t).contains(x, y).then_some(SlotHit::Back)
 }
 
 fn page_label(tr: Tr, page: Page) -> String {
@@ -952,23 +980,24 @@ pub fn draw_slots(
     let SlotScreen { title, tabs, page, slots, hover } = *shown;
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
-    text(out, title, Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
+    let k = slots_scale(theme).2;
+    text(out, title, slots_map(Rect::new(200.0, 40.0, 1520.0, 70.0), theme), 48.0 * k, theme.text_color, Align::Center);
     for (i, &tab) in tabs.iter().enumerate() {
-        let r = tab_rect(i, tabs.len());
+        let r = tab_rect(i, tabs.len(), theme);
         let color = if tab == page || hover == Some(SlotHit::Tab(tab)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, page_label(tr, tab), r, 28.0, if tab == page { theme.accent_color } else { theme.text_color }, Align::Center);
+        text(out, page_label(tr, tab), r, 28.0 * k, if tab == page { theme.accent_color } else { theme.text_color }, Align::Center);
     }
     for (i, slot) in slots.iter().enumerate() {
-        let r = slot_rect(i);
+        let r = slot_rect(i, theme);
         let color = if hover == Some(SlotHit::Slot(i)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        let thumb = thumb_rect(i);
-        let below = |dy: f32, h: f32| Rect::new(thumb.x, thumb.y + thumb.h + dy, thumb.w, h);
+        let (thumb, area) = (thumb_rect(i, theme), thumb_box(i, theme));
+        let below = |dy: f32, h: f32| Rect::new(area.x, area.y + area.h + dy * k, area.w, h * k);
         match slot {
             None => {
                 out.push(Draw::Rect { rect: thumb, color: [1.0, 1.0, 1.0, 0.04] });
-                text(out, tr.t("Empty"), thumb, 30.0, theme.dim_color, Align::Center);
+                text(out, tr.t("Empty"), thumb, 30.0 * k, theme.dim_color, Align::Center);
             }
             Some(info) => {
                 match &info.scene {
@@ -977,18 +1006,18 @@ pub fn draw_slots(
                         out.push(Draw::Rect { rect: thumb, color: [0.3, 0.05, 0.05, 0.6] });
                     }
                 }
-                text(out, info.time.clone(), below(4.0, 30.0), 22.0, theme.dim_color, Align::Left);
+                text(out, info.time.clone(), below(4.0, 30.0), 22.0 * k, theme.dim_color, Align::Left);
                 let row = below(32.0, 30.0);
                 // A save with no scene has one of the engine's own texts as its preview.
                 let preview = if info.scene.is_none() { tr.t(&info.preview) } else { &info.preview };
-                text(out, one_row(preview, 22.0, row.w), row, 22.0, theme.text_color, Align::Left);
+                text(out, one_row(preview, 22.0 * k, row.w), row, 22.0 * k, theme.text_color, Align::Left);
             }
         }
     }
-    let back = slots_back_rect();
+    let back = slots_back_rect(theme);
     let color = if hover == Some(SlotHit::Back) { theme.button_hover_color } else { theme.button_color };
     out.push(Draw::Rect { rect: back, color });
-    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
+    text(out, tr.t("Back"), back, 34.0 * k, theme.text_color, Align::Center);
 }
 
 // ---- game-menu tabs ------------------------------------------------------------------
@@ -1385,23 +1414,75 @@ mod tests {
     }
 
     #[test]
+    fn the_default_theme_keeps_the_slot_screens_where_they_always_were() {
+        let d = Theme::default();
+        assert_eq!(slot_rect(0, &d), Rect::new(200.0, 220.0, 480.0, 330.0));
+        assert_eq!(slot_rect(5, &d), Rect::new(1240.0, 586.0, 480.0, 330.0));
+        assert_eq!(thumb_rect(4, &d), Rect::new(736.0, 602.0, 448.0, 252.0));
+        assert_eq!(tab_rect(0, 11, &d), Rect::new(415.0, 130.0, 90.0, 56.0));
+        assert_eq!(slots_back_rect(&d), Rect::new(840.0, 960.0, 240.0, 70.0));
+        assert_eq!(extras_back_rect(), slots_back_rect(&d));
+        let tabs = crate::slots::pages();
+        let slot = SlotScreen { title: "Save", tabs: &tabs, page: tabs[0], slots: &[None], hover: None };
+        let mut out = Vec::new();
+        draw_slots(&mut out, &d, Tr::default(), &slot, &|_| None);
+        let texts: Vec<(f32, Rect)> = out.iter().filter_map(|x| if let Draw::Text { size, rect, .. } = x { Some((*size, *rect)) } else { None }).collect();
+        assert_eq!(texts[0], (48.0, Rect::new(200.0, 40.0, 1520.0, 70.0)));
+        assert_eq!(texts[1].0, 28.0);
+        assert_eq!(texts[texts.len() - 2], (30.0, Rect::new(216.0, 236.0, 448.0, 252.0)), "Empty");
+        assert_eq!(texts[texts.len() - 1].0, 34.0);
+    }
+
+    #[test]
+    fn a_slots_rect_moves_and_scales_the_slot_screens_and_the_clicks_follow() {
+        let t = Theme::parse("slots_rect = 300, 100, 760, 495\n").0; // half the default size
+        let (r, th) = (slot_rect(4, &t), thumb_rect(4, &t));
+        assert_eq!(r, Rect::new(560.0, 373.0, 240.0, 165.0));
+        assert_eq!(th, Rect::new(r.x + 8.0, r.y + 8.0, 224.0, 126.0));
+        assert_eq!(tab_rect(0, 11, &t), Rect::new(407.5, 145.0, 45.0, 28.0));
+        assert_eq!(slots_back_rect(&t), Rect::new(300.0 + 320.0, 100.0 + 460.0, 120.0, 35.0));
+        let tabs = crate::slots::pages();
+        let (x, y) = centre(r);
+        assert_eq!(slots_at(x, y, &tabs, 6, &t), Some(SlotHit::Slot(4)));
+        let (x, y) = centre(slots_back_rect(&Theme::default()));
+        assert_eq!(slots_at(x, y, &tabs, 6, &t), None, "the old Back button is gone");
+        let (x, y) = centre(slots_back_rect(&t));
+        assert_eq!(slots_at(x, y, &tabs, 6, &t), Some(SlotHit::Back));
+        let slot = SlotScreen { title: "Save", tabs: &tabs, page: tabs[0], slots: &[None], hover: None };
+        let mut out = Vec::new();
+        draw_slots(&mut out, &t, Tr::default(), &slot, &|_| None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { size, .. } if *size == 24.0)), "the title at half size");
+    }
+
+    #[test]
+    fn a_thumbnail_keeps_its_aspect_ratio_in_a_slot_that_is_scaled_unevenly() {
+        for rect in ["300, 100, 1000, 520", "300, 100, 800, 900"] {
+            let t = Theme::parse(&format!("slots_rect = {rect}\n")).0;
+            let (th, slot) = (thumb_rect(0, &t), slot_rect(0, &t));
+            assert!((th.w / th.h - 16.0 / 9.0).abs() < 1e-3, "{rect}");
+            assert!(th.x >= slot.x && th.x + th.w <= slot.x + slot.w && th.y + th.h < slot.y + slot.h, "{rect}");
+        }
+    }
+
+    #[test]
     fn slot_screens_lay_out_and_hit_test() {
         let tabs = crate::slots::pages();
         for (i, tab) in tabs.iter().enumerate() {
-            let r = tab_rect(i, tabs.len());
+            let r = tab_rect(i, tabs.len(), &Theme::default());
             assert!(r.x >= 0.0 && r.x + r.w <= VIRTUAL.w);
             let (x, y) = centre(r);
-            assert_eq!(slots_at(x, y, &tabs, 6), Some(SlotHit::Tab(*tab)));
+            assert_eq!(slots_at(x, y, &tabs, 6, &Theme::default()), Some(SlotHit::Tab(*tab)));
         }
         for i in 0..6 {
-            let (x, y) = centre(slot_rect(i));
-            assert_eq!(slots_at(x, y, &tabs, 6), Some(SlotHit::Slot(i)));
-            let t = thumb_rect(i);
+            let (x, y) = centre(slot_rect(i, &Theme::default()));
+            assert_eq!(slots_at(x, y, &tabs, 6, &Theme::default()), Some(SlotHit::Slot(i)));
+            let t = thumb_rect(i, &Theme::default());
             assert!((t.w / t.h - 16.0 / 9.0).abs() < 1e-3);
         }
-        assert!(slot_rect(5).y + slot_rect(5).h < slots_back_rect().y);
-        let (x, y) = centre(slots_back_rect());
-        assert_eq!(slots_at(x, y, &tabs, 6), Some(SlotHit::Back));
+        let d = Theme::default();
+        assert!(slot_rect(5, &d).y + slot_rect(5, &d).h < slots_back_rect(&d).y);
+        let (x, y) = centre(slots_back_rect(&d));
+        assert_eq!(slots_at(x, y, &tabs, 6, &Theme::default()), Some(SlotHit::Back));
     }
 
     #[test]
@@ -1805,7 +1886,7 @@ mod tests {
         // above the slot grid's page tabs, the history's and the slot screens' titles, and the default settings panel
         let strip_bottom = game_tab_rect(0, 6).y + game_tab_rect(0, 6).h;
         let settings = Theme::default().options_rect;
-        assert!(strip_bottom <= tab_rect(0, 3).y && strip_bottom <= 40.0 && strip_bottom <= settings[1]);
+        assert!(strip_bottom <= tab_rect(0, 3, &Theme::default()).y && strip_bottom <= 40.0 && strip_bottom <= settings[1]);
         assert!(!game_tabs(false, false).contains(&GameTab::Save) && !game_tabs(false, false).contains(&GameTab::MainMenu));
     }
 }

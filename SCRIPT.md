@@ -2870,6 +2870,24 @@ menu_title = hide
 - Mouse and keyboard follow the new places. Save, Load, Settings and the other screens opened
   from the main menu are not moved by these keys.
 
+### The Save and Load screens
+
+The Save and Load screens can be moved and scaled. Without this key they look as they always have.
+
+```text
+# x, y, width, height of the area they are laid out in; at least 760x495 (default 200, 40, 1520, 990)
+slots_rect = 300, 100, 1000, 650
+```
+
+- The title, the page tabs, the six slots (three across, two down) and the Back button are laid
+  out inside `slots_rect`. Positions and sizes scale with it across and down. Text sizes scale with the
+  smaller of the two.
+- A slot's picture keeps its 16:9 shape: it is the biggest one that fits in the slot, at its top.
+  The time and the preview text sit under it.
+- The row of game-menu tabs along the top (Save, Load, Settings, ...) stays where it is, so keep
+  `slots_rect` below y = 40. Extras keeps its own layout.
+- Mouse and keyboard follow the new places.
+
 ### The game menu
 
 Esc and a right click during the story (also over a shop, an inventory or a text input) open
