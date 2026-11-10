@@ -131,6 +131,7 @@ fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files
     }
     files.extend(program.extra_assets().map(|(_, a)| a.to_string()));
     files.extend(program.item_icons().map(|(_, a)| a.to_string()));
+    files.extend(program.portraits().map(|(_, a)| a.to_string()));
     // Auto-voice recordings that belong to a line (leftovers stay behind).
     if program.voice_folder.is_some() {
         let names: BTreeSet<String> =
@@ -936,6 +937,26 @@ mod tests {
         let opts = Options { script: &src.join("l.quill.md"), player: &base.join("player.exe"), out: &base.join("out2"), name: None, libs: None, folder: true, zip: false };
         let err = package(&opts, &quillstone_script::parse(lonely).unwrap()).unwrap_err();
         assert!(err.contains("matches no file"), "{err}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packages_a_character_portrait_and_check_does_not_call_it_unused() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-portrait-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        for f in ["mika.png", "unused.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "::character{id=mika portrait=assets/mika.png}\n**Mika:** Hi.\n";
+        std::fs::write(src.join("p.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
+        package(&opts, &program).unwrap();
+        assert!(out.join("game/assets/mika.png").is_file() && !out.join("game/assets/unused.png").exists());
+        assert_eq!(unused_assets(&src, "p.quill.md", &program).unwrap(), ["assets/unused.png"]);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

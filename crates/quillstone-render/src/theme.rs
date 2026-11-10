@@ -62,6 +62,8 @@ pub const DEFAULT_TEXTBOX_PADDING: [f32; 4] = [40.0, 36.0, 40.0, 20.0];
 /// Least size of the textbox, and of the text area left inside it by the padding.
 pub const MIN_TEXTBOX: [f32; 2] = [400.0, 120.0];
 pub const MIN_TEXT_AREA: [f32; 2] = [200.0, 60.0];
+/// Least size of the portrait's rectangle.
+pub const MIN_PORTRAIT: [f32; 2] = [32.0, 32.0];
 
 /// The `::input` panel at 1920x1080 unless the theme moves it, and the least size that holds its parts.
 pub const DEFAULT_INPUT_RECT: [f32; 4] = [360.0, 310.0, 1200.0, 460.0];
@@ -167,6 +169,8 @@ pub struct Theme {
     pub name_plate_image: Option<String>,
     /// `x, y, w, h` of the name plate in the screen; `None`: inside the top left of the textbox.
     pub name_plate_rect: Option<[f32; 4]>,
+    /// `x, y, w, h` the speaker's portrait is fitted in; `None`: a square on top of the textbox's left end.
+    pub portrait_rect: Option<[f32; 4]>,
     /// Alignment of the dialogue text and of the speaker's name: `Left` or `CenterX`.
     pub text_align: Align,
     pub name_align: Align,
@@ -283,6 +287,7 @@ impl Default for Theme {
             textbox_padding: DEFAULT_TEXTBOX_PADDING,
             name_plate_image: None,
             name_plate_rect: None,
+            portrait_rect: None,
             text_align: Align::Left,
             name_align: Align::Left,
             quick_menu: QuickMenu::Visible,
@@ -500,6 +505,10 @@ impl Theme {
                 },
                 "name_plate_rect" => match rect(None) {
                     Ok(r) => t.name_plate_rect = Some(r),
+                    Err(m) => bad(m),
+                },
+                "portrait_rect" => match rect(Some(MIN_PORTRAIT)) {
+                    Ok(r) => t.portrait_rect = Some(r),
                     Err(m) => bad(m),
                 },
                 "textbox_rect" => match rect(Some(MIN_TEXTBOX)) {
@@ -859,6 +868,21 @@ mod tests {
         assert!(t.assets().contains(&"g/plate.png") && t.images().contains(&"g/plate.png"));
         assert_eq!(Theme::parse("textbox_padding = 24\n").0.textbox_padding, [24.0; 4]);
         assert_eq!(Theme::parse("quick_menu = hidden\n").0.quick_menu, QuickMenu::Hidden);
+    }
+
+    #[test]
+    fn the_portrait_rect_is_read_and_a_bad_one_is_reported_with_its_line() {
+        assert_eq!(Theme::default().portrait_rect, None);
+        let (t, problems) = Theme::parse("portrait_rect = 100, 200, 300.5, 400\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(t.portrait_rect, Some([100.0, 200.0, 300.5, 400.0]));
+        let (t, problems) = Theme::parse("portrait_rect = 0, 0, 20, 100\nportrait_rect = 1800, 0, 300, 300\nportrait_rect = 1, 2, 3\n");
+        assert_eq!(t.portrait_rect, None);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)) && p.contains("portrait_rect"), "{p}");
+        }
+        assert!(problems[0].contains("32x32"), "{problems:?}");
     }
 
     #[test]

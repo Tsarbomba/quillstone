@@ -892,6 +892,8 @@ pub struct View {
     theme: Theme,
     /// The id of the character whose line is on screen, if it is one (see [`View::set_speaker`]).
     speaker_id: Option<String>,
+    /// The portrait picture of that character, drawn by the textbox while their line is up.
+    speaker_portrait: Option<String>,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
     art_scale: Option<f32>,
     /// The size of each picture a sprite is drawn with (by path, so layers and crossfading poses differ), noted by every draw while a hotspot follows a sprite: hit-testing
@@ -943,6 +945,7 @@ impl View {
             text_scale: 1.0,
             theme: Theme::default(),
             speaker_id: None,
+            speaker_portrait: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
             anims: BTreeMap::new(),
@@ -1040,6 +1043,11 @@ impl View {
                 self.sprites[i].shade = self.shade_target(&self.sprites[i].id);
             }
         }
+    }
+
+    /// The portrait picture of the character whose line is on screen (`None`: narration, or no portrait).
+    pub fn set_portrait(&mut self, src: Option<String>) {
+        self.speaker_portrait = src;
     }
 
     /// The brightness the sprite `id` is heading for: dimmed when a character who is on stage speaks and it is not them.
@@ -1880,6 +1888,9 @@ impl View {
                 Some(src) => push_image(&mut out, src, textbox, Fit::Stretch, box_alpha, image_size),
                 None => out.push(Draw::Rect { rect: textbox, color: faded(theme.panel_color, box_alpha) }),
             }
+            if let Some(src) = &self.speaker_portrait {
+                push_portrait(&mut out, src, portrait_rect(theme), box_alpha, image_size);
+            }
             let has_name = match &d.speaker {
                 Some(name) => {
                     let color = d.color.map(|[r, g, b]| [r, g, b, 1.0]).unwrap_or(theme.name_color);
@@ -2047,6 +2058,28 @@ pub fn textbox_rect(theme: &Theme) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Where the speaker's portrait goes: the theme's `portrait_rect`, else a 320 px square
+/// standing on the textbox's top edge at its left edge.
+pub fn portrait_rect(theme: &Theme) -> Rect {
+    if let Some([x, y, w, h]) = theme.portrait_rect {
+        return Rect::new(x, y, w, h);
+    }
+    let tb = textbox_rect(theme);
+    Rect::new(tb.x, (tb.y - DEFAULT_PORTRAIT).max(0.0), DEFAULT_PORTRAIT, DEFAULT_PORTRAIT.min(tb.y))
+}
+
+/// The side of the default portrait square.
+const DEFAULT_PORTRAIT: f32 = 320.0;
+
+/// The picture fitted inside `rect` whole, standing on its bottom edge, in the middle of it.
+fn push_portrait(out: &mut Vec<Draw>, src: &str, rect: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
+    let Some(size) = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0) else { return };
+    let k = (rect.w / size.w).min(rect.h / size.h);
+    let (w, h) = (size.w * k, size.h * k);
+    let dest = Rect::new(rect.x + (rect.w - w) / 2.0, rect.y + rect.h - h, w, h);
+    out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
+}
+
 /// The speaker's name plate: the theme's `name_plate_rect`, else a strip inside the
 /// textbox's top left (inset by the padding's left and right).
 pub fn name_plate_rect(theme: &Theme) -> Rect {
@@ -2207,6 +2240,8 @@ mod vignette_tests;
 mod mask_tests;
 #[cfg(test)]
 mod highlight_tests;
+#[cfg(test)]
+mod portrait_tests;
 #[cfg(test)]
 mod layers_tests;
 

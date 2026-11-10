@@ -1219,11 +1219,15 @@ impl<'p> Game<'p> {
 
     /// Tell the view which character is speaking (for `speaker_highlight`): the one whose declared name is the
     /// line's speaker, in the script's language or the translated one. A name with `{variables}` matches nobody.
+    /// That character's portrait goes along.
     fn sync_speaker(&mut self, snap: bool) {
         let name = self.view.dialogue.as_ref().and_then(|d| d.speaker.as_deref());
         let is = |c: &&quillstone_script::Character| Some(c.name.as_str()) == name || self.catalog().is_some_and(|cat| Some(cat.text(None, &c.name)) == name);
-        let id = name.and_then(|_| self.program.characters.values().find(is)).map(|c| c.id.clone());
+        let who = name.and_then(|_| self.program.characters.values().find(is));
+        let portrait = who.and_then(|c| c.portrait.as_ref()).map(|(_, p)| p.clone());
+        let id = who.map(|c| c.id.clone());
         self.view.set_speaker(id, snap);
+        self.view.set_portrait(portrait);
     }
 
     fn show(&mut self, cmds: &[Cmd]) {
@@ -1606,6 +1610,8 @@ mod layers_tests;
 mod dynpic_tests;
 #[cfg(test)]
 mod highlight_tests;
+#[cfg(test)]
+mod portrait_tests;
 #[cfg(test)]
 mod hud_tests;
 #[cfg(test)]

@@ -444,7 +444,7 @@ fn hotspot_images(program: &Program) -> HashSet<(usize, &str)> {
     ops.flat_map(|(i, op)| op.hotspot_pictures(program.lines.get(i).copied().unwrap_or(0))).collect()
 }
 
-/// Hotspot images (script order, each at its region's own line), then item icons (declaration order):
+/// Hotspot images (script order, each at its region's own line), then item icons and portraits (declaration order):
 /// pictures whatever their extension, at a sensible size.
 fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet<(usize, &str)>) -> Vec<Finding> {
     // An imagemap's pictures are full-screen, so unlike the other hotspot pictures they are not "icons".
@@ -461,6 +461,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
     let noun = |l: usize, a: &str| if screens.contains(&(l, a)) { "imagemap picture" } else { "hotspot image" };
     let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, noun(l, a)));
     let icons = program.item_icons().map(|(l, a)| (l, a, "item icon"));
+    let icons = icons.chain(program.portraits().map(|(l, a)| (l, a, "portrait")));
     let frames = program.anim_frames().map(|(l, _, a)| (l, a, "animation frame"));
     let mut out = Vec::new();
     // Animations with a great many frames cost load time and memory all at once.
@@ -507,7 +508,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: frames beyond {BIG_FRAME_SIDE} px only cost load time and memory (the screen is 1920x1080)"),
             )),
-            (None, Some((w, h))) if !["animation frame", "imagemap picture"].contains(&noun) && w.max(h) > BIG_ICON_SIDE => out.push((
+            (None, Some((w, h))) if !["animation frame", "imagemap picture", "portrait"].contains(&noun) && w.max(h) > BIG_ICON_SIDE => out.push((
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
             )),
@@ -1443,6 +1444,31 @@ mod tests {
         assert!(err.contains("inside the game folder"), "{err}");
         let err = checked("---\nicon: assets/icon.webm\n---\nHi.\n", &[]).unwrap_err();
         assert!(err.contains("must be a picture"), "{err}");
+    }
+
+    #[test]
+    fn check_judges_character_portraits_as_pictures_with_the_line_of_the_character() {
+        let script = "Hi.\n::character{id=mika portrait=faces/mika.png}\n**Mika:** Hello.\n";
+        let findings = |files: &[(&str, &[u8])]| {
+            let dir = std::env::temp_dir().join(format!("quillstone-check-portrait-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("faces")).unwrap();
+            for (name, bytes) in files {
+                std::fs::write(dir.join(name), bytes).unwrap();
+            }
+            std::fs::write(dir.join("s.quill.md"), script).unwrap();
+            let program = load(&dir.join("s.quill.md")).unwrap();
+            let found = picture_findings(&program, &dir.join("s.quill.md"), &dir, &HashSet::new());
+            std::fs::remove_dir_all(&dir).unwrap();
+            found
+        };
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(600, 900).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        assert!(findings(&[("faces/mika.png", &png.into_inner())]).is_empty(), "a tall portrait is no oversized icon");
+        let f = findings(&[]);
+        assert!(f.len() == 1 && f[0].0 && f[0].1.contains(":2:") && f[0].1.contains("missing portrait"), "{f:?}");
+        let f = findings(&[("faces/mika.png", b"not a picture")]);
+        assert!(f.len() == 1 && f[0].0 && f[0].1.contains(":2:"), "{f:?}");
     }
 
     #[test]

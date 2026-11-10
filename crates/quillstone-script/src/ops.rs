@@ -522,6 +522,8 @@ pub struct Character {
     pub layers: Vec<String>,
     /// Layer picture template: `{layer}` is a layer id, `{value}` the value shown on it.
     pub layer_sprites: Option<String>,
+    /// `(source line, path)` of the picture shown by the textbox while this character speaks.
+    pub portrait: Option<(usize, String)>,
 }
 
 /// The most layers one character may have.
@@ -849,6 +851,13 @@ impl Program {
             }
         }
         (inventory, journal, icons)
+    }
+
+    /// The portrait of every character that has one, as `(source line, path)`, in the order of the script.
+    pub fn portraits(&self) -> impl Iterator<Item = (usize, &str)> {
+        let mut found: Vec<(usize, &str)> = self.characters.values().filter_map(|c| c.portrait.as_ref()).map(|(l, p)| (*l, p.as_str())).collect();
+        found.sort_by_key(|(line, _)| *line);
+        found.into_iter()
     }
 
     /// The icon of every declared item, as `(source line, path)`, in the order the

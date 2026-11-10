@@ -575,6 +575,21 @@ may hold `{variable}`s of declared variables (an unknown one is an error).
 pictures are: `{layer}` is the layer id, `{value}` what is shown on it. A character may have
 `sprites=` poses, layers, or both.
 
+**A portrait.** A face shown by the textbox while the character speaks:
+
+```
+::character{id=mika name=Mika portrait=assets/mika_face.png}
+```
+
+- It shows while a line by that character is on screen, and nowhere else: narration and
+  characters without a `portrait` show none.
+- It is one picture (`.png`, `.jpg` or `.webp`). A `{...}` in the path is an error.
+- It does not depend on the stage: no `::show` is needed, so it works for a phone call or a
+  close-up where the character is not on stage.
+- It follows the textbox: it is hidden with it (the `U` key, `::textbox{hide}`) and fades with it.
+- Where it goes is the theme's `portrait_rect` (see [Themes](#themes)). `quillstone check`
+  looks for the file; `package` ships it.
+
 ### Showing sprites
 
 `::show` puts a sprite on stage, or changes one that is there. Whatever a later `::show`
@@ -2783,6 +2798,9 @@ textbox_padding = 40, 36, 40, 20
 name_plate_image = assets/gui/plate.png
 # x, y, width, height of the name plate
 name_plate_rect = 380, 640, 400, 64
+# x, y, width, height the speaker's portrait is fitted into
+# (left out: a 320x320 square standing on the textbox's left end)
+portrait_rect = 160, 460, 320, 320
 # the dialogue text: left (default) or center
 text_align = center
 # the speaker's name: left (default) or center
@@ -2794,6 +2812,10 @@ name_align = center
   one, the text starts 10 px below the name plate when the plate is inside the box.
 - Without `name_plate_rect` the plate is a 48 px strip at the top of the textbox, 22 px down and
   inset by the padding's left and right. The rect is absolute, so it can sit above the box.
+- `portrait_rect` is at least 32x32 and inside the screen. The picture is fitted inside it whole, keeping
+  its proportions, centred and standing on the bottom edge. It is drawn over the textbox and under the
+  text, so it may sit inside the box. The engine does not move the text: when you place it inside
+  the textbox, widen `textbox_padding` on that side (for example `textbox_padding = 260, 36, 40, 20`).
 - Choice buttons stack centred above the top edge of the textbox (and shrink if there is little
   room, so leave some above it), and inline pictures are drawn above it too.
 - `quillstone check` warns about lines too long for the real textbox and padding, and checks

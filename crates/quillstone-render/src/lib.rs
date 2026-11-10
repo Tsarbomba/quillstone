@@ -38,4 +38,4 @@ pub use view::{
     Align, Background, Dialogue, Draw, InlineImage, Outline, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,
 };
-pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, name_plate_rect, textbox_rect};
+pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, name_plate_rect, portrait_rect, textbox_rect};

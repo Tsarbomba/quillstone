@@ -105,7 +105,7 @@ const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, not
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
-        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites"],
+        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "portrait"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
         "choice" => &["time"],
@@ -1897,6 +1897,7 @@ impl Parser {
         let color = a.value("color");
         let sprites = a.value("sprites");
         let (layers, layer_sprites) = (a.value("layers"), a.value("layer_sprites"));
+        let portrait = a.value("portrait");
         if let Some(extra) = a.leftover(&[]) {
             self.err(line, unknown_attr("character", extra));
         }
@@ -1928,6 +1929,13 @@ impl Parser {
             return;
         }
         let sprites = sprites.map(|t| normal_path(&t));
+        let portrait = match portrait.as_deref().map(portrait_path).transpose() {
+            Ok(p) => p.map(|p| (line, p)),
+            Err(m) => {
+                self.err(line, m);
+                return;
+            }
+        };
         let layer_sprites = layer_sprites.map(|t| normal_path(&t));
         let layers = match self.character_layers(line, layers.as_deref(), layer_sprites.as_deref()) {
             Ok(l) => l,
@@ -1941,7 +1949,7 @@ impl Parser {
             self.err(line, m);
             return;
         }
-        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites });
+        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, portrait });
     }
 
     /// A display name may hold `{variable}` of declared variables (shown with their value at the line);
@@ -3072,6 +3080,14 @@ fn check_image_path(path: &str, key: &str, what: &str) -> Result<String, String>
     Ok(path)
 }
 
+/// A character's `portrait=`: one picture (no `{...}` template, so poses can come later without breaking games).
+fn portrait_path(path: &str) -> Result<String, String> {
+    if path.contains('{') {
+        return Err(format!("`portrait={path}`: a portrait is one picture, so it can't have a `{{...}}` in it"));
+    }
+    check_image_path(path, "portrait", "a portrait")
+}
+
 /// A file named by the script must be relative and inside the game folder, or a save
 /// that mentions it can't be loaded again (and the game can't be packaged). Returns the path
 /// normalised, which is the spelling the program keeps.
@@ -3429,6 +3445,23 @@ mod tests {
     use crate::test_util::ok;
 
     const DEMO: &str = include_str!("../../../examples/demo.quill.md");
+
+    #[test]
+    fn a_character_portrait_is_one_picture_inside_the_game_folder() {
+        let p = ok("::character{id=mika portrait=./faces/mika.png}\n::character{id=jo}\n");
+        assert_eq!(p.characters["mika"].portrait, Some((1, "faces/mika.png".into())));
+        assert_eq!(p.characters["jo"].portrait, None);
+        assert_eq!(p.portraits().collect::<Vec<_>>(), [(1, "faces/mika.png")]);
+        for (attr, needle) in [
+            ("portrait=faces/{pose}.png", "one picture"),
+            ("portrait=faces/mika.gif", "must be a .png, .jpg or .webp"),
+            ("portrait=faces/mika", "must be a .png, .jpg or .webp"),
+            ("portrait=../mika.png", "inside the game folder"),
+        ] {
+            let e = errs(&format!("Hi.\n::character{{id=mika {attr}}}\n"));
+            assert!(e.len() == 1 && e[0].line == 2 && e[0].message.contains(needle), "{attr}: {e:?}");
+        }
+    }
 
     fn errs(src: &str) -> Vec<ParseError> {
         parse(src).expect_err("expected parse errors")
