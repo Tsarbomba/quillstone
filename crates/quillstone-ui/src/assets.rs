@@ -319,7 +319,7 @@ mod tests {
         let (start, len) = (8192, 5); // the script takes the first 4096-byte page
         let archive = d.join("game.qsa").to_string_lossy().into_owned();
         assert_eq!(a.ffmpeg_url("v.webm").unwrap(), format!("subfile,,start,{start},end,{},,:{archive}", start + len));
-        assert_eq!(a.ffmpeg_url("loose.webm").unwrap(), d.join("mods/loose.webm").to_string_lossy(), "a loose file is plain");
+        assert_eq!(a.ffmpeg_url("loose.webm").unwrap(), d.join("mods").join("loose.webm").to_string_lossy(), "a loose file is plain");
         for bad in ["http://example.com/v.webm", "../v.webm", "missing.webm"] {
             assert!(a.ffmpeg_url(bad).is_err(), "{bad} must never reach FFmpeg");
         }
