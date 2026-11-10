@@ -46,7 +46,7 @@ fn notice(g: &Game) -> Option<String> {
 fn open_extras(g: &mut Game) {
     let buttons = menu_buttons(g.newest_save.is_some(), g.has_extras());
     let at = buttons.iter().position(|b| *b == MenuButton::Extras).expect("an Extras button");
-    click(g, menu_button_rect(at));
+    click(g, menu_button_rect(at, &Theme::default()));
     assert_eq!(g.screen(), Screen::Extras);
 }
 

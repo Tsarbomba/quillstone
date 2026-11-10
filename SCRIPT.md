@@ -2850,6 +2850,26 @@ options_panel_border = 40
   spills out of the textbox. Writers need to do nothing: `quillstone check` still judges lines
   at `text_size`.
 
+### The main menu
+
+The main menu's buttons and title can be moved and scaled. Without these keys it looks as it always has.
+
+```text
+# x, y, width, height of the area the buttons stack in; at least 200x240 (default 750, 400, 420, 556)
+menu_rect = 120, 420, 360, 480
+# where the game's title is drawn, centred (default 0, 180, 1920, 160)
+menu_title_rect = 120, 200, 360, 160
+# hide: no title, for a background picture that already shows the logo (show or hide, default show)
+menu_title = hide
+```
+
+- The buttons are as wide as `menu_rect`. Their height, the gap between them and their label size
+  scale with its height: the default 556 px holds six buttons, and a smaller area makes them smaller.
+- The title is drawn centred in `menu_title_rect`, its text size scaling with that rect's height
+  (96 px at the default 160).
+- Mouse and keyboard follow the new places. Save, Load, Settings and the other screens opened
+  from the main menu are not moved by these keys.
+
 ### The game menu
 
 Esc and a right click during the story (also over a shop, an inventory or a text input) open

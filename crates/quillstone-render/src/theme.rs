@@ -71,6 +71,11 @@ pub const MIN_INPUT_RECT: [f32; 2] = [600.0, 460.0];
 pub const DEFAULT_OPTIONS_RECT: [f32; 4] = [400.0, 90.0, 1120.0, 910.0];
 pub const MIN_OPTIONS_RECT: [f32; 2] = [640.0, 420.0];
 pub const DEFAULT_OPTIONS_TEXT_SIZE: f32 = 36.0;
+/// The main menu's button stack (six buttons) and its title at 1920x1080 unless the theme moves them,
+/// and the least size of the stack (the buttons and their labels scale with its height).
+pub const DEFAULT_MENU_RECT: [f32; 4] = [750.0, 400.0, 420.0, 556.0];
+pub const MIN_MENU_RECT: [f32; 2] = [200.0, 240.0];
+pub const DEFAULT_MENU_TITLE_RECT: [f32; 4] = [0.0, 180.0, 1920.0, 160.0];
 
 /// How a cell of the inventory and shop grid is filled: a colour or a picture.
 #[derive(Debug, Clone, PartialEq)]
@@ -186,6 +191,10 @@ pub struct Theme {
     pub options_background: Option<String>,
     pub options_panel_image: Option<String>,
     pub options_panel_border: f32,
+    /// Main menu: the area the buttons stack in, the area the title is centred in, and whether it is drawn.
+    pub menu_rect: [f32; 4],
+    pub menu_title_rect: [f32; 4],
+    pub menu_title: bool,
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -279,6 +288,9 @@ impl Default for Theme {
             options_background: None,
             options_panel_image: None,
             options_panel_border: 0.0,
+            menu_rect: DEFAULT_MENU_RECT,
+            menu_title_rect: DEFAULT_MENU_TITLE_RECT,
+            menu_title: true,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -440,6 +452,19 @@ impl Theme {
                 "options_rect" => match rect(Some(MIN_OPTIONS_RECT)) {
                     Ok(r) => t.options_rect = r,
                     Err(m) => bad(m),
+                },
+                "menu_rect" => match rect(Some(MIN_MENU_RECT)) {
+                    Ok(r) => t.menu_rect = r,
+                    Err(m) => bad(m),
+                },
+                "menu_title_rect" => match rect(None) {
+                    Ok(r) => t.menu_title_rect = r,
+                    Err(m) => bad(m),
+                },
+                "menu_title" => match value {
+                    "show" => t.menu_title = true,
+                    "hide" => t.menu_title = false,
+                    _ => bad("`menu_title` must be `show` or `hide`".into()),
                 },
                 "inventory_panel_rect" => match rect(None) {
                     Ok(r) => t.inventory_panel_rect = r,
@@ -976,6 +1001,27 @@ mod tests {
         assert_eq!(t.options_panel_border, 24.0);
         for pic in ["g/in.png", "g/o.png", "g/p.png"] {
             assert!(t.assets().contains(&pic) && t.images().contains(&pic), "{pic}");
+        }
+    }
+
+    #[test]
+    fn the_main_menu_keys_default_to_the_fixed_layout_and_are_read() {
+        let d = Theme::default();
+        assert_eq!((d.menu_rect, d.menu_title_rect, d.menu_title), ([750.0, 400.0, 420.0, 556.0], [0.0, 180.0, 1920.0, 160.0], true));
+        let (t, problems) = Theme::parse("menu_rect = 120, 420, 360, 480\nmenu_title_rect = 10, 20, 800, 100\nmenu_title = hide\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.menu_rect, t.menu_title_rect, t.menu_title), ([120.0, 420.0, 360.0, 480.0], [10.0, 20.0, 800.0, 100.0], false));
+    }
+
+    #[test]
+    fn bad_main_menu_values_are_reported_with_their_line() {
+        let text = "menu_rect = 0, 0, 199, 500\nmenu_rect = 0, 0, 400, 239\nmenu_rect = 1600, 0, 400, 500\nmenu_rect = a, 0, 400, 500\n\
+                    menu_title_rect = 0, 0, 2000, 100\nmenu_title_rect = 5\nmenu_title = off\n";
+        let (t, problems) = Theme::parse(text);
+        assert_eq!(t, Theme::default());
+        assert_eq!(problems.len(), 7, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
     }
 

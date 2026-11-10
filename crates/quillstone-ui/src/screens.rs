@@ -379,13 +379,20 @@ pub fn menu_buttons(can_continue: bool, extras: bool) -> Vec<MenuButton> {
     out
 }
 
-/// Up to six buttons fit under the title.
-pub fn menu_button_rect(i: usize) -> Rect {
-    Rect::new((VIRTUAL.w - 420.0) / 2.0, 400.0 + i as f32 * 96.0, 420.0, 76.0)
+/// The factor the theme's `menu_rect` height makes of the buttons' sizes (1 at the default 556: six buttons).
+fn menu_factor(t: &Theme) -> f32 {
+    t.menu_rect[3] / 556.0
 }
 
-pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton]) -> Option<MenuButton> {
-    (0..buttons.len()).find(|&i| menu_button_rect(i).contains(x, y)).map(|i| buttons[i])
+/// Up to six buttons stack in `menu_rect`: 76 high, every 96, at the default size.
+pub fn menu_button_rect(i: usize, t: &Theme) -> Rect {
+    let [x, y, w, _] = t.menu_rect;
+    let k = menu_factor(t);
+    Rect::new(x, y + i as f32 * 96.0 * k, w, 76.0 * k)
+}
+
+pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton], t: &Theme) -> Option<MenuButton> {
+    (0..buttons.len()).find(|&i| menu_button_rect(i, t).contains(x, y)).map(|i| buttons[i])
 }
 
 /// A theme picture over the whole screen (nothing if there is none or it isn't loaded).
@@ -413,8 +420,9 @@ pub fn draw_main_menu(
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 1.0] });
     draw_full_picture(out, theme.menu_background.as_deref(), image_size);
     draw_full_picture(out, theme.menu_overlay.as_deref(), image_size);
-    if !title.is_empty() {
-        text(out, title, Rect::new(0.0, 180.0, VIRTUAL.w, 160.0), 96.0, theme.accent_color, Align::Center);
+    if !title.is_empty() && theme.menu_title {
+        let [x, y, w, h] = theme.menu_title_rect;
+        text(out, title, Rect::new(x, y, w, h), 96.0 * h / 160.0, theme.accent_color, Align::Center);
     }
     for (i, &b) in buttons.iter().enumerate() {
         let label = match b {
@@ -425,10 +433,10 @@ pub fn draw_main_menu(
             MenuButton::Settings => "Settings",
             MenuButton::Quit => "Quit",
         };
-        let r = menu_button_rect(i);
+        let r = menu_button_rect(i, theme);
         let lit = hover == Some(b) || focus == Some(i);
         out.push(Draw::Rect { rect: r, color: if lit { theme.button_hover_color } else { theme.button_color } });
-        text(out, tr.t(label), r, 40.0, theme.text_color, Align::Center);
+        text(out, tr.t(label), r, 40.0 * menu_factor(theme), theme.text_color, Align::Center);
     }
 }
 
@@ -1410,11 +1418,52 @@ mod tests {
         assert_eq!(menu_buttons(false, false).len(), 4);
         let with = menu_buttons(true, false);
         assert_eq!(with[1], MenuButton::Continue);
+        let d = Theme::default();
         for (i, b) in with.iter().enumerate() {
-            let (x, y) = centre(menu_button_rect(i));
-            assert_eq!(menu_at(x, y, &with), Some(*b));
+            let (x, y) = centre(menu_button_rect(i, &d));
+            assert_eq!(menu_at(x, y, &with, &d), Some(*b));
         }
-        assert!(menu_button_rect(with.len() - 1).y + 80.0 <= VIRTUAL.h);
+        assert!(menu_button_rect(with.len() - 1, &d).y + 80.0 <= VIRTUAL.h);
+    }
+
+    #[test]
+    fn the_default_theme_keeps_the_main_menu_where_it_always_was() {
+        let d = Theme::default();
+        for i in 0..6 {
+            assert_eq!(menu_button_rect(i, &d), Rect::new(750.0, 400.0 + i as f32 * 96.0, 420.0, 76.0));
+        }
+        let mut out = Vec::new();
+        draw_main_menu(&mut out, &d, Tr::default(), "T", &[MenuButton::Start], None, None, &|_| None);
+        let sizes: Vec<f32> = out.iter().filter_map(|x| if let Draw::Text { size, .. } = x { Some(*size) } else { None }).collect();
+        assert_eq!(sizes, [96.0, 40.0]);
+    }
+
+    #[test]
+    fn a_menu_rect_moves_and_scales_the_buttons_and_the_clicks_follow() {
+        let t = Theme::parse("menu_rect = 120, 420, 360, 480\n").0;
+        let k = 480.0 / 556.0;
+        let r = menu_button_rect(2, &t);
+        assert_eq!((r.x, r.w), (120.0, 360.0));
+        assert!((r.y - (420.0 + 192.0 * k)).abs() < 0.01 && (r.h - 76.0 * k).abs() < 0.01, "{r:?}");
+        let b = menu_buttons(false, false);
+        let (x, y) = centre(menu_button_rect(1, &t));
+        assert_eq!(menu_at(x, y, &b, &t), Some(b[1]));
+        let (x, y) = centre(menu_button_rect(1, &Theme::default()));
+        assert_eq!(menu_at(x, y, &b, &t), None, "the old place no longer answers");
+        let mut out = Vec::new();
+        draw_main_menu(&mut out, &t, Tr::default(), "T", &b[..1], None, None, &|_| None);
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { size, .. } if (*size - 40.0 * k).abs() < 0.01)));
+    }
+
+    #[test]
+    fn the_menu_title_follows_its_rect_and_can_be_hidden() {
+        let size = |t: &Theme| {
+            let mut out = Vec::new();
+            draw_main_menu(&mut out, t, Tr::default(), "T", &[], None, None, &|_| None);
+            out.iter().find_map(|d| if let Draw::Text { size, .. } = d { Some(*size) } else { None })
+        };
+        assert_eq!(size(&Theme::parse("menu_title_rect = 100, 50, 800, 80\n").0), Some(48.0));
+        assert_eq!(size(&Theme::parse("menu_title = hide\n").0), None);
     }
 
     #[test]
@@ -1692,7 +1741,7 @@ mod tests {
 
         let mut out = Vec::new();
         draw_main_menu(&mut out, &t, Tr::default(), "T", &[MenuButton::Start], None, None, &sized);
-        let button = pos(&out, &|d| matches!(d, Draw::Rect { rect, .. } if *rect == menu_button_rect(0)));
+        let button = pos(&out, &|d| matches!(d, Draw::Rect { rect, .. } if *rect == menu_button_rect(0, &t)));
         assert!(pos(&out, &image("bg.png")) < pos(&out, &image("ov.png")) && pos(&out, &image("ov.png")) < pos(&out, &anything));
         assert!(pos(&out, &anything) < button);
         assert!(!out.iter().any(image("gm.png")), "the game menu's overlay is not the main menu's");

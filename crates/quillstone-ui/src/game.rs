@@ -755,7 +755,7 @@ impl<'p> Game<'p> {
         } else {
             let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
             let menu = self.screen == Screen::MainMenu;
-            let hover = self.pointer().filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons));
+            let hover = self.pointer().filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons, self.theme()));
             let title = self.tr(self.program.title.as_deref().unwrap_or("Quillstone"));
             let mut out = Vec::new();
             if menu {
@@ -934,7 +934,7 @@ impl<'p> Game<'p> {
     fn menu_event(&mut self, event: Event) {
         let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
         let pick = match event {
-            Event::Press(Button::Left) => self.cursor.and_then(|(x, y)| menu_at(x, y, &buttons)),
+            Event::Press(Button::Left) => self.cursor.and_then(|(x, y)| menu_at(x, y, &buttons, self.theme())),
             Event::Key(Key::Up) => {
                 self.menu_focus = Some(self.menu_focus.map_or(0, |f| f.saturating_sub(1)));
                 None
