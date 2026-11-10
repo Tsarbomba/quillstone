@@ -483,6 +483,7 @@ The commands at a glance. Each group is explained below the table.
 | `::vignette{strength=0.6}` | dark edges: see [Vignette](#vignette) |
 | `::filter{gray=1}` | a colour filter: see [Colour filter](#colour-filter) |
 | `::textbox{hide}` / `::textbox{show}` | hide or show the dialogue box |
+| `::page` / `::page{off}` | lines stack up on a full-screen page, or back to the textbox: see [Full-screen pages](#full-screen-pages) |
 | `![alt](assets/x.png)` | an inline image |
 
 ### Backgrounds
@@ -815,6 +816,43 @@ clean picture. `::textbox{show fade=0.5}` shows it again.
 - On a `::hotspots` screen it stays hidden, and the line that is pending isn't drawn either,
   which gives a clean map. Show it again with `::textbox{show}`, or just say a line.
 - Rollback, saves and hot reload keep it.
+
+### Full-screen pages
+
+For a letter, a diary or an opening narration, `::page` makes the lines stack up on a full-screen
+page instead of replacing each other in the textbox. `::page{off}` brings the textbox back.
+
+```markdown
+::page
+
+Dear Mika,
+
+The lamp on the roof still works.
+
+**Mika:** She always wrote like this.
+
+::page{off}
+```
+
+- `::page` starts an empty page, and the lines written after it are page lines. Writing `::page`
+  again is a page break.
+- The mode follows the file, read from top to bottom, not the story's path. A jump into the
+  middle of a page passage shows its lines on a page that starts empty; a jump out shows a normal
+  textbox line. An included file starts in textbox mode, and the including file's mode goes on
+  after the `::include`.
+- Each line is a paragraph on a dimmed screen. A line with a speaker starts with the name in the
+  speaker's colour. There is no textbox, name plate or portrait.
+- Each line waits for the player as in the textbox: advance, auto, skip, `{nw}`, voice,
+  the backlog and read-tracking all work per line. Only the newest line types out.
+- When the next line doesn't fit the page, it starts a new screen page. A page also holds at
+  most 64 lines, after which the next line starts a fresh page.
+- The page is cleared by `::page`, by a textbox line and by a `::video`. Choices, hotspots and
+  other screens don't clear it: a choice asked after page lines appears over the page, and
+  the page's text dims while the choice is up so the buttons can be read.
+- `::textbox{hide}` and the `U` key hide the page too.
+- Rollback, saves and hot reload keep the page. `quillstone check` warns about a page line that
+  is too long for a page by itself.
+- The page's area and dimming are set in the theme (`page_rect`, `page_color`).
 
 ### Inline images
 
@@ -2658,6 +2696,7 @@ Going back one step restores:
 - **The stage:** the background; sprites and their positions, heights, depths, sizes, stretch,
   mirroring, `alpha` and pixel offsets, `blend=add` and layers; animations and looping moves
   (from the start of their cycle); the camera.
+- **The page:** the lines of a full-screen page.
 - **Effects that stay:** the colour cover of `::fade{out}`, the ambient particles' settings,
   the colour wash of `::tint`, the dark edges of `::vignette`, the colour filter of
   `::filter`, and the HUD elements.
@@ -2748,6 +2787,10 @@ button_hover_color = #40336be0
 overlay_color = #050510e0
 # stretched over the textbox (1600x260 unless textbox_rect says otherwise)
 textbox_image = assets/gui/textbox.png
+# over the whole screen under a full-screen page's text (default #000000cc)
+page_color = #000000cc
+# x, y, width, height the page's text fills (default 260, 120, 1400, 840)
+page_rect = 260, 120, 1400, 840
 # visible (default), hover or hidden (see below)
 quick_menu = visible
 # all (default) or listed: only buttons with a quick_<id>_icon or _pos (see below)
@@ -2818,6 +2861,9 @@ name_align = center
   the textbox, widen `textbox_padding` on that side (for example `textbox_padding = 260, 36, 40, 20`).
 - Choice buttons stack centred above the top edge of the textbox (and shrink if there is little
   room, so leave some above it), and inline pictures are drawn above it too.
+- `page_rect` is the area the text of a full-screen page (see [Full-screen pages](#full-screen-pages))
+  is laid out in: inside the screen, at least 600x300. `page_color` is drawn over the whole screen
+  under it.
 - `quillstone check` warns about lines too long for the real textbox and padding, and checks
   `name_plate_image` and `textbox_image` as pictures; `package` includes them.
 - The history screen is not affected.

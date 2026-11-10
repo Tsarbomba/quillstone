@@ -98,7 +98,7 @@ pub const SPRITE_BLUR: RangeInclusive<f32> = 0.0..=64.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, page, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -126,6 +126,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "vignette" => &["none", "off", "strength", "size", "color", "fade"],
         "filter" => &["none", "off", "gray", "sepia", "brightness", "contrast", "saturation", "fade"],
         "textbox" => &["hide", "show", "fade"],
+        "page" => &["off"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src", "volume"],
@@ -227,6 +228,8 @@ struct Parser {
     base: usize,
     /// The first line of every label, for the duplicate-label message.
     label_lines: BTreeMap<String, usize>,
+    /// Between `::page` and `::page{off}` of the file being read: its dialogue lines are page lines.
+    page: bool,
 }
 
 /// A jump target that must be filled in once all labels are known.
@@ -592,10 +595,12 @@ impl Parser {
             return;
         }
         let outer = std::mem::replace(&mut self.base, base);
+        let outer_page = std::mem::take(&mut self.page); // an included file starts in textbox mode
         files.stack.push(key);
         self.run_file(text, files);
         files.stack.pop();
         self.base = outer;
+        self.page = outer_page;
     }
 
     // ---- front matter -------------------------------------------------
@@ -1048,7 +1053,7 @@ impl Parser {
         if let Err(m) = crate::markup::check_markup(&text) {
             self.err(line, m);
         }
-        self.push(Op::Say { speaker, color: None, text }, line);
+        self.push(Op::Say { speaker, color: None, text, page: self.page }, line);
     }
 
     fn image(&mut self, line: usize, alt: &str, path: &str) {
@@ -1129,6 +1134,10 @@ impl Parser {
                 self.character(line, inner);
                 return i;
             }
+            "page" => {
+                self.page(line, inner);
+                return i;
+            }
             "anim" => {
                 self.anim(line, inner);
                 return i;
@@ -1201,6 +1210,23 @@ impl Parser {
             }
         }
         i
+    }
+
+    /// `::page` (a fresh page; the lines that follow are page lines) or `::page{off}` (the textbox again).
+    /// The mode is the file's, read top to bottom: it is not an op.
+    fn page(&mut self, line: usize, inner: &str) {
+        let mut attrs = match Attrs::parse(inner) {
+            Ok(a) => a,
+            Err(m) => return self.err(line, m),
+        };
+        let off = attrs.flag("off");
+        if let Some(extra) = attrs.leftover(&[]) {
+            return self.err(line, unknown_attr("page", extra));
+        }
+        self.page = !off;
+        if !off {
+            self.push(Op::Page, line);
+        }
     }
 
     /// `::call{to=heal amount=5 who="Mika"}`: a label and the values of its parameters.
@@ -3472,7 +3498,7 @@ mod tests {
     }
 
     fn say(speaker: Option<&str>, text: &str) -> Op {
-        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into() }
+        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), page: false }
     }
 
     fn int(n: i64) -> Expr {
@@ -3522,6 +3548,49 @@ mod tests {
             assert_eq!(e[0].line, 2, "{src}");
             assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
         }
+    }
+
+    fn page_flags(p: &Program) -> Vec<(&str, bool)> {
+        p.ops.iter().filter_map(|op| if let Op::Say { text, page, .. } = op { Some((text.as_str(), *page)) } else { None }).collect()
+    }
+
+    #[test]
+    fn lines_between_page_and_page_off_are_page_lines_and_page_starts_a_fresh_page() {
+        let p = ok("Before.\n::page\nOne.\n**Mika:** Two.\n::page{off}\nAfter.\n");
+        assert_eq!(page_flags(&p), [("Before.", false), ("One.", true), ("Two.", true), ("After.", false)]);
+        assert_eq!(p.ops.iter().filter(|op| **op == Op::Page).count(), 1, "`::page{{off}}` is no op");
+        assert_eq!(p.ops[1], Op::Page);
+    }
+
+    #[test]
+    fn a_second_page_in_page_mode_is_a_page_break_and_the_line_before_it_keeps_its_mode() {
+        let p = ok("::page\nOne.\n::page\nTwo.\n");
+        assert_eq!(p.ops[2], Op::Page);
+        assert_eq!(page_flags(&p), [("One.", true), ("Two.", true)]);
+        // a paragraph still being read when `::page` comes belongs to the mode it was written in
+        assert_eq!(page_flags(&ok("A\n::page\nB\n")), [("A", false), ("B", true)]);
+    }
+
+    #[test]
+    fn page_mode_follows_the_file_a_page_left_open_does_not_leak_into_or_out_of_an_include() {
+        let files = [("inc.quill.md", "In.\n::page\nOpen.\n"), ("plain.quill.md", "Plain.\n")];
+        let src = "::page\nOne.\n::include{plain.quill.md}\nTwo.\n::page{off}\n::include{inc.quill.md}\nThree.\n";
+        let files: std::collections::HashMap<_, _> = files.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
+        let p = parse_files(src, "main.quill.md", &|f| files.get(f).cloned().ok_or_else(|| "none".to_string())).unwrap();
+        assert_eq!(
+            page_flags(&p),
+            [("One.", true), ("Plain.", false), ("Two.", true), ("In.", false), ("Open.", true), ("Three.", false)]
+        );
+    }
+
+    #[test]
+    fn page_errors_name_the_line() {
+        for (src, needle) in [("::page{off=1 speed=2}\n", "unknown attribute `speed`"), ("::page{fast}\n", "unknown attribute `fast`"), ("::page{off\n", "expected")] {
+            let e = errs(&format!("Hi.\n{src}"));
+            assert_eq!(e[0].line, 2, "{src}");
+            assert!(e[0].message.contains(needle), "{src}: {}", e[0].message);
+        }
+        assert!(page_flags(&ok("::page{off=true}\nHi.\n"))[0] == ("Hi.", false));
     }
 
     #[test]
@@ -3709,7 +3778,7 @@ mod tests {
         let col = c.color.unwrap();
         assert!((col[0] - 1.0).abs() < 1e-6 && (col[1] - 0xd9 as f32 / 255.0).abs() < 1e-6);
         // speaker names are matched case-insensitively and normalised to the display name
-        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into() });
+        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into(), page: false });
         assert_eq!(p.ops[1], say(Some("Someone"), "yo"));
     }
 
@@ -6124,7 +6193,7 @@ mod tests {
         );
         let p = ok(&src);
         let says: Vec<_> = p.ops.iter().filter_map(|o| match o {
-            Op::Say { speaker, color, text } => Some((speaker.clone().unwrap(), *color, text.clone())),
+            Op::Say { speaker, color, text, .. } => Some((speaker.clone().unwrap(), *color, text.clone())),
             _ => None,
         }).collect();
         assert_eq!(says[0].0, "{hname}");

@@ -60,6 +60,8 @@ mod use_tests;
 mod hud_button_tests;
 #[cfg(test)]
 mod hotspot_call_tests;
+#[cfg(test)]
+mod page_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -90,6 +92,10 @@ pub enum Cmd {
     /// Show a line and wait for [`Input::Advance`]. `speaker: None` is narration.
     /// `color` is the speaker's name plate colour, if the character declared one.
     Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String },
+    /// The lines of the full-screen page (`::page`), oldest first, the newest last: it is the line a
+    /// [`Cmd::Say`] after it shows (and that stays on screen under choices). Sent whenever the page
+    /// changes; an empty list takes the page away. A redraw sends it before the line.
+    Page { lines: Vec<Line> },
     /// An inline image shown with the next waiting line.
     ShowImage { src: String, alt: String },
     /// `src` may be a video file (a looping video background). With a `wipe`,
@@ -474,6 +480,10 @@ pub struct SfxLoopState {
     pub volume: f32,
 }
 
+/// Most lines one full-screen page holds: the next page line starts a fresh page. It is what bounds the
+/// size of a save (every state in it, and the rollback history, repeats the page).
+pub const MAX_PAGE_LINES: usize = 64;
+
 /// The line currently (or most recently) on screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -537,6 +547,9 @@ pub struct State {
     /// Its volume, 0..1 (`::voice{.. volume=}`).
     pub voice_volume: f32,
     pub line: Option<Line>,
+    /// The page lines shown so far on the current full-screen page (`::page`), the newest last (that is
+    /// `line` while it waits). Empty with the textbox. It never affects control flow, so `explore` leaves it out.
+    pub page: Vec<Line>,
     /// The blocking command currently waiting for input, if any.
     pub pending: Option<Cmd>,
     pub finished: bool,
@@ -580,6 +593,7 @@ impl State {
             voice: None,
             voice_volume: 1.0,
             line: None,
+            page: Vec::new(),
             pending: None,
             finished: false,
         }
@@ -659,6 +673,9 @@ impl State {
         }
         if let Some(src) = &self.voice {
             out.push(Cmd::PlayVoice { src: src.clone(), volume: self.voice_volume });
+        }
+        if !self.page.is_empty() {
+            out.push(Cmd::Page { lines: self.page.clone() });
         }
         // A line stays on screen under choices and waits; a pending Say shows itself.
         if !matches!(self.pending, Some(Cmd::Say { .. })) {
@@ -797,8 +814,17 @@ pub fn waits_at_line(state: &State) -> bool {
 /// counts a visit for `seen(label)`; the return takes that one back ([`return_to`]), but only when
 /// the label does come back (one that jumps away leaves the count as it was).
 fn call_from_line(state: &mut State, program: &Program, label: &str) {
+    unshow_page_line(state);
     state.stack.push(Frame { ret: state.pc, line: true });
     state.pc = program.labels[label];
+}
+
+/// A page line that is shown again later (after a line call returns, or a load that re-runs it) leaves
+/// the page now, so it joins the page once, not twice.
+pub(crate) fn unshow_page_line(state: &mut State) {
+    if matches!(state.pending, Some(Cmd::Say { .. })) && state.page.last().is_some() && state.page.last() == state.line.as_ref() {
+        state.page.pop();
+    }
 }
 
 /// Move the visit counters of the labels at `pc` (`seen(label)`) by `delta`; a counter not set yet starts at `default`.
@@ -983,13 +1009,34 @@ fn remember_line(state: &mut State, cmd: &Cmd) {
     }
 }
 
+/// The line just remembered is a page line (`page`) and joins the page, or a textbox line that takes the
+/// page away. A page that is full starts afresh.
+fn show_page(state: &mut State, out: &mut Vec<Cmd>, page: bool) {
+    if !page {
+        return clear_page(state, out);
+    }
+    if state.page.len() >= MAX_PAGE_LINES {
+        state.page.clear();
+    }
+    state.page.extend(state.line.clone());
+    out.push(Cmd::Page { lines: state.page.clone() });
+}
+
+/// Take the page away (when there is one).
+fn clear_page(state: &mut State, out: &mut Vec<Cmd>) {
+    if !state.page.is_empty() {
+        state.page.clear();
+        out.push(Cmd::Page { lines: Vec::new() });
+    }
+}
+
 /// The command a waiting op shows, for ops whose screen is built from the script
 /// and the variables (`text` maps the script's text to what is shown, the identity unless the
 /// game is translated; the one place that builds them: `step` shows them, a save read or a
 /// changed variable rebuilds them).
 pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dyn Fn(&str) -> String) -> Option<Cmd> {
     match op {
-        Op::Say { speaker, color, text } => {
+        Op::Say { speaker, color, text, .. } => {
             Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars) })
         }
         Op::Choice { options, map, .. } => Some(choice_cmd(options, map, &visible_options(options, vars), vars, text)),
@@ -1009,6 +1056,9 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dy
 fn show_screen(state: &mut State, program: &Program, op: &Op, out: &mut Vec<Cmd>) -> Vec<Cmd> {
     let cmd = rebuild_pending(program, op, &state.vars, &|s| s.to_string()).expect("a waiting op has a screen");
     remember_line(state, &cmd);
+    if let Op::Say { page, .. } = op {
+        show_page(state, out, *page);
+    }
     block(state, out, cmd)
 }
 
@@ -1307,8 +1357,16 @@ pub(crate) fn step_traced(
             }
             Op::Video { src, fit, looped, skippable } => {
                 state.line = None;
+                clear_page(state, &mut out);
                 let cmd = Cmd::PlayVideo { src: src.clone(), fit: *fit, looped: *looped, skippable: *skippable };
                 return block(state, &mut out, cmd);
+            }
+            Op::Page => {
+                if !state.page.is_empty() {
+                    state.line = None;
+                    clear_page(state, &mut out);
+                }
+                state.pc += 1;
             }
             Op::Wait { seconds } => {
                 return block(state, &mut out, Cmd::Wait { seconds: *seconds });

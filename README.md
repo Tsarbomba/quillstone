@@ -25,7 +25,7 @@ Linux and macOS are less tested. The script language may still change.
 **What it covers:** characters and sprites with transitions and animations,
 music, sound and voice, branching choices, variables, inventories, shops and quests,
 clickable scenes, simple real-time mini-games, a theme for the menus and dialogue box,
-rollback, history, skip and auto-forward, save slots, a gallery, music room and scene replays,
+full-screen text pages, rollback, history, skip and auto-forward, save slots, a gallery, music room and scene replays,
 translations, gamepad support and hot reload. The full language is in
 [SCRIPT.md](SCRIPT.md).
 
@@ -366,6 +366,7 @@ The `examples/` folder has a script for each area:
 | `weather.quill.md` | snow, rain and falling petals |
 | `gallery.quill.md`, `replay.quill.md` | the Extras screen: a gallery with pictures and clips, and scene replays |
 | `iconmenu.quill.md` + `icons_theme.txt` | picture buttons in the quick menu, placed by the theme |
+| `page.quill.md` | a letter read on a full-screen page, then back to the textbox |
 | `chapters.quill.md` + `chapters/` | a story split over several files with `::include` |
 | `lang.quill.md` + `lang/sv.txt` | a game in English and Swedish |
 

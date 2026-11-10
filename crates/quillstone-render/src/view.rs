@@ -21,6 +21,7 @@ use crate::filter::ColorMatrix;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
 use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, FULL_UV, VIRTUAL};
+use crate::page::{screen_page, PageLine};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
@@ -860,6 +861,9 @@ pub struct View {
     pub sprites: Vec<SpriteView>,
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
+    /// The lines of the full-screen page (`::page`), the newest last (it is also `dialogue`, which types out);
+    /// empty with the textbox.
+    pub page: Vec<PageLine>,
     pub choices: Vec<String>,
     /// Alongside `choices`: `Some(reason)` for a greyed option that can't be picked (the reason may be empty).
     pub locked: Vec<Option<String>>,
@@ -921,6 +925,7 @@ impl View {
             sprites: Vec::new(),
             images: Vec::new(),
             dialogue: None,
+            page: Vec::new(),
             choices: Vec::new(),
             locked: Vec::new(),
             hotspots: Vec::new(),
@@ -1083,17 +1088,10 @@ impl View {
     /// The size to draw dialogue `d` at: the theme's times the text scale, or when the line doesn't fit the
     /// textbox that big, the largest 10% step down that does (the theme's own size at worst, as `check` judged).
     fn dialogue_size(&self, d: &Dialogue, has_name: bool) -> f32 {
-        let theme = &self.theme;
-        let steps = ((self.text_scale - 1.0) * 10.0).round() as i32;
-        let body = dialogue_body(theme, has_name);
-        let fits = |size: f32| {
+        let body = dialogue_body(&self.theme, has_name);
+        fitted_size(&self.theme, self.text_scale, |size| {
             crate::estimate_lines_styled(&d.text, &d.runs, size, body.w) <= (body.h / line_height(size)).floor() as usize
-        };
-        (1..=steps)
-            .rev()
-            .map(|i| theme.text_size * (1.0 + (self.text_scale - 1.0) * i as f32 / steps as f32))
-            .find(|&size| fits(size))
-            .unwrap_or(theme.text_size)
+        })
     }
 
     /// Apply one batch of commands from the runtime.
@@ -1125,6 +1123,10 @@ impl View {
         for cmd in cmds {
             match cmd {
                 Cmd::ClearScene => {
+                    if !self.page.is_empty() {
+                        self.page.clear();
+                        self.dialogue = None; // a page line was the line; the redraw sends the one that is
+                    }
                     self.background = None;
                     self.previous_background = None;
                     self.sprites.clear();
@@ -1240,6 +1242,12 @@ impl View {
                             d.reveal_all();
                         }
                     }
+                }
+                Cmd::Page { lines } => {
+                    if lines.is_empty() && !self.page.is_empty() {
+                        self.dialogue = None; // the page's last line goes with it
+                    }
+                    self.page = lines.iter().map(|l| PageLine::new(l.speaker.clone(), l.color, &l.text)).collect();
                 }
                 Cmd::ShowChoices { options, locked } => {
                     self.choices = options.clone();
@@ -1881,7 +1889,31 @@ impl View {
         }
 
         let box_alpha = self.box_alpha();
-        if let Some(d) = self.dialogue.as_ref().filter(|_| ui && box_alpha > 0.0) {
+        let shown = self.dialogue.as_ref().filter(|_| ui && box_alpha > 0.0);
+        let paged = !self.page.is_empty();
+        if let Some(d) = shown.filter(|_| paged) {
+            // A page line: no textbox, name plate or portrait; the page's lines over a dimmed screen.
+            out.push(Draw::Rect { rect: screen, color: faded(theme.page_color, box_alpha) });
+            let mut paras: Vec<_> = self.page[..self.page.len() - 1].iter().map(|l| l.paragraph(theme)).collect();
+            paras.push(PageLine { speaker: d.speaker.clone(), color: d.color, text: d.text.clone(), runs: d.runs.clone() }.paragraph(theme));
+            let last = paras.len() - 1;
+            // Choices sit over the page: its text steps back so the buttons can be read.
+            let text_alpha = if self.choices.is_empty() { box_alpha } else { box_alpha * 0.3 };
+            for p in screen_page(theme, self.text_scale, &paras) {
+                let para = &paras[p.index];
+                out.push(Draw::Text {
+                    text: para.text.clone(),
+                    runs: para.runs.clone(), // coloured runs don't fade (the colour has no alpha)
+                    visible_chars: if p.index == last { para.name_chars + d.visible_chars() } else { usize::MAX },
+                    rect: p.rect,
+                    size: p.size,
+                    color: faded(theme.text_color, text_alpha),
+                    align: Align::Left,
+                    outline: text_outline(theme),
+                });
+            }
+        }
+        if let Some(d) = shown.filter(|_| !paged) {
             // The theme's textbox picture if it is loaded, else a plain panel.
             let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
             match picture {
@@ -2116,6 +2148,14 @@ pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, si
     (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
 }
 
+/// [`dialogue_lines_tagged`] for a page line: about how many lines it takes at `size` px (the speaker's name
+/// in front), and how many the page area fits.
+pub fn page_lines_tagged(theme: &Theme, speaker: Option<&str>, tagged: &str, size: f32) -> (usize, usize) {
+    let para = PageLine::new(speaker.map(str::to_string), None, tagged).paragraph(theme);
+    let [_, _, w, h] = theme.page_rect;
+    (crate::estimate_lines_styled(&para.text, &para.runs, size, w), (h / line_height(size)).floor() as usize)
+}
+
 /// The theme's outline for dialogue and name text, if it asks for one.
 fn text_outline(theme: &Theme) -> Option<Outline> {
     (theme.text_outline_size > 0.0).then_some(Outline { size: theme.text_outline_size, color: theme.text_outline_color })
@@ -2124,6 +2164,18 @@ fn text_outline(theme: &Theme) -> Option<Outline> {
 /// `color` with its opacity scaled by `alpha`.
 pub fn faded(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], color[3] * alpha]
+}
+
+/// The size text is drawn at when the player scales it: the theme's size times the scale, or the largest of the
+/// steps down from there (a tenth of the scale each) that `fits`, never below the theme's size. The textbox
+/// and the full-screen page both use it, for a line that is too long for its room.
+pub(crate) fn fitted_size(theme: &Theme, text_scale: f32, fits: impl Fn(f32) -> bool) -> f32 {
+    let steps = ((text_scale - 1.0) * 10.0).round() as i32;
+    (1..=steps)
+        .rev()
+        .map(|i| theme.text_size * (1.0 + (text_scale - 1.0) * i as f32 / steps as f32))
+        .find(|&size| fits(size))
+        .unwrap_or(theme.text_size)
 }
 
 /// A hotspot's region in virtual coordinates.

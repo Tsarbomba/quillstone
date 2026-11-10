@@ -7,7 +7,7 @@
 
 use quillstone_script::{HudKind, Op, Catalog, Vars};
 
-use crate::{fill_name, interpolate, rebuild_pending, screen_matches, speaker_name, visible_options, Cmd, ItemInfo, Logged, Session};
+use crate::{fill_name, interpolate, rebuild_pending, screen_matches, speaker_name, visible_options, Cmd, ItemInfo, Line, Logged, Session};
 
 /// The item with its name and description translated.
 pub fn localize_item(info: &mut ItemInfo, cat: &Catalog) {
@@ -23,7 +23,11 @@ impl Session<'_> {
         if matches!(self.state.pending, Some(Cmd::Say { .. })) {
             return Some((self.state.pc, &self.state.vars));
         }
-        let line = self.state.line.as_ref()?;
+        self.find_line(self.state.line.as_ref()?)
+    }
+
+    /// The op and variables an earlier `line` was said from, found in the rollback history.
+    fn find_line(&self, line: &Line) -> Option<(usize, &Vars)> {
         self.history
             .iter()
             .rev()
@@ -62,6 +66,24 @@ impl Session<'_> {
                         None => Cmd::Say { speaker, color, text },
                     }
                 }
+                // The page lines are looked up like any line: the newest is the one waiting, the earlier ones
+                // are found in the history (one it no longer holds stays in the script's language).
+                Cmd::Page { lines } => {
+                    let waiting = matches!(self.state.pending, Some(Cmd::Say { .. }));
+                    let n = lines.len();
+                    let lines = lines
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, line)| {
+                            let from = if k + 1 == n && waiting { Some((self.state.pc, vars)) } else { self.find_line(&line) };
+                            match from.and_then(|(pc, v)| self.say_in(pc, v, &line.speaker, cat)) {
+                                Some((speaker, text)) => Line { speaker, color: line.color, text },
+                                None => line,
+                            }
+                        })
+                        .collect();
+                    Cmd::Page { lines }
+                }
                 // The screen the story waits at is built again from the script, in `cat`'s language.
                 Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. }
                     if i == last =>
@@ -93,6 +115,9 @@ impl Session<'_> {
     /// waits at, all in `cat`'s language. Nothing else on the stage is touched.
     pub fn relocalized(&self, cat: &Catalog) -> Vec<Cmd> {
         let mut cmds: Vec<Cmd> = self.state.hud.iter().map(|h| Cmd::HudShow { elem: Box::new(h.clone()), fade: 0.0 }).collect();
+        if !self.state.page.is_empty() {
+            cmds.push(Cmd::Page { lines: self.state.page.clone() });
+        }
         if !matches!(self.state.pending, Some(Cmd::Say { .. })) {
             if let Some(line) = &self.state.line {
                 cmds.push(Cmd::Say { speaker: line.speaker.clone(), color: line.color, text: line.text.clone() });

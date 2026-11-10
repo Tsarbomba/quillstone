@@ -1613,8 +1613,12 @@ impl MoveStep {
 /// One instruction of the compiled script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    /// Dialogue (`speaker` is `Some`) or narration (`None`). Waits for the player.
-    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String },
+    /// Dialogue (`speaker` is `Some`) or narration (`None`). Waits for the player. A `page` line was
+    /// written between `::page` and `::page{off}` (the parser's flag, not a run-time mode): it stacks up on
+    /// a full-screen page instead of replacing the line in the textbox.
+    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, page: bool },
+    /// `::page`: start a fresh, empty page (the lines that follow stack up on it, see [`Op::Say`]).
+    Page,
     /// A still image shown inline (`![alt](path)`) together with the next waiting line.
     Image { src: String, alt: String },
     /// Background. `src` may be a video (the backend plays it looped). With a

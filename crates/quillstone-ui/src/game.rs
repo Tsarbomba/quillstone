@@ -1613,6 +1613,8 @@ mod highlight_tests;
 #[cfg(test)]
 mod portrait_tests;
 #[cfg(test)]
+mod page_tests;
+#[cfg(test)]
 mod hud_tests;
 #[cfg(test)]
 mod particles_tests;

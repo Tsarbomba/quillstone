@@ -23,6 +23,7 @@ pub mod filter;
 pub mod hud;
 pub mod image_probe;
 pub mod layout;
+pub mod page;
 pub mod particles;
 pub mod pixels;
 pub mod theme;
@@ -38,4 +39,4 @@ pub use view::{
     Align, Background, Dialogue, Draw, InlineImage, Outline, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,
 };
-pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, name_plate_rect, portrait_rect, textbox_rect};
+pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, page_lines_tagged, name_plate_rect, portrait_rect, textbox_rect};

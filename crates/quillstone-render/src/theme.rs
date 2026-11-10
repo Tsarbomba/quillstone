@@ -65,6 +65,10 @@ pub const MIN_TEXT_AREA: [f32; 2] = [200.0, 60.0];
 /// Least size of the portrait's rectangle.
 pub const MIN_PORTRAIT: [f32; 2] = [32.0, 32.0];
 
+/// The area full-screen pages (`::page`) are laid out in at 1920x1080 unless the theme moves it, and the least size of one.
+pub const DEFAULT_PAGE_RECT: [f32; 4] = [260.0, 120.0, 1400.0, 840.0];
+pub const MIN_PAGE_RECT: [f32; 2] = [600.0, 300.0];
+
 /// The `::input` panel at 1920x1080 unless the theme moves it, and the least size that holds its parts.
 pub const DEFAULT_INPUT_RECT: [f32; 4] = [360.0, 310.0, 1200.0, 460.0];
 pub const MIN_INPUT_RECT: [f32; 2] = [600.0, 460.0];
@@ -159,6 +163,10 @@ pub struct Theme {
     pub button_hover_color: [f32; 4],
     /// Behind the settings, backlog and save/load screens.
     pub overlay_color: [f32; 4],
+    /// Drawn over the whole screen under the text of a full-screen page (`::page`).
+    pub page_color: [f32; 4],
+    /// `x, y, w, h` the text of a full-screen page is laid out in.
+    pub page_rect: [f32; 4],
     /// Drawn stretched over the textbox area (1600x260 at 1920x1080).
     pub textbox_image: Option<String>,
     /// `x, y, w, h` of the dialogue box in the 1920x1080 screen.
@@ -282,6 +290,8 @@ impl Default for Theme {
             button_color: [0.0, 0.0, 0.0, 0.70],
             button_hover_color: [0.25, 0.20, 0.42, 0.88],
             overlay_color: [0.02, 0.02, 0.05, 0.88],
+            page_color: [0.0, 0.0, 0.0, 0.8],
+            page_rect: DEFAULT_PAGE_RECT,
             textbox_image: None,
             textbox_rect: DEFAULT_TEXTBOX,
             textbox_padding: DEFAULT_TEXTBOX_PADDING,
@@ -373,6 +383,7 @@ impl Theme {
                 "button_color" => Some(&mut t.button_color),
                 "button_hover_color" => Some(&mut t.button_hover_color),
                 "overlay_color" => Some(&mut t.overlay_color),
+                "page_color" => Some(&mut t.page_color),
                 "text_outline_color" => Some(&mut t.text_outline_color),
                 _ => None,
             };
@@ -468,6 +479,10 @@ impl Theme {
             match key {
                 "input_rect" => match rect(Some(MIN_INPUT_RECT)) {
                     Ok(r) => t.input_rect = Some(r),
+                    Err(m) => bad(m),
+                },
+                "page_rect" => match rect(Some(MIN_PAGE_RECT)) {
+                    Ok(r) => t.page_rect = r,
                     Err(m) => bad(m),
                 },
                 "options_rect" => match rect(Some(MIN_OPTIONS_RECT)) {
@@ -1108,6 +1123,22 @@ mod tests {
         let (t, problems) = Theme::parse(text);
         assert_eq!(t, Theme::default());
         assert_eq!(problems.len(), 7, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_page_keys_are_read_and_bad_ones_are_reported_with_their_line() {
+        let d = Theme::default();
+        assert_eq!((d.page_rect, d.page_color), (DEFAULT_PAGE_RECT, [0.0, 0.0, 0.0, 0.8]));
+        let (t, problems) = Theme::parse("page_rect = 100, 50, 1200, 700\npage_color = #10203040\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.page_rect, t.page_color), ([100.0, 50.0, 1200.0, 700.0], parse_color("#10203040").unwrap()));
+        let text = "page_rect = 0, 0, 599, 800\npage_rect = 0, 0, 800, 299\npage_rect = 1500, 0, 600, 400\npage_rect = 1\npage_color = black\n";
+        let (t, problems) = Theme::parse(text);
+        assert_eq!(t, Theme::default());
+        assert_eq!(problems.len(), 5, "{problems:?}");
         for (i, p) in problems.iter().enumerate() {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }

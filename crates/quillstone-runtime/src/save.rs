@@ -14,7 +14,7 @@ use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetK
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
 use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_OFFSET};
-use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
+use crate::{filter_typed, rebuild_pending, screen_matches, step, unshow_page_line, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
@@ -176,6 +176,7 @@ impl<'p> Session<'p> {
             history.clear();
             if !consistent(&state, program) {
                 // Keep the scene, drop what belonged to the line being waited on.
+                unshow_page_line(&mut state);
                 state.pending = None;
                 state.line = None;
                 state.finished = false;
@@ -333,6 +334,12 @@ fn rgba(c: Option<[f32; 4]>) -> String {
         Some([r, g, b, a]) => format!("{r},{g},{b},{a}"),
         None => "-".into(),
     }
+}
+
+/// `line "speaker" color "text"` (`page` records have the same words): `-` is no speaker or colour.
+fn line_record(kind: &str, l: &Line) -> String {
+    let speaker = l.speaker.as_deref().map_or("-".into(), q);
+    format!("{kind} {speaker} {} {}", color(l.color), q(&l.text))
 }
 
 /// `hud <kind> "id" x y "if" ...kind fields ["action" "hover"]`: an empty `if` is no condition, `-` is "not
@@ -607,9 +614,12 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         let volume = if s.voice_volume < 1.0 { format!(" {}", s.voice_volume) } else { String::new() };
         w(format!("voice {}{volume}", q(v)));
     }
+    // Saves from before `::page` existed have no such records: they load with the textbox.
+    for l in &s.page {
+        w(line_record("page", l));
+    }
     if let Some(l) = &s.line {
-        let speaker = l.speaker.as_deref().map_or("-".into(), q);
-        w(format!("line {speaker} {} {}", color(l.color), q(&l.text)));
+        w(line_record("line", l));
     }
     match &s.pending {
         Some(Cmd::Say { .. }) => w("pending say".into()),
@@ -1002,7 +1012,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.voice = Some(path(1)?);
                 s.voice_volume = t.get(2).map_or(1.0, |_| sane(f(2).unwrap_or(1.0), 0.0, 1.0, 1.0));
             }
-            "line" => {
+            "line" | "page" => {
                 let speaker = match (arg(1)?, line.split_whitespace().nth(1)) {
                     ("-", Some("-")) => None, // an unquoted dash is "no speaker"
                     (name, _) => Some(name.to_string()),
@@ -1011,7 +1021,14 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "-" => None,
                     c => Some(parse_rgb(c, n)?),
                 };
-                s.line = Some(Line { speaker, color, text: arg(3)?.to_string() });
+                let read = Line { speaker, color, text: arg(3)?.to_string() };
+                if t[0] == "line" {
+                    s.line = Some(read);
+                } else if s.page.len() >= crate::MAX_PAGE_LINES {
+                    return Err(format!("line {n}: more than {} `page` records in a state", crate::MAX_PAGE_LINES));
+                } else {
+                    s.page.push(read);
+                }
             }
             "pending" => {
                 s.pending = Some(match arg(1)? {

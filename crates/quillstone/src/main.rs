@@ -627,7 +627,20 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
-            Op::Say { speaker, text, .. } => {
+            // A page line is judged against the page: too long only if it alone doesn't fit a page.
+            Op::Say { speaker, text, page: true, .. } => {
+                let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
+                if lines > fit + 1 {
+                    out.push((
+                        program.lines[pc],
+                        format!(
+                            "this line takes about {lines} lines and a page fits {fit}; it will be shown \
+                             smaller, or cut off if very long (split it into two lines?)"
+                        ),
+                    ));
+                }
+            }
+            Op::Say { speaker, text, page: false, .. } => {
                 let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
                 if lines > fit + 1 {
                     out.push((
@@ -1232,7 +1245,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::FadeOut { time, .. } if *time > 0.0 => println!("[the screen fades out]"),
             Cmd::FadeOut { .. } => println!("[the screen is covered]"),
             Cmd::FadeIn { .. } => println!("[the screen fades in]"),
-            Cmd::Textbox { .. } => {} // nothing to show in text mode
+            Cmd::Textbox { .. } | Cmd::Page { .. } => {} // nothing to show in text mode
             Cmd::Particles { set: Some(p), .. } => match &p.kind {
                 ParticleKind::Snow => println!("[particles: snow]"),
                 ParticleKind::Rain => println!("[particles: rain]"),
@@ -1964,6 +1977,18 @@ mod tests {
     }
 
     #[test]
+    fn a_long_page_line_is_judged_against_the_page_not_the_textbox() {
+        let long = "word ".repeat(120); // 600 characters: far over the textbox, a few lines on a page
+        let warns = |src: &str, theme: &str| line_warnings(&parse(src).unwrap(), &quillstone_render::Theme::parse(theme).0);
+        assert_eq!(warns(&format!("**A:** {long}\n"), "").len(), 1, "too long for the textbox");
+        assert!(warns(&format!("::page\n**A:** {long}\n"), "").is_empty(), "fits a page");
+        let huge = "word ".repeat(1200);
+        let found = warns(&format!("Hi.\n::page\n{huge}\n"), "");
+        assert!(found.len() == 1 && found[0].0 == 3 && found[0].1.contains("a page fits"), "{found:?}");
+        assert_eq!(warns(&format!("::page\n{long}\n::page{{off}}\n{long}\n"), "").len(), 1, "the textbox line after `::page{{off}}` is still judged by the box");
+    }
+
+    #[test]
     fn the_long_line_warning_uses_the_themes_textbox_and_padding() {
         let line = "word ".repeat(40); // 200 characters
         let script = format!("---\ntheme: t.txt\n---\n**A:** {line}\n");
@@ -2194,6 +2219,13 @@ mod tests {
         assert!(check(&path).is_ok());
         assert!(test(&path, 1000).is_ok());
         assert!(dump(&path).is_ok());
+    }
+
+    #[test]
+    fn the_page_example_passes_check_and_test() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/page.quill.md");
+        assert!(check(&path).is_ok());
+        assert!(test(&path, 1000).is_ok());
     }
 
     /// `check`'s unused-file warning for a script in a fresh folder with these files beside it (`s.quill.md` is the script).
