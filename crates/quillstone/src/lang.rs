@@ -226,7 +226,8 @@ mod tests {
         let dir = game("example", &[]);
         std::fs::copy(&script, dir.join("main.quill.md")).unwrap();
         std::fs::create_dir_all(dir.join("lang")).unwrap();
-        let shipped = std::fs::read_to_string(examples.join("lang/sv.txt")).unwrap();
+        // a Windows checkout has CRLF line ends; export writes LF
+        let shipped = std::fs::read_to_string(examples.join("lang/sv.txt")).unwrap().replace("\r\n", "\n");
         std::fs::write(dir.join("lang/sv.txt"), &shipped).unwrap();
         let p = crate::load(&dir.join("main.quill.md")).unwrap();
         export(&dir.join("main.quill.md"), &p, "sv").unwrap();
