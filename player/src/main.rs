@@ -38,7 +38,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key as WinitKey, NamedKey};
+use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use audio::Audio;
@@ -91,6 +91,8 @@ struct App {
     /// The screen needs images still being decoded: the previous frame stays up, the
     /// game's clock stands still and story input is ignored (see `redraw`).
     holding: bool,
+    /// Which of Ctrl, Shift... are down, for Ctrl+V at a text input.
+    modifiers: ModifiersState,
     /// The window's text-input method (IME) is on: only while the game wants typed text.
     ime_on: bool,
     /// When the current wait for images began, and what the last shown frame used.
@@ -217,6 +219,7 @@ fn main() {
         settled: false,
         dirty: true,
         holding: false,
+        modifiers: ModifiersState::empty(),
         ime_on: false,
         hold_since: None,
         last_asked: Vec::new(),
@@ -629,6 +632,11 @@ impl App {
     }
 }
 
+/// The text on the clipboard, or nothing when it holds none or can't be read.
+fn clipboard_text() -> Option<String> {
+    arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
+}
+
 /// The game's name for a key, if it uses it. Held-down repeats only count for
 /// keys where repeating makes sense (moving through lists and sliders), and
 /// Backspace while the player is typing text. With `fresh` (a timing bar or key prompt is up) nothing
@@ -782,12 +790,17 @@ impl ApplicationHandler for App {
                 // A text input also gets what the key types (repeats included). The game
                 // ignores letter keys there, so the same press is never both a shortcut and text;
                 // control characters (Enter, Backspace, Tab) are dropped by the game.
-                if let (true, ElementState::Pressed, Some(text)) = (typing, state, text) {
-                    if !self.holding && self.game.wants_text() {
-                        self.game.handle(Event::Text(text.to_string()));
+                // Ctrl+V (Cmd+V on a Mac) pastes instead; the game cleans and cuts the text like typed text.
+                let paste = (self.modifiers.control_key() || self.modifiers.super_key())
+                    && matches!(&logical_key, WinitKey::Character(c) if c.eq_ignore_ascii_case("v"));
+                if typing && state == ElementState::Pressed && !self.holding && self.game.wants_text() {
+                    let text = if paste { clipboard_text() } else { text.map(|t| t.to_string()) };
+                    if let Some(text) = text {
+                        self.game.handle(Event::Text(text));
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             // Text an input method committed (Chinese, Japanese, Korean, dead keys, emoji picker...).
             WindowEvent::Ime(Ime::Commit(text)) => {
                 if !self.holding && self.game.wants_text() {

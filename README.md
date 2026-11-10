@@ -157,7 +157,7 @@ The details:
   (closing it returns), and S / L / H / F5 / F9 work as in the story. Only the Leave / Close
   button leaves (or Backspace; or I in the inventory).
 - **Typing.** At a text input the keys type into the field: Enter or OK confirms, Backspace
-  deletes, Esc opens the save screen. Shortcut letters are off there.
+  deletes, Ctrl+V pastes, Esc opens the save screen. Shortcut letters are off there.
 - **Extras** (from the main menu). Click or Enter opens an entry, Tab switches between Gallery,
   Music room and Scenes, and Left/Right turn the page. In a picture or clip, Left/Right move
   on, and any click, Esc, Enter, Space or Backspace closes it. Esc, Backspace or right-click

@@ -2323,7 +2323,9 @@ Asks the player to type a text and stores it in a variable (a name, mostly).
 blinking caret and an OK button.
 
 - Typing adds characters at the end, and Backspace removes the last one. There is no moving
-  the caret inside the text, and no paste.
+  the caret inside the text.
+- Ctrl+V pastes text from the clipboard at the end (Cmd+V on a Mac). Line breaks are dropped
+  and the text is cut at the limit.
 - A long text scrolls so its last characters stay in view. The panel counts what is typed
   against the limit.
 - Enter or OK confirms.

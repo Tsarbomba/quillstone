@@ -50,6 +50,8 @@ kira = { version = "0.12", optional = true, default-features = false, features =
 # Only for its `MediaSource` trait, which kira's decoders take (same version and features as kira's own).
 symphonia = { version = "0.6", optional = true, default-features = false }
 gilrs = { version = "0.11", optional = true }
+# Ctrl+V at a text input (winit has no clipboard). No image support: text only.
+arboard = { version = "3", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 [profile.release]
