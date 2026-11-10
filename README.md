@@ -144,7 +144,7 @@ The details:
   History, Main menu, Quit. Click one, or press Tab to move on to the next screen. Esc or
   right-click on any of those screens closes it again. From the main menu the tabs are Load,
   Settings and Quit.
-- **Settings** holds text speed, auto-forward delay, skip unread, music / sound / voice volume,
+- **Settings** holds text speed, text size (100% to 150%), auto-forward delay, skip unread, music / sound / voice volume,
   fullscreen, the quick menu, and the language in a game that has several. The quick menu's
   Settings button opens the same screen.
 - **Save and load.** There are 9 pages of 6 slots; the load screen also has the Auto and Quick

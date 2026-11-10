@@ -2826,6 +2826,13 @@ options_panel_border = 40
   1920x1080 screen) and stretches the edges and the middle, so rounded corners come from the picture.
   The border is cut back if it is more than half of the picture or of the panel.
 - `check` reports a missing or unreadable picture; `package` includes the pictures.
+- Besides text speed, volumes and the rest, the screen has a **Text size** slider: 100% to 150%
+  in steps of 10%, 100% by default. It is saved in `settings.txt` as `text_scale = 1.2`.
+  It scales the story's text that the theme sizes with `text_size`: dialogue, choices and the
+  like, not the menus, Settings or History. If a line is too long for the textbox at the bigger
+  size, it is shown at the largest smaller size that fits (never below `text_size`), so it never
+  spills out of the textbox. Writers need to do nothing: `quillstone check` still judges lines
+  at `text_size`.
 
 ### The game menu
 

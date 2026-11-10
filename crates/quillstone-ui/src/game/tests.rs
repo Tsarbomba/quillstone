@@ -414,6 +414,7 @@ fn the_settings_screen_pauses_the_story_and_saves_only_changes() {
 
     g.open_settings();
     key(&mut g, Key::Down);
+    key(&mut g, Key::Down);
     key(&mut g, Key::Right); // auto-forward delay up a notch
     g.handle(Event::Press(Button::Right));
     assert_eq!(g.take_requests(), vec![Request::SaveSettings]);
@@ -427,7 +428,7 @@ fn clicking_and_dragging_a_volume_slider() {
     g.take_audio();
     g.open_settings();
     let music = ROWS.iter().position(|r| *r == Row::Music).unwrap();
-    let t = track_rect(music, 8, &Theme::default());
+    let t = track_rect(music, ROWS.len(), &Theme::default());
     g.handle(Event::CursorMoved(Some((t.x + t.w * 0.25, t.y))));
     g.handle(Event::Press(Button::Left));
     assert_eq!(g.settings().music_volume, 0.25);
@@ -456,6 +457,36 @@ fn text_speed_changes_apply_to_the_line_on_screen() {
     key(&mut g, Key::Escape);
     g.tick(0.0, false);
     assert!(g.view().dialogue.as_ref().unwrap().is_complete());
+}
+
+#[test]
+fn text_size_steps_one_tenth_a_key_and_applies_to_the_line_on_screen_and_survives_set_theme() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    let size = g.theme().text_size;
+    let drawn = |g: &Game| {
+        g.draw_list(&|_: &str| None).iter().find_map(|d| match d {
+            Draw::Text { text, size, .. } if text == "one" => Some(*size),
+            _ => None,
+        })
+    };
+    assert_eq!(drawn(&g), Some(size));
+    g.open_settings();
+    key(&mut g, Key::Down); // text size is the second row
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right);
+    assert_eq!(g.settings().text_scale, 1.2);
+    key(&mut g, Key::Left);
+    assert_eq!(g.settings().text_scale, 1.1);
+    for _ in 0..9 {
+        key(&mut g, Key::Right);
+    }
+    assert_eq!(g.settings().text_scale, 1.5);
+    key(&mut g, Key::Escape);
+    assert!((drawn(&g).unwrap() - size * 1.5).abs() < 1e-3);
+    assert_eq!(g.theme().text_size, size, "the writer's theme is untouched");
+    g.set_theme(Theme { text_size: 30.0, ..Theme::default() });
+    assert!((drawn(&g).unwrap() - 45.0).abs() < 1e-3);
 }
 
 #[test]
@@ -2773,19 +2804,19 @@ fn the_settings_row_cycles_the_quick_menu_and_it_is_saved() {
 #[test]
 fn the_settings_screen_fits_every_row_and_the_buttons_at_the_screen_size() {
     for i in 0..ROWS.len() {
-        let r = row_rect(i, 8, &Theme::default());
-        assert!(r.y >= 170.0, "row {i} is below the title");
+        let r = row_rect(i, ROWS.len(), &Theme::default());
+        assert!(r.y >= 160.0, "row {i} is below the title");
         if i > 0 {
-            assert!(r.y >= row_rect(i - 1, 8, &Theme::default()).y + row_rect(i - 1, 8, &Theme::default()).h, "row {i} doesn't overlap the one above");
+            assert!(r.y >= row_rect(i - 1, ROWS.len(), &Theme::default()).y + row_rect(i - 1, ROWS.len(), &Theme::default()).h, "row {i} doesn't overlap the one above");
         }
         let c = control_rect(i, &ROWS, &Theme::default());
         assert!(c.y >= r.y && c.y + c.h <= r.y + r.h + 1e-3, "row {i}'s control is inside the row vertically");
         assert!(c.x + c.w <= r.x + r.w, "row {i}'s control is inside the row");
     }
-    let last = row_rect(ROWS.len() - 1, 8, &Theme::default());
+    let last = row_rect(ROWS.len() - 1, ROWS.len(), &Theme::default());
     for in_story in [true, false] {
         for &b in settings_buttons(in_story) {
-            let r = button_rect(b, in_story, 8, &Theme::default());
+            let r = button_rect(b, in_story, ROWS.len(), &Theme::default());
             assert!(r.y >= last.y + last.h && r.y + r.h < 960.0, "buttons under the rows and above the hint line");
         }
     }

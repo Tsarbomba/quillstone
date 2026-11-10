@@ -432,6 +432,7 @@ pub fn draw_main_menu(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     TextSpeed,
+    TextSize,
     AutoDelay,
     SkipUnread,
     Music,
@@ -443,11 +444,21 @@ pub enum Row {
     Language,
 }
 
-pub const ROWS: [Row; 8] =
-    [Row::TextSpeed, Row::AutoDelay, Row::SkipUnread, Row::Music, Row::Sfx, Row::Voice, Row::Fullscreen, Row::QuickMenu];
-
-const ROWS_WITH_LANGUAGE: [Row; 9] = [
+pub const ROWS: [Row; 9] = [
     Row::TextSpeed,
+    Row::TextSize,
+    Row::AutoDelay,
+    Row::SkipUnread,
+    Row::Music,
+    Row::Sfx,
+    Row::Voice,
+    Row::Fullscreen,
+    Row::QuickMenu,
+];
+
+const ROWS_WITH_LANGUAGE: [Row; 10] = [
+    Row::TextSpeed,
+    Row::TextSize,
     Row::AutoDelay,
     Row::SkipUnread,
     Row::Music,
@@ -513,13 +524,17 @@ fn factor(t: &Theme) -> f32 {
     (t.options_text_size / DEFAULT_OPTIONS_TEXT_SIZE).min(h / 860.0).min(w / 800.0)
 }
 
-/// Top and height of a row: tighter with nine rows so the buttons still clear the hint line.
+/// Top and height of a row: tighter with nine rows, and again with ten, so the buttons still clear the hint line.
 fn row_y(n: usize, t: &Theme) -> f32 {
     panel(t).y + factor(t) * if n > 8 { 80.0 } else { 100.0 }
 }
 
 fn row_h(n: usize, t: &Theme) -> f32 {
-    factor(t) * if n > 8 { 66.0 } else { 72.0 }
+    factor(t) * match n {
+        ..=8 => 72.0,
+        9 => 66.0,
+        _ => 60.0,
+    }
 }
 
 /// The slider tracks start 480/1120 and are 440/1120 of the panel's width across.
@@ -547,7 +562,7 @@ pub fn control_rect(i: usize, rows: &[Row], t: &Theme) -> Rect {
     let (row, k) = (row_rect(i, rows.len(), t), factor(t));
     if rows[i].is_toggle() {
         let w = if matches!(rows[i], Row::QuickMenu | Row::Language) { 260.0 } else { 160.0 };
-        Rect::new(track_x(t), row.y + 4.0 * k, w * k, 52.0 * k)
+        Rect::new(track_x(t), row.y + 4.0 * k, w * k, (row.h - 8.0 * k).min(52.0 * k))
     } else {
         Rect::new(track_x(t) - 12.0, row.y, track_w(t) + 24.0, row.h)
     }
@@ -586,6 +601,7 @@ pub fn slider_pos_at(x: f32, t: &Theme) -> f32 {
 pub fn row_slider(s: &Settings, row: Row) -> Option<f32> {
     match row {
         Row::TextSpeed => Some(text_speed_to_slider(s.text_speed)),
+        Row::TextSize => Some(text_scale_to_slider(s.text_scale)),
         Row::AutoDelay => Some(auto_delay_to_slider(s.auto_delay)),
         Row::Music => Some(s.music_volume),
         Row::Sfx => Some(s.sfx_volume),
@@ -598,6 +614,7 @@ pub fn row_slider(s: &Settings, row: Row) -> Option<f32> {
 pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
     match row {
         Row::TextSpeed => s.text_speed = text_speed_from_slider(pos),
+        Row::TextSize => s.text_scale = text_scale_from_slider(pos),
         Row::AutoDelay => s.auto_delay = auto_delay_from_slider(pos),
         Row::Music => s.music_volume = volume_from_slider(pos),
         Row::Sfx => s.sfx_volume = volume_from_slider(pos),
@@ -609,6 +626,7 @@ pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
 fn row_label(row: Row) -> &'static str {
     match row {
         Row::TextSpeed => "Text speed",
+        Row::TextSize => "Text size",
         Row::AutoDelay => "Auto-forward delay",
         Row::SkipUnread => "Skip unread text",
         Row::Music => "Music volume",
@@ -625,6 +643,7 @@ pub fn row_value(s: &Settings, row: Row, language: &str) -> String {
     match row {
         Row::TextSpeed if s.text_speed <= 0.0 => "Instant".into(),
         Row::TextSpeed => format!("{} chars/s", s.text_speed.round()),
+        Row::TextSize => format!("{}%", (s.text_scale * 100.0).round()),
         Row::AutoDelay => format!("{:.1} s", s.auto_delay),
         Row::Music => format!("{}%", (s.music_volume * 100.0).round()),
         Row::Sfx => format!("{}%", (s.sfx_volume * 100.0).round()),
@@ -1421,6 +1440,19 @@ mod tests {
     }
 
     #[test]
+    fn the_text_size_row_is_a_slider_from_100_to_150_percent_under_text_speed() {
+        assert_eq!(ROWS[..2], [Row::TextSpeed, Row::TextSize]);
+        let mut s = Settings::default();
+        assert_eq!((row_slider(&s, Row::TextSize), row_value(&s, Row::TextSize, "")), (Some(0.0), "100%".to_string()));
+        set_row_slider(&mut s, Row::TextSize, 0.4);
+        assert_eq!((s.text_scale, row_value(&s, Row::TextSize, "")), (1.2, "120%".to_string()));
+        assert!((row_slider(&s, Row::TextSize).unwrap() - 0.4).abs() < 1e-5);
+        set_row_slider(&mut s, Row::TextSize, 7.0);
+        assert_eq!(row_value(&s, Row::TextSize, ""), "150%");
+        assert_eq!(row_label(Row::TextSize), "Text size");
+    }
+
+    #[test]
     fn rows_read_and_write_settings() {
         let mut s = Settings::default();
         set_row_slider(&mut s, Row::Music, 0.3);
@@ -1546,18 +1578,18 @@ mod tests {
     #[test]
     fn a_settings_value_stays_inside_its_row_with_a_margin_and_shrinks_to_fit() {
         for i in 0..ROWS.len() {
-            let (v, row) = (value_rect(i, 8, &Theme::default()), row_rect(i, 8, &Theme::default()));
+            let (v, row) = (value_rect(i, ROWS.len(), &Theme::default()), row_rect(i, ROWS.len(), &Theme::default()));
             assert!(v.x + v.w <= row.x + row.w - 20.0 + 1e-3, "row {i}: value column ends before the row does");
             assert!(v.x >= track_x(&Theme::default()) + track_w(&Theme::default()), "row {i}: and starts after the track");
         }
-        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, 8, &Theme::default()).w);
-        assert_eq!(estimate_lines(&text, size, value_rect(0, 8, &Theme::default()).w), 1);
+        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w);
+        assert_eq!(estimate_lines(&text, size, value_rect(0, ROWS.len(), &Theme::default()).w), 1);
         assert!(size >= 32.0 * 0.6 && text == "60 chars/s");
-        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, 8, &Theme::default()).w);
-        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, 8, &Theme::default()).w) == 1);
+        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w);
+        assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, ROWS.len(), &Theme::default()).w) == 1);
         let mut out = Vec::new();
         draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None, None, &|_| None);
-        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, 8, &Theme::default()))), "drawn in its column");
+        assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, ROWS.len(), &Theme::default()))), "drawn in its column");
     }
 
     #[test]
@@ -1573,7 +1605,7 @@ mod tests {
         assert_eq!(row_rect(0, 8, &t), Rect::new(400.0, 190.0, 1120.0, 60.0));
         assert_eq!(track_rect(0, 8, &t), Rect::new(880.0, 214.0, 440.0, 12.0));
         assert_eq!(value_rect(0, 8, &t), Rect::new(1340.0, 196.0, 160.0, 48.0));
-        assert_eq!(control_rect(6, &ROWS, &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
+        assert_eq!(control_rect(6, &ROWS[1..], &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
         assert_eq!(button_rect(SettingsButton::Back, true, 8, &t), Rect::new(560.0, 826.0, 240.0, 80.0));
         assert_eq!(row_rect(0, 9, &t).y, 170.0, "nine rows are tighter");
     }
@@ -1618,7 +1650,7 @@ mod tests {
         assert!((slider_pos_at(track.x + track.w / 2.0, &t) - 0.5).abs() < 1e-5);
         let mut out = Vec::new();
         draw_settings(&mut out, &t, &Settings::default(), true, 1, None, None, &|_| None);
-        assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == row_rect(1, 8, &t) && *color == FOCUS)), "focus follows the row");
+        assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == row_rect(1, ROWS.len(), &t) && *color == FOCUS)), "focus follows the row");
         let size = |text: &str| out.iter().find_map(|d| match d { Draw::Text { text: s, size, .. } if s == text => Some(*size), _ => None });
         assert_eq!(size("Back"), Some(28.0), "the buttons use the screen's text size");
     }

@@ -887,6 +887,8 @@ pub struct View {
     /// Seconds left of a `::wait`, if one is running.
     wait: Option<f32>,
     chars_per_sec: f32,
+    /// The player's text size setting (1.0..=1.5): dialogue and the other text sized from the theme's `text_size`.
+    text_scale: f32,
     theme: Theme,
     /// The id of the character whose line is on screen, if it is one (see [`View::set_speaker`]).
     speaker_id: Option<String>,
@@ -938,6 +940,7 @@ impl View {
             hide_ui: false,
             wait: None,
             chars_per_sec: DEFAULT_CHARS_PER_SEC,
+            text_scale: 1.0,
             theme: Theme::default(),
             speaker_id: None,
             art_scale: None,
@@ -1057,6 +1060,32 @@ impl View {
     /// typing carries on at the new speed (or completes at once for `0`).
     pub fn set_speed(&mut self, chars_per_sec: f32) {
         self.chars_per_sec = chars_per_sec;
+    }
+
+    /// Scale the theme's text size by the player's setting (1.0 is the theme's own).
+    pub fn with_text_scale(mut self, scale: f32) -> View {
+        self.text_scale = scale;
+        self
+    }
+
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale;
+    }
+
+    /// The size to draw dialogue `d` at: the theme's times the text scale, or when the line doesn't fit the
+    /// textbox that big, the largest 10% step down that does (the theme's own size at worst, as `check` judged).
+    fn dialogue_size(&self, d: &Dialogue, has_name: bool) -> f32 {
+        let theme = &self.theme;
+        let steps = ((self.text_scale - 1.0) * 10.0).round() as i32;
+        let body = dialogue_body(theme, has_name);
+        let fits = |size: f32| {
+            crate::estimate_lines_styled(&d.text, &d.runs, size, body.w) <= (body.h / line_height(size)).floor() as usize
+        };
+        (1..=steps)
+            .rev()
+            .map(|i| theme.text_size * (1.0 + (self.text_scale - 1.0) * i as f32 / steps as f32))
+            .find(|&size| fits(size))
+            .unwrap_or(theme.text_size)
     }
 
     /// Apply one batch of commands from the runtime.
@@ -1773,7 +1802,7 @@ impl View {
                     runs: Vec::new(),
                     visible_chars: usize::MAX,
                     rect: screen,
-                    size: self.theme.text_size,
+                    size: self.theme.text_size * self.text_scale,
                     color: self.theme.text_color,
                     align: Align::Center,
                     outline: None,
@@ -1837,7 +1866,7 @@ impl View {
             // A passing message in the top right corner, over the HUD.
             if let Some(n) = &self.notice {
                 let alpha = n.alpha();
-                let (size, pad) = ((theme.text_size * 0.75).round(), 16.0);
+                let (size, pad) = ((theme.text_size * self.text_scale * 0.75).round(), 16.0);
                 let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
                 crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad);
             }
@@ -1878,7 +1907,7 @@ impl View {
                 runs: d.runs.clone(), // coloured runs don't fade (the colour has no alpha)
                 visible_chars: d.visible_chars(),
                 rect: dialogue_body(theme, has_name),
-                size: theme.text_size,
+                size: self.dialogue_size(d, has_name),
                 color: faded(theme.text_color, box_alpha),
                 align: theme.text_align,
                 outline: text_outline(theme),
@@ -1916,7 +1945,7 @@ impl View {
                 (false, false) => theme.button_color,
             };
             out.push(Draw::Rect { rect, color });
-            let size = choice_text_size(theme, rect);
+            let size = (theme.text_size * self.text_scale).min(rect.h * 0.5);
             // With a reason the label moves up and the reason sits under it, smaller.
             let label_rect = if reason.is_some() { Rect::new(rect.x, rect.y, rect.w, rect.h * 0.62) } else { rect };
             let Rich { text, runs, .. } = rich(label);
@@ -1948,7 +1977,7 @@ impl View {
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
         if let Some((spot, r)) = hovered_spot {
             let Rich { text, runs, .. } = rich(&spot.label);
-            let size = (theme.text_size * 0.8).round();
+            let size = (theme.text_size * self.text_scale * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
                 .min(VIRTUAL.w - 2.0 * TIP_MARGIN);
             let h = size * 1.35 + TIP_PAD;
@@ -3383,6 +3412,52 @@ mod tests {
         // The picture isn't loaded: fall back to the panel.
         let list = v.draw_list(&no_images, None);
         assert!(list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == TEXTBOX)));
+    }
+
+    /// The size of the dialogue text in `v`'s draw list.
+    fn dialogue_size_drawn(v: &View, text: &str) -> f32 {
+        let list = v.draw_list(&no_images, None);
+        list.iter().find_map(|d| match d {
+            Draw::Text { text: t, size, .. } if t == text => Some(*size),
+            _ => None,
+        })
+        .expect("the line is drawn")
+    }
+
+    #[test]
+    fn the_text_scale_makes_a_short_line_bigger_and_scale_one_changes_nothing() {
+        let size = Theme::default().text_size;
+        let mut v = View::new().with_speed(0.0).with_text_scale(1.5);
+        v.apply(&[say(None, "hi")]);
+        assert!((dialogue_size_drawn(&v, "hi") - size * 1.5).abs() < 1e-3);
+        v.set_text_scale(1.0);
+        assert_eq!(dialogue_size_drawn(&v, "hi"), size);
+    }
+
+    #[test]
+    fn a_line_too_long_for_the_scaled_size_is_drawn_at_the_largest_size_that_fits() {
+        let theme = Theme::default();
+        let size = theme.text_size;
+        // grow a line until it fits at the theme's size but not at 1.5 times it
+        let mut line = String::from("word");
+        while dialogue_lines_tagged(&theme, &line, false, size * 1.5).0 <= dialogue_lines_tagged(&theme, &line, false, size * 1.5).1 {
+            line.push_str(" word");
+        }
+        let (lines, fit) = dialogue_lines_tagged(&theme, &line, false, size);
+        assert!(lines <= fit, "fits at the theme's size");
+        let mut v = View::new().with_speed(0.0).with_text_scale(1.5);
+        v.apply(&[say(None, &line)]);
+        let drawn = dialogue_size_drawn(&v, &line);
+        assert!(drawn >= size && drawn < size * 1.5, "{drawn}");
+        let (lines, fit) = dialogue_lines_tagged(&theme, &line, false, drawn);
+        assert!(lines <= fit, "and fits at the size it is drawn at");
+        let (lines, fit) = dialogue_lines_tagged(&theme, &line, false, drawn + size * 0.1);
+        assert!(lines > fit || drawn + size * 0.1 > size * 1.5 + 1e-3, "no bigger step fits");
+        // typing on doesn't change it
+        let mut v = View::new().with_speed(10.0).with_text_scale(1.5);
+        v.apply(&[say(None, &line)]);
+        v.tick(0.5);
+        assert_eq!(dialogue_size_drawn(&v, &line), drawn);
     }
 
     #[test]

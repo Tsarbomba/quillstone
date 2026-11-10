@@ -44,10 +44,10 @@ fn texts(g: &Game) -> Vec<String> {
     draws.into_iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text) } else { None }).collect()
 }
 
-/// Open Settings, down to the Language row (the ninth), and one step with `Right` (or `Left`).
+/// Open Settings, down to the Language row (the tenth), and one step with `Right` (or `Left`).
 fn switch(g: &mut Game, k: Key) {
     g.open_settings();
-    for _ in 0..8 {
+    for _ in 0..9 {
         key(g, Key::Down);
     }
     key(g, k);
@@ -78,7 +78,7 @@ fn the_row_cycles_with_keys_and_the_line_is_translated_at_once() {
     g.open_settings();
     let t = texts(&g);
     assert!(t.contains(&"Language".to_string()) && t.contains(&"English".to_string()), "{t:?}");
-    for _ in 0..8 {
+    for _ in 0..9 {
         key(&mut g, Key::Down);
     }
     key(&mut g, Key::Right);
@@ -101,7 +101,7 @@ fn a_click_on_the_row_cycles_and_the_title_follows() {
     let mut g = game(&p, instant());
     assert_eq!(g.title(), "Tale");
     g.open_settings();
-    let c = crate::screens::control_rect(8, crate::screens::rows(true), &Theme::default());
+    let c = crate::screens::control_rect(9, crate::screens::rows(true), &Theme::default());
     g.handle(Event::CursorMoved(Some((c.x + c.w / 2.0, c.y + c.h / 2.0))));
     g.handle(Event::Press(Button::Left));
     g.handle(Event::Release(Button::Left));
@@ -161,7 +161,7 @@ fn the_choice_persists_with_the_other_settings_and_hot_reload_keeps_it() {
     let p = parse(&story()).unwrap();
     let mut g = game(&p, instant());
     g.open_settings();
-    for _ in 0..8 {
+    for _ in 0..9 {
         key(&mut g, Key::Down);
     }
     key(&mut g, Key::Right);

@@ -57,6 +57,8 @@ impl QuickMenuSetting {
 pub struct Settings {
     /// Typewriter speed in characters per second; `0` shows lines instantly.
     pub text_speed: f32,
+    /// Dialogue text size, 1.0 (the writer's) to 1.5 times it, in steps of 0.1.
+    pub text_scale: f32,
     /// Auto-forward pause after a line is fully shown, in seconds.
     pub auto_delay: f32,
     /// Volume slider positions, 0..1.
@@ -83,6 +85,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             text_speed: 60.0,
+            text_scale: 1.0,
             auto_delay: 1.5,
             music_volume: 1.0,
             sfx_volume: 1.0,
@@ -100,6 +103,8 @@ impl Default for Settings {
 
 pub const MIN_TEXT_SPEED: f32 = 10.0;
 pub const MAX_TEXT_SPEED: f32 = 200.0;
+pub const MIN_TEXT_SCALE: f32 = 1.0;
+pub const MAX_TEXT_SCALE: f32 = 1.5;
 pub const MIN_AUTO_DELAY: f32 = 0.5;
 pub const MAX_AUTO_DELAY: f32 = 6.0;
 
@@ -121,6 +126,7 @@ impl Settings {
                         s.text_speed = if v <= 0.0 { 0.0 } else { v.clamp(MIN_TEXT_SPEED, MAX_TEXT_SPEED) };
                     }
                 }
+                "text_scale" => s.text_scale = num().map_or(s.text_scale, snap_text_scale),
                 "auto_delay" => {
                     if let Some(v) = num() {
                         s.auto_delay = v.clamp(MIN_AUTO_DELAY, MAX_AUTO_DELAY);
@@ -160,6 +166,7 @@ impl Settings {
         format!(
             "# Quillstone settings\n\
              text_speed = {}\n\
+             text_scale = {}\n\
              auto_delay = {}\n\
              music_volume = {}\n\
              sfx_volume = {}\n\
@@ -168,6 +175,7 @@ impl Settings {
              skip_unread = {}\n\
              quick_menu = {}\n{}{}{}{}",
             self.text_speed,
+            self.text_scale,
             self.auto_delay,
             self.music_volume,
             self.sfx_volume,
@@ -250,6 +258,19 @@ pub fn text_speed_to_slider(cps: f32) -> f32 {
     }
 }
 
+/// A text scale held to 1.0..=1.5 in steps of 0.1.
+pub fn snap_text_scale(scale: f32) -> f32 {
+    (scale.clamp(MIN_TEXT_SCALE, MAX_TEXT_SCALE) * 10.0).round() / 10.0
+}
+
+pub fn text_scale_from_slider(pos: f32) -> f32 {
+    snap_text_scale(MIN_TEXT_SCALE + pos.clamp(0.0, 1.0) * (MAX_TEXT_SCALE - MIN_TEXT_SCALE))
+}
+
+pub fn text_scale_to_slider(scale: f32) -> f32 {
+    ((scale - MIN_TEXT_SCALE) / (MAX_TEXT_SCALE - MIN_TEXT_SCALE)).clamp(0.0, 1.0)
+}
+
 pub fn auto_delay_from_slider(pos: f32) -> f32 {
     let d = MIN_AUTO_DELAY + pos.clamp(0.0, 1.0) * (MAX_AUTO_DELAY - MIN_AUTO_DELAY);
     (d * 10.0).round() / 10.0
@@ -272,6 +293,7 @@ mod tests {
     fn the_file_round_trips() {
         let s = Settings {
             text_speed: 0.0,
+            text_scale: 1.3,
             auto_delay: 2.5,
             music_volume: 0.25,
             sfx_volume: 0.0,
@@ -410,6 +432,30 @@ mod tests {
         let s = Settings::parse("text_speed = 9999\nauto_delay = 0\nvoice_volume = 2\n");
         assert_eq!((s.text_speed, s.auto_delay, s.voice_volume), (MAX_TEXT_SPEED, MIN_AUTO_DELAY, 1.0));
         assert_eq!(Settings::parse("text_speed = -5\n").text_speed, 0.0); // instant
+    }
+
+    #[test]
+    fn text_scale_is_saved_clamped_snapped_and_defaults_for_an_old_file() {
+        let s = Settings { text_scale: 1.2, ..Settings::default() };
+        assert!(s.to_text().contains("text_scale = 1.2"));
+        assert_eq!(Settings::parse(&s.to_text()).text_scale, 1.2);
+        assert_eq!(Settings::parse("text_scale = 9\n").text_scale, MAX_TEXT_SCALE);
+        assert_eq!(Settings::parse("text_scale = 0.2\n").text_scale, MIN_TEXT_SCALE);
+        assert_eq!(Settings::parse("text_scale = 1.34\n").text_scale, 1.3);
+        assert_eq!(Settings::parse("text_scale = NaN\n").text_scale, 1.0);
+        assert_eq!(Settings::parse("text_speed = 40\n").text_scale, 1.0);
+    }
+
+    #[test]
+    fn text_scale_slider_runs_from_100_to_150_percent_in_tenths() {
+        assert_eq!(text_scale_from_slider(0.0), 1.0);
+        assert_eq!(text_scale_from_slider(1.0), 1.5);
+        assert_eq!(text_scale_from_slider(0.41), 1.2);
+        assert_eq!((text_scale_to_slider(1.0), text_scale_to_slider(1.5)), (0.0, 1.0));
+        for tenth in 0..=5 {
+            let scale = 1.0 + tenth as f32 / 10.0;
+            assert_eq!(text_scale_from_slider(text_scale_to_slider(scale)), snap_text_scale(scale));
+        }
     }
 
     #[test]

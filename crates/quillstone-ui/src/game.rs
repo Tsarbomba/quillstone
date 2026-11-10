@@ -244,7 +244,7 @@ impl<'p> Game<'p> {
             program,
             storage,
             session,
-            view: View::new().with_speed(settings.text_speed).with_anims(&program.anims).with_art_scale(program.art_scale),
+            view: View::new().with_speed(settings.text_speed).with_text_scale(settings.text_scale).with_anims(&program.anims).with_art_scale(program.art_scale),
             mixer: Mixer::new(),
             settings_before: settings.clone(),
             settings,
@@ -360,7 +360,7 @@ impl<'p> Game<'p> {
     /// A view with nothing in it yet (same speed and theme).
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
-        self.view = View::new().with_speed(self.settings.text_speed).with_theme(theme).with_anims(&self.program.anims).with_art_scale(self.program.art_scale);
+        self.view = View::new().with_speed(self.settings.text_speed).with_text_scale(self.settings.text_scale).with_theme(theme).with_anims(&self.program.anims).with_art_scale(self.program.art_scale);
     }
 
     /// Where closing a screen goes back to.
@@ -1507,6 +1507,8 @@ impl<'p> Game<'p> {
     fn nudge(&mut self, delta: f32) {
         let row = rows(self.has_language_row())[self.focus];
         match row_slider(&self.settings, row) {
+            // text size has five notches over the slider: one key press moves one notch
+            Some(pos) if row == Row::TextSize => self.set_slider(self.focus, pos + delta.signum() * 0.2),
             Some(pos) => self.set_slider(self.focus, pos + delta),
             None => self.toggle_row(row),
         }
@@ -1532,6 +1534,7 @@ impl<'p> Game<'p> {
         set_row_slider(&mut self.settings, row, pos);
         let channel = match row {
             Row::TextSpeed => return self.view.set_speed(self.settings.text_speed),
+            Row::TextSize => return self.view.set_text_scale(self.settings.text_scale),
             Row::Music => Channel::Music,
             Row::Sfx => Channel::Sfx,
             Row::Voice => Channel::Voice,
