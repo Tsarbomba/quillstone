@@ -33,14 +33,18 @@ build (use an **LGPL** one so games can ship it) and libclang.
 4. At run time the FFmpeg DLLs must be found: add `C:\ffmpeg\bin` to `PATH`, or
    copy its `.dll` files next to `quillstone-player.exe` (that is also how a game ships).
 
-**Linux / WSL**: the same, with `ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz`;
-install libclang (`sudo apt install libclang-dev`), `export FFMPEG_DIR=...`, and
-`export LD_LIBRARY_PATH=$FFMPEG_DIR/lib` to run.
+**Linux / WSL**
+1. Download `ffmpeg-n8.1-latest-linux64-lgpl-shared-8.1.tar.xz` from the same page and unpack it.
+2. Install libclang: `sudo apt install libclang-dev`.
+3. `export FFMPEG_DIR=...` (the unpacked folder).
+4. To run: `export LD_LIBRARY_PATH=$FFMPEG_DIR/lib`.
 
-**macOS**: `brew install ffmpeg pkg-config llvm`, then
-`export LIBCLANG_PATH=$(brew --prefix llvm)/lib` (FFmpeg is found through
-pkg-config, no `FFMPEG_DIR` needed). Homebrew's FFmpeg is a GPL build: fine for
-developing, but ship an LGPL build with a game.
+**macOS**
+1. `brew install ffmpeg pkg-config llvm`
+2. `export LIBCLANG_PATH=$(brew --prefix llvm)/lib`
+
+FFmpeg is found through pkg-config there, so no `FFMPEG_DIR` is needed. Homebrew's FFmpeg is a
+GPL build: fine for developing, but ship an LGPL build with a game.
 
 No FFmpeg? Build without video: `cargo run --release --no-default-features --features text,audio -- ...`
 (videos then show a placeholder).
@@ -68,13 +72,20 @@ cargo run --release -- ../examples/demo.quill.md
 
 The first build downloads and compiles wgpu, winit, cosmic-text and kira (a few minutes).
 
-The player has optional features (`text`, `audio`, `video`, `gamepad`; all on
-by default), so you can narrow a problem down. For example,
-`cargo run --release --no-default-features --features text -- ../examples/demo.quill.md`
-runs without sound or video, and `--no-default-features` alone shows just the
-window and images. Gamepads need libudev's development files on Linux
-(`sudo apt install libudev-dev`), or build with `--no-default-features --features text,audio,video`.
-Build errors about FFmpeg: see [Set up FFmpeg](#set-up-ffmpeg-for-video-one-time).
+The player has optional features, all on by default: `text`, `audio`, `video` and `gamepad`.
+Turning some off narrows a problem down:
+
+| Build with | You get |
+| --- | --- |
+| `--no-default-features --features text` | no sound or video |
+| `--no-default-features` | just the window and images |
+| `--no-default-features --features text,audio,video` | no gamepads |
+
+For example: `cargo run --release --no-default-features --features text -- ../examples/demo.quill.md`
+
+- Gamepads need libudev's development files on Linux (`sudo apt install libudev-dev`), or the
+  last build in the table.
+- Build errors about FFmpeg: see [Set up FFmpeg](#set-up-ffmpeg-for-video-one-time).
 
 For a game to ship, build the player without a console window:
 
@@ -85,38 +96,53 @@ cd ..
 cargo run --release -p quillstone -- package examples/demo.quill.md --player player/target/release/quillstone-player.exe --libs C:\ffmpeg\bin --out MyGame
 ```
 
-(`no-console` adds `--features no-console`: no console window behind the game on Windows; messages then go
-nowhere, except startup errors and crashes, which land in `error.txt` next to the exe.)
+With `no-console` there is no console window behind the game on Windows. Messages then go
+nowhere, except startup errors and crashes, which land in `error.txt` next to the exe.
 
 ## Slim FFmpeg for shipping
 
-The full FFmpeg download carries every codec FFmpeg
-has (~130 MB of DLLs). `tools/build-ffmpeg.sh` builds one (the release kits use it) with only what Quillstone
-plays (VP8 and VP9 video in WebM, Vorbis and Opus sound, and `.opus` sound files) and
-only the five libraries the player loads. On Windows, run it in the MSYS2 **UCRT64**
-shell (the packages to install are listed at the top of the script):
+The full FFmpeg download carries every codec FFmpeg has (~130 MB of DLLs).
+`tools/build-ffmpeg.sh` builds a slim one, which the release kits use. It holds:
+
+- only what Quillstone plays: VP8 and VP9 video in WebM, Vorbis and Opus sound, and `.opus`
+  sound files;
+- only the five libraries the player loads.
+
+On Windows, run it in the MSYS2 **UCRT64** shell (the packages to install are listed at the top
+of the script):
 
 ```
 cd /c/Users/you/path/to/quillstone
 tools/build-ffmpeg.sh ffmpeg-slim
 ```
 
-Then package with `--libs ffmpeg-slim\bin` (Linux: `ffmpeg-slim/lib`). The player
-doesn't need rebuilding: the slim DLLs replace the full ones as long as the FFmpeg
-version matches (8.1). The output also has `include/` and `lib/` (Windows: the `.lib` import
+Then package with `--libs ffmpeg-slim\bin` (Linux: `ffmpeg-slim/lib`).
+
+The player doesn't need rebuilding: the slim DLLs replace the full ones as long as the FFmpeg
+version matches (8.1). The output also has `include/` and `lib/` (on Windows, the `.lib` import
 libraries), so `FFMPEG_DIR=<ffmpeg-slim>` builds the player too, which is what the release does.
 Day to day, developing against the full download is fine.
 
 ## Making a release
 
-Pushing a tag that starts with `v` (for example `v0.2.0`) runs `.github/workflows/release.yml`: it builds the
-kits for Windows and Linux (each holds `quillstone`, `quillstone-player`, the five FFmpeg 8.1 libraries from the slim build,
-the licenses, the examples and the docs) and publishes them on the Releases page with generated notes. The kits are archives with one folder inside, named like the archive, and are uploaded
-as they are, not zipped again. The slim FFmpeg is built from source on each runner (MSYS2 UCRT64 on Windows)
-and cached by OS and the hash of `tools/build-ffmpeg.sh`, so it rebuilds only when that script changes;
-the kit's `licenses/FFmpeg.txt` names the source and links the script (games packaged from the kit carry it too).
-Running the workflow by hand from the Actions tab ("Run workflow") builds the same kits and keeps them as
-workflow artifacts without making a release: a good way to try it before tagging.
+Push a tag that starts with `v` (for example `v0.2.0`). That runs
+`.github/workflows/release.yml`, which:
+
+1. runs the tests (`cargo test --workspace`);
+2. builds the kits for Windows and Linux;
+3. publishes them on the Releases page with generated notes.
+
+Each kit holds `quillstone`, `quillstone-player`, the five FFmpeg 8.1 libraries from the slim
+build, the licenses, the examples and the docs. A kit is an archive with one folder inside,
+named like the archive, and is uploaded as it is, not zipped again.
+
+The slim FFmpeg is built from source on each runner (MSYS2 UCRT64 on Windows). It is cached by
+OS and the hash of `tools/build-ffmpeg.sh`, so it rebuilds only when that script changes. The
+kit's `licenses/FFmpeg.txt` names the source and links the script; games packaged from the kit
+carry it too.
+
+To try it before tagging, run the workflow by hand from the Actions tab ("Run workflow"). It
+builds the same kits and keeps them as workflow artifacts without making a release.
 
 ## Layout
 

@@ -74,9 +74,10 @@ title: My First Game
 ````
 
 Run it with `quillstone-player mygame/mygame.quill.md`. Leave it running, change a line, and save:
-the game updates within half a second, at the same spot (hot reload). Every command, choice,
-variable and effect is in [SCRIPT.md](SCRIPT.md); `quillstone check mygame/mygame.quill.md` tells you
-what is wrong, with the line.
+the game updates within half a second, at the same spot (hot reload).
+
+Every command, choice, variable and effect is in [SCRIPT.md](SCRIPT.md). When something is wrong,
+`quillstone check mygame/mygame.quill.md` says what, with the line.
 
 ## Playing
 
@@ -84,66 +85,139 @@ what is wrong, with the line.
 quillstone-player examples/demo.quill.md
 ```
 
-**Hot reload:** leave the game running while you write (this works when the player runs a script, not a `game.qsa`). Saving the script (or
-a file it includes, or its theme) updates the game within half a second, at the same spot, the way a
-save would load after an edit; the music keeps playing. If the edited script has
-errors, a notice shows the first one (all of them go to the console) and the old
-version keeps running. New pictures are picked up too; a new theme font needs a
-restart.
+Run without a script argument, the player looks for a game by itself, in this order:
 
-Run without a script argument, the player plays `game.qsa` if it sits next to its
-executable, else `main.quill.md` (or the only `.quill.md` file) from a `game`
-folder next to it, or else from the executable's own folder. That is how a shipped game starts: players just
-double-click the exe. If it can't start, the reason is also written to
-`error.txt` next to the exe.
+1. `game.qsa` next to its executable;
+2. `main.quill.md` (or the only `.quill.md` file) in a `game` folder next to it;
+3. the same in the executable's own folder.
+
+That is how a shipped game starts: players just double-click the exe. If it can't start, the
+reason is also written to `error.txt` next to the exe.
+
+### Hot reload
+
+Leave the game running while you write. Saving the script, a file it includes or its theme
+updates the game within half a second, at the same spot, the way a save would load after an
+edit. The music keeps playing.
+
+- If the edited script has errors, a notice shows the first one (all of them go to the console)
+  and the old version keeps running.
+- New pictures are picked up too. A new theme font needs a restart.
+- It works when the player runs a script, not a `game.qsa`.
+
+### Controls
+
+In the story:
 
 | Control | What it does |
 | --- | --- |
 | click / Space / Enter / Right | advance (the first press finishes typing the line) |
-| 1-9 or click | pick a choice (a timed choice picks its default option when the bar runs out) |
+| 1-9 or click | pick a choice |
+| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it |
 | Backspace / Left / wheel up | go back (rollback); wheel down rolls forward again |
-| H / Page Up | history (backlog); wheel, Up/Down, Page Up/Down, Home/End to scroll; H, Esc, right-click or a click closes it |
 | A | auto-forward on/off (waits for the voice clip; stops at choices) |
-| Tab / hold Ctrl | skip lines already read (stops at unread lines, choices and the end; "Skip unread text" in settings skips everything up to a choice) |
-| S / L | save / load screens (9 pages of 6 slots; the load screen also has the Auto and Quick pages) |
+| Tab / hold Ctrl | skip lines already read |
+| U | hide the textbox and quick menu to see the picture |
 | F5 / F9 | quick save / quick load |
-| U | hide the textbox and quick menu to see the picture; the next key press or click brings them back (and does nothing else) |
-| Esc / right-click | the save screen, with a row of tabs along the top (Save, Load, Settings, History, Main menu, Quit) that works like a game menu: click one, or press Tab to move on to the next screen. Esc or right-click on any of those screens closes it again. Settings (text speed, auto-forward delay, skip unread, music/sound/voice volume, fullscreen, quick menu, and the language in a game that has several) is also the quick menu's Settings button. From the main menu the tabs are Load, Settings and Quit |
-| I | the inventory, in games that have one (over the story Esc, right-click or I closes it). In a shop and in an inventory the script opened, Esc and right-click open the save screen (closing it returns), S / L / H / F5 / F9 work as in the story, and only the Leave / Close button (or Backspace, the gamepad's X; or I in the inventory) leaves |
-| J | the journal, in games that have one (the inventory's screen listing quests; over the story Esc, right-click or J closes it) |
-| typing | at a text input the keys type into the field (Enter or OK confirms, Backspace deletes, Esc opens the save screen) and shortcut letters are off there |
 | F11 | fullscreen |
+
+Screens:
+
+| Control | What it opens |
+| --- | --- |
+| Esc / right-click | the save screen, which is also the game menu (see below) |
+| S / L | the save / load screens |
+| H / Page Up | the history (backlog) |
+| I | the inventory, in games that have one |
+| J | the journal, in games that have one (the inventory's screen, listing quests) |
 | F12 | the developer console, only when the player was started with `--dev` (see "Developer tools" in SCRIPT.md) |
-| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it (on a hotspot screen the arrow keys cycle the regions; on the save and load screens Left/Right also turn the page) |
-| Extras (main menu) | click or Enter opens an entry; Tab switches between Gallery, Music room and Scenes; Left/Right turn the page; in a picture or clip Left/Right move on and any click, Esc, Enter, Space or Backspace closes it; Esc, Backspace or right-click goes back |
-| a question (Quit, Overwrite, ...) | Enter or Y says yes; Esc, N or right-click says no |
 
-**Gamepads** (Xbox, PlayStation, Switch Pro, Steam Deck) work too: A advances or
-confirms, B or Start is Esc (in the story it opens the save screen, with its row of tabs; elsewhere it closes the screen), X rolls back, Y
-opens the history, LB toggles auto-forward, RB toggles skip, holding RT skips,
-LT and Back open the load and save screens, and the D-pad or left stick moves
-around.
+The details:
 
-The game opens at a main menu (Start, Continue, Load, Extras when the game has a
-gallery, music room or scene replays, Settings, Quit) and
-returns to it at the end of the story. The quick menu under the textbox (Back, History, Skip, Auto, Save, Load,
-Q.Save, Q.Load, Settings, and Items and Journal in a game with an inventory or a journal) does the same with the mouse; a game may show it
-only while the mouse is over the textbox, or not at all, and Settings lets you choose; a theme can draw the buttons as pictures at places of its own. The game saves automatically
-whenever a choice comes up and when you quit. Settings and saves are kept per
-user (Windows: `%APPDATA%\Quillstone\<game>\`; macOS: `~/Library/Application Support/Quillstone/<game>/`;
-Linux: `~/.local/share/quillstone/<game>/`). `<game>` is the script's `id:` front matter key; without one it is
-the title (so renaming the title moves the saves: set `id:` before you ship), or the script's file name.
-The first time, the window opens at 1920x1080 (the game's own size), or at the largest 16:9 size that fits
-the monitor with some margin, centred; after that the player remembers the window's size, position and
-full-screen or maximised state (in `settings.txt`) and restores them, kept on screen if the monitors changed.
-`quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as unlocked for that run
-(to test the Extras screen); nothing is written to the saved unlocks.
-`quillstone-player <game> --dev` adds a developer console on F12 (inspect and set variables, jump to a label) and allows
-`--start <label>` and `--set var=value` (repeatable) to begin a new game there; see "Developer tools" in SCRIPT.md.
-Only the flag turns it on, so a shipped game has none of it.
-Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations and timed
-choices) and restoring it carries on exactly where it stopped. Videos play with FFmpeg (the kit includes it). `QUILLSTONE_TEST_VIDEO=1` plays a test
-pattern in place of every video, to check the pipeline without FFmpeg.
+- **Choices.** A timed choice picks its default option when the bar runs out. On a hotspot
+  screen the arrow keys cycle the regions.
+- **Skip** stops at unread lines, choices and the end. With "Skip unread text" on in Settings it
+  skips everything up to a choice.
+- **U** hides the textbox until the next key press or click, which brings it back and does
+  nothing else.
+- **The game menu.** The save screen has a row of tabs along the top: Save, Load, Settings,
+  History, Main menu, Quit. Click one, or press Tab to move on to the next screen. Esc or
+  right-click on any of those screens closes it again. From the main menu the tabs are Load,
+  Settings and Quit.
+- **Settings** holds text speed, auto-forward delay, skip unread, music / sound / voice volume,
+  fullscreen, the quick menu, and the language in a game that has several. The quick menu's
+  Settings button opens the same screen.
+- **Save and load.** There are 9 pages of 6 slots; the load screen also has the Auto and Quick
+  pages. Left/Right turn the page.
+- **History.** Scroll with the wheel, Up/Down, Page Up/Down or Home/End. H, Esc, right-click or
+  a click closes it.
+- **Inventory and journal.** Over the story, Esc, right-click or the same key (I or J) closes
+  them.
+- **A shop, or an inventory the script opened.** Esc and right-click open the save screen
+  (closing it returns), and S / L / H / F5 / F9 work as in the story. Only the Leave / Close
+  button leaves (or Backspace; or I in the inventory).
+- **Typing.** At a text input the keys type into the field: Enter or OK confirms, Backspace
+  deletes, Esc opens the save screen. Shortcut letters are off there.
+- **Extras** (from the main menu). Click or Enter opens an entry, Tab switches between Gallery,
+  Music room and Scenes, and Left/Right turn the page. In a picture or clip, Left/Right move
+  on, and any click, Esc, Enter, Space or Backspace closes it. Esc, Backspace or right-click
+  goes back.
+- **A question** (Quit, Overwrite, ...). Enter or Y says yes; Esc, N or right-click says no.
+
+**Gamepads** (Xbox, PlayStation, Switch Pro, Steam Deck) work too:
+
+| Button | What it does |
+| --- | --- |
+| A | advance or confirm |
+| B / Start | Esc: in the story it opens the save screen, elsewhere it closes the screen |
+| X | roll back (and leave a shop) |
+| Y | history |
+| LB / RB | auto-forward on/off / skip on/off |
+| hold RT | skip |
+| LT / Back | the load / save screens |
+| D-pad / left stick | move around |
+
+### Menus, saves and the window
+
+**Menus.** The game opens at a main menu and returns to it at the end of the story: Start,
+Continue, Load, Settings, Quit, and Extras when the game has a gallery, music room or scene
+replays.
+
+The quick menu under the textbox does with the mouse what the keys do: Back, History, Skip,
+Auto, Save, Load, Q.Save, Q.Load, Settings, and Items and Journal in a game with an inventory or
+a journal. A game may show it only while the mouse is over the textbox, or not at all; Settings
+lets you choose. A theme can draw the buttons as pictures at places of its own.
+
+**Saves.** The game saves automatically whenever a choice comes up and when you quit. Settings
+and saves are kept per user:
+
+| System | Folder |
+| --- | --- |
+| Windows | `%APPDATA%\Quillstone\<game>\` |
+| macOS | `~/Library/Application Support/Quillstone/<game>/` |
+| Linux | `~/.local/share/quillstone/<game>/` |
+
+`<game>` is the script's `id:` front matter key. Without one it is the title, or else the
+script's file name. Renaming the title then moves the saves, so set `id:` before you ship.
+
+**The window.** The first time, it opens at 1920x1080 (the game's own size), or at the largest
+16:9 size that fits the monitor with some margin, centred. After that the player remembers the
+window's size, position and full-screen or maximised state (in `settings.txt`) and restores
+them, kept on screen if the monitors changed.
+
+Minimising the window pauses everything (music, sound, voice, videos, waits, typing, animations
+and timed choices). Restoring it carries on exactly where it stopped.
+
+### Options for testing
+
+- `quillstone-player <game> --unlock-all` shows every gallery, music room and scene entry as
+  unlocked for that run, to test the Extras screen. Nothing is written to the saved unlocks.
+- `quillstone-player <game> --dev` adds a developer console on F12 (inspect and set variables,
+  jump to a label). It also allows `--start <label>` and `--set var=value` (repeatable) to begin
+  a new game there; see "Developer tools" in SCRIPT.md. Only the flag turns it on, so a shipped
+  game has none of it.
+- Videos play with FFmpeg, which the kit includes. `QUILLSTONE_TEST_VIDEO=1` plays a test
+  pattern in place of every video, to check the pipeline without FFmpeg.
 
 **Troubleshooting**
 - No sound device? The player prints a warning and runs silent.
@@ -172,16 +246,25 @@ All commands (`<script>` is a `.quill.md` file; the script's folder is the game 
 | `quillstone package <script> --out <folder> [--player <exe>] [--name <name>] [--libs <folder>] [--folder] [--zip]` | build a game folder to ship (see "Ship a game"); `--player` defaults to the `quillstone-player` beside `quillstone` |
 | `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
 
-`test` plays every choice branch and reports, with the choices that lead there:
-endless loops that never show anything, places the story can never end from,
-labels and lines no branch reaches, choice options whose condition is never
-true, and variables that are read but never set (usually typos). It exits with
-an error only for the first two; the rest are warnings.
+`test` plays every choice branch and reports what it finds, with the choices that lead there:
 
-Exit codes: `0` when it finished and found no error, `1` for a real problem, and
-`2` when it stopped at the `--limit` (how many situations it explores, 100000 by default; variables that keep growing can make the
-story endless), because then only part of the story was played. Raise `--limit`,
-or pass `--allow-partial` if a partial run is fine for you (the exit code is then `0`).
+- endless loops that never show anything (an error);
+- places the story can never end from (an error);
+- labels and lines no branch reaches;
+- choice options whose condition is never true;
+- variables that are read but never set (usually typos).
+
+Only the first two are errors; the rest are warnings.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | it finished and found no error |
+| `1` | a real problem |
+| `2` | it stopped at the `--limit`, so only part of the story was played |
+
+`--limit` is how many situations it explores, 100000 by default (variables that keep growing can
+make a story endless). Raise it, or pass `--allow-partial` if a partial run is fine for you: the
+exit code is then `0`.
 
 ## Ship a game
 
@@ -189,42 +272,62 @@ or pass `--allow-partial` if a partial run is fine for you (the exit code is the
 quillstone package mygame.quill.md --out MyGame --zip
 ```
 
-`MyGame/` then holds `Quillstone Demo.exe` (named after the title; `--name` picks
-another), FFmpeg's five libraries (DLLs on Windows: avcodec, avformat, avutil, swscale, swresample;
-never avfilter or avdevice), `licenses/FFmpeg.txt` (the LGPL notice FFmpeg
-requires) and `game.qsa`: the script and only the files it and its theme use, packed
-into one file (stored as they are, not compressed or scrambled, so it is only a
-tidy way to ship them). Add `--zip` to also get `MyGame.zip` beside the folder (it unzips to `MyGame/`);
-players unzip it and double-click the exe.
-The script is checked first (it also warns about unused asset files, which `package` leaves out), assets outside the script's folder are refused, and
-an existing non-empty `--out` folder is never overwritten. Without `--libs`, the
-libraries are taken from beside the player. Without `--player`, the `quillstone-player` beside the `quillstone`
-program is used (so the kit needs neither).
+`MyGame/` then holds:
 
-**Game icon.** A game gets the Quillstone icon. To use your own, set `icon: assets/icon.png` in the front matter
-(a square PNG, JPEG or WebP, 256x256 or larger with a transparent background; `check` warns when it isn't square
-or is smaller). The window shows the icon, and when the player is a Windows `.exe`, `package` also writes it into
-the renamed exe (sizes 16, 32, 48 and 256; the small ones are sharpened automatically), so Explorer, the desktop
-and the taskbar show it; this works from any system. The player you built is never changed, only the copy in
-`--out`.
+| File | What it is |
+| --- | --- |
+| `<Title>.exe` | the player, named after the game's title (`--name` picks another name) |
+| `game.qsa` | the script and only the files it and its theme use, in one file |
+| five FFmpeg libraries | avcodec, avformat, avutil, swscale and swresample (DLLs on Windows; never avfilter or avdevice) |
+| `licenses/FFmpeg.txt` | the LGPL notice FFmpeg requires |
 
-Add `--folder` to get a `game/` folder of loose files instead of `game.qsa`.
-`quillstone unpack MyGame/game.qsa --out look-inside` writes the files of an
-archive into a new folder, to see what is in it.
+With `--zip` you also get `MyGame.zip` beside the folder (it unzips to `MyGame/`). Players unzip
+it and double-click the exe.
 
-**Patches and mods.** Put a file at the same path in a `mods/` folder beside the
-exe and it replaces the shipped one: a new `assets/room.png`, a fixed
-`chapters/ch2.quill.md`, a `lang/fr.txt` translation. A file with a path the game
-doesn't have yet is simply added (a voice recording in the voice folder, say).
-`quillstone-player path/to/game.qsa` does the same with the `mods/` folder beside
-that archive. (It is `mods`, not `game`, on purpose: a `game/` folder is what `--folder`
-releases ship, and one left over from an older release must not win over a newer archive.)
+`game.qsa` stores the files as they are, not compressed or scrambled: it is only a tidy way to
+ship them.
 
-**Smaller games.** The kit's FFmpeg libraries are already a slim build with only what Quillstone plays (VP8/VP9 video in WebM, Vorbis and Opus sound). A full FFmpeg (~130 MB of DLLs) works too: package with `--libs <its bin or lib folder>`. To build the slim one yourself, see `tools/build-ffmpeg.sh` and [BUILDING.md](BUILDING.md).
+What `package` does for you:
 
-A shipped game (the kit's player has no console window) shows no messages; if it can't start or crashes, the reason
-is written to `error.txt` next to the exe. On Linux the player loads FFmpeg's
-`.so` files from its own folder, so the same layout works there.
+- It checks the script first, and warns about asset files nothing uses (it leaves those out).
+- It refuses assets outside the script's folder.
+- It never overwrites an existing `--out` folder that isn't empty.
+- Without `--libs`, it takes the FFmpeg libraries from beside the player.
+- Without `--player`, it uses the `quillstone-player` beside the `quillstone` program. The kit
+  therefore needs neither option.
+
+**Game icon.** A game gets the Quillstone icon. To use your own, set `icon: assets/icon.png` in
+the front matter: a square PNG, JPEG or WebP, 256x256 or larger, with a transparent background.
+`check` warns when it isn't square or is smaller.
+
+The window shows the icon. When the player is a Windows `.exe`, `package` also writes it into
+the renamed exe, so Explorer, the desktop and the taskbar show it. It goes in at 16, 32, 48 and
+256 pixels (the small sizes are sharpened automatically), and this works from any system. The
+player you built is never changed, only the copy in `--out`.
+
+**Loose files.** Add `--folder` to get a `game/` folder of loose files instead of `game.qsa`.
+To see what is in an archive, `quillstone unpack MyGame/game.qsa --out look-inside` writes its
+files into a new folder.
+
+**Patches and mods.** Put a file at the same path in a `mods/` folder beside the exe and it
+replaces the shipped one: a new `assets/room.png`, a fixed `chapters/ch2.quill.md`, a
+`lang/fr.txt` translation. A file with a path the game doesn't have yet is simply added (a voice
+recording in the voice folder, say). `quillstone-player path/to/game.qsa` does the same with the
+`mods/` folder beside that archive.
+
+The folder is `mods`, not `game`, on purpose. A `game/` folder is what `--folder` releases ship,
+and one left over from an older release must not win over a newer archive.
+
+**Smaller games.** The kit's FFmpeg libraries are already a slim build with only what Quillstone
+plays: VP8/VP9 video in WebM, Vorbis and Opus sound. A full FFmpeg (~130 MB of DLLs) works too:
+package with `--libs <its bin or lib folder>`. To build the slim one yourself, see
+`tools/build-ffmpeg.sh` and [BUILDING.md](BUILDING.md).
+
+**When a shipped game fails.** The kit's player has no console window, so a shipped game shows
+no messages. If it can't start or crashes, the reason is written to `error.txt` next to the exe.
+
+**Linux.** The player loads FFmpeg's `.so` files from its own folder, so the same layout works
+there.
 
 ## Script format
 
