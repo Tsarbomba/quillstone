@@ -1088,9 +1088,10 @@ mod tests {
 
     // ---- depth and size limits (expressions come from saves) -----------------------
 
-    /// Run on a thread with a small stack (a Windows main thread has 1 MB).
+    /// Run on a thread with the stack of a Windows main thread (1 MB). A debug build needs about half of it
+    /// for the deepest allowed expression, a release build under 128 KB.
     fn small_stack<F: FnOnce() + Send + 'static>(f: F) {
-        std::thread::Builder::new().stack_size(512 * 1024).spawn(f).unwrap().join().expect("overflowed or panicked");
+        std::thread::Builder::new().stack_size(1024 * 1024).spawn(f).unwrap().join().expect("overflowed or panicked");
     }
 
     #[test]
