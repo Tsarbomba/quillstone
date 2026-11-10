@@ -1564,7 +1564,7 @@ impl<'p> Game<'p> {
     }
 
     fn backlog_event(&mut self, event: Event) {
-        let max = backlog_max_scroll(&self.backlog);
+        let max = backlog_max_scroll(&self.backlog, self.theme());
         let scroll_by = |s: usize, d: isize| (s as isize + d).clamp(0, max as isize) as usize;
         match event {
             Event::Wheel(dy) => self.backlog_scroll = scroll_by(self.backlog_scroll, if dy > 0.0 { 1 } else { -1 }),

@@ -2888,6 +2888,25 @@ slots_rect = 300, 100, 1000, 650
   `slots_rect` below y = 40. Extras keeps its own layout.
 - Mouse and keyboard follow the new places.
 
+### The History screen
+
+The History screen can be moved, scaled and given another text size. Without these keys it looks as it always has.
+
+```text
+# x, y, width, height of the area it is laid out in; at least 800x495 (default 160, 40, 1600, 990)
+history_rect = 300, 100, 1200, 800
+# the log's text size (8 to 200, default 32)
+history_text_size = 28
+```
+
+- The title is at the top of `history_rect`, the hint at its bottom, and the log fills the space
+  between. As many whole entries are shown as fit; the wheel and the keys scroll through the rest.
+- The title and hint sizes scale with the rect, the smaller of its two scales.
+- `history_text_size` sets the log's text. The line spacing, the gap between entries and the
+  column of speaker names grow with it. The name column is never wider than 40% of the rect.
+- A click anywhere closes the screen, as before. The tab row along the top stays where it is, so
+  keep `history_rect` below y = 40.
+
 ### The game menu
 
 Esc and a right click during the story (also over a shop, an inventory or a text input) open

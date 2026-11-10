@@ -78,6 +78,10 @@ pub const MIN_MENU_RECT: [f32; 2] = [200.0, 240.0];
 /// The Save and Load screens' area (title, page tabs, 3x2 slots, Back) and the least size of it.
 pub const DEFAULT_SLOTS_RECT: [f32; 4] = [200.0, 40.0, 1520.0, 990.0];
 pub const MIN_SLOTS_RECT: [f32; 2] = [760.0, 495.0];
+/// The History screen's area (title, log, hint), the least size of it and the text size its layout is made for.
+pub const DEFAULT_HISTORY_RECT: [f32; 4] = [160.0, 40.0, 1600.0, 990.0];
+pub const MIN_HISTORY_RECT: [f32; 2] = [800.0, 495.0];
+pub const DEFAULT_HISTORY_TEXT_SIZE: f32 = 32.0;
 pub const DEFAULT_MENU_TITLE_RECT: [f32; 4] = [0.0, 180.0, 1920.0, 160.0];
 
 /// How a cell of the inventory and shop grid is filled: a colour or a picture.
@@ -200,6 +204,10 @@ pub struct Theme {
     pub menu_title: bool,
     /// Save and Load: the area the title, page tabs, slot grid and Back button are laid out in.
     pub slots_rect: [f32; 4],
+    /// History: the area the title, the log and the hint are laid out in, and the log's text size
+    /// (the name column and the spacing of the lines follow it).
+    pub history_rect: [f32; 4],
+    pub history_text_size: f32,
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -297,6 +305,8 @@ impl Default for Theme {
             menu_title_rect: DEFAULT_MENU_TITLE_RECT,
             menu_title: true,
             slots_rect: DEFAULT_SLOTS_RECT,
+            history_rect: DEFAULT_HISTORY_RECT,
+            history_text_size: DEFAULT_HISTORY_TEXT_SIZE,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -465,6 +475,10 @@ impl Theme {
                 },
                 "slots_rect" => match rect(Some(MIN_SLOTS_RECT)) {
                     Ok(r) => t.slots_rect = r,
+                    Err(m) => bad(m),
+                },
+                "history_rect" => match rect(Some(MIN_HISTORY_RECT)) {
+                    Ok(r) => t.history_rect = r,
                     Err(m) => bad(m),
                 },
                 "menu_title_rect" => match rect(None) {
@@ -649,10 +663,11 @@ file_keys! {
 
 /// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
 type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
-const NUMBER_KEYS: [NumberKey; 10] = [
+const NUMBER_KEYS: [NumberKey; 11] = [
     ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
     ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
     ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
+    ("history_text_size", 8.0, 200.0, "", |t| &mut t.history_text_size),
     ("text_outline_size", 0.0, 8.0, "", |t| &mut t.text_outline_size),
     ("options_panel_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.options_panel_border),
     ("inventory_cell_gap", 0.0, 100.0, "", |t| &mut t.inventory_cell_gap),
@@ -1036,6 +1051,27 @@ mod tests {
         let (t, problems) = Theme::parse("slots_rect = 0, 0, 759, 900\nslots_rect = 0, 0, 900, 494\nslots_rect = 1200, 0, 900, 600\nslots_rect = x\n");
         assert_eq!(t, Theme::default());
         assert_eq!(problems.len(), 4, "{problems:?}");
+        for (i, p) in problems.iter().enumerate() {
+            assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_history_keys_default_to_the_fixed_layout_and_are_read() {
+        let d = Theme::default();
+        assert_eq!((d.history_rect, d.history_text_size), ([160.0, 40.0, 1600.0, 990.0], 32.0));
+        let (t, problems) = Theme::parse("history_rect = 300, 100, 900, 600\nhistory_text_size = 24\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.history_rect, t.history_text_size), ([300.0, 100.0, 900.0, 600.0], 24.0));
+    }
+
+    #[test]
+    fn bad_history_values_are_reported_with_their_line() {
+        let text = "history_rect = 0, 0, 799, 900\nhistory_rect = 0, 0, 900, 494\nhistory_rect = 1200, 0, 900, 600\n\
+                    history_rect = x\nhistory_text_size = 7\nhistory_text_size = big\n";
+        let (t, problems) = Theme::parse(text);
+        assert_eq!(t, Theme::default());
+        assert_eq!(problems.len(), 6, "{problems:?}");
         for (i, p) in problems.iter().enumerate() {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }

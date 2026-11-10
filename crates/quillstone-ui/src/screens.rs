@@ -3,7 +3,7 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::theme::{DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
+use quillstone_render::theme::{DEFAULT_HISTORY_RECT, DEFAULT_HISTORY_TEXT_SIZE, DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
 use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
@@ -785,14 +785,29 @@ pub fn draw_settings(
 
 // ---- backlog ----------------------------------------------------------------------------
 
-const LOG_TOP: f32 = 130.0;
-const LOG_BOTTOM: f32 = 960.0;
-const LOG_SIZE: f32 = 32.0;
 const LOG_GAP: f32 = 20.0;
-const NAME_X: f32 = 160.0;
 const NAME_W: f32 = 320.0;
-const TEXT_X: f32 = 500.0;
-const TEXT_W: f32 = 1260.0;
+
+fn history_map(r: Rect, t: &Theme) -> Rect {
+    area_map(r, DEFAULT_HISTORY_RECT, t.history_rect)
+}
+
+/// The log's text size, and the factor it makes of the spacing and the name column (1 at the default).
+fn log_size(t: &Theme) -> (f32, f32) {
+    (t.history_text_size, t.history_text_size / DEFAULT_HISTORY_TEXT_SIZE)
+}
+
+/// Where the log's rows may be (130 to 960 at the default), and the name column and the text column
+/// (160 + 320 and 500 + 1260 at the default). The columns follow the text size, not the rect's size,
+/// but the name column stays within 40% of the area's width.
+fn log_area(t: &Theme) -> (f32, f32, [f32; 2], [f32; 2]) {
+    let [x, _, w, _] = t.history_rect;
+    let fs = log_size(t).1;
+    let top = history_map(Rect::new(0.0, 130.0, 0.0, 830.0), t);
+    let name_w = (NAME_W * fs).min(w * 0.4);
+    let text_x = x + name_w + 20.0 * fs;
+    (top.y, top.y + top.h, [x, name_w], [text_x, x + w - text_x])
+}
 
 /// The text of a history row, without styling.
 fn log_body(entry: &Logged) -> String {
@@ -802,25 +817,26 @@ fn log_body(entry: &Logged) -> String {
     }
 }
 
-fn log_line_height() -> f32 {
-    line_height(LOG_SIZE)
+fn log_line_height(t: &Theme) -> f32 {
+    line_height(log_size(t).0)
 }
 
-fn log_entry_height(entry: &Logged) -> f32 {
-    estimate_lines(&log_body(entry), LOG_SIZE, TEXT_W) as f32 * log_line_height()
+fn log_entry_height(entry: &Logged, t: &Theme) -> f32 {
+    estimate_lines(&log_body(entry), log_size(t).0, log_area(t).3[1]) as f32 * log_line_height(t)
 }
 
 /// How far back the backlog can scroll (in entries) without running out: until the oldest
 /// entry is on screen (more would only show it alone on an empty page). 0 if all fit.
-pub fn backlog_max_scroll(entries: &[Logged]) -> usize {
-    let room = LOG_BOTTOM - LOG_TOP;
+pub fn backlog_max_scroll(entries: &[Logged], t: &Theme) -> usize {
+    let (top, bottom, ..) = log_area(t);
+    let (room, gap) = (bottom - top, LOG_GAP * log_size(t).1);
     // Scrolling back by `s` shows the oldest `len - s` entries, bottom-aligned: the oldest is
     // in view once they fit, which is the first `s` for which that prefix is no taller than the room.
     let mut s = 0;
-    let mut total: f32 = entries.iter().map(log_entry_height).sum::<f32>() + LOG_GAP * entries.len().saturating_sub(1) as f32;
+    let mut total: f32 = entries.iter().map(|e| log_entry_height(e, t)).sum::<f32>() + gap * entries.len().saturating_sub(1) as f32;
     while total > room && s + 1 < entries.len() {
         let newest = &entries[entries.len() - 1 - s];
-        total -= log_entry_height(newest) + LOG_GAP;
+        total -= log_entry_height(newest, t) + gap;
         s += 1;
     }
     s
@@ -837,16 +853,19 @@ pub fn draw_backlog(
 ) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
-    text(out, tr.t("History"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
+    let k = area_scale(DEFAULT_HISTORY_RECT, theme.history_rect).2;
+    text(out, tr.t("History"), history_map(Rect::new(160.0, 40.0, 1600.0, 70.0), theme), 48.0 * k, theme.text_color, Align::Center);
     let hint = tr.t("Wheel / Page Up / Page Down to scroll  ·  Esc to close");
-    text(out, hint, Rect::new(0.0, 990.0, VIRTUAL.w, 40.0), 24.0, theme.dim_color, Align::Center);
+    text(out, hint, history_map(Rect::new(160.0, 990.0, 1600.0, 40.0), theme), 24.0 * k, theme.dim_color, Align::Center);
     if entries.is_empty() {
-        text(out, tr.t("Nothing yet."), screen(), 36.0, theme.dim_color, Align::Center);
+        text(out, tr.t("Nothing yet."), history_map(Rect::new(160.0, 0.0, 1600.0, 1080.0), theme), 36.0 * k, theme.dim_color, Align::Center);
         return;
     }
 
-    let line_h = log_line_height();
-    let mut bottom = LOG_BOTTOM;
+    let (log_top, log_bottom, name_col, text_col) = log_area(theme);
+    let (log_size, fs) = log_size(theme);
+    let line_h = log_line_height(theme);
+    let mut bottom = log_bottom;
     for entry in entries.iter().rev().skip(scroll) {
         let (speaker, color, body_color) = match entry {
             Logged::Line(line) => {
@@ -856,21 +875,21 @@ pub fn draw_backlog(
             Logged::Choice(_) => (None, theme.accent_color, theme.accent_color),
         };
         let body = log_body(entry);
-        let h = log_entry_height(entry);
+        let h = log_entry_height(entry, theme);
         let top = bottom - h;
-        if top < LOG_TOP {
+        if top < log_top {
             break; // only whole entries are drawn
         }
         if let Some(name) = speaker {
             // A long name steps down in size until it fits on one row (the row is one line tall).
-            let mut size = LOG_SIZE;
-            while size > 20.0 && estimate_lines(name, size, NAME_W) > 1 {
-                size -= 2.0;
+            let mut size = log_size;
+            while size > 20.0 * fs && estimate_lines(name, size, name_col[1]) > 1 {
+                size -= 2.0 * fs;
             }
-            text(out, name, Rect::new(NAME_X, top, NAME_W, line_h), size, color, Align::Left);
+            text(out, name, Rect::new(name_col[0], top, name_col[1], line_h), size, color, Align::Left);
         }
-        text(out, body, Rect::new(TEXT_X, top, TEXT_W, h), LOG_SIZE, body_color, Align::Left);
-        bottom = top - LOG_GAP;
+        text(out, body, Rect::new(text_col[0], top, text_col[1], h), log_size, body_color, Align::Left);
+        bottom = top - LOG_GAP * fs;
     }
 }
 
@@ -893,19 +912,25 @@ const SLOT_H: f32 = 330.0;
 /// Slots per row on the save and load screens.
 pub const SLOT_COLUMNS: usize = 3;
 
-/// The scale from the area the slot screens' layout was made for ([`DEFAULT_SLOTS_RECT`]) to the theme's
-/// `slots_rect`: across, down, and for text the smaller of the two (1, 1, 1 at the default).
-fn slots_scale(t: &Theme) -> (f32, f32, f32) {
-    let [_, _, w, h] = t.slots_rect;
-    let (kx, ky) = (w / DEFAULT_SLOTS_RECT[2], h / DEFAULT_SLOTS_RECT[3]);
+/// The scale from the area a screen's layout was made for to the theme's rect for it: across, down, and
+/// for text the smaller of the two (1, 1, 1 at the default).
+fn area_scale(made_for: [f32; 4], rect: [f32; 4]) -> (f32, f32, f32) {
+    let (kx, ky) = (rect[2] / made_for[2], rect[3] / made_for[3]);
     (kx, ky, kx.min(ky))
 }
 
-/// A rect of the default layout, moved and scaled into the theme's `slots_rect`.
+/// A rect of the default layout, moved and scaled into the theme's rect.
+fn area_map(r: Rect, made_for: [f32; 4], rect: [f32; 4]) -> Rect {
+    let (kx, ky, _) = area_scale(made_for, rect);
+    Rect::new(rect[0] + (r.x - made_for[0]) * kx, rect[1] + (r.y - made_for[1]) * ky, r.w * kx, r.h * ky)
+}
+
+fn slots_scale(t: &Theme) -> (f32, f32, f32) {
+    area_scale(DEFAULT_SLOTS_RECT, t.slots_rect)
+}
+
 fn slots_map(r: Rect, t: &Theme) -> Rect {
-    let (kx, ky, _) = slots_scale(t);
-    let [x, y, ..] = t.slots_rect;
-    Rect::new(x + (r.x - DEFAULT_SLOTS_RECT[0]) * kx, y + (r.y - DEFAULT_SLOTS_RECT[1]) * ky, r.w * kx, r.h * ky)
+    area_map(r, DEFAULT_SLOTS_RECT, t.slots_rect)
 }
 
 pub fn tab_rect(i: usize, count: usize, t: &Theme) -> Rect {
@@ -1640,7 +1665,75 @@ mod tests {
         let mut out = Vec::new();
         draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 1, &|_| None);
         assert!(!texts(&out).contains(&"three".to_string()));
-        assert_eq!(backlog_max_scroll(&entries), 0, "all of it fits: nothing to scroll to");
+        assert_eq!(backlog_max_scroll(&entries, &Theme::default()), 0, "all of it fits: nothing to scroll to");
+    }
+
+    /// The rect of the text drawn as `what`, and its size.
+    fn drawn(out: &[Draw], what: &str) -> (Rect, f32) {
+        out.iter()
+            .find_map(|d| match d {
+                Draw::Text { text, rect, size, .. } if text == what => Some((*rect, *size)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn the_default_theme_keeps_the_history_screen_where_it_always_was() {
+        let mut entry = line("one");
+        if let Logged::Line(l) = &mut entry {
+            l.speaker = Some("Mira".into());
+        }
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[entry], 0, &|_| None);
+        assert_eq!(drawn(&out, "History"), (Rect::new(160.0, 40.0, 1600.0, 70.0), 48.0));
+        let hint = "Wheel / Page Up / Page Down to scroll  ·  Esc to close";
+        assert_eq!(drawn(&out, hint), (Rect::new(160.0, 990.0, 1600.0, 40.0), 24.0));
+        assert_eq!(drawn(&out, "Mira"), (Rect::new(160.0, 917.0, 320.0, 43.0), 32.0));
+        assert_eq!(drawn(&out, "one"), (Rect::new(500.0, 917.0, 1260.0, 43.0), 32.0));
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None);
+        assert_eq!(drawn(&out, "Nothing yet."), (Rect::new(160.0, 0.0, 1600.0, 1080.0), 36.0));
+    }
+
+    #[test]
+    fn a_history_rect_moves_and_scales_the_screen_and_the_scrolling_follows() {
+        let t = Theme::parse("history_rect = 400, 100, 800, 495\n").0; // half the default size
+        let mut entry = line("one");
+        if let Logged::Line(l) = &mut entry {
+            l.speaker = Some("Mira".into());
+        }
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &t, Tr::default(), &[entry], 0, &|_| None);
+        assert_eq!(drawn(&out, "History"), (Rect::new(400.0, 100.0, 800.0, 35.0), 24.0));
+        // 130..960 becomes 145..560; the one row is 43 high, as the text size is the same.
+        assert_eq!(drawn(&out, "Mira"), (Rect::new(400.0, 517.0, 320.0, 43.0), 32.0));
+        assert_eq!(drawn(&out, "one"), (Rect::new(740.0, 517.0, 460.0, 43.0), 32.0));
+        let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
+        let (full, half) = (backlog_max_scroll(&entries, &Theme::default()), backlog_max_scroll(&entries, &t));
+        assert!(half > full, "fewer lines fit in a smaller rect: {half} > {full}");
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None);
+        let rows: Vec<Rect> = out.iter().filter_map(|d| match d {
+            Draw::Text { text, rect, .. } if text.starts_with("line ") => Some(*rect),
+            _ => None,
+        }).collect();
+        assert!(rows.len() < 12 && rows.iter().all(|r| r.y >= 145.0 && r.y + r.h <= 560.0), "{}", rows.len());
+    }
+
+    #[test]
+    fn the_history_text_size_scales_the_rows_the_gaps_and_the_name_column() {
+        let t = Theme::parse("history_text_size = 64\n").0;
+        let mut entries = vec![line("one"), line("two")];
+        if let Logged::Line(l) = &mut entries[0] {
+            l.speaker = Some("Mira".into());
+        }
+        let mut out = Vec::new();
+        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None);
+        let (one, two) = (drawn(&out, "one"), drawn(&out, "two"));
+        assert_eq!((one.1, one.0.h, one.0.x), (64.0, (64.0f32 * 1.35).round(), 160.0 + 640.0 + 40.0));
+        assert_eq!(one.0.y + one.0.h + 40.0, two.0.y, "the gap doubles too");
+        assert_eq!(drawn(&out, "Mira").0.w, 640.0);
     }
 
     #[test]
@@ -1652,7 +1745,7 @@ mod tests {
             Draw::Text { text, rect, .. } if text == "a\nb\nc" => Some(rect.h),
             _ => None,
         });
-        let one = (LOG_SIZE * 1.35).round();
+        let one = (32.0f32 * 1.35).round();
         assert_eq!(h, Some(3.0 * one), "three lines of room");
     }
 
@@ -1664,7 +1757,7 @@ mod tests {
         let shown = texts(&out).iter().filter(|t| t.starts_with("line ")).count();
         assert!(shown > 5 && shown < 30, "{shown}");
         assert!(out.iter().all(|d| match d {
-            Draw::Text { rect, text, .. } if text.starts_with("line ") => rect.y >= LOG_TOP,
+            Draw::Text { rect, text, .. } if text.starts_with("line ") => rect.y >= 130.0,
             _ => true,
         }));
     }
@@ -1672,7 +1765,7 @@ mod tests {
     #[test]
     fn scrolling_stops_when_the_oldest_entry_is_on_screen() {
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
-        let max = backlog_max_scroll(&entries);
+        let max = backlog_max_scroll(&entries, &Theme::default());
         assert!(max > 50 && max < 99, "{max}: not all the way to a lone entry");
         let shown = |scroll: usize| {
             let mut out = Vec::new();
@@ -1683,7 +1776,7 @@ mod tests {
         draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, max, &|_| None);
         assert!(texts(&out).contains(&"line 0".to_string()), "the oldest line is there at the end");
         assert!(shown(max) > 5, "and so is a page of others");
-        assert_eq!(backlog_max_scroll(&entries[..3]), 0, "a short history has nothing to scroll");
+        assert_eq!(backlog_max_scroll(&entries[..3], &Theme::default()), 0, "a short history has nothing to scroll");
     }
 
     #[test]
@@ -1704,7 +1797,7 @@ mod tests {
         // Too long for one row even when smaller, so it wraps: the renderer may shrink it to 60% to fit.
         let rows = quillstone_render::estimate_lines("Professor Bartholomew Fitzgerald-Montgomery", size, rect.w);
         assert!(rows as f32 * (size * 0.6 * 1.35).round() <= rect.h, "{rows} rows of {size}px fit {}px", rect.h);
-        assert!((20.0..LOG_SIZE).contains(&size));
+        assert!((20.0..32.0).contains(&size));
     }
 
     #[test]
