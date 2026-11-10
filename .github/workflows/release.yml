@@ -83,7 +83,7 @@ jobs:
           echo "FFMPEG_DIR=$here/ffmpeg-slim" >> "$GITHUB_ENV"
 
       - name: Test the workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast # every failure in one run
 
       - name: Build the command line tool
         run: cargo build --release -p quillstone

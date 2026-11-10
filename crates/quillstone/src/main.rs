@@ -1662,7 +1662,7 @@ mod tests {
         let script = "# m\n::hotspots{ground=assets/g.png hover=assets/gh.png}\n- [One](#m){rect=0,0,.5,.5 hover=assets/oh.png}\n::\n";
         let program = parse(script).unwrap();
         let found = in_dir(&[], |dir| picture_findings(&program, &dir.join("s.quill.md"), dir, &hotspot_images(&program)));
-        let named: Vec<(&str, &str)> = found.iter().map(|(_, m)| (m.split(':').nth(1).unwrap(), m.split('`').nth(1).unwrap())).collect();
+        let named: Vec<(&str, &str)> = found.iter().map(|(_, m)| (m.split(".quill.md:").nth(1).unwrap().split(':').next().unwrap(), m.split('`').nth(1).unwrap())).collect();
         assert_eq!(named, [("3", "assets/oh.png"), ("2", "assets/g.png"), ("2", "assets/gh.png")], "{found:?}");
         assert!(found[0].1.contains("hotspot image") && found[1].1.contains("imagemap picture") && found[2].1.contains("imagemap picture"), "{found:?}");
         assert!(found.iter().all(|(error, _)| *error), "{found:?}");
@@ -1678,7 +1678,7 @@ mod tests {
         let lines: Vec<(usize, &str)> = found
             .iter()
             .map(|(_, m)| {
-                let line: usize = m.split(':').nth(1).unwrap().parse().unwrap();
+                let line: usize = m.split(".quill.md:").nth(1).unwrap().split(':').next().unwrap().parse().unwrap();
                 (line, m.split('`').nth(1).unwrap())
             })
             .collect();
