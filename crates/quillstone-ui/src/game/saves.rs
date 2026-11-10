@@ -45,6 +45,12 @@ impl Game<'_> {
         self.notice = Some((message.into(), NOTICE_SECONDS));
     }
 
+    /// `ask` with one of the engine's own questions, in the language in use.
+    pub(super) fn ask_ui(&mut self, message: &str, then: Then) {
+        let message = self.ui().t(message).to_string();
+        self.ask(&message, then);
+    }
+
     pub(super) fn ask(&mut self, message: &str, then: Then) {
         self.stop_skip();
         self.confirm = Some(Confirm { message: message.to_string(), then });
@@ -89,7 +95,7 @@ impl Game<'_> {
 
     pub(super) fn open_slots(&mut self, screen: Screen) {
         if self.replay.is_some() {
-            return self.notify(super::replay::NOT_IN_REPLAY);
+            return self.notify_ui(super::replay::NOT_IN_REPLAY, &[]);
         }
         self.stop_skip();
         self.cover_bag();
@@ -178,12 +184,12 @@ impl Game<'_> {
         let slot = Slot { page: self.page, index };
         let filled = self.slots.get(index).and_then(Option::as_ref);
         match self.screen {
-            Screen::Save if filled.is_some() => self.ask("Overwrite this save?", Then::Save(slot)),
+            Screen::Save if filled.is_some() => self.ask_ui("Overwrite this save?", Then::Save(slot)),
             Screen::Save => {
                 self.save_to(slot);
             }
             Screen::Load if filled.is_some_and(|info| info.scene.is_some()) => {
-                self.ask("Load this save?\nUnsaved progress will be lost.", Then::Load(slot));
+                self.ask_ui("Load this save?\nUnsaved progress will be lost.", Then::Load(slot));
             }
             _ => {}
         }
@@ -208,7 +214,7 @@ impl Game<'_> {
                 true
             }
             Err(e) => {
-                self.notify(format!("Could not save: {e}"));
+                self.notify_ui("Could not save: {error}", &[("error", &e)]);
                 false
             }
         }
@@ -230,29 +236,29 @@ impl Game<'_> {
                 self.screen = Screen::Story;
                 self.show(&cmds); // may open the screen the save was waiting at
                 self.auto = false;
-                self.notify("Loaded");
+                self.notify_ui("Loaded", &[]);
             }
-            Err(e) => self.notify(format!("Could not load: {e}")),
+            Err(e) => self.notify_ui("Could not load: {error}", &[("error", &e)]),
         }
     }
 
     pub(super) fn quick_save(&mut self) {
         if self.replay.is_some() {
-            return self.notify(super::replay::NOT_IN_REPLAY);
+            return self.notify_ui(super::replay::NOT_IN_REPLAY, &[]);
         }
         let slot = next_rotating_slot(&*self.storage, Page::Quick);
         if self.save_to(slot) {
-            self.notify("Quick saved");
+            self.notify_ui("Quick saved", &[]);
         }
     }
 
     pub(super) fn quick_load(&mut self) {
         if self.replay.is_some() {
-            return self.notify(super::replay::NOT_IN_REPLAY);
+            return self.notify_ui(super::replay::NOT_IN_REPLAY, &[]);
         }
         match newest_slot(&*self.storage, Page::Quick) {
-            Some(slot) => self.ask("Load the quick save?\nUnsaved progress will be lost.", Then::Load(slot)),
-            None => self.notify("No quick save yet"),
+            Some(slot) => self.ask_ui("Load the quick save?\nUnsaved progress will be lost.", Then::Load(slot)),
+            None => self.notify_ui("No quick save yet", &[]),
         }
     }
 }

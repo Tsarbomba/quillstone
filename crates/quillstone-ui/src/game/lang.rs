@@ -6,10 +6,13 @@
 
 use std::collections::BTreeMap;
 
+use std::fmt::Display;
+
 use quillstone_runtime::{Cmd, Logged};
 use quillstone_script::{Catalog, Language};
 
 use super::Game;
+use crate::texts::Tr;
 
 impl<'p> Game<'p> {
     /// The translations by language code (`lang/<code>.txt`, read by the frontend). A language
@@ -55,6 +58,17 @@ impl<'p> Game<'p> {
     /// `text` as the screens show it: translated when the language in use has it.
     pub(super) fn tr<'a>(&'a self, text: &'a str) -> &'a str {
         self.catalog().map_or(text, |c| c.text(None, text))
+    }
+
+    /// The engine's own texts (buttons, labels, messages) in the language in use.
+    pub(super) fn ui(&self) -> Tr<'_> {
+        Tr::new(self.catalog())
+    }
+
+    /// [`Game::notify`] with one of the engine's own texts, in the language in use.
+    pub(super) fn notify_ui(&mut self, message: &str, args: &[(&str, &dyn Display)]) {
+        let message = self.ui().f(message, args);
+        self.notify(message);
     }
 
     /// `cmds` with their texts in the language in use (`None`: nothing to translate).

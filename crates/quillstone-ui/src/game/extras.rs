@@ -73,7 +73,7 @@ impl Game<'_> {
         }
         match self.storage.write(PERSISTENT_FILE, &write_persistent(self.session.persistent())) {
             Ok(()) => self.persistent_dirty = false,
-            Err(e) => self.notify(format!("Could not save what was unlocked: {e}")),
+            Err(e) => self.notify_ui("Could not save what was unlocked: {error}", &[("error", &e)]),
         }
     }
 
@@ -148,7 +148,7 @@ impl Game<'_> {
     pub(super) fn draw_extras_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
         let theme = self.view.theme();
         if let Some(i) = self.extras.viewing {
-            return ex::draw_picture(out, theme, &self.program.gallery[i], image_size);
+            return ex::draw_picture(out, theme, self.ui(), &self.program.gallery[i], image_size);
         }
         let (tabs, entries, pages) = (self.extras_tabs(), self.extras_entries(), self.extras_pages());
         let per = ex::per_page(self.extras.tab);
@@ -177,7 +177,7 @@ impl Game<'_> {
             playing,
             hover,
         };
-        ex::draw_extras(out, theme, &shown, image_size);
+        ex::draw_extras(out, theme, self.ui(), &shown, image_size);
     }
 
     pub(super) fn extras_event(&mut self, event: Event) {
@@ -248,7 +248,7 @@ impl Game<'_> {
         if self.extras.tab == Tab::Scenes {
             let Some(replay) = self.program.replays.get(index) else { return };
             if !self.unlock_all && !self.session.replay_unlocked(&replay.label) {
-                return self.notify("Not unlocked yet");
+                return self.notify_ui("Not unlocked yet", &[]);
             }
             let label = replay.label.clone();
             self.start_replay(&label);
@@ -256,7 +256,7 @@ impl Game<'_> {
         }
         let Some(src) = self.extras_list().get(index).cloned() else { return };
         if !self.unlock_all && !self.session.unlocked(&src) {
-            return self.notify("Not unlocked yet");
+            return self.notify_ui("Not unlocked yet", &[]);
         }
         match self.extras.tab {
             Tab::Gallery => self.extras.viewing = Some(index),

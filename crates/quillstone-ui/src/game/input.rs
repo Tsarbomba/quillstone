@@ -114,7 +114,7 @@ impl Game<'_> {
             can_confirm: self.can_confirm_input(),
             hover_ok,
         };
-        input::draw_input(out, self.view.theme(), &screen, image_size);
+        input::draw_input(out, self.view.theme(), self.ui(), &screen, image_size);
     }
 
     pub(super) fn input_event(&mut self, event: Event) {

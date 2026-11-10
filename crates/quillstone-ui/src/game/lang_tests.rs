@@ -255,3 +255,46 @@ fn switching_language_keeps_the_cutscene_the_inline_image_and_the_end() {
     switch(&mut g, Key::Right);
     assert!(g.view().finished, "the end screen is still the end");
 }
+
+const SV_UI: &str = "\
+> Settings\n= Inställningar\n\n> Text speed\n= Textfart\n\n> {n} chars/s\n= {n} tecken/s\n\n> Main menu\n= Huvudmeny\n\n\
+> Save\n= Spara\n\n> Quit the game?\n= Avsluta spelet?\n\n> Yes\n= Ja\n\n> No\n=\n\n> Loaded\n= Laddad\n";
+
+fn ui_game<'p>(p: &'p Program) -> Game<'p> {
+    let mut g = Game::new(p, Settings { text_speed: 40.0, ..instant() }, Box::new(crate::MemoryStorage::default()));
+    g.set_translations([("sv".to_string(), Catalog::parse(&format!("{SV}\n{SV_UI}")).unwrap())].into());
+    g.start_story();
+    g
+}
+
+#[test]
+fn the_engines_screens_are_drawn_in_the_language_in_use_and_switch_back_with_it() {
+    let p = parse(&story()).unwrap();
+    let mut g = ui_game(&p);
+    g.open_settings();
+    let english = texts(&g);
+    for want in ["Settings", "Text speed", "40 chars/s", "Main menu", "Save"] {
+        assert!(english.contains(&want.to_string()), "{want}: {english:?}");
+    }
+    for _ in 0..9 {
+        key(&mut g, Key::Down);
+    }
+    key(&mut g, Key::Right);
+    let swedish = texts(&g);
+    for want in ["Inställningar", "Textfart", "40 tecken/s", "Huvudmeny", "Spara"] {
+        assert!(swedish.contains(&want.to_string()), "{want}: {swedish:?}");
+    }
+    assert!(swedish.contains(&"Quit".to_string()), "a text with no entry stays English: {swedish:?}");
+    g.ask_ui("Quit the game?", Then::Quit);
+    let asked = texts(&g);
+    assert!(asked.contains(&"Avsluta spelet?".to_string()) && asked.contains(&"Ja".to_string()), "{asked:?}");
+    assert!(asked.contains(&"No".to_string()), "an empty translation shows the original: {asked:?}");
+    key(&mut g, Key::Escape);
+    g.notify_ui("Loaded", &[]);
+    assert!(texts(&g).contains(&"Laddad".to_string()));
+    key(&mut g, Key::Escape);
+    switch(&mut g, Key::Left);
+    g.open_settings();
+    let back = texts(&g);
+    assert!(back.contains(&"Settings".to_string()) && back.contains(&"40 chars/s".to_string()), "{back:?}");
+}

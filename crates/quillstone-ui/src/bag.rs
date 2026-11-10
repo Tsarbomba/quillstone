@@ -10,6 +10,7 @@ use quillstone_render::{place, Align, CellStyle, Draw, Rect, Size, Theme, VIRTUA
 use quillstone_script::Fit;
 
 use crate::input::{screen, text};
+use crate::texts::Tr;
 
 const MARGIN: f32 = 40.0;
 const GRID_TOP: f32 = 150.0;
@@ -231,7 +232,7 @@ fn fill(out: &mut Vec<Draw>, style: Option<&CellStyle>, fallback: [f32; 4], rect
     }
 }
 
-pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     let name_color = theme.inventory_name_color.unwrap_or(theme.text_color);
     let price_color = theme.inventory_price_color.unwrap_or(theme.accent_color);
@@ -300,7 +301,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
         text(out, crate::screens::one_row(&cell.name, size, name_rect.w), name_rect, size, name_col, Align::Center);
         let line = Rect::new(r.x + 8.0, name_rect.y + 38.0, r.w - 16.0, 32.0);
         match (cell.state, &cell.price) {
-            (CellState::Owned, _) => text(out, "Owned", line, 26.0, theme.accent_color, Align::Center),
+            (CellState::Owned, _) => text(out, tr.t("Owned"), line, 26.0, theme.accent_color, Align::Center),
             (CellState::Disabled, Some(p)) => text(out, p.clone(), line, 26.0, dim, Align::Center),
             (_, Some(p)) => text(out, p.clone(), line, fit_size(p, 26.0, line.w), price_color, Align::Center),
             _ => {}
@@ -325,7 +326,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
             out.push(Draw::Rect { rect: r, color: lit(s.hover == Some(h)) });
             text(out, arrow, r, 44.0, theme.text_color, Align::Center);
         }
-        let label = format!("Page {} of {}", s.page + 1, s.pages);
+        let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
         text(out, label, page_label_rect(theme), 26.0, theme.dim_color, Align::Center);
     }
     if let Some(enabled) = s.use_button {
@@ -333,7 +334,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, s: &BagScreen, image_size: &
         let [br, bg, bb, ba] = theme.button_color;
         let (fill, label) = if enabled { (lit(s.hover == Some(Hit::Use)), theme.text_color) } else { ([br, bg, bb, ba * 0.45], theme.dim_color) };
         out.push(Draw::Rect { rect: r, color: fill });
-        text(out, "Use", r, 34.0, label, Align::Center);
+        text(out, tr.t("Use"), r, 34.0, label, Align::Center);
     }
     let close = close_rect(theme);
     out.push(Draw::Rect { rect: close, color: lit(s.hover == Some(Hit::Close)) });
@@ -397,7 +398,7 @@ mod tests {
                         empty: "Nothing",
                     };
                     let mut out = Vec::new();
-                    draw_bag(&mut out, &t, &screen, &|_| Some(Size::new(64.0, 64.0)));
+                    draw_bag(&mut out, &t, Tr::default(), &screen, &|_| Some(Size::new(64.0, 64.0)));
                     for d in &out {
                         match d {
                             Draw::Rect { rect, .. } | Draw::Text { rect, .. } => assert!(inside_screen(*rect), "{rect:?} for {t:?}"),
@@ -430,7 +431,7 @@ mod tests {
             detail: None, close_label: "Close", empty: "Nothing",
         };
         let mut out = Vec::new();
-        draw_bag(&mut out, &t, &screen, &|_| Some(Size::new(64.0, 64.0)));
+        draw_bag(&mut out, &t, Tr::default(), &screen, &|_| Some(Size::new(64.0, 64.0)));
         let cell = cell_rect(&t, 0);
         let within = |r: Rect| r.x >= cell.x - 1e-3 && r.y >= cell.y - 1e-3 && r.x + r.w <= cell.x + cell.w + 1e-3 && r.y + r.h <= cell.y + cell.h + 1e-3;
         let mut seen = 0;
@@ -518,7 +519,7 @@ mod tests {
             empty: "",
         };
         let mut out = Vec::new();
-        draw_bag(&mut out, &t, &screen, &|_| Some(Size::new(10.0, 10.0)));
+        draw_bag(&mut out, &t, Tr::default(), &screen, &|_| Some(Size::new(10.0, 10.0)));
         let images: Vec<&str> = out.iter().filter_map(|d| if let Draw::Image { src, .. } = d { Some(src.as_str()) } else { None }).collect();
         assert_eq!(&images[..2], ["bg.png", "p.png"], "background, then the panel");
         assert!(images.contains(&"o.png") && images.contains(&"a.png") && images.contains(&"c.png"));
@@ -529,7 +530,7 @@ mod tests {
         assert!(out.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == [17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 1.0])));
         // a picture that isn't loaded yet falls back to the plain look
         let mut out = Vec::new();
-        draw_bag(&mut out, &t, &screen, &|_| None);
+        draw_bag(&mut out, &t, Tr::default(), &screen, &|_| None);
         assert!(out.iter().all(|d| !matches!(d, Draw::Image { .. })));
         assert!(matches!(&out[0], Draw::Rect { color, .. } if *color == t.overlay_color));
     }
@@ -545,7 +546,7 @@ mod tests {
                 detail: None, close_label: "Close", empty: "",
             };
             let mut out = Vec::new();
-            draw_bag(&mut out, &t, &screen, &|_| None);
+            draw_bag(&mut out, &t, Tr::default(), &screen, &|_| None);
             out.iter().find_map(|d| match d {
                 Draw::Rect { rect, color } if *rect == u => Some(color[3]),
                 _ => None,
@@ -572,7 +573,7 @@ mod tests {
             title: "T", background: None, money: None, cells: &shown, page: 0, pages: 1, focus: None, hover: None, use_button: None,
             detail: None, close_label: "Close", empty: "Nothing",
         };
-        draw_bag(&mut out, &t, &screen, &|_| None);
+        draw_bag(&mut out, &t, Tr::default(), &screen, &|_| None);
         let (text, rect, size) = out
             .iter()
             .find_map(|d| match d {

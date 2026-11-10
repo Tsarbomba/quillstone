@@ -12,6 +12,7 @@ use quillstone_script::{KeyPress, TimingBar};
 use crate::input::{picture_or_rect, rich_text, screen, text};
 use crate::settings::*;
 use crate::slots::{thumbnail, Page, SlotInfo};
+use crate::texts::Tr;
 
 const FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.06];
 const TRACK: [f32; 4] = [0.35, 0.35, 0.42, 1.0];
@@ -203,6 +204,7 @@ pub struct QuickLook {
 pub fn draw_quick(
     out: &mut Vec<Draw>,
     theme: &Theme,
+    tr: Tr,
     layout: &QuickLayout,
     look: &QuickLook,
     size_of: &dyn Fn(&str) -> Option<Size>,
@@ -247,6 +249,7 @@ pub fn draw_quick(
             QuickButton::Items => "Items",
             QuickButton::Journal => "Journal",
         };
+        let label = tr.t(label);
         let color = if on {
             theme.accent_color
         } else if hovered {
@@ -259,12 +262,12 @@ pub fn draw_quick(
 }
 
 /// The badge text for the modes that run: "AUTO", "SKIP »" or both; `None` when neither does.
-pub fn mode_badge_text(auto: bool, skipping: bool) -> Option<String> {
+pub fn mode_badge_text(tr: Tr, auto: bool, skipping: bool) -> Option<String> {
     match (auto, skipping) {
         (false, false) => None,
-        (true, false) => Some("AUTO".into()),
-        (false, true) => Some("SKIP »".into()),
-        (true, true) => Some("AUTO  SKIP »".into()),
+        (true, false) => Some(tr.t("AUTO").into()),
+        (false, true) => Some(tr.t("SKIP »").into()),
+        (true, true) => Some(format!("{}  {}", tr.t("AUTO"), tr.t("SKIP »"))),
     }
 }
 
@@ -276,8 +279,8 @@ pub fn mode_badge_rect(label: &str) -> Rect {
 
 /// A small badge in the corner while auto-forward and/or skip is on, wherever the
 /// quick menu is or is not (it only tints its labels).
-pub fn draw_mode_badge(out: &mut Vec<Draw>, theme: &Theme, auto: bool, skipping: bool) {
-    let Some(label) = mode_badge_text(auto, skipping) else { return };
+pub fn draw_mode_badge(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, auto: bool, skipping: bool) {
+    let Some(label) = mode_badge_text(tr, auto, skipping) else { return };
     let r = mode_badge_rect(&label);
     out.push(Draw::Rect { rect: r, color: [0.0, 0.0, 0.0, 0.6] });
     text(out, label, r, 26.0, theme.text_color, Align::Center);
@@ -396,9 +399,11 @@ fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn
 /// The main menu: the theme's background picture (or black), its overlay picture, the title, buttons.
 /// `focus` is the button the keyboard is on.
 /// An empty `title` and no `buttons` draw just the menu's background (what an overlay opened from the menu leaves).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_main_menu(
     out: &mut Vec<Draw>,
     theme: &Theme,
+    tr: Tr,
     title: &str,
     buttons: &[MenuButton],
     focus: Option<usize>,
@@ -423,7 +428,7 @@ pub fn draw_main_menu(
         let r = menu_button_rect(i);
         let lit = hover == Some(b) || focus == Some(i);
         out.push(Draw::Rect { rect: r, color: if lit { theme.button_hover_color } else { theme.button_color } });
-        text(out, label, r, 40.0, theme.text_color, Align::Center);
+        text(out, tr.t(label), r, 40.0, theme.text_color, Align::Center);
     }
 }
 
@@ -623,8 +628,8 @@ pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
     }
 }
 
-fn row_label(row: Row) -> &'static str {
-    match row {
+fn row_label<'a>(tr: Tr<'a>, row: Row) -> &'a str {
+    tr.t(match row {
         Row::TextSpeed => "Text speed",
         Row::TextSize => "Text size",
         Row::AutoDelay => "Auto-forward delay",
@@ -635,29 +640,30 @@ fn row_label(row: Row) -> &'static str {
         Row::Fullscreen => "Fullscreen",
         Row::QuickMenu => "Quick menu",
         Row::Language => "Language",
-    }
+    })
 }
 
 /// The text of a row's value; `language` is the name of the language in use (for the Language row).
-pub fn row_value(s: &Settings, row: Row, language: &str) -> String {
+pub fn row_value(tr: Tr, s: &Settings, row: Row, language: &str) -> String {
     match row {
-        Row::TextSpeed if s.text_speed <= 0.0 => "Instant".into(),
-        Row::TextSpeed => format!("{} chars/s", s.text_speed.round()),
+        Row::TextSpeed if s.text_speed <= 0.0 => tr.t("Instant").into(),
+        Row::TextSpeed => tr.f("{n} chars/s", &[("n", &s.text_speed.round())]),
         Row::TextSize => format!("{}%", (s.text_scale * 100.0).round()),
         Row::AutoDelay => format!("{:.1} s", s.auto_delay),
         Row::Music => format!("{}%", (s.music_volume * 100.0).round()),
         Row::Sfx => format!("{}%", (s.sfx_volume * 100.0).round()),
         Row::Voice => format!("{}%", (s.voice_volume * 100.0).round()),
-        Row::SkipUnread => if s.skip_unread { "On" } else { "Off" }.into(),
-        Row::Fullscreen => if s.fullscreen { "On" } else { "Off" }.into(),
+        Row::SkipUnread => tr.t(if s.skip_unread { "On" } else { "Off" }).into(),
+        Row::Fullscreen => tr.t(if s.fullscreen { "On" } else { "Off" }).into(),
         Row::Language => language.to_string(),
-        Row::QuickMenu => match s.quick_menu {
-            QuickMenuSetting::Default => "Game default",
-            QuickMenuSetting::Visible => "Always",
-            QuickMenuSetting::Hover => "On hover",
-            QuickMenuSetting::Hidden => "Hidden",
-        }
-        .into(),
+        Row::QuickMenu => tr
+            .t(match s.quick_menu {
+                QuickMenuSetting::Default => "Game default",
+                QuickMenuSetting::Visible => "Always",
+                QuickMenuSetting::Hover => "On hover",
+                QuickMenuSetting::Hidden => "Hidden",
+            })
+            .into(),
     }
 }
 
@@ -699,6 +705,7 @@ pub(crate) fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
 pub fn draw_settings(
     out: &mut Vec<Draw>,
     theme: &Theme,
+    tr: Tr,
     s: &Settings,
     in_story: bool,
     focus: usize,
@@ -723,7 +730,7 @@ pub fn draw_settings(
     if let Some((src, size)) = loaded(&theme.options_panel_image, image_size) {
         nine_slice(out, src, size, p, theme.options_panel_border);
     }
-    text(out, "Settings", Rect::new(p.x, p.y, p.w, 80.0 * k), 56.0 * k, theme.text_color, Align::Center);
+    text(out, tr.t("Settings"), Rect::new(p.x, p.y, p.w, 80.0 * k), 56.0 * k, theme.text_color, Align::Center);
 
     let n = rows.len();
     for (i, &row) in rows.iter().enumerate() {
@@ -732,7 +739,7 @@ pub fn draw_settings(
             out.push(Draw::Rect { rect: r, color: FOCUS });
         }
         let label_w = track_x(theme) - r.x - 30.0 * k - 10.0;
-        text(out, row_label(row), Rect::new(r.x + 30.0 * k, r.y + 6.0 * k, label_w, 48.0 * k), 36.0 * k, theme.text_color, Align::Left);
+        text(out, row_label(tr, row), Rect::new(r.x + 30.0 * k, r.y + 6.0 * k, label_w, 48.0 * k), 36.0 * k, theme.text_color, Align::Left);
         match row_slider(s, row) {
             Some(pos) => {
                 let t = track_rect(i, n, theme);
@@ -741,14 +748,14 @@ pub fn draw_settings(
                 out.push(Draw::Rect { rect: Rect::new(t.x, t.y, t.w * pos, t.h), color: fill });
                 out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0 * k, r.y + 10.0 * k, 20.0 * k, 40.0 * k), color: theme.text_color });
                 let value = value_rect(i, n, theme);
-                let (shown, size) = fit_value(&row_value(s, row, language), 32.0 * k, value.w);
+                let (shown, size) = fit_value(&row_value(tr, s, row, language), 32.0 * k, value.w);
                 text(out, shown, value, size, theme.dim_color, Align::Left);
             }
             None => {
                 let c = control_rect(i, rows, theme);
                 let color = if hover == Some(SettingsHit::Control(i)) { theme.button_hover_color } else { theme.button_color };
                 out.push(Draw::Rect { rect: c, color });
-                text(out, row_value(s, row, language), c, 32.0 * k, theme.text_color, Align::Center);
+                text(out, row_value(tr, s, row, language), c, 32.0 * k, theme.text_color, Align::Center);
             }
         }
     }
@@ -762,9 +769,9 @@ pub fn draw_settings(
         let r = button_rect(b, in_story, n, theme);
         let color = if hover == Some(SettingsHit::Button(b)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, label, r, 36.0 * k, theme.text_color, Align::Center);
+        text(out, tr.t(label), r, 36.0 * k, theme.text_color, Align::Center);
     }
-    let hint = "Esc to close  ·  Up/Down to pick  ·  Left/Right to adjust";
+    let hint = tr.t("Esc to close  ·  Up/Down to pick  ·  Left/Right to adjust");
     text(out, hint, Rect::new(p.x, p.y + p.h - 40.0 * k, p.w, 40.0 * k), 24.0 * k, theme.dim_color, Align::Center);
 }
 
@@ -815,17 +822,18 @@ pub fn backlog_max_scroll(entries: &[Logged]) -> usize {
 pub fn draw_backlog(
     out: &mut Vec<Draw>,
     theme: &Theme,
+    tr: Tr,
     entries: &[Logged],
     scroll: usize,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
-    text(out, "History", Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
-    let hint = "Wheel / Page Up / Page Down to scroll  ·  Esc to close";
+    text(out, tr.t("History"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
+    let hint = tr.t("Wheel / Page Up / Page Down to scroll  ·  Esc to close");
     text(out, hint, Rect::new(0.0, 990.0, VIRTUAL.w, 40.0), 24.0, theme.dim_color, Align::Center);
     if entries.is_empty() {
-        text(out, "Nothing yet.", screen(), 36.0, theme.dim_color, Align::Center);
+        text(out, tr.t("Nothing yet."), screen(), 36.0, theme.dim_color, Align::Center);
         return;
     }
 
@@ -908,10 +916,10 @@ pub fn slots_at(x: f32, y: f32, tabs: &[Page], slot_count: usize) -> Option<Slot
     slots_back_rect().contains(x, y).then_some(SlotHit::Back)
 }
 
-fn page_label(page: Page) -> String {
+fn page_label(tr: Tr, page: Page) -> String {
     match page {
-        Page::Auto => "Auto".into(),
-        Page::Quick => "Quick".into(),
+        Page::Auto => tr.t("Auto").into(),
+        Page::Quick => tr.t("Quick").into(),
         Page::Numbered(n) => n.to_string(),
     }
 }
@@ -929,6 +937,7 @@ pub struct SlotScreen<'a> {
 pub fn draw_slots(
     out: &mut Vec<Draw>,
     theme: &Theme,
+    tr: Tr,
     shown: &SlotScreen,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
@@ -940,7 +949,7 @@ pub fn draw_slots(
         let r = tab_rect(i, tabs.len());
         let color = if tab == page || hover == Some(SlotHit::Tab(tab)) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, page_label(tab), r, 28.0, if tab == page { theme.accent_color } else { theme.text_color }, Align::Center);
+        text(out, page_label(tr, tab), r, 28.0, if tab == page { theme.accent_color } else { theme.text_color }, Align::Center);
     }
     for (i, slot) in slots.iter().enumerate() {
         let r = slot_rect(i);
@@ -951,7 +960,7 @@ pub fn draw_slots(
         match slot {
             None => {
                 out.push(Draw::Rect { rect: thumb, color: [1.0, 1.0, 1.0, 0.04] });
-                text(out, "Empty", thumb, 30.0, theme.dim_color, Align::Center);
+                text(out, tr.t("Empty"), thumb, 30.0, theme.dim_color, Align::Center);
             }
             Some(info) => {
                 match &info.scene {
@@ -962,14 +971,16 @@ pub fn draw_slots(
                 }
                 text(out, info.time.clone(), below(4.0, 30.0), 22.0, theme.dim_color, Align::Left);
                 let row = below(32.0, 30.0);
-                text(out, one_row(&info.preview, 22.0, row.w), row, 22.0, theme.text_color, Align::Left);
+                // A save with no scene has one of the engine's own texts as its preview.
+                let preview = if info.scene.is_none() { tr.t(&info.preview) } else { &info.preview };
+                text(out, one_row(preview, 22.0, row.w), row, 22.0, theme.text_color, Align::Left);
             }
         }
     }
     let back = slots_back_rect();
     let color = if hover == Some(SlotHit::Back) { theme.button_hover_color } else { theme.button_color };
     out.push(Draw::Rect { rect: back, color });
-    text(out, "Back", back, 34.0, theme.text_color, Align::Center);
+    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
 }
 
 // ---- game-menu tabs ------------------------------------------------------------------
@@ -1029,12 +1040,12 @@ pub fn game_tab_at(x: f32, y: f32, tabs: &[GameTab]) -> Option<GameTab> {
 }
 
 /// Draw the strip; `current` is the screen being shown (highlighted like the slot page tabs).
-pub fn draw_game_tabs(out: &mut Vec<Draw>, theme: &Theme, tabs: &[GameTab], current: Option<GameTab>, hover: Option<GameTab>) {
+pub fn draw_game_tabs(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, tabs: &[GameTab], current: Option<GameTab>, hover: Option<GameTab>) {
     for (i, &tab) in tabs.iter().enumerate() {
         let r = game_tab_rect(i, tabs.len());
         let color = if Some(tab) == current || hover == Some(tab) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, tab.label(), r, 26.0, if Some(tab) == current { theme.accent_color } else { theme.text_color }, Align::Center);
+        text(out, tr.t(tab.label()), r, 26.0, if Some(tab) == current { theme.accent_color } else { theme.text_color }, Align::Center);
     }
 }
 
@@ -1053,7 +1064,7 @@ pub fn confirm_at(x: f32, y: f32) -> Option<bool> {
     [true, false].into_iter().find(|&yes| confirm_button_rect(yes).contains(x, y))
 }
 
-pub fn draw_confirm(out: &mut Vec<Draw>, theme: &Theme, message: &str, hover: Option<bool>) {
+pub fn draw_confirm(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, message: &str, hover: Option<bool>) {
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 0.5] });
     out.push(Draw::Rect { rect: DIALOG, color: [0.08, 0.07, 0.12, 0.97] });
     let msg = Rect::new(DIALOG.x + 40.0, DIALOG.y + 30.0, DIALOG.w - 80.0, 140.0);
@@ -1062,7 +1073,7 @@ pub fn draw_confirm(out: &mut Vec<Draw>, theme: &Theme, message: &str, hover: Op
         let r = confirm_button_rect(yes);
         let color = if hover == Some(yes) { theme.button_hover_color } else { theme.button_color };
         out.push(Draw::Rect { rect: r, color });
-        text(out, label, r, 34.0, theme.text_color, Align::Center);
+        text(out, tr.t(label), r, 34.0, theme.text_color, Align::Center);
     }
 }
 
@@ -1293,7 +1304,7 @@ mod tests {
         let t = themed("quick_settings_size = 60, 32\nquick_back_size = 300, 32\n");
         let layout = quick_layout(TEXTBOX, &t, false, false, &sized);
         let mut out = Vec::new();
-        draw_quick(&mut out, &t, &layout, &QuickLook::default(), &sized, 1.0);
+        draw_quick(&mut out, &t, Tr::default(), &layout, &QuickLook::default(), &sized, 1.0);
         let size_of_label = |what: &str| out.iter().find_map(|d| match d {
             Draw::Text { text, size, rect, .. } if text == what => Some((*size, *rect)),
             _ => None,
@@ -1315,7 +1326,7 @@ mod tests {
     fn drawn_quick(t: &Theme, inventory: bool, look: QuickLook, alpha: f32) -> Vec<Draw> {
         let layout = quick_layout(TEXTBOX, t, inventory, false, &sized);
         let mut out = Vec::new();
-        draw_quick(&mut out, t, &layout, &look, &sized, alpha);
+        draw_quick(&mut out, t, Tr::default(), &layout, &look, &sized, alpha);
         out
     }
 
@@ -1443,13 +1454,13 @@ mod tests {
     fn the_text_size_row_is_a_slider_from_100_to_150_percent_under_text_speed() {
         assert_eq!(ROWS[..2], [Row::TextSpeed, Row::TextSize]);
         let mut s = Settings::default();
-        assert_eq!((row_slider(&s, Row::TextSize), row_value(&s, Row::TextSize, "")), (Some(0.0), "100%".to_string()));
+        assert_eq!((row_slider(&s, Row::TextSize), row_value(Tr::default(), &s, Row::TextSize, "")), (Some(0.0), "100%".to_string()));
         set_row_slider(&mut s, Row::TextSize, 0.4);
-        assert_eq!((s.text_scale, row_value(&s, Row::TextSize, "")), (1.2, "120%".to_string()));
+        assert_eq!((s.text_scale, row_value(Tr::default(), &s, Row::TextSize, "")), (1.2, "120%".to_string()));
         assert!((row_slider(&s, Row::TextSize).unwrap() - 0.4).abs() < 1e-5);
         set_row_slider(&mut s, Row::TextSize, 7.0);
-        assert_eq!(row_value(&s, Row::TextSize, ""), "150%");
-        assert_eq!(row_label(Row::TextSize), "Text size");
+        assert_eq!(row_value(Tr::default(), &s, Row::TextSize, ""), "150%");
+        assert_eq!(row_label(Tr::default(), Row::TextSize), "Text size");
     }
 
     #[test]
@@ -1457,11 +1468,11 @@ mod tests {
         let mut s = Settings::default();
         set_row_slider(&mut s, Row::Music, 0.3);
         assert_eq!(s.music_volume, 0.3);
-        assert_eq!(row_value(&s, Row::Music, ""), "30%");
+        assert_eq!(row_value(Tr::default(), &s, Row::Music, ""), "30%");
         set_row_slider(&mut s, Row::TextSpeed, 1.0);
-        assert_eq!(row_value(&s, Row::TextSpeed, ""), "Instant");
+        assert_eq!(row_value(Tr::default(), &s, Row::TextSpeed, ""), "Instant");
         assert_eq!(row_slider(&s, Row::Fullscreen), None);
-        assert_eq!(row_value(&s, Row::Fullscreen, ""), "Off");
+        assert_eq!(row_value(Tr::default(), &s, Row::Fullscreen, ""), "Off");
     }
 
     fn line(t: &str) -> Logged {
@@ -1482,7 +1493,7 @@ mod tests {
     fn backlog_shows_newest_at_the_bottom_and_scrolls() {
         let entries = vec![line("one"), Logged::Choice("Go".into()), line("three")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None);
         let t = texts(&out);
         let pos = |s: &str| t.iter().position(|x| x == s).unwrap();
         assert!(pos("three") < pos("» Go") && pos("» Go") < pos("one")); // drawn newest first
@@ -1497,7 +1508,7 @@ mod tests {
         assert!(y("one") < y("» Go") && y("» Go") < y("three"));
 
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 1, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 1, &|_| None);
         assert!(!texts(&out).contains(&"three".to_string()));
         assert_eq!(backlog_max_scroll(&entries), 0, "all of it fits: nothing to scroll to");
     }
@@ -1506,7 +1517,7 @@ mod tests {
     fn a_paragraph_break_in_the_backlog_is_a_real_line_break_with_room_for_it() {
         let tall = vec![line("a{p}b{p}c")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &tall, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &tall, 0, &|_| None);
         let h = out.iter().find_map(|d| match d {
             Draw::Text { text, rect, .. } if text == "a\nb\nc" => Some(rect.h),
             _ => None,
@@ -1519,7 +1530,7 @@ mod tests {
     fn a_long_backlog_only_draws_what_fits() {
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None);
         let shown = texts(&out).iter().filter(|t| t.starts_with("line ")).count();
         assert!(shown > 5 && shown < 30, "{shown}");
         assert!(out.iter().all(|d| match d {
@@ -1535,11 +1546,11 @@ mod tests {
         assert!(max > 50 && max < 99, "{max}: not all the way to a lone entry");
         let shown = |scroll: usize| {
             let mut out = Vec::new();
-            draw_backlog(&mut out, &Theme::default(), &entries, scroll, &|_| None);
+            draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, scroll, &|_| None);
             texts(&out).iter().filter(|t| t.starts_with("line ")).count()
         };
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &entries, max, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, max, &|_| None);
         assert!(texts(&out).contains(&"line 0".to_string()), "the oldest line is there at the end");
         assert!(shown(max) > 5, "and so is a page of others");
         assert_eq!(backlog_max_scroll(&entries[..3]), 0, "a short history has nothing to scroll");
@@ -1552,7 +1563,7 @@ mod tests {
             l.speaker = Some("Professor Bartholomew Fitzgerald-Montgomery".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &[long], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[long], 0, &|_| None);
         let (rect, size) = out
             .iter()
             .find_map(|d| match d {
@@ -1588,14 +1599,14 @@ mod tests {
         let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w);
         assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, ROWS.len(), &Theme::default()).w) == 1);
         let mut out = Vec::new();
-        draw_settings(&mut out, &Theme::default(), &Settings::default(), true, 0, None, None, &|_| None);
+        draw_settings(&mut out, &Theme::default(), Tr::default(), &Settings::default(), true, 0, None, None, &|_| None);
         assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, ROWS.len(), &Theme::default()))), "drawn in its column");
     }
 
     #[test]
     fn an_empty_backlog_says_so() {
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), &[], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None);
         assert!(texts(&out).contains(&"Nothing yet.".to_string()));
     }
 
@@ -1649,7 +1660,7 @@ mod tests {
         assert_eq!(slider_pos_at(track.x, &t), 0.0);
         assert!((slider_pos_at(track.x + track.w / 2.0, &t) - 0.5).abs() < 1e-5);
         let mut out = Vec::new();
-        draw_settings(&mut out, &t, &Settings::default(), true, 1, None, None, &|_| None);
+        draw_settings(&mut out, &t, Tr::default(), &Settings::default(), true, 1, None, None, &|_| None);
         assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == row_rect(1, ROWS.len(), &t) && *color == FOCUS)), "focus follows the row");
         let size = |text: &str| out.iter().find_map(|d| match d { Draw::Text { text: s, size, .. } if s == text => Some(*size), _ => None });
         assert_eq!(size("Back"), Some(28.0), "the buttons use the screen's text size");
@@ -1661,7 +1672,7 @@ mod tests {
         let sized = |s: &str| (s == "bg.png").then(|| Size::new(1920.0, 1080.0)).or((s == "frame.png").then(|| Size::new(100.0, 100.0)));
         let draw = |t: &Theme, size: &dyn Fn(&str) -> Option<Size>| {
             let mut out = Vec::new();
-            draw_settings(&mut out, t, &Settings::default(), true, 0, None, None, size);
+            draw_settings(&mut out, t, Tr::default(), &Settings::default(), true, 0, None, None, size);
             out
         };
         let (with, without) = (draw(&t, &sized), draw(&t, &|_| None));
@@ -1680,7 +1691,7 @@ mod tests {
         let anything = |d: &Draw| matches!(d, Draw::Text { .. });
 
         let mut out = Vec::new();
-        draw_main_menu(&mut out, &t, "T", &[MenuButton::Start], None, None, &sized);
+        draw_main_menu(&mut out, &t, Tr::default(), "T", &[MenuButton::Start], None, None, &sized);
         let button = pos(&out, &|d| matches!(d, Draw::Rect { rect, .. } if *rect == menu_button_rect(0)));
         assert!(pos(&out, &image("bg.png")) < pos(&out, &image("ov.png")) && pos(&out, &image("ov.png")) < pos(&out, &anything));
         assert!(pos(&out, &anything) < button);
@@ -1688,14 +1699,14 @@ mod tests {
 
         let mut screens = Vec::new();
         let mut a = Vec::new();
-        draw_settings(&mut a, &t, &Settings::default(), true, 0, None, None, &sized);
+        draw_settings(&mut a, &t, Tr::default(), &Settings::default(), true, 0, None, None, &sized);
         screens.push(a);
         let mut b = Vec::new();
-        draw_backlog(&mut b, &t, &[], 0, &sized);
+        draw_backlog(&mut b, &t, Tr::default(), &[], 0, &sized);
         screens.push(b);
         let mut c = Vec::new();
         let view = SlotScreen { title: "Save", tabs: &[], page: Page::Auto, slots: &[], hover: None };
-        draw_slots(&mut c, &t, &view, &sized);
+        draw_slots(&mut c, &t, Tr::default(), &view, &sized);
         screens.push(c);
         for out in &screens {
             let dim = pos(out, &|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color));
@@ -1703,7 +1714,7 @@ mod tests {
             assert!(!out.iter().any(image("ov.png")));
         }
         let mut none = Vec::new();
-        draw_backlog(&mut none, &t, &[], 0, &|_| None);
+        draw_backlog(&mut none, &t, Tr::default(), &[], 0, &|_| None);
         assert!(!none.iter().any(image("gm.png")), "not loaded: today's look");
     }
 
@@ -1731,7 +1742,7 @@ mod tests {
         for in_story in [true, false] {
             let tabs = game_tabs(in_story, false);
             let mut out = Vec::new();
-            draw_game_tabs(&mut out, &Theme::default(), tabs, None, None);
+            draw_game_tabs(&mut out, &Theme::default(), Tr::default(), tabs, None, None);
             for (i, &tab) in tabs.iter().enumerate() {
                 let r = game_tab_rect(i, tabs.len());
                 assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == r)), "drawn at its rect");

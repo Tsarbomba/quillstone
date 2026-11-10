@@ -2589,8 +2589,24 @@ A file is plain lines that start with a marker. Nothing needs escaping: texts ar
 - the title and `replays:` titles;
 - the file names listed in `gallery:` and `music_room:`.
 
-A text with no translation shows in the script's language, without any message. The game's own
-buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.
+A text with no translation shows in the script's language, without any message.
+
+**The game's own screens**
+
+The texts the engine draws itself ("Settings", "Save", "Back", the settings rows, hints, questions
+and short messages like "Loaded") are translated through the same file:
+
+- `lang export` adds them after the script's texts, each with a `#:` place like `settings screen`
+  or `message`. A text the script also has is one entry.
+- A text with a changing part has a `{name}` in it, like `Page {n} of {pages}`. Keep it as in the
+  rule below.
+- A text with no entry, or an empty `=`, shows in English. A file made before these entries existed
+  keeps working: run `lang export` again to add them.
+- Changing the language in Settings changes the screens at once.
+- Not translated: the developer console, the notices meant for the writer (a script that can't be
+  read, a story that stopped), the names of keys, and dates and times.
+- A translation longer than the English text is drawn smaller where there is a label that fits
+  its space (the settings values, the quick menu); elsewhere keep it short.
 
 **Rules for a translation**
 
@@ -2607,7 +2623,7 @@ buttons and screens ("Settings", "Save", "Back" ...) are not translated yet.
 - syntax errors are reported with `file:line`;
 - a translation that drops, adds or misspells a `{name}` or tag is an error;
 - texts the script no longer has are warnings;
-- a count of untranslated texts is printed for each language.
+- a count of untranslated texts (the game's own screens included) is printed for each language.
 
 `quillstone package` ships the `lang/*.txt` files of the languages the script lists.
 Translation files are limited to 8 MB, 100,000 entries and 16 KB per text.

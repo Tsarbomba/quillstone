@@ -737,6 +737,7 @@ impl<'p> Game<'p> {
     pub fn draw_list(&self, image_size: &dyn Fn(&str) -> Option<Size>) -> Vec<Draw> {
         let story = self.screen == Screen::Story;
         let theme = self.view.theme();
+        let tr = self.ui();
         let mut out = if self.in_story {
             let at = |x: f32, y: f32| self.view.choice_at(x, y).or_else(|| self.view.hotspot_at(x, y));
             let hover_choice = self.pointer().filter(|_| story).and_then(|(x, y)| at(x, y));
@@ -758,10 +759,10 @@ impl<'p> Game<'p> {
             let title = self.tr(self.program.title.as_deref().unwrap_or("Quillstone"));
             let mut out = Vec::new();
             if menu {
-                draw_main_menu(&mut out, theme, title, &buttons, self.menu_focus, hover, image_size);
+                draw_main_menu(&mut out, theme, tr, title, &buttons, self.menu_focus, hover, image_size);
             } else {
                 // Settings, Load or Extras opened from the menu: only its background stays under them.
-                draw_main_menu(&mut out, theme, "", &[], None, None, image_size);
+                draw_main_menu(&mut out, theme, tr, "", &[], None, None, image_size);
             }
             out
         };
@@ -806,10 +807,10 @@ impl<'p> Game<'p> {
                 qload_off: self.quick_load_missing(),
             };
             let sizes = self.quick_sizes.borrow();
-            draw_quick(&mut out, theme, &layout, &look, &|s| sizes.get(s).copied(), alpha);
+            draw_quick(&mut out, theme, tr, &layout, &look, &|s| sizes.get(s).copied(), alpha);
         }
         if self.in_story && story && !self.view.hide_ui() {
-            draw_mode_badge(&mut out, theme, self.auto, self.skip.is_some());
+            draw_mode_badge(&mut out, theme, tr, self.auto, self.skip.is_some());
         }
         match self.screen {
             Screen::MainMenu | Screen::Story => {}
@@ -817,16 +818,16 @@ impl<'p> Game<'p> {
                 let rows = rows(self.has_language_row());
                 let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story, rows, theme));
                 let language = self.has_language_row().then(|| self.language_name());
-                draw_settings(&mut out, theme, &self.settings, self.in_story, self.focus, hover, language, image_size);
+                draw_settings(&mut out, theme, tr, &self.settings, self.in_story, self.focus, hover, language, image_size);
             }
-            Screen::Backlog => draw_backlog(&mut out, theme, &self.backlog, self.backlog_scroll, image_size),
+            Screen::Backlog => draw_backlog(&mut out, theme, tr, &self.backlog, self.backlog_scroll, image_size),
             Screen::Save | Screen::Load => {
                 let tabs = self.slot_tabs();
                 let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len()));
                 let hover = hover.or(self.slot_focus.map(SlotHit::Slot));
-                let title = if self.screen == Screen::Save { "Save" } else { "Load" };
+                let title = tr.t(if self.screen == Screen::Save { "Save" } else { "Load" });
                 let view = SlotScreen { title, tabs: &tabs, page: self.page, slots: &self.slots, hover };
-                draw_slots(&mut out, theme, &view, image_size);
+                draw_slots(&mut out, theme, tr, &view, image_size);
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
@@ -835,11 +836,11 @@ impl<'p> Game<'p> {
         if self.current_tab().is_some() {
             let tabs = game_tabs(self.in_story, self.replay.is_some());
             let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| game_tab_at(x, y, tabs));
-            draw_game_tabs(&mut out, theme, tabs, self.current_tab(), hover);
+            draw_game_tabs(&mut out, theme, tr, tabs, self.current_tab(), hover);
         }
         if let Some(confirm) = &self.confirm {
             let hover = self.pointer().and_then(|(x, y)| confirm_at(x, y));
-            draw_confirm(&mut out, theme, &confirm.message, hover);
+            draw_confirm(&mut out, theme, tr, &confirm.message, hover);
         }
         if let Some(c) = &self.console {
             crate::console::draw_console(&mut out, theme, c);
@@ -1447,15 +1448,15 @@ impl<'p> Game<'p> {
     /// The main menu button: asks first (the screen stays open beneath the question, so No comes back to it).
     fn ask_main_menu(&mut self) {
         if self.replay.is_some() {
-            self.ask("Leave this replay and go back to Extras?", Then::MainMenu);
+            self.ask_ui("Leave this replay and go back to Extras?", Then::MainMenu);
         } else {
-            self.ask("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
+            self.ask_ui("Return to the main menu?\nUnsaved progress will be lost.", Then::MainMenu);
         }
     }
 
     fn ask_quit(&mut self) {
         if self.in_story {
-            self.ask("Quit the game?", Then::Quit);
+            self.ask_ui("Quit the game?", Then::Quit);
         } else {
             if self.screen == Screen::Settings {
                 self.close_settings();

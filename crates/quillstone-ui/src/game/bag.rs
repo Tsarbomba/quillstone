@@ -140,7 +140,8 @@ impl Game<'_> {
 
     fn shelf(&self) -> Shelf {
         let info_detail = |i: &ItemInfo, price: Option<String>| Detail { name: i.name.clone(), text: i.text.clone(), price };
-        let price_line = |p: i64| format!("Price: {p}");
+        let tr = self.ui();
+        let price_line = |p: i64| tr.f("Price: {n}", &[("n", &p)]);
         let shown = self.pending_shown();
         let localize = |mut i: ItemInfo| {
             if let Some(cat) = self.catalog() {
@@ -157,7 +158,7 @@ impl Game<'_> {
                         name: s.item.name.clone(),
                         icon: s.item.icon.clone(),
                         price: Some(match s.item.count {
-                            Some(n) => format!("{} {label} (owned: {n})", s.price),
+                            Some(n) => tr.f("{price} {label} (owned: {n})", &[("price", &s.price), ("label", &label), ("n", &n)]),
                             None => format!("{} {label}", s.price),
                         }),
                         state: if s.owned {
@@ -182,7 +183,7 @@ impl Game<'_> {
                     .map(|(i, done)| BagCell {
                         name: i.name.clone(),
                         icon: i.icon.clone(),
-                        price: done.then(|| "Done".to_string()),
+                        price: done.then(|| tr.t("Done").to_string()),
                         state: if *done { CellState::Disabled } else { CellState::Normal },
                     })
                     .collect();
@@ -221,13 +222,14 @@ impl Game<'_> {
             self.screen = Screen::Story;
             self.forward(Input::Use(id));
         } else {
-            self.notify("Can't use that now");
+            self.notify_ui("Can't use that now", &[]);
         }
     }
 
     /// The screen as drawn.
     pub(super) fn draw_bag_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
         let theme = self.view.theme();
+        let tr = self.ui();
         let shelf = self.shelf();
         let shop = self.screen == Screen::Shop;
         let per = bag::per_page(theme);
@@ -248,12 +250,15 @@ impl Game<'_> {
         };
         let money = shelf.shop.as_ref().map(|(line, _)| line.as_str());
         let background = if shop { theme.shop_background.as_deref().or(theme.inventory_background.as_deref()) } else { theme.inventory_background.as_deref() };
+        // The theme's titles are the writer's own words; only the built-in ones are translated.
+        let (title, default) = match (shop, self.bag.journal) {
+            (true, _) => (&theme.shop_title, "Shop"),
+            (_, true) => (&theme.journal_title, "Journal"),
+            _ => (&theme.inventory_title, "Items"),
+        };
+        let title = if title == default { tr.t(default) } else { title };
         let screen = BagScreen {
-            title: match (shop, self.bag.journal) {
-                (true, _) => &theme.shop_title,
-                (_, true) => &theme.journal_title,
-                _ => &theme.inventory_title,
-            },
+            title,
             background,
             money,
             cells: shown,
@@ -263,10 +268,10 @@ impl Game<'_> {
             hover,
             use_button,
             detail: detail_at.and_then(|i| shelf.details.get(i)),
-            close_label: if shop { "Leave" } else { "Close" },
-            empty: "Nothing here yet.",
+            close_label: tr.t(if shop { "Leave" } else { "Close" }),
+            empty: tr.t("Nothing here yet."),
         };
-        bag::draw_bag(out, theme, &screen, image_size);
+        bag::draw_bag(out, theme, tr, &screen, image_size);
     }
 
     pub(super) fn bag_event(&mut self, event: Event) {
@@ -356,16 +361,16 @@ impl Game<'_> {
         }
         let Some(cell) = shelf.cells.get(i) else { return };
         match cell.state {
-            CellState::Owned => self.notify("Already owned"),
+            CellState::Owned => self.notify_ui("Already owned", &[]),
             CellState::Disabled => {
                 let label = shelf.shop.map(|(_, label)| label).unwrap_or_default();
-                self.notify(format!("Not enough {label}"));
+                self.notify_ui("Not enough {label}", &[("label", &label)]);
             }
             CellState::Normal => {
                 let name = cell.name.clone();
                 self.forward(Input::Buy(i));
                 if matches!(self.session.state().pending, Some(Cmd::ShowShop { .. })) {
-                    self.notify(format!("Bought {name}"));
+                    self.notify_ui("Bought {name}", &[("name", &name)]);
                 }
             }
         }

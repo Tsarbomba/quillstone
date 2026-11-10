@@ -6,6 +6,7 @@ use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::input::{screen, text};
+use crate::texts::Tr;
 use crate::screens::{fit_value, slots_back_rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,10 +141,10 @@ pub struct ExtrasScreen<'a> {
     pub hover: Option<Hit>,
 }
 
-pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
-    text(out, "Extras", Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
+    text(out, tr.t("Extras"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, &t) in s.tabs.iter().enumerate() {
         let r = tab_rect(i, s.tabs.len());
         out.push(Draw::Rect { rect: r, color: lit(t == s.tab || s.hover == Some(Hit::Tab(t))) });
@@ -152,7 +153,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
             Tab::Music => "Music room",
             Tab::Scenes => "Scenes",
         };
-        text(out, label, r, 30.0, if t == s.tab { theme.accent_color } else { theme.text_color }, Align::Center);
+        text(out, tr.t(label), r, 30.0, if t == s.tab { theme.accent_color } else { theme.text_color }, Align::Center);
     }
     for (i, &(src, unlocked)) in s.entries.iter().enumerate() {
         let r = item_rect(s.tab, i);
@@ -201,22 +202,22 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, s: &ExtrasScreen, image_s
             out.push(Draw::Rect { rect: r, color: lit(live && s.hover == Some(hit)) });
             text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
         }
-        let label = format!("Page {} of {}", s.page + 1, s.pages);
+        let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
         text(out, label, Rect::new(0.0, 912.0, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
     }
     let back = slots_back_rect();
     out.push(Draw::Rect { rect: back, color: lit(s.hover == Some(Hit::Back)) });
-    text(out, "Back", back, 34.0, theme.text_color, Align::Center);
+    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
 }
 
 /// One gallery picture filling the screen (letterboxed), over black.
-pub fn draw_picture(out: &mut Vec<Draw>, theme: &Theme, src: &str, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub fn draw_picture(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, src: &str, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 1.0] });
     if let Some(size) = image_size(src) {
         let p = place(size, screen(), Fit::Contain);
         out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
     }
-    let hint = "Click or Esc to go back  \u{00B7}  Left/Right for the others";
+    let hint = tr.t("Click or Esc to go back  ·  Left/Right for the others");
     text(out, hint, Rect::new(0.0, VIRTUAL.h - 44.0, VIRTUAL.w, 32.0), 22.0, theme.dim_color, Align::Center);
 }
 
@@ -270,7 +271,7 @@ mod tests {
         let entries = [(long.as_str(), true)];
         let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Scenes, page: 0, pages: 1, entries: &entries, thumbs: &[], focus: None, playing: None, hover: None };
         let mut out = Vec::new();
-        draw_extras(&mut out, &theme, &screen, &|_| None);
+        draw_extras(&mut out, &theme, Tr::default(), &screen, &|_| None);
         let row = track_rect(0);
         let (shown, size) = out
             .iter()
@@ -284,7 +285,7 @@ mod tests {
         let short = [("The rooftop", true)];
         let screen = ExtrasScreen { entries: &short, ..screen };
         out.clear();
-        draw_extras(&mut out, &theme, &screen, &|_| None);
+        draw_extras(&mut out, &theme, Tr::default(), &screen, &|_| None);
         assert!(out.iter().any(|d| matches!(d, Draw::Text { text, size, .. } if text == "The rooftop" && *size == 34.0)), "short titles are untouched");
     }
 
@@ -295,7 +296,7 @@ mod tests {
             let tabs = tabs_for(1, 0, 0);
             let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Gallery, page, pages: 3, entries: &[], thumbs: &[], focus: None, playing: None, hover: None };
             let mut out = Vec::new();
-            draw_extras(&mut out, &theme, &screen, &|_| None);
+            draw_extras(&mut out, &theme, Tr::default(), &screen, &|_| None);
             out.iter()
                 .find_map(|d| match d {
                     Draw::Text { text, color, .. } if text == glyph => Some(*color),

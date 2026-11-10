@@ -9,6 +9,8 @@ use quillstone_render::theme::DEFAULT_INPUT_RECT;
 use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_script::markup::rich;
 
+use crate::texts::Tr;
+
 /// The panel's default placement and the height its parts are stacked in (a taller panel centres them).
 const PANEL: Rect = Rect::new(DEFAULT_INPUT_RECT[0], DEFAULT_INPUT_RECT[1], DEFAULT_INPUT_RECT[2], DEFAULT_INPUT_RECT[3]);
 const PAD: f32 = 20.0;
@@ -143,7 +145,7 @@ pub(crate) fn picture_or_rect(out: &mut Vec<Draw>, pic: Option<&str>, dest: Rect
     }
 }
 
-pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     let panel = panel_rect(theme);
     picture_or_rect(out, theme.input_image.as_deref(), panel, theme.panel_color, image_size);
@@ -157,19 +159,19 @@ pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_siz
     line(out, f, [0.0, 0.0, 0.0, 0.45]);
     outline(out, f, theme.accent_color);
 
-    let tr = text_rect(theme);
+    let field = text_rect(theme);
     let caret = if s.caret { "|" } else { "" };
     if s.text.is_empty() {
-        text(out, caret, tr, FIELD_SIZE, theme.text_color, Align::Left);
+        text(out, caret, field, FIELD_SIZE, theme.text_color, Align::Left);
         if let Some(hint) = s.placeholder {
             // Starts just after the caret; cut short when it can't fit.
-            let room = Rect::new(tr.x + 14.0, tr.y, tr.w - 14.0, tr.h);
+            let room = Rect::new(field.x + 14.0, field.y, field.w - 14.0, field.h);
             text(out, visible_head(hint, FIELD_SIZE, room.w), room, FIELD_SIZE, theme.dim_color, Align::Left);
         }
     } else {
         // The caret is part of the text, after its last character, so it follows it.
-        let shown = visible_tail(s.text, FIELD_SIZE, tr.w - 24.0);
-        text(out, format!("{shown}{caret}"), tr, FIELD_SIZE, theme.text_color, Align::Left);
+        let shown = visible_tail(s.text, FIELD_SIZE, field.w - 24.0);
+        text(out, format!("{shown}{caret}"), field, FIELD_SIZE, theme.text_color, Align::Left);
     }
     text(out, format!("{}/{}", s.text.chars().count(), s.max), count_rect(theme), 22.0, theme.dim_color, Align::Center);
 
@@ -177,13 +179,13 @@ pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, s: &InputScreen, image_siz
     if s.can_confirm {
         line(out, ok, if s.hover_ok { theme.button_hover_color } else { theme.button_color });
         outline(out, ok, theme.dim_color); // a button colour close to the panel's would vanish
-        text(out, "OK", ok, 40.0, theme.text_color, Align::Center);
+        text(out, tr.t("OK"), ok, 40.0, theme.text_color, Align::Center);
     } else {
         let [r, g, b, a] = theme.button_color;
         line(out, ok, [r, g, b, a * 0.4]);
         let [r, g, b, a] = theme.dim_color;
         outline(out, ok, [r, g, b, a * 0.25]);
-        text(out, "OK", ok, 40.0, [r, g, b, a * 0.6], Align::Center);
+        text(out, tr.t("OK"), ok, 40.0, [r, g, b, a * 0.6], Align::Center);
     }
 }
 
@@ -280,7 +282,7 @@ mod tests {
                     can_confirm: can,
                     hover_ok: false,
                 };
-                draw_input(&mut out, &theme, &s, &|_| None);
+                draw_input(&mut out, &theme, Tr::default(), &s, &|_| None);
                 for d in &out {
                     match d {
                         Draw::Rect { rect, .. } => assert!(inside(*rect, screen), "{rect:?}"),
@@ -308,10 +310,10 @@ mod tests {
             hover_ok: false,
         };
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, &mk("", true), &|_| None);
+        draw_input(&mut out, &theme, Tr::default(), &mk("", true), &|_| None);
         assert!(texts(&out).contains(&"Alex".to_string()) && texts(&out).contains(&"0/16".to_string()));
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, &mk("Sam", true), &|_| None);
+        draw_input(&mut out, &theme, Tr::default(), &mk("Sam", true), &|_| None);
         assert!(!texts(&out).contains(&"Alex".to_string()));
         assert!(texts(&out).contains(&"Sam|".to_string()), "the caret follows the text: {:?}", texts(&out));
         let ok_fill = |out: &[Draw]| out.iter().find_map(|d| match d {
@@ -319,8 +321,8 @@ mod tests {
             _ => None,
         });
         let (mut a, mut b) = (Vec::new(), Vec::new());
-        draw_input(&mut a, &theme, &mk("", true), &|_| None);
-        draw_input(&mut b, &theme, &mk("", false), &|_| None);
+        draw_input(&mut a, &theme, Tr::default(), &mk("", true), &|_| None);
+        draw_input(&mut b, &theme, Tr::default(), &mk("", false), &|_| None);
         assert!(ok_fill(&b).unwrap()[3] < ok_fill(&a).unwrap()[3], "dimmed");
     }
 
@@ -338,8 +340,8 @@ mod tests {
         assert!(!ok_at(&theme, old.x + 5.0, old.y + 5.0), "and no longer where it was");
         let s = InputScreen { prompt: "Name?", text: "", placeholder: None, max: 8, caret: false, can_confirm: true, hover_ok: false };
         let (mut with, mut without) = (Vec::new(), Vec::new());
-        draw_input(&mut with, &theme, &s, &|_| Some(Size::new(64.0, 64.0)));
-        draw_input(&mut without, &theme, &s, &|_| None);
+        draw_input(&mut with, &theme, Tr::default(), &s, &|_| Some(Size::new(64.0, 64.0)));
+        draw_input(&mut without, &theme, Tr::default(), &s, &|_| None);
         assert!(with.iter().any(|d| matches!(d, Draw::Image { src, dest, .. } if src == "gui/in.png" && *dest == panel)));
         assert!(!without.iter().any(|d| matches!(d, Draw::Image { .. })), "a picture that isn't loaded leaves the panel colour");
         assert!(without.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == panel && *color == theme.panel_color)));

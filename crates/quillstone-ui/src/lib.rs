@@ -23,6 +23,7 @@ pub mod screens;
 pub mod settings;
 pub mod slots;
 pub mod source;
+pub mod texts;
 
 pub use assets::Assets;
 pub use game::{Button, Event, Game, Key, Request, Screen, AUTO_PER_CHAR};

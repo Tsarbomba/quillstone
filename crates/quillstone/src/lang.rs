@@ -3,10 +3,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use quillstone_script::{check_translation, language_file, Catalog, Program};
+use quillstone_script::{check_translation, language_file, Catalog, Program, Source};
 use quillstone_ui::source::read_translation;
 
 use crate::Finding;
+
+/// The script's texts, then the engine's own (a text the script has too stays one entry, at its place in the script).
+fn all_texts(program: &Program) -> Vec<Source> {
+    let mut strings = program.translatable();
+    let seen: BTreeSet<String> = strings.iter().map(|s| s.text.clone()).collect();
+    strings.extend(quillstone_ui::texts::sources().into_iter().filter(|s| !seen.contains(&s.text)));
+    strings
+}
 
 /// `quillstone lang export <script> <code>`: create or update `lang/<code>.txt`.
 pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String> {
@@ -29,7 +37,7 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
             format!("{}\n(fix {file} first; nothing was written)", lines.join("\n"))
         })?,
     };
-    let strings = program.translatable();
+    let strings = all_texts(program);
     let places: BTreeMap<String, String> = strings.iter().map(|s| (s.text.clone(), s.place.clone())).collect();
     let merged = old.merged(&strings);
     let name = program.languages.iter().find(|l| l.code == code).map_or(code, |l| l.name.as_str());
@@ -50,7 +58,7 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
 pub fn check(script: &Path, program: &Program) -> Vec<Finding> {
     let root = quillstone_ui::source::script_dir(script);
     let mut found = Vec::new();
-    let strings: BTreeSet<String> = program.translatable().into_iter().map(|s| s.text).collect();
+    let strings: BTreeSet<String> = all_texts(program).into_iter().map(|s| s.text).collect();
     let spoken = program.spoken();
     for lang in program.languages.iter().skip(1) {
         let file = language_file(&lang.code);
@@ -139,8 +147,8 @@ mod tests {
     fn export_adds_new_texts_in_script_order_with_places_and_is_idempotent() {
         let dir = game("new", &[]);
         let text = export_to(&dir, SCRIPT).unwrap();
-        let order: Vec<&str> = text.lines().filter(|l| l.starts_with("> ")).collect();
-        assert_eq!(order, ["> T", "> A", "> Hello {n}.", "> Bye."]);
+        let order: Vec<&str> = text.lines().filter(|l| l.starts_with("> ")).take(4).collect();
+        assert_eq!(order, ["> T", "> A", "> Hello {n}.", "> Bye."], "the script's own texts come first");
         assert!(text.contains("#: a:7\n> Hello {n}."), "{text}");
         assert_eq!(export_to(&dir, SCRIPT).unwrap(), text, "a second export changes nothing");
         // a translation and a translator's comment survive an export
@@ -149,6 +157,40 @@ mod tests {
         let again = export_to(&dir, SCRIPT).unwrap();
         assert!(again.contains("# keep it short\n#: a:9\n> Bye.\n= Hejdå."), "{again}");
         assert_eq!(export_to(&dir, SCRIPT).unwrap(), again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_adds_the_engines_own_texts_after_the_scripts_with_their_place_once_each() {
+        let dir = game("ui", &[]);
+        let text = export_to(&dir, &SCRIPT.replace("Bye.", "Quit")).unwrap();
+        let story: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("> ")).take(4).collect();
+        assert_eq!(story, ["T", "A", "Hello {n}.", "Quit"]);
+        let entries = text.lines().filter(|l| l.starts_with("#: ")).count();
+        assert_eq!(entries, 4 + quillstone_ui::texts::STRINGS.len() - 1, "the engine's Quit is the script's Quit");
+        assert!(text.contains("#: settings screen
+> Text speed
+=
+"), "{text}");
+        assert!(text.contains("#: a:9
+> Quit
+=
+"), "the script's place wins");
+        assert_eq!(export_to(&dir, &SCRIPT.replace("Bye.", "Quit")).unwrap(), text, "a second export changes nothing");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_without_the_engines_texts_still_loads_and_check_says_how_many_are_missing() {
+        let dir = game("ui-missing", &[("main.quill.md", SCRIPT), ("lang/sv.txt", "> Hello {n}.\n= Hej {n}.\n\n> Save\n= Spara\n")]);
+        let path = dir.join("main.quill.md");
+        let program = crate::load(&path).unwrap();
+        let found = check(&path, &program);
+        assert_eq!(found.iter().filter(|f| f.0).count(), 0, "{found:?}");
+        let total = 4 + quillstone_ui::texts::STRINGS.len();
+        assert!(found.iter().any(|f| f.1.contains(&format!("is {} of {total} text(s) short", total - 2))), "{found:?}");
+        std::fs::write(dir.join("lang/sv.txt"), "> Page {n} of {pages}\n= Sida {n}\n").unwrap();
+        assert_eq!(errors(&path, &program), 1, "a placeholder dropped from an engine text is an error too");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -84,7 +84,7 @@ impl Game<'_> {
         }
         match self.storage.write(READ_FILE, &text) {
             Ok(()) => self.read_dirty = false,
-            Err(e) => self.notify(format!("Could not save which lines were read: {e}")),
+            Err(e) => self.notify_ui("Could not save which lines were read: {error}", &[("error", &e)]),
         }
     }
 
@@ -96,7 +96,7 @@ impl Game<'_> {
             return;
         }
         if !self.settings.skip_unread && self.waiting_on_a_line() && !self.current_line_read() {
-            self.notify("Nothing here has been read yet");
+            self.notify_ui("Nothing here has been read yet", &[]);
             return;
         }
         self.skip = Some(mode);

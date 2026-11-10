@@ -58,3 +58,329 @@
 #: roof:48
 > We watch the lights come on. That cost 2 gold, but it was worth it.
 = Vi ser ljusen tändas. Det kostade 2 guld, men det var värt det.
+
+#: game menu
+> Save
+= Spara
+
+#: game menu
+> Load
+= Ladda
+
+#: game menu
+> Settings
+= Inställningar
+
+#: game menu
+> History
+= Historik
+
+#: game menu
+> Main menu
+= Huvudmeny
+
+#: game menu
+> Quit
+= Avsluta
+
+#: game menu
+> Back
+= Tillbaka
+
+#: main menu
+> Start
+= Starta
+
+#: main menu
+> Continue
+= Fortsätt
+
+#: main menu
+> Extras
+= Extra
+
+#: quick menu
+> Skip
+= Hoppa
+
+#: quick menu
+> Auto
+= Auto
+
+#: quick menu
+> Q.Save
+= Snabbspara
+
+#: quick menu
+> Q.Load
+= Snabbladda
+
+#: quick menu
+> Items
+= Föremål
+
+#: quick menu
+> Journal
+= Dagbok
+
+#: quick menu
+> AUTO
+= AUTO
+
+#: quick menu
+> SKIP »
+= HOPPA »
+
+#: settings screen
+> Text speed
+= Textfart
+
+#: settings screen
+> Text size
+= Textstorlek
+
+#: settings screen
+> Auto-forward delay
+= Autofördröjning
+
+#: settings screen
+> Skip unread text
+= Hoppa över oläst text
+
+#: settings screen
+> Music volume
+= Musikvolym
+
+#: settings screen
+> Sound volume
+= Ljudvolym
+
+#: settings screen
+> Voice volume
+= Röstvolym
+
+#: settings screen
+> Fullscreen
+= Helskärm
+
+#: settings screen
+> Quick menu
+= Snabbmeny
+
+#: settings screen
+> Language
+= Språk
+
+#: settings screen
+> Instant
+= Direkt
+
+#: settings screen
+> {n} chars/s
+= {n} tecken/s
+
+#: settings screen
+> On
+= På
+
+#: settings screen
+> Off
+= Av
+
+#: settings screen
+> Game default
+= Spelets val
+
+#: settings screen
+> Always
+= Alltid
+
+#: settings screen
+> On hover
+= Vid pekning
+
+#: settings screen
+> Hidden
+= Dold
+
+#: settings screen
+> Esc to close  ·  Up/Down to pick  ·  Left/Right to adjust
+= Esc för att stänga  ·  Upp/Ner för att välja  ·  Vänster/Höger för att ändra
+
+#: history screen
+> Wheel / Page Up / Page Down to scroll  ·  Esc to close
+= Hjulet / Page Up / Page Down för att rulla  ·  Esc för att stänga
+
+#: history screen
+> Nothing yet.
+= Inget ännu.
+
+#: save screen
+> Quick
+= Snabb
+
+#: save screen
+> Empty
+= Tom
+
+#: save screen
+> Unreadable save
+= Oläslig sparfil
+
+#: save screen
+> This save doesn't fit the current script
+= Sparfilen passar inte det här manuset
+
+#: question
+> Yes
+= Ja
+
+#: question
+> No
+= Nej
+
+#: question
+> Overwrite this save?
+= Skriva över den här sparfilen?
+
+#: question
+> Load this save?
+> Unsaved progress will be lost.
+= Ladda den här sparfilen?
+= Osparade framsteg går förlorade.
+
+#: question
+> Load the quick save?
+> Unsaved progress will be lost.
+= Ladda snabbsparningen?
+= Osparade framsteg går förlorade.
+
+#: question
+> Return to the main menu?
+> Unsaved progress will be lost.
+= Tillbaka till huvudmenyn?
+= Osparade framsteg går förlorade.
+
+#: question
+> Leave this replay and go back to Extras?
+= Avsluta uppspelningen och gå tillbaka till Extra?
+
+#: question
+> Quit the game?
+= Avsluta spelet?
+
+#: extras screen
+> Gallery
+= Galleri
+
+#: extras screen
+> Music room
+= Musikrum
+
+#: extras screen
+> Scenes
+= Scener
+
+#: extras screen
+> Page {n} of {pages}
+= Sida {n} av {pages}
+
+#: extras screen
+> Click or Esc to go back  ·  Left/Right for the others
+= Klicka eller Esc för att gå tillbaka  ·  Vänster/Höger för de andra
+
+#: inventory and shop
+> Shop
+= Butik
+
+#: inventory and shop
+> Owned
+= Ägd
+
+#: inventory and shop
+> Use
+= Använd
+
+#: inventory and shop
+> Close
+= Stäng
+
+#: inventory and shop
+> Leave
+= Lämna
+
+#: inventory and shop
+> Done
+= Klar
+
+#: inventory and shop
+> Nothing here yet.
+= Inget här ännu.
+
+#: inventory and shop
+> Price: {n}
+= Pris: {n}
+
+#: inventory and shop
+> {price} {label} (owned: {n})
+= {price} {label} (du har: {n})
+
+#: text input
+> OK
+= OK
+
+#: message
+> Loaded
+= Laddad
+
+#: message
+> Quick saved
+= Snabbsparat
+
+#: message
+> No quick save yet
+= Ingen snabbsparning ännu
+
+#: message
+> Nothing here has been read yet
+= Inget här har lästs ännu
+
+#: message
+> Not unlocked yet
+= Inte upplåst ännu
+
+#: message
+> Not available during a replay
+= Inte tillgängligt under en uppspelning
+
+#: message
+> Can't use that now
+= Kan inte användas nu
+
+#: message
+> Already owned
+= Redan ägd
+
+#: message
+> Not enough {label}
+= Inte tillräckligt med {label}
+
+#: message
+> Bought {name}
+= Köpte {name}
+
+#: message
+> Could not save: {error}
+= Kunde inte spara: {error}
+
+#: message
+> Could not load: {error}
+= Kunde inte ladda: {error}
+
+#: message
+> Could not save which lines were read: {error}
+= Kunde inte spara vilka rader som lästs: {error}
+
+#: message
+> Could not save what was unlocked: {error}
+= Kunde inte spara vad som låsts upp: {error}

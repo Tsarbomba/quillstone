@@ -30,7 +30,7 @@ impl Game<'_> {
     pub(super) fn hud_press(&mut self, id: &str, action: HudAction) {
         let allowed = self.hud_ready() && can_press(self.program, self.session.state(), id);
         if !allowed {
-            return self.notify("Can't use that now");
+            return self.notify_ui("Can't use that now", &[]);
         }
         match action {
             HudAction::Call(_) => self.forward(Input::Hud(id.to_string())),
