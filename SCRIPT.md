@@ -1415,8 +1415,14 @@ replay or while skipping, buttons are drawn dimmed and a press only says "Can't 
 
 - A click on a button never also moves the story on.
 - A choice or hotspot under the same spot wins over the button, and so does the quick menu.
-- Buttons are **mouse only**. The keyboard and a gamepad already have their own keys for the
-  screens, and a `call=` button gets no focus of its own.
+- **Keyboard and gamepad.** At a normal line with no choices or hotspots, Up / Down (the D-pad)
+  pick out a button, first to last in the order you wrote them and round again; one hidden by
+  its `if=` is skipped. The picked button looks hovered (a picture without `hover=` gets the
+  theme's `button_hover_color` panel behind it).
+- Enter or Space (the gamepad's A) presses the picked button, as a click does. With none
+  picked they advance as usual.
+- The pick goes away when the story moves, any other key is pressed, the mouse moves or
+  clicks, or the button can't be pressed any more.
 - The click area is the rectangle the element is drawn at (for text, its estimated box), so
   keep a button clear of the textbox.
 

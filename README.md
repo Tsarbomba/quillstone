@@ -113,7 +113,7 @@ In the story:
 | --- | --- |
 | click / Space / Enter / Right | advance (the first press finishes typing the line) |
 | 1-9 or click | pick a choice |
-| Up / Down, Enter | pick out a choice, a menu entry or a save slot, and take it |
+| Up / Down, Enter | pick out a choice, a menu entry, a save slot or (at a normal line) a clickable HUD button, and take it |
 | Backspace / Left / wheel up | go back (rollback); wheel down rolls forward again |
 | A | auto-forward on/off (waits for the voice clip; stops at choices) |
 | Tab / hold Ctrl | skip lines already read |

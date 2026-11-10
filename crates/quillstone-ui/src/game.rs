@@ -189,6 +189,8 @@ pub struct Game<'p> {
     voice_files: std::collections::HashMap<String, String>,
     /// The choice the keyboard (or gamepad) is on.
     choice_focus: Option<usize>,
+    /// The HUD button the keyboard picked out (its id); see `hud.rs`. UI state only, never saved.
+    hud_focus: Option<String>,
     /// The save slot the keyboard is on, on the slot screens.
     slot_focus: Option<usize>,
     /// The inventory or shop screen.
@@ -282,6 +284,7 @@ impl<'p> Game<'p> {
             extras: Extras::default(),
             voice_files: std::collections::HashMap::new(),
             choice_focus: None,
+            hud_focus: None,
             slot_focus: None,
             bag: Bag::default(),
             input: InputField::default(),
@@ -491,6 +494,7 @@ impl<'p> Game<'p> {
             self.hover_muted = false;
         }
         if let Event::Wheel(dy) = event {
+            self.hud_focus = None;
             // One step per whole notch; turning the other way starts afresh.
             if dy.signum() != self.wheel.signum() {
                 self.wheel = 0.0;
@@ -505,7 +509,12 @@ impl<'p> Game<'p> {
         }
         let before = self.focus_state();
         let is_key = matches!(event, Event::Key(_));
+        // Up/Down are the only input that keeps the HUD focus; anything else (or the story moving) drops it.
+        let keeps_hud_focus = matches!(event, Event::Key(Key::Up | Key::Down) | Event::KeyReleased(_));
         self.route(event);
+        if !keeps_hud_focus {
+            self.hud_focus = None;
+        }
         if is_key && self.focus_state() != before {
             self.hover_muted = true;
         }
@@ -513,8 +522,9 @@ impl<'p> Game<'p> {
 
     /// Every keyboard focus there is, to tell whether a key moved one.
     #[allow(clippy::type_complexity)]
-    fn focus_state(&self) -> (Option<usize>, Option<usize>, Option<usize>, usize, Option<usize>, Option<usize>) {
-        (self.menu_focus, self.choice_focus, self.slot_focus, self.focus, self.bag.focus, self.extras.focus)
+    fn focus_state(&self) -> (Option<usize>, Option<usize>, Option<usize>, usize, Option<usize>, Option<usize>, Option<String>) {
+        let (menu, choice, slot) = (self.menu_focus, self.choice_focus, self.slot_focus);
+        (menu, choice, slot, self.focus, self.bag.focus, self.extras.focus, self.hud_focus.clone())
     }
 
     /// The cursor as far as hover looks go: none while the keyboard has the focus.
@@ -746,7 +756,7 @@ impl<'p> Game<'p> {
             // The tooltip of a hotspot follows the mouse, or sits by the region when the keyboard picked it.
             let pointer = self.pointer().filter(|_| pointed);
             if story || self.screen == Screen::MainMenu {
-                let look = HudLook { pointer: self.pointer().filter(|_| story), active: self.hud_ready() };
+                let look = HudLook { pointer: self.pointer().filter(|_| story), active: self.hud_ready(), focused: self.hud_focused().filter(|_| story) };
                 self.view.draw_list_hud(image_size, hover_choice, pointer, look)
             } else {
                 // A full-screen overlay is up: only the picture stays under its dim.
@@ -1029,8 +1039,9 @@ impl<'p> Game<'p> {
                     };
                     self.choice_focus = next.copied().or(self.choice_focus);
                 }
+                Key::Up | Key::Down => self.hud_move(key == Key::Up),
                 Key::Space | Key::Enter | Key::Right => {
-                    if self.view.choices.is_empty() {
+                    if self.view.choices.is_empty() && (key == Key::Right || !self.hud_press_focused()) {
                         self.advance();
                     }
                 }
@@ -1216,6 +1227,7 @@ impl<'p> Game<'p> {
     }
 
     fn show(&mut self, cmds: &[Cmd]) {
+        self.hud_focus = None; // the story moved
         let localized = self.localized(cmds);
         let cmds = localized.as_deref().unwrap_or(cmds);
         let voiced = self.with_auto_voice(cmds);

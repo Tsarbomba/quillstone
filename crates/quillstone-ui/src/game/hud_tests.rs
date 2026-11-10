@@ -351,3 +351,167 @@ fn an_open_button_opens_the_screen_like_its_key_and_does_not_advance() {
     click(&mut g, ON_LOG);
     assert_eq!(g.screen(), Screen::Settings);
 }
+
+// ---- the keyboard (and the gamepad's D-pad and A, which arrive as these keys) ----
+
+const KEYS: &str = "\
+---
+vars: { calls: 0, quests: [], shown: false }
+journal: quests
+---
+::hud{id=phone text=Phone call=#phone x=0.9 y=0.1}
+::hud{id=ghost text=Ghost call=#phone x=0.5 y=0.1 if=shown}
+::hud{id=log text=Log open=settings x=0 y=0}
+::hud{id=label text=Label x=0 y=0.5}
+# start
+**A:** one
+**A:** two
+::choice
+- [Go](#next)
+::
+# next
+::hotspots
+- [Door](#end){rect=0.1,0.2,0.2,0.3}
+::
+# end
+::end
+# phone
+::set{calls += 1}
+**A:** Ring.
+::return
+";
+
+fn focused<'a>(g: &'a Game) -> Option<&'a str> {
+    g.hud_focus.as_deref()
+}
+
+/// Whether the button's text is drawn right after the theme's hover panel.
+fn lit(g: &Game, text: &str) -> bool {
+    let hover = g.view().theme().button_hover_color;
+    let list = g.draw_list(&sized);
+    let at = list.iter().position(|d| matches!(d, Draw::Text { text: t, .. } if t == text)).expect("drawn");
+    at > 0 && matches!(&list[at - 1], Draw::Rect { color, .. } if *color == hover)
+}
+
+#[test]
+fn up_and_down_pick_out_the_pressable_visible_hud_buttons_in_order_and_wrap() {
+    let p = parse(KEYS).unwrap();
+    let mut g = instant_game(&p);
+    assert_eq!(focused(&g), None);
+    key(&mut g, Key::Down);
+    assert_eq!(focused(&g), Some("phone"), "first; `ghost` is hidden by its if=, `label` is no button");
+    key(&mut g, Key::Down);
+    assert_eq!(focused(&g), Some("log"));
+    key(&mut g, Key::Down);
+    assert_eq!(focused(&g), Some("phone"), "wraps");
+    key(&mut g, Key::Up);
+    assert_eq!(focused(&g), Some("log"));
+    key(&mut g, Key::Up);
+    assert_eq!(focused(&g), Some("phone"));
+    g.handle(Event::Key(Key::Backspace));
+    key(&mut g, Key::Up);
+    assert_eq!(focused(&g), Some("log"), "Up from nothing starts at the last");
+}
+
+#[test]
+fn enter_or_space_with_a_focused_button_presses_it_and_without_one_advances() {
+    let p = parse(KEYS).unwrap();
+    for press in [Key::Enter, Key::Space] {
+        let mut g = instant_game(&p);
+        key(&mut g, Key::Down);
+        key(&mut g, press);
+        assert_eq!((said(&g).as_str(), calls(&g)), ("Ring.", 1), "the `call=` label ran");
+        assert_eq!(focused(&g), None);
+        key(&mut g, press);
+        assert_eq!(said(&g), "one", "back at the line, advanced by nothing but the return");
+        key(&mut g, press);
+        assert_eq!(said(&g), "two", "no focus: advances as ever");
+    }
+    let mut g = instant_game(&p);
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.screen(), Screen::Settings, "`open=` opens the screen");
+    key(&mut g, Key::Escape);
+    assert_eq!((g.screen(), focused(&g)), (Screen::Story, None));
+}
+
+#[test]
+fn right_left_rollback_the_mouse_and_a_new_line_clear_the_hud_focus() {
+    let p = parse(KEYS).unwrap();
+    let mut g = instant_game(&p);
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Right);
+    assert_eq!((said(&g).as_str(), focused(&g)), ("two", None), "Right advances and clears");
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Left);
+    assert_eq!((said(&g).as_str(), focused(&g)), ("one", None), "Left rolls back and clears");
+    key(&mut g, Key::Down);
+    g.handle(Event::Wheel(1.0));
+    assert_eq!(focused(&g), None, "the wheel too");
+    key(&mut g, Key::Down);
+    g.handle(Event::CursorMoved(Some((900.0, 500.0))));
+    assert_eq!(focused(&g), None, "the mouse takes over");
+    key(&mut g, Key::Down);
+    g.handle(Event::Press(Button::Left));
+    assert_eq!(focused(&g), None, "and a click");
+}
+
+#[test]
+fn a_focused_button_that_stops_being_pressable_loses_the_focus_and_is_not_drawn_lit() {
+    let p = parse(&KEYS.replace("if=shown", "if=\"calls < 1\"")).unwrap();
+    let mut g = instant_game(&p);
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Down);
+    assert_eq!(focused(&g), Some("ghost"));
+    key(&mut g, Key::Space); // `ghost` calls the label, which makes its own condition false
+    assert_eq!((focused(&g), calls(&g)), (None, 1));
+    assert_eq!(g.hud_buttons(), ["phone", "log"], "`ghost` is hidden now");
+}
+
+#[test]
+fn choices_and_hotspots_keep_up_and_down_and_never_give_the_hud_focus() {
+    let p = parse(KEYS).unwrap();
+    let mut g = instant_game(&p);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    assert!(matches!(g.state().pending, Some(Cmd::ShowChoices { .. })));
+    key(&mut g, Key::Down);
+    assert_eq!((g.choice_focus, focused(&g)), (Some(0), None), "Down picks the choice");
+    key(&mut g, Key::Enter);
+    assert!(matches!(g.state().pending, Some(Cmd::ShowHotspots { .. })));
+    key(&mut g, Key::Down);
+    assert_eq!((g.choice_focus, focused(&g)), (Some(0), None), "Down picks the region");
+}
+
+#[test]
+fn the_focused_button_is_drawn_as_a_hovered_one_is() {
+    let p = parse(KEYS).unwrap();
+    let mut g = instant_game(&p);
+    assert!(!lit(&g, "Phone"));
+    key(&mut g, Key::Down);
+    assert!(lit(&g, "Phone") && !lit(&g, "Log"));
+    key(&mut g, Key::Down);
+    assert!(lit(&g, "Log") && !lit(&g, "Phone"));
+    // the mouse resting on another button does not light it as well
+    g.draw_list(&sized);
+    g.handle(Event::CursorMoved(ON_LOG));
+    assert!(lit(&g, "Log"));
+    key(&mut g, Key::Down);
+    assert!(lit(&g, "Phone") && !lit(&g, "Log"));
+}
+
+#[test]
+fn a_focused_picture_button_without_a_hover_picture_gets_the_hover_panel_behind_it() {
+    let p = parse(&PHONE.replace(" hover=assets/phone_hover.png", "")).unwrap();
+    let mut g = instant_game(&p);
+    let panel = |g: &Game| {
+        let hover = g.view().theme().button_hover_color;
+        g.draw_list(&sized).iter().any(|d| matches!(d, Draw::Rect { rect, color } if *color == hover && rect.w == 100.0))
+    };
+    g.draw_list(&sized);
+    g.handle(Event::CursorMoved(ON_PHONE));
+    assert!(!panel(&g), "the mouse alone changes nothing, as before");
+    key(&mut g, Key::Down); // phone is declared first
+    assert!(panel(&g));
+}

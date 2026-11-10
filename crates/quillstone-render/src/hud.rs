@@ -12,16 +12,18 @@ use crate::layout::{is_wide, Rect, Size, FULL_UV, VIRTUAL};
 use crate::theme::Theme;
 use crate::view::{faded, Align, Draw};
 
-/// How buttons look this frame: where the mouse is, and whether they work now (else they are dimmed).
+/// How buttons look this frame: where the mouse is, which one the keyboard picked (it looks hovered), and
+/// whether they work now (else they are dimmed).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HudLook {
+pub struct HudLook<'a> {
     pub pointer: Option<(f32, f32)>,
+    pub focused: Option<&'a str>,
     pub active: bool,
 }
 
-impl Default for HudLook {
+impl Default for HudLook<'_> {
     fn default() -> Self {
-        HudLook { pointer: None, active: true }
+        HudLook { pointer: None, focused: None, active: true }
     }
 }
 
@@ -147,7 +149,8 @@ impl HudLayer {
         }
         let button = e.action.is_some();
         let alpha = if button && !look.active { item.fade.alpha * INERT_ALPHA } else { item.fade.alpha };
-        let under_mouse = |r: Rect| button && look.active && look.pointer.is_some_and(|(x, y)| r.contains(x, y));
+        let focused = look.focused == Some(e.id.as_str());
+        let under_mouse = |r: Rect| button && look.active && (focused || look.pointer.is_some_and(|(x, y)| r.contains(x, y)));
         match &e.kind {
             HudKind::Text { text, size, color, back, pad } => {
                 let shown = interpolate(text, &self.vars);
@@ -155,7 +158,7 @@ impl HudLayer {
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));
                 let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad);
-                // A text button under the mouse gets the theme's hover colour as its panel.
+                // A text button under the mouse (or focused) gets the theme's hover colour as its panel.
                 let back = if under_mouse(r) { Some(theme.button_hover_color) } else { back };
                 Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad))
             }
@@ -190,6 +193,10 @@ impl HudLayer {
                 // the place of the normal one under the mouse once it is.
                 let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
                 let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
+                if focused && look.active && shown == src {
+                    // no hover picture to swap in: the keyboard focus shows as the panel a text button gets
+                    out.push(Draw::Rect { rect: dest, color: theme.button_hover_color });
+                }
                 out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
                 Some(dest)
             }
