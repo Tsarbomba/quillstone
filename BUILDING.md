@@ -141,8 +141,8 @@ OS and the hash of `tools/build-ffmpeg.sh`, so it rebuilds only when that script
 kit's `licenses/FFmpeg.txt` names the source and links the script; games packaged from the kit
 carry it too.
 
-Every push to `main` also runs the tests and clippy (`.github/workflows/test.yml`), so a broken
-commit shows up before a tag does.
+Every push to `main` also runs the tests and clippy on Linux and Windows
+(`.github/workflows/test.yml`). Tag only when that run is green.
 
 To try it before tagging, run the workflow by hand from the Actions tab ("Run workflow"). It
 builds the same kits and keeps them as workflow artifacts without making a release.

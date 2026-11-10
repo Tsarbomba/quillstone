@@ -10,7 +10,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows too: CRLF checkouts and drive-letter paths have broken tests that pass on Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
@@ -23,5 +28,5 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # The engine crates only: the player needs FFmpeg and is built by the release workflow.
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - run: cargo clippy --workspace --all-targets -- -D warnings
