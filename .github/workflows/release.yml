@@ -82,6 +82,9 @@ jobs:
           here=$(pwd -W 2>/dev/null || pwd) # Windows-style path for cargo
           echo "FFMPEG_DIR=$here/ffmpeg-slim" >> "$GITHUB_ENV"
 
+      - name: Test the workspace
+        run: cargo test --workspace
+
       - name: Build the command line tool
         run: cargo build --release -p quillstone
 

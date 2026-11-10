@@ -2,8 +2,8 @@
 //!
 //! Music, sound effects and voice each play on their own kira sub-track, so each
 //! channel can get its own volume. Music and voice are streamed from disk (no
-//! decode hitch on the main thread); one-shot sound effects are decoded up front so
-//! they start instantly. Looping sound effects are streamed like music (a long
+//! decode hitch on the main thread); one-shot sound effects are decoded on first use and
+//! then kept, so a repeat starts instantly. Looping sound effects are streamed like music (a long
 //! ambience is never decoded whole) with a loop region, on the sound track; the
 //! handle of each is kept per file so the mixer can stop or retune it. A loop that
 //! cannot start, or ends without being stopped, is reported (see
@@ -29,7 +29,7 @@ mod stub {
     pub struct Audio;
 
     impl Audio {
-        pub fn new<'a>(_assets: &Assets, _sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
+        pub fn new(_assets: &Assets) -> Option<Audio> {
             None
         }
 
@@ -124,9 +124,8 @@ mod real {
     }
 
     impl Audio {
-        /// Open the default sound device and preload the given sound effects
-        /// (paths relative to the game's files). `None` if there is no usable device.
-        pub fn new<'a>(assets: &Assets, sfx: impl Iterator<Item = &'a str>) -> Option<Audio> {
+        /// Open the default sound device. `None` if there is no usable device.
+        pub fn new(assets: &Assets) -> Option<Audio> {
             let mut manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
                 Ok(m) => m,
                 Err(e) => {
@@ -139,7 +138,7 @@ mod real {
             let mut clock = manager.add_clock(ClockSpeed::TicksPerSecond(CLOCK_HZ)).ok()?;
             clock.start();
 
-            let mut audio = Audio {
+            Some(Audio {
                 assets: assets.clone(),
                 _manager: manager,
                 music_track,
@@ -160,11 +159,7 @@ mod real {
                 voice_ended: false,
                 sfx_shots: Vec::new(),
                 warned: HashSet::new(),
-            };
-            for src in sfx {
-                audio.sfx_data(src); // loads it now (or warns)
-            }
-            Some(audio)
+            })
         }
 
         /// Call every frame. `true` once when a one-shot music track has ended, or when
@@ -402,7 +397,7 @@ mod real {
             std::mem::take(&mut self.failed_loops)
         }
 
-        /// A sound effect's decoded samples, loaded on first use (or at startup).
+        /// A sound effect's decoded samples, loaded on first use.
         fn sfx_data(&mut self, src: &str) -> Option<StaticSoundData> {
             if let Some(data) = self.sfx.get(src) {
                 return Some(data.clone()); // cheap: the samples are shared

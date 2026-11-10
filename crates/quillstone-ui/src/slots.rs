@@ -158,8 +158,8 @@ impl SaveFile {
                 "preview" => file.preview = unquote(value)?,
                 _ => {
                     // The session starts here: everything from this line on.
-                    let at = text.find(line)?;
-                    rest = &text[at..];
+                    // (by position: searching would match the same words inside the quoted preview)
+                    rest = &text[line.as_ptr() as usize - text.as_ptr() as usize..];
                     break;
                 }
             }
@@ -202,10 +202,19 @@ pub struct SlotInfo {
     pub scene: Option<View>,
 }
 
+/// What is in a slot: `None` if it is empty, `Some(None)` if a file is there but can't be read or is
+/// damaged (never taken for empty: it would be saved over without a question).
+fn slot_file(storage: &dyn Storage, slot: Slot) -> Option<Option<SaveFile>> {
+    match storage.load(&slot.file_name()) {
+        Ok(None) => None,
+        Ok(Some(text)) => Some(SaveFile::parse(&text)),
+        Err(_) => Some(None),
+    }
+}
+
 /// Read a slot for display. `None` if it is empty.
 pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option<SlotInfo> {
-    let text = storage.read(&slot.file_name())?;
-    let Some(file) = SaveFile::parse(&text) else {
+    let Some(file) = slot_file(storage, slot)? else {
         return Some(SlotInfo { seq: 0, time: String::new(), preview: "Unreadable save".into(), scene: None });
     };
     let scene = Session::load(program, &file.session).ok().map(|(_, cmds)| {
@@ -220,10 +229,7 @@ pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option
 /// The slot on `page` to write next: an empty one, else the oldest. (Auto and
 /// quick saves rotate through their page.)
 pub fn next_rotating_slot(storage: &dyn Storage, page: Page) -> Slot {
-    let seq = |i: usize| {
-        let slot = Slot { page, index: i };
-        storage.read(&slot.file_name()).map(|t| SaveFile::parse(&t).map_or(0, |f| f.seq))
-    };
+    let seq = |index: usize| slot_file(storage, Slot { page, index }).map(|file| file.map_or(0, |f| f.seq));
     let index = (0..SLOTS_PER_PAGE)
         .min_by_key(|&i| match seq(i) {
             None => (0, 0), // empty slots first
@@ -297,6 +303,34 @@ mod tests {
         assert!(Session::load(&p, &back.session).is_ok());
         assert!(SaveFile::parse("nonsense").is_none());
         assert!(SaveFile::parse("quillstone-save 1\nseq x\n").is_none());
+    }
+
+    #[test]
+    fn a_save_on_a_line_that_repeats_the_session_header_still_loads() {
+        let p = parse("**Mika:** The header says quillstone-session 2 here.\n").unwrap();
+        let (session, _) = Session::start(&p);
+        let file = SaveFile::new(&session, Timestamp { millis: 42, text: "noon".into() });
+        assert!(file.preview.contains("quillstone-session 2"));
+        let back = SaveFile::parse(&file.to_text()).unwrap();
+        assert_eq!(back, file);
+        assert!(Session::load(&p, &back.session).is_ok());
+    }
+
+    #[test]
+    fn an_unreadable_slot_file_is_not_an_empty_slot() {
+        let p = parse(STORY).unwrap();
+        let (session, _) = Session::start(&p);
+        let mut storage = MemoryStorage::default();
+        let locked = Slot { page: Page::Quick, index: 0 };
+        storage.unreadable.insert(locked.file_name());
+        let info = read_slot(&storage, &p, locked).unwrap();
+        assert_eq!((info.preview.as_str(), info.seq, info.scene.is_none()), ("Unreadable save", 0, true));
+        // slot 0 is unreadable and slots 1.. are empty: the rotation uses an empty one first
+        assert_eq!(next_rotating_slot(&storage, Page::Quick).index, 1);
+        for index in 1..SLOTS_PER_PAGE {
+            storage.write(&Slot { page: Page::Quick, index }.file_name(), &SaveFile::new(&session, storage.now()).to_text()).unwrap();
+        }
+        assert_eq!(next_rotating_slot(&storage, Page::Quick).index, 0, "only now is the unreadable file replaced");
     }
 
     #[test]

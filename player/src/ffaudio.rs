@@ -58,7 +58,7 @@ mod imp {
 
     pub fn load(assets: &Assets, src: &str) -> Result<StaticSoundData, FromFileError> {
         let mut d = FfmpegAudio::open(&assets.ffmpeg_url(src).map_err(error)?)?;
-        let mut frames = Vec::with_capacity(d.length);
+        let mut frames = Vec::new(); // not `d.length`: a damaged file may claim hours
         while let Some(chunk) = d.next_chunk()? {
             frames.extend(chunk);
         }

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use quillstone_render::{build_frame, letterbox, to_virtual, Size};
-use quillstone_script::{AssetKind, Op, Program};
+use quillstone_script::{AssetKind, Program};
 use quillstone_ui::settings::{window_placement, Area, FRAME_ROOM};
 use quillstone_ui::{Assets, Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
 use quillstone_video::Videos;
@@ -168,13 +168,7 @@ fn main() {
         .map(|text| Settings::parse(&text))
         .unwrap_or_default();
 
-    // One-shot sound effects are preloaded so they start instantly; music, voice and
-    // looping effects stream (a long ambience is never decoded at startup).
-    let sfx = program.ops.iter().filter_map(|op| match op {
-        Op::Sfx { src, .. } => Some(src.as_str()),
-        _ => None,
-    });
-    let audio = Audio::new(&assets, sfx);
+    let audio = Audio::new(&assets);
 
     let game_settings_window = (settings.window_size, settings.window_pos, settings.window_maximized);
     let mut game = Game::new(program, settings, Box::new(FileStorage { dir }));
@@ -295,7 +289,7 @@ fn find_game() -> Option<(Assets, PathBuf)> {
         let mut scripts = std::fs::read_dir(&dir)
             .ok()?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.is_file() && p.to_string_lossy().ends_with(".quill.md"));
+            .filter(|p| p.is_file() && p.to_string_lossy().to_ascii_lowercase().ends_with(".quill.md"));
         match (scripts.next(), scripts.next()) {
             (Some(only), None) => Some(open_folder(only)),
             _ => None,

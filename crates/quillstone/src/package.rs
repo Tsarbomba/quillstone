@@ -65,6 +65,26 @@ fn require_new(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Run `write` into `out` (new or empty, see [`require_new`]). Whatever a failed run wrote is removed, so the
+/// retry isn't refused for a half-built folder: a folder that was there (empty) is emptied, not removed.
+fn into_new(out: &Path, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    require_new(out)?;
+    let existed = out.exists();
+    let result = write();
+    if result.is_err() {
+        let _ = if existed {
+            std::fs::read_dir(out).map(|d| {
+                for e in d.filter_map(Result::ok) {
+                    let _ = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+                }
+            })
+        } else {
+            std::fs::remove_dir_all(out)
+        };
+    }
+    result
+}
+
 /// Every file the game uses, each once, in the order it first needs them: what `package` ships and
 /// what `check` measures unused files against.
 fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files, String> {
@@ -166,7 +186,6 @@ pub fn unused_assets(root: &Path, script_name: &str, program: &Program) -> Optio
 }
 
 pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
-    let root = quillstone_ui::source::script_dir(opts.script);
     if !opts.player.is_file() {
         return Err(format!("the player `{}` doesn't exist (build it with `cargo build --release` in player/)", opts.player.display()));
     }
@@ -175,7 +194,19 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     if zip_path.as_ref().is_some_and(|z| z.exists()) {
         return Err(format!("`{}` already exists; pick another folder or remove it", zip_path.unwrap().display()));
     }
+    let name = exe_name(opts.name.or(program.title.as_deref()));
+    let ext = opts.player.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let exe_file = format!("{name}{ext}");
+    // The exe sits beside what `package` writes there, so it must not take one of those names.
+    let taken = [if opts.folder { "game" } else { "game.qsa" }, "licenses"];
+    if taken.iter().any(|t| t.eq_ignore_ascii_case(&exe_file)) {
+        return Err(format!("can't name the program `{exe_file}`: that is a file or folder of the package; pass `--name <other>` (or set a `title:`)"));
+    }
+    into_new(opts.out, || write_package(opts, program, &exe_file, zip_path))
+}
 
+fn write_package(opts: &Options, program: &Program, exe_file: &str, zip_path: Option<PathBuf>) -> Result<(), String> {
+    let root = quillstone_ui::source::script_dir(opts.script);
     let script_name = opts.script.file_name().and_then(|n| n.to_str()).ok_or("the script needs a plain file name")?;
     let files = used_files(root, script_name, program)?;
     for f in &files.list {
@@ -202,9 +233,7 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
     }
     let files = files.list;
 
-    let name = exe_name(opts.name.or(program.title.as_deref()));
-    let ext = opts.player.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    let exe = opts.out.join(format!("{name}{ext}"));
+    let exe = opts.out.join(exe_file);
     bytes += copy(opts.player, &exe)?;
     match &program.icon {
         Some((_, icon)) => {
@@ -216,7 +245,8 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         }
     }
 
-    let lib_dir = opts.libs.or(opts.player.parent()).unwrap_or_else(|| Path::new("."));
+    // (beside a player given by bare file name is `.`, not the empty path)
+    let lib_dir = opts.libs.unwrap_or_else(|| quillstone_ui::source::script_dir(opts.player));
     let libs = ffmpeg_libs(lib_dir);
     for lib in &libs {
         bytes += copy(lib, &opts.out.join(lib.file_name().expect("listed from a folder")))?;
@@ -241,7 +271,10 @@ pub fn package(opts: &Options, program: &Program) -> Result<(), String> {
         bytes as f64 / 1e6
     );
     if let Some(zip) = zip_path {
-        zip_folder(opts.out, &zip)?;
+        if let Err(e) = zip_folder(opts.out, &zip) {
+            let _ = std::fs::remove_file(&zip); // a half-written zip (one that existed was refused above)
+            return Err(e);
+        }
         println!("zipped it as {}", zip.display());
     }
     Ok(())
@@ -358,18 +391,20 @@ fn embed_icon(exe: &Path, picture: &[u8]) -> Result<bool, String> {
 /// `quillstone unpack`: write every file of a game archive under `out` (a new or empty folder).
 pub fn unpack(archive: &Path, out: &Path) -> Result<(), String> {
     let archive = quillstone_ui::archive::Archive::open(archive)?;
-    require_new(out)?;
     let mut paths: Vec<&str> = archive.paths().collect();
     paths.sort_unstable();
-    for path in &paths {
-        let to = out.join(path);
-        if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    into_new(out, || {
+        for path in &paths {
+            let to = out.join(path);
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            }
+            let mut from = archive.slice(path).expect("listed by the archive");
+            let mut file = std::fs::File::create_new(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+            std::io::copy(&mut from, &mut file).map_err(|e| format!("cannot write {}: {e}", to.display()))?;
         }
-        let mut from = archive.slice(path).expect("listed by the archive");
-        let mut file = std::fs::File::create_new(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
-        std::io::copy(&mut from, &mut file).map_err(|e| format!("cannot write {}: {e}", to.display()))?;
-    }
+        Ok(())
+    })?;
     println!("unpacked {} file(s) into {} (the script is {})", paths.len(), out.display(), archive.main());
     Ok(())
 }
@@ -614,6 +649,52 @@ mod tests {
         let again = Options { out: &base.join("Other"), ..opts };
         let again = Options { out: &out, ..again };
         assert!(package(&again, &program).unwrap_err().contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_exe_name_that_collides_with_the_package_is_refused_before_anything_is_written() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-collide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("g.quill.md"), "Hi.\n").unwrap();
+        std::fs::write(base.join("player"), "player bytes").unwrap();
+        let program = quillstone_script::parse("Hi.\n").unwrap(); // untitled: the exe would be `game`
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player"), out: &out, name: None, libs: None, folder: true, zip: false };
+        assert!(package(&opts, &program).unwrap_err().contains("--name"));
+        assert!(!out.exists());
+        let licenses = Options { name: Some("Licenses"), ..opts };
+        assert!(package(&licenses, &program).unwrap_err().contains("--name"));
+        assert!(!out.exists());
+        // as a single archive the exe may be `game`
+        let archive = Options { folder: false, ..opts };
+        package(&archive, &program).unwrap();
+        assert!(out.join("game").is_file() && out.join("game.qsa").is_file());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_failed_package_leaves_no_folder_and_the_retry_succeeds() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(&src).unwrap();
+        let script = "---\ntitle: G\nicon: icon.png\n---\nHi.\n";
+        std::fs::write(src.join("g.quill.md"), script).unwrap();
+        std::fs::write(base.join("player"), "player bytes").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("g.quill.md"), player: &base.join("player"), out: &out, name: None, libs: None, folder: true, zip: false };
+        // the script is copied, then the missing icon stops it
+        assert!(package(&opts, &program).is_err());
+        assert!(!out.exists());
+        // an existing empty folder is emptied, not removed
+        std::fs::create_dir_all(&out).unwrap();
+        assert!(package(&opts, &program).is_err());
+        assert!(out.is_dir() && std::fs::read_dir(&out).unwrap().next().is_none());
+        std::fs::write(src.join("icon.png"), png(16, 16)).unwrap();
+        package(&opts, &program).unwrap();
+        assert!(out.join("G").is_file());
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -974,6 +1055,11 @@ mod tests {
         }
         assert!(unpack(&out.join("game.qsa"), &un).unwrap_err().contains("isn't empty"));
         assert!(unpack(&base.join("player.exe"), &base.join("un2")).unwrap_err().contains("not a usable game archive"));
+        // an archive holding `a` and `a/b` can't be written out: nothing half-unpacked is left
+        let files = [("a".to_string(), src.join("main.quill.md")), ("a/b".to_string(), src.join("main.quill.md"))];
+        quillstone_ui::archive::write(&base.join("odd.qsa"), "a", &files).unwrap();
+        assert!(unpack(&base.join("odd.qsa"), &base.join("un3")).unwrap_err().contains("cannot create"));
+        assert!(!base.join("un3").exists());
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
