@@ -461,7 +461,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
     let noun = |l: usize, a: &str| if screens.contains(&(l, a)) { "imagemap picture" } else { "hotspot image" };
     let spots = program.assets_with_lines().filter(|(l, _, a)| hot.contains(&(*l, *a))).map(|(l, _, a)| (l, a, noun(l, a)));
     let icons = program.item_icons().map(|(l, a)| (l, a, "item icon"));
-    let icons = icons.chain(program.portraits().map(|(l, a)| (l, a, "portrait")));
+    let pictures = icons.chain(program.portraits().map(|(l, a)| (l, a, "portrait")));
     let frames = program.anim_frames().map(|(l, _, a)| (l, a, "animation frame"));
     let mut out = Vec::new();
     // Animations with a great many frames cost load time and memory all at once.
@@ -492,7 +492,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
             }
         }
     }
-    for (line, asset, noun) in spots.chain(icons).chain(frames) {
+    for (line, asset, noun) in spots.chain(pictures).chain(frames) {
         let at = at(program, script, line);
         let mut size = None;
         let problem = asset_problem(root, asset, noun, "won't show in a shipped game", |f| match picture::read_picture(f) {
@@ -508,7 +508,7 @@ fn picture_findings(program: &Program, script: &Path, root: &Path, hot: &HashSet
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: frames beyond {BIG_FRAME_SIDE} px only cost load time and memory (the screen is 1920x1080)"),
             )),
-            (None, Some((w, h))) if !["animation frame", "imagemap picture", "portrait"].contains(&noun) && w.max(h) > BIG_ICON_SIDE => out.push((
+            (None, Some((w, h))) if ["item icon", "hotspot image"].contains(&noun) && w.max(h) > BIG_ICON_SIDE => out.push((
                 false,
                 format!("{at}: warning: `{asset}` is {w}x{h}: icons are drawn at about 100 px; a smaller file loads faster and saves memory"),
             )),
@@ -628,25 +628,19 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
             // A page line is judged against the page: too long only if it alone doesn't fit a page.
-            Op::Say { speaker, text, page: true, .. } => {
-                let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
+            Op::Say { speaker, text, page, .. } => {
+                let (lines, fit, room) = if *page {
+                    let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
+                    (lines, fit, "a page")
+                } else {
+                    let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
+                    (lines, fit, "the textbox")
+                };
                 if lines > fit + 1 {
                     out.push((
                         program.lines[pc],
                         format!(
-                            "this line takes about {lines} lines and a page fits {fit}; it will be shown \
-                             smaller, or cut off if very long (split it into two lines?)"
-                        ),
-                    ));
-                }
-            }
-            Op::Say { speaker, text, page: false, .. } => {
-                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
-                if lines > fit + 1 {
-                    out.push((
-                        program.lines[pc],
-                        format!(
-                            "this line takes about {lines} lines and the textbox fits {fit}; it will be shown \
+                            "this line takes about {lines} lines and {room} fits {fit}; it will be shown \
                              smaller, or cut off if very long (split it into two lines?)"
                         ),
                     ));
@@ -661,7 +655,7 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
                 }
                 let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none()).collect();
                 let Some(rect) = quillstone_render::view::choice_rects(theme, buttons.len()).first().copied() else { continue };
-                let size = quillstone_render::view::choice_text_size(theme, rect);
+                let size = quillstone_render::view::choice_text_size(theme.text_size, rect);
                 let fit = (rect.h / quillstone_render::line_height(size)).floor() as usize;
                 for o in buttons {
                     let lines = quillstone_render::estimate_lines(&plain(&o.text), size, rect.w);

@@ -820,9 +820,9 @@ fn call_from_line(state: &mut State, program: &Program, label: &str) {
 }
 
 /// A page line that is shown again later (after a line call returns, or a load that re-runs it) leaves
-/// the page now, so it joins the page once, not twice.
+/// the page now, so it joins the page once, not twice. A waiting line with a page is always its last entry.
 pub(crate) fn unshow_page_line(state: &mut State) {
-    if matches!(state.pending, Some(Cmd::Say { .. })) && state.page.last().is_some() && state.page.last() == state.line.as_ref() {
+    if matches!(state.pending, Some(Cmd::Say { .. })) {
         state.page.pop();
     }
 }
@@ -975,6 +975,9 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
     }
     if let Some(cmd) = rebuild_pending(program, op, &state.vars, &|s| s.to_string()) {
         remember_line(state, &cmd);
+        if let (Cmd::Say { .. }, Some(last)) = (&cmd, state.page.last_mut()) {
+            *last = state.line.clone().unwrap(); // the page line on screen shows the refreshed text
+        }
         state.pending = Some(cmd);
     }
     if waits_on_nothing(state, program) {

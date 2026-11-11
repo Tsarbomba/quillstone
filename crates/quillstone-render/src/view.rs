@@ -1088,10 +1088,15 @@ impl View {
     /// The size to draw dialogue `d` at: the theme's times the text scale, or when the line doesn't fit the
     /// textbox that big, the largest 10% step down that does (the theme's own size at worst, as `check` judged).
     fn dialogue_size(&self, d: &Dialogue, has_name: bool) -> f32 {
-        let body = dialogue_body(&self.theme, has_name);
         fitted_size(&self.theme, self.text_scale, |size| {
-            crate::estimate_lines_styled(&d.text, &d.runs, size, body.w) <= (body.h / line_height(size)).floor() as usize
+            let (lines, fit) = dialogue_lines(&self.theme, &d.text, &d.runs, has_name, size);
+            lines <= fit
         })
+    }
+
+    /// The theme's text size times the player's text scale.
+    fn text_size(&self) -> f32 {
+        self.theme.text_size * self.text_scale
     }
 
     /// Apply one batch of commands from the runtime.
@@ -1818,7 +1823,7 @@ impl View {
                     runs: Vec::new(),
                     visible_chars: usize::MAX,
                     rect: screen,
-                    size: self.theme.text_size * self.text_scale,
+                    size: self.text_size(),
                     color: self.theme.text_color,
                     align: Align::Center,
                     outline: None,
@@ -1882,7 +1887,7 @@ impl View {
             // A passing message in the top right corner, over the HUD.
             if let Some(n) = &self.notice {
                 let alpha = n.alpha();
-                let (size, pad) = ((theme.text_size * self.text_scale * 0.75).round(), 16.0);
+                let (size, pad) = ((self.text_size() * 0.75).round(), 16.0);
                 let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
                 crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad);
             }
@@ -1988,10 +1993,15 @@ impl View {
                 (false, false) => theme.button_color,
             };
             out.push(Draw::Rect { rect, color });
-            let size = (theme.text_size * self.text_scale).min(rect.h * 0.5);
             // With a reason the label moves up and the reason sits under it, smaller.
             let label_rect = if reason.is_some() { Rect::new(rect.x, rect.y, rect.w, rect.h * 0.62) } else { rect };
             let Rich { text, runs, .. } = rich(label);
+            // A label too wide for its button at the player's text size is drawn smaller, then the height cap.
+            let shrink = if reason.is_some() { 0.8 } else { 1.0 };
+            let size = choice_text_size(
+                fitted_size(theme, self.text_scale, |s| crate::estimate_lines_styled(&text, &runs, s * shrink, rect.w) <= 1),
+                rect,
+            );
             out.push(Draw::Text {
                 text,
                 runs,
@@ -2020,7 +2030,7 @@ impl View {
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
         if let Some((spot, r)) = hovered_spot {
             let Rich { text, runs, .. } = rich(&spot.label);
-            let size = (theme.text_size * self.text_scale * 0.8).round();
+            let size = (self.text_size() * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
                 .min(VIRTUAL.w - 2.0 * TIP_MARGIN);
             let h = size * 1.35 + TIP_PAD;
@@ -2106,9 +2116,8 @@ const DEFAULT_PORTRAIT: f32 = 320.0;
 /// The picture fitted inside `rect` whole, standing on its bottom edge, in the middle of it.
 fn push_portrait(out: &mut Vec<Draw>, src: &str, rect: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
     let Some(size) = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0) else { return };
-    let k = (rect.w / size.w).min(rect.h / size.h);
-    let (w, h) = (size.w * k, size.h * k);
-    let dest = Rect::new(rect.x + (rect.w - w) / 2.0, rect.y + rect.h - h, w, h);
+    let mut dest = place(size, rect, Fit::Contain).dest;
+    dest.y = rect.y + rect.h - dest.h;
     out.push(Draw::Image { src: src.to_string(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
 }
 
@@ -2142,10 +2151,14 @@ pub fn dialogue_body(theme: &Theme, with_speaker: bool) -> Rect {
 /// `size` px, and how many fit: a bigger run is counted as wide as it will really be drawn. A
 /// line that doesn't fit is drawn smaller by the player. Plain text works too.
 pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
-    let body = dialogue_body(theme, with_speaker);
-    let line_h = line_height(size);
     let Rich { text, runs, .. } = rich(tagged);
-    (crate::estimate_lines_styled(&text, &runs, size, body.w), (body.h / line_h).floor() as usize)
+    dialogue_lines(theme, &text, &runs, with_speaker, size)
+}
+
+/// [`dialogue_lines_tagged`] for text already split from its runs.
+fn dialogue_lines(theme: &Theme, text: &str, runs: &[TextRun], with_speaker: bool, size: f32) -> (usize, usize) {
+    let body = dialogue_body(theme, with_speaker);
+    (crate::estimate_lines_styled(text, runs, size, body.w), (body.h / line_height(size)).floor() as usize)
 }
 
 /// [`dialogue_lines_tagged`] for a page line: about how many lines it takes at `size` px (the speaker's name
@@ -2184,9 +2197,9 @@ pub fn hotspot_rect(spot: &Spot) -> Rect {
     Rect::new(x * VIRTUAL.w, y * VIRTUAL.h, w * VIRTUAL.w, h * VIRTUAL.h)
 }
 
-/// The text size of a choice button: the theme's, smaller on buttons squeezed by many options.
-pub fn choice_text_size(theme: &Theme, rect: Rect) -> f32 {
-    theme.text_size.min(rect.h * 0.5)
+/// The text size of a choice button: `size`, smaller on buttons squeezed by many options.
+pub fn choice_text_size(size: f32, rect: Rect) -> f32 {
+    size.min(rect.h * 0.5)
 }
 
 pub fn choice_rects(theme: &Theme, count: usize) -> Vec<Rect> {
@@ -2508,6 +2521,26 @@ mod tests {
         // the next ordinary line types out again
         v.apply(&[say(None, "new")]);
         assert!(!v.dialogue.as_ref().unwrap().is_complete());
+    }
+
+    #[test]
+    fn a_choice_label_too_wide_for_its_button_is_drawn_smaller_at_a_big_text_scale() {
+        let long = "Walk back through the old wet forest path";
+        let size_of = |scale: f32, label: &str| {
+            let mut v = View::new().with_text_scale(scale);
+            v.apply(&[Cmd::ShowChoices { options: vec![label.into()], locked: Vec::new() }]);
+            let rect = choice_rects(&v.theme, 1)[0];
+            let l = v.draw_list(&|_| None, None);
+            let size = l.iter().find_map(|d| if let Draw::Text { text, size, .. } = d { (text == label).then_some(*size) } else { None });
+            (size.unwrap(), rect)
+        };
+        let theme = Theme::default();
+        let (short, _) = size_of(1.5, "Go");
+        let (big, rect) = size_of(1.5, long);
+        assert_eq!(short, (theme.text_size * 1.5).min(rect.h * 0.5));
+        assert!(big < short && big >= theme.text_size, "{big} {short}");
+        assert_eq!(crate::estimate_lines(long, big, rect.w), 1);
+        assert_eq!(size_of(1.0, long).0, theme.text_size.min(rect.h * 0.5), "unscaled text is as it was");
     }
 
     // ---- background --------------------------------------------------------

@@ -53,8 +53,9 @@ const MAX_SFX_LOOPS: usize = 64;
 const MAX_EXTRA_VARS: usize = 1_024;
 
 /// The largest save the game reads (the whole file, header included): a hostile or
-/// damaged file costs several times its size in memory while it is parsed. A real
-/// save is tens of kilobytes. Bigger is refused ("unreadable" on the Load screen).
+/// damaged file costs several times its size in memory while it is parsed. A typical
+/// save is tens of kilobytes, a page-heavy game's a few hundred. Bigger is refused ("unreadable" on the
+/// Load screen).
 pub const MAX_SAVE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Room left under [`MAX_SAVE_BYTES`] for what a slot file adds in front of the session text (its header),

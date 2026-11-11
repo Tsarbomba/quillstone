@@ -1,7 +1,7 @@
 //! Full-screen pages in the runtime: what joins and clears the page, the cap, rollback, saves
 //! (old, round trip, hostile), a Use that comes back to a page line, languages and the tester.
 
-use quillstone_script::{parse, Catalog, Program};
+use quillstone_script::{parse, Catalog, Program, Value};
 
 use crate::test_util::{next, replace_records};
 use crate::{explore, Cmd, Input, Session, MAX_PAGE_LINES};
@@ -224,6 +224,20 @@ fn using_an_item_from_a_page_line_shows_the_line_again_once() {
     assert!(!cmds.is_empty());
     assert_eq!(texts(&game), ["One.", "Two."], "the line is not on the page twice");
     assert_eq!(page_of(&cmds).unwrap(), ["One.", "Two."]);
+}
+
+#[test]
+fn a_page_line_that_a_persistent_value_changed_joins_the_page_once_after_a_use() {
+    let src = "---\npersistent: { k: 0 }\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=pill name=Pill use=#eat}\n::set{bag+=\"pill\"}\n::page\nOne.\n\nSeen {k}.\n\nThree.\n# eat\n::return\n";
+    let p = parse(src).unwrap();
+    let (mut game, _) = Session::start(&p);
+    next(&mut game);
+    assert_eq!(texts(&game), ["One.", "Seen 0."]);
+    game.set_persistent([("k".to_string(), Value::Int(5))].into_iter().collect());
+    assert_eq!(texts(&game), ["One.", "Seen 5."], "the page shows the refreshed line");
+    let cmds = game.input(Input::Use("pill".into()));
+    assert_eq!(page_of(&cmds).unwrap(), ["One.", "Seen 5."]);
+    assert_eq!(texts(&game), ["One.", "Seen 5."]);
 }
 
 #[test]

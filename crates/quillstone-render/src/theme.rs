@@ -476,43 +476,22 @@ impl Theme {
                     None => format!("`{key}` must be four numbers `x, y, w, h` that lie inside the 1920x1080 screen"),
                 })
             };
+            if let Some((_, min, slot)) = RECT_KEYS.iter().find(|k| k.0 == key) {
+                match rect(*min) {
+                    Ok(r) => *slot(&mut t) = r,
+                    Err(m) => bad(m),
+                }
+                continue;
+            }
             match key {
                 "input_rect" => match rect(Some(MIN_INPUT_RECT)) {
                     Ok(r) => t.input_rect = Some(r),
-                    Err(m) => bad(m),
-                },
-                "page_rect" => match rect(Some(MIN_PAGE_RECT)) {
-                    Ok(r) => t.page_rect = r,
-                    Err(m) => bad(m),
-                },
-                "options_rect" => match rect(Some(MIN_OPTIONS_RECT)) {
-                    Ok(r) => t.options_rect = r,
-                    Err(m) => bad(m),
-                },
-                "menu_rect" => match rect(Some(MIN_MENU_RECT)) {
-                    Ok(r) => t.menu_rect = r,
-                    Err(m) => bad(m),
-                },
-                "slots_rect" => match rect(Some(MIN_SLOTS_RECT)) {
-                    Ok(r) => t.slots_rect = r,
-                    Err(m) => bad(m),
-                },
-                "history_rect" => match rect(Some(MIN_HISTORY_RECT)) {
-                    Ok(r) => t.history_rect = r,
-                    Err(m) => bad(m),
-                },
-                "menu_title_rect" => match rect(None) {
-                    Ok(r) => t.menu_title_rect = r,
                     Err(m) => bad(m),
                 },
                 "menu_title" => match value {
                     "show" => t.menu_title = true,
                     "hide" => t.menu_title = false,
                     _ => bad("`menu_title` must be `show` or `hide`".into()),
-                },
-                "inventory_panel_rect" => match rect(None) {
-                    Ok(r) => t.inventory_panel_rect = r,
-                    Err(m) => bad(m),
                 },
                 "inventory_description_rect" => match rect(None) {
                     Ok(r) => t.inventory_description_rect = Some(r),
@@ -699,6 +678,18 @@ const NUMBER_KEYS: [NumberKey; 11] = [
     ("voice_duck", 0.0, 1.0, " (1 = no ducking)", |t| &mut t.voice_duck),
     ("speaker_highlight", 0.0, 1.0, " (1 = no dimming)", |t| &mut t.speaker_highlight),
     ("choice_timer_height", 2.0, 40.0, "", |t| &mut t.choice_timer_height),
+];
+
+/// Plain `x, y, w, h` keys of the theme file: the least size each allows (none: any), and its field.
+type RectKey = (&'static str, Option<[f32; 2]>, fn(&mut Theme) -> &mut [f32; 4]);
+const RECT_KEYS: [RectKey; 7] = [
+    ("page_rect", Some(MIN_PAGE_RECT), |t| &mut t.page_rect),
+    ("options_rect", Some(MIN_OPTIONS_RECT), |t| &mut t.options_rect),
+    ("menu_rect", Some(MIN_MENU_RECT), |t| &mut t.menu_rect),
+    ("slots_rect", Some(MIN_SLOTS_RECT), |t| &mut t.slots_rect),
+    ("history_rect", Some(MIN_HISTORY_RECT), |t| &mut t.history_rect),
+    ("menu_title_rect", None, |t| &mut t.menu_title_rect),
+    ("inventory_panel_rect", None, |t| &mut t.inventory_panel_rect),
 ];
 
 /// A file path of the theme file, normalised like the script's own paths, so one file under two spellings is one file.

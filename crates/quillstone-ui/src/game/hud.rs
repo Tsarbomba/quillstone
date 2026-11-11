@@ -46,7 +46,7 @@ impl Game<'_> {
     /// Up/Down: the first (last) button, then the next (previous), wrapping round as the hotspots do.
     pub(super) fn hud_move(&mut self, backwards: bool) {
         let buttons = self.hud_buttons();
-        let at = self.hud_focused().and_then(|f| buttons.iter().position(|b| b == f));
+        let at = buttons.iter().position(|b| Some(b.as_str()) == self.hud_focus.as_deref());
         let n = buttons.len();
         let next = match at {
             _ if n == 0 => return,
@@ -62,10 +62,9 @@ impl Game<'_> {
     pub(super) fn hud_press_focused(&mut self) -> bool {
         let Some(id) = self.hud_focused().map(str::to_string) else { return false };
         let action = self.session.state().hud.iter().find(|h| h.id == id).and_then(|h| h.action.clone());
-        action.is_some_and(|a| {
-            self.hud_press(&id, a);
-            true
-        })
+        let Some(action) = action else { return false };
+        self.hud_press(&id, action);
+        true
     }
 
     /// A click on a HUD button.

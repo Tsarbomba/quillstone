@@ -2257,6 +2257,12 @@ fn item_icons_are_wanted_only_for_a_shop_or_inventory_coming_up() {
 }
 
 #[test]
+fn every_character_portrait_is_wanted_ahead() {
+    let p = parse("::character{id=mika name=Mika portrait=faces/mika.png}\n**A:** hi\n").unwrap();
+    assert!(new_game(&p, instant()).upcoming_images().contains(&"faces/mika.png"));
+}
+
+#[test]
 fn a_shop_is_a_checkpoint_stops_skipping_and_a_purchase_is_not() {
     let p = parse(SHOPPING).unwrap();
     let mut first = new_game(&p, instant());

@@ -870,6 +870,7 @@ impl<'p> Game<'p> {
         }
         let pc = self.session.state().pc;
         let mut out = self.program.images_ahead(pc, AHEAD);
+        out.extend(self.program.portraits().map(|(_, file)| file)); // a portrait line must not wait for its picture
         // Every frame of an animation on stage now: later frames are not in the draw list yet.
         for id in self.view.shown_animations() {
             if let Some(anim) = self.program.anims.get(id) {
@@ -1525,7 +1526,7 @@ impl<'p> Game<'p> {
         let row = rows(self.has_language_row())[self.focus];
         match row_slider(&self.settings, row) {
             // text size has five notches over the slider: one key press moves one notch
-            Some(pos) if row == Row::TextSize => self.set_slider(self.focus, pos + delta.signum() * 0.2),
+            Some(pos) if row == Row::TextSize => self.set_slider(self.focus, pos + delta.signum() * 0.1 / (crate::settings::MAX_TEXT_SCALE - crate::settings::MIN_TEXT_SCALE)),
             Some(pos) => self.set_slider(self.focus, pos + delta),
             None => self.toggle_row(row),
         }

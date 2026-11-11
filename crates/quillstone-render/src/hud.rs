@@ -150,16 +150,16 @@ impl HudLayer {
         let button = e.action.is_some();
         let alpha = if button && !look.active { item.fade.alpha * INERT_ALPHA } else { item.fade.alpha };
         let focused = look.focused == Some(e.id.as_str());
-        let under_mouse = |r: Rect| button && look.active && (focused || look.pointer.is_some_and(|(x, y)| r.contains(x, y)));
+        let lit = |r: Rect| button && look.active && (focused || look.pointer.is_some_and(|(x, y)| r.contains(x, y)));
         match &e.kind {
             HudKind::Text { text, size, color, back, pad } => {
                 let shown = interpolate(text, &self.vars);
-                let size = size.unwrap_or(theme.text_size);
+                let size = size.unwrap_or(theme.text_size); // the writer's layout: HUD text does not follow the player's text size
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));
                 let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad);
                 // A text button under the mouse (or focused) gets the theme's hover colour as its panel.
-                let back = if under_mouse(r) { Some(theme.button_hover_color) } else { back };
+                let back = if lit(r) { Some(theme.button_hover_color) } else { back };
                 Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad))
             }
             HudKind::Bar { value, max, size: [w, h], color, back, border } => {
@@ -192,7 +192,7 @@ impl HudLayer {
                 // The hover picture is asked for every frame (so it is loaded before the first hover) and takes
                 // the place of the normal one under the mouse once it is.
                 let hover = e.hover.as_ref().filter(|h| image_size(h).is_some());
-                let shown = hover.filter(|_| under_mouse(dest)).unwrap_or(src);
+                let shown = hover.filter(|_| lit(dest)).unwrap_or(src);
                 if focused && look.active && shown == src {
                     // no hover picture to swap in: the keyboard focus shows as the panel a text button gets
                     out.push(Draw::Rect { rect: dest, color: theme.button_hover_color });

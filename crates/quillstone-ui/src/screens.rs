@@ -3,8 +3,8 @@
 //! Pure functions over virtual coordinates (1920x1080), like the view's own
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
-use quillstone_render::theme::{DEFAULT_HISTORY_RECT, DEFAULT_HISTORY_TEXT_SIZE, DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
-use quillstone_render::{estimate_lines, line_height, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
+use quillstone_render::theme::{DEFAULT_HISTORY_RECT, DEFAULT_HISTORY_TEXT_SIZE, DEFAULT_MENU_RECT, DEFAULT_MENU_TITLE_RECT, DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
+use quillstone_render::{estimate_lines, line_height, place, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
 use quillstone_script::{KeyPress, TimingBar};
@@ -381,7 +381,7 @@ pub fn menu_buttons(can_continue: bool, extras: bool) -> Vec<MenuButton> {
 
 /// The factor the theme's `menu_rect` height makes of the buttons' sizes (1 at the default 556: six buttons).
 fn menu_factor(t: &Theme) -> f32 {
-    t.menu_rect[3] / 556.0
+    t.menu_rect[3] / DEFAULT_MENU_RECT[3]
 }
 
 /// Up to six buttons stack in `menu_rect`: 76 high, every 96, at the default size.
@@ -422,7 +422,7 @@ pub fn draw_main_menu(
     draw_full_picture(out, theme.menu_overlay.as_deref(), image_size);
     if !title.is_empty() && theme.menu_title {
         let [x, y, w, h] = theme.menu_title_rect;
-        text(out, title, Rect::new(x, y, w, h), 96.0 * h / 160.0, theme.accent_color, Align::Center);
+        text(out, title, Rect::new(x, y, w, h), 96.0 * h / DEFAULT_MENU_TITLE_RECT[3], theme.accent_color, Align::Center);
     }
     for (i, &b) in buttons.iter().enumerate() {
         let label = match b {
@@ -537,17 +537,14 @@ fn factor(t: &Theme) -> f32 {
     (t.options_text_size / DEFAULT_OPTIONS_TEXT_SIZE).min(h / 860.0).min(w / 800.0)
 }
 
-/// Top and height of a row: tighter with nine rows, and again with ten, so the buttons still clear the hint line.
+/// Top and height of a row: tighter from nine rows on (600 px of rows, at most 72 each), so the buttons still
+/// clear the hint line.
 fn row_y(n: usize, t: &Theme) -> f32 {
     panel(t).y + factor(t) * if n > 8 { 80.0 } else { 100.0 }
 }
 
 fn row_h(n: usize, t: &Theme) -> f32 {
-    factor(t) * match n {
-        ..=8 => 72.0,
-        9 => 66.0,
-        _ => 60.0,
-    }
+    factor(t) * (600.0 / n as f32).floor().min(72.0)
 }
 
 /// The slider tracks start 480/1120 and are 440/1120 of the panel's width across.
@@ -792,9 +789,9 @@ fn history_map(r: Rect, t: &Theme) -> Rect {
     area_map(r, DEFAULT_HISTORY_RECT, t.history_rect)
 }
 
-/// The log's text size, and the factor it makes of the spacing and the name column (1 at the default).
-fn log_size(t: &Theme) -> (f32, f32) {
-    (t.history_text_size, t.history_text_size / DEFAULT_HISTORY_TEXT_SIZE)
+/// The factor the log's text size makes of the spacing and the name column (1 at the default).
+fn log_factor(t: &Theme) -> f32 {
+    t.history_text_size / DEFAULT_HISTORY_TEXT_SIZE
 }
 
 /// Where the log's rows may be (130 to 960 at the default), and the name column and the text column
@@ -802,7 +799,7 @@ fn log_size(t: &Theme) -> (f32, f32) {
 /// but the name column stays within 40% of the area's width.
 fn log_area(t: &Theme) -> (f32, f32, [f32; 2], [f32; 2]) {
     let [x, _, w, _] = t.history_rect;
-    let fs = log_size(t).1;
+    let fs = log_factor(t);
     let top = history_map(Rect::new(0.0, 130.0, 0.0, 830.0), t);
     let name_w = (NAME_W * fs).min(w * 0.4);
     let text_x = x + name_w + 20.0 * fs;
@@ -818,18 +815,18 @@ fn log_body(entry: &Logged) -> String {
 }
 
 fn log_line_height(t: &Theme) -> f32 {
-    line_height(log_size(t).0)
+    line_height(t.history_text_size)
 }
 
 fn log_entry_height(entry: &Logged, t: &Theme) -> f32 {
-    estimate_lines(&log_body(entry), log_size(t).0, log_area(t).3[1]) as f32 * log_line_height(t)
+    estimate_lines(&log_body(entry), t.history_text_size, log_area(t).3[1]) as f32 * log_line_height(t)
 }
 
 /// How far back the backlog can scroll (in entries) without running out: until the oldest
 /// entry is on screen (more would only show it alone on an empty page). 0 if all fit.
 pub fn backlog_max_scroll(entries: &[Logged], t: &Theme) -> usize {
     let (top, bottom, ..) = log_area(t);
-    let (room, gap) = (bottom - top, LOG_GAP * log_size(t).1);
+    let (room, gap) = (bottom - top, LOG_GAP * log_factor(t));
     // Scrolling back by `s` shows the oldest `len - s` entries, bottom-aligned: the oldest is
     // in view once they fit, which is the first `s` for which that prefix is no taller than the room.
     let mut s = 0;
@@ -863,7 +860,7 @@ pub fn draw_backlog(
     }
 
     let (log_top, log_bottom, name_col, text_col) = log_area(theme);
-    let (log_size, fs) = log_size(theme);
+    let (log_size, fs) = (theme.history_text_size, log_factor(theme));
     let line_h = log_line_height(theme);
     let mut bottom = log_bottom;
     for entry in entries.iter().rev().skip(scroll) {
@@ -954,8 +951,9 @@ fn thumb_box(i: usize, t: &Theme) -> Rect {
 /// The 16:9 picture area of a slot: the biggest 16:9 rect in [`thumb_box`], at its top, centred across.
 pub fn thumb_rect(i: usize, t: &Theme) -> Rect {
     let b = thumb_box(i, t);
-    let (w, h) = (b.w.min(b.h * 16.0 / 9.0), b.h.min(b.w * 9.0 / 16.0));
-    Rect::new(b.x + (b.w - w) / 2.0, b.y, w, h)
+    let mut r = place(Size::new(16.0, 9.0), b, quillstone_script::Fit::Contain).dest;
+    r.y = b.y;
+    r
 }
 
 /// Back on the slot screens, and on Extras, which doesn't move with the theme.
