@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, HudAction, KeyPress, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{can_press, can_use, finish_input, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
+use crate::{can_press, can_use, finish_input, finish_number, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -126,11 +126,16 @@ pub fn explore(program: &Program, limit: usize) -> Report {
             }
             // The default (or "Player"), plus every text the script compares the answer to, cleaned up as
             // typed text is: a branch like `::if{name == "Bob"}` can then be played.
-            Some(Cmd::AskInput { default, max, .. }) => {
-                let mut answers = vec![default.clone().unwrap_or_else(|| "Player".chars().take(*max).collect())];
+            Some(Cmd::AskInput { default, max, number, .. }) => {
+                let fallback = if *number { "0".into() } else { "Player".chars().take(*max).collect() };
+                let mut answers = vec![default.clone().unwrap_or(fallback)];
                 if let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) {
                     for text in compared.get(var.as_str()).into_iter().flatten() {
-                        let typed = finish_input(text, default.as_deref(), *max);
+                        let typed = if *number {
+                            finish_number(text, default.as_deref(), *max).map(|n| n.to_string())
+                        } else {
+                            finish_input(text, default.as_deref(), *max)
+                        };
                         if let Some(t) = typed.filter(|t| !answers.contains(t)) {
                             answers.push(t);
                         }
@@ -188,14 +193,22 @@ pub fn explore(program: &Program, limit: usize) -> Report {
     x.finish()
 }
 
-/// For each variable, the text literals the script compares it to with `==` or `!=`, in script order.
-fn compared_texts(program: &Program) -> HashMap<&str, Vec<&str>> {
-    fn walk<'a>(out: &mut HashMap<&'a str, Vec<&'a str>>, e: &'a Expr) {
+/// For each variable, the text and number literals the script compares it to with `==` or `!=`, in script order
+/// (numbers as text, for a number `::input`).
+fn compared_texts(program: &Program) -> HashMap<&str, Vec<String>> {
+    fn walk<'a>(out: &mut HashMap<&'a str, Vec<String>>, e: &'a Expr) {
         if let Expr::Cmp(a, Cmp::Eq | Cmp::Ne, b) = e {
-            if let (Expr::Var(v), Expr::Lit(Value::Str(t))) | (Expr::Lit(Value::Str(t)), Expr::Var(v)) = (&**a, &**b) {
-                let texts = out.entry(v.as_str()).or_default();
-                if !texts.contains(&t.as_str()) {
-                    texts.push(t);
+            if let (Expr::Var(v), Expr::Lit(lit)) | (Expr::Lit(lit), Expr::Var(v)) = (&**a, &**b) {
+                let t = match lit {
+                    Value::Str(t) => Some(t.clone()),
+                    Value::Int(n) => Some(n.to_string()),
+                    _ => None,
+                };
+                if let Some(t) = t {
+                    let texts = out.entry(v.as_str()).or_default();
+                    if !texts.contains(&t) {
+                        texts.push(t);
+                    }
                 }
             }
         }

@@ -5,13 +5,13 @@ use quillstone_script::markup::rich;
 use quillstone_script::{parse, Program, Value};
 
 use crate::test_util::says;
-use crate::{explore::explore, finish_input, interpolate, read_persistent, write_persistent, Cmd, Input, Session};
+use crate::{explore::explore, finish_input, finish_number, interpolate, read_persistent, write_persistent, Cmd, Input, Session};
 
 const STORY: &str = "---\nvars: { hero.name: \"nobody\" }\n---\n# start\n**A:** Before.\n::input{var=hero.name prompt=\"Your name, {hero.name}?\" default=\"Alex\" max=8}\n**A:** Hello {hero.name}!\n";
 
 fn ask(cmds: &[Cmd]) -> Option<(String, Option<String>, usize)> {
     cmds.iter().find_map(|c| match c {
-        Cmd::AskInput { prompt, default, max } => Some((prompt.clone(), default.clone(), *max)),
+        Cmd::AskInput { prompt, default, max, .. } => Some((prompt.clone(), default.clone(), *max)),
         _ => None,
     })
 }
@@ -46,6 +46,55 @@ fn an_answer_is_cleaned_trimmed_capped_and_falls_back_to_the_default() {
     assert_eq!(finish_input("", None, 8), None);
     assert_eq!(finish_input("   ", None, 8), None);
     assert_eq!(finish_input("\u{1}\u{2}", Some(" "), 8), None, "a default that is empty after clean-up is none");
+}
+
+// ---- a number answer --------------------------------------------------------------
+
+const LOCK: &str = "---\nvars: { code: 0 }\n---\n::input{var=code prompt=\"Door code?\" max=4}\n::if{code == 1234}\n**A:** Open.\n::else\n**A:** Shut.\n::endif\n";
+
+#[test]
+fn a_number_answer_is_whole_digits_within_max_with_an_optional_leading_minus() {
+    assert_eq!(finish_number(" 1234 ", None, 4), Some(1234));
+    assert_eq!(finish_number("007", None, 4), Some(7));
+    assert_eq!(finish_number("-12", None, 4), Some(-12), "the minus is not a digit");
+    assert_eq!(finish_number("12345", None, 4), None, "refused, not cut");
+    for bad in ["-", "1-2", "12a", "1 2", "+5", "1.5", ""] {
+        assert_eq!(finish_number(bad, None, 4), None, "{bad:?}");
+    }
+    assert_eq!(finish_number("", Some("42"), 4), Some(42), "empty: the default");
+    assert_eq!(finish_number("7", Some("42"), 4), Some(7));
+    assert_eq!(finish_number("999999999999999999", None, 18), Some(999_999_999_999_999_999), "18 digits fit an i64");
+    assert_eq!(finish_number("-999999999999999999", None, 18), Some(-999_999_999_999_999_999));
+}
+
+#[test]
+fn a_number_answer_is_stored_as_a_number_and_compared_as_one() {
+    let p = parse(LOCK).unwrap();
+    let (mut s, cmds) = Session::start(&p);
+    assert!(matches!(cmds.last(), Some(Cmd::AskInput { number: true, max: 4, .. })), "{cmds:?}");
+    assert!(s.input(Input::Text("abc".into())).is_empty() && s.input(Input::Text("".into())).is_empty(), "still waiting");
+    assert!(s.input(Input::Text("12345".into())).is_empty());
+    assert!(says(&s.input(Input::Text("1234".into())), "Open."));
+    assert_eq!(s.state().vars["code"], Value::Int(1234));
+    // rolled back, a wrong code takes the other branch; a saved game at the prompt rebuilds it as a number prompt
+    s.rollback();
+    let text = s.save();
+    let (mut loaded, cmds) = Session::load(&p, &text).unwrap();
+    assert!(matches!(cmds.last(), Some(Cmd::AskInput { number: true, .. })), "{cmds:?}");
+    assert!(says(&loaded.input(Input::Text("-5".into())), "Shut."));
+    assert_eq!(loaded.state().vars["code"], Value::Int(-5));
+    // the answer survives a save after it, and the history record loads
+    let (after, _) = Session::load(&p, &loaded.save()).unwrap();
+    assert_eq!(after.state().vars["code"], Value::Int(-5));
+}
+
+#[test]
+fn a_number_input_uses_its_default_and_the_tester_tries_the_compared_numbers() {
+    let p = parse("---\nvars: { code: 0 }\n---\n::input{var=code prompt=\"Code?\" default=7}\n**A:** Got {code}.\n").unwrap();
+    let (mut s, _) = Session::start(&p);
+    assert!(says(&s.input(Input::Text("".into())), "Got 7."));
+    let report = explore(&parse(LOCK).unwrap(), 1000);
+    assert!(report.errors.is_empty() && report.warnings.is_empty() && !report.partial, "both branches are reached: {report:?}");
 }
 
 // ---- the story ------------------------------------------------------------------

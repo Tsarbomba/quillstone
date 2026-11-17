@@ -2366,12 +2366,13 @@ Asks the player to type a text and stores it in a variable (a name, mostly).
 
 | Attribute | | What it is |
 | --- | --- | --- |
-| `var` | required | the text variable that gets the answer |
+| `var` | required | the text or number variable that gets the answer |
 | `prompt` | required | the question |
 | `default` | optional | the answer used when the player confirms an empty field |
-| `max` | optional, 1 to 1024, default 24 | how many characters the answer may have |
+| `max` | optional, 1 to 1024, default 24 (a number: 1 to 18, default 9) | how many characters (digits, for a number) the answer may have |
 
-- **`var`** is declared in `vars:` or `persistent:` with a text default (dotted names work).
+- **`var`** is declared in `vars:` or `persistent:` with a text default or a number default (dotted names
+  work). Its declared type decides what is asked: see "A number answer" below.
 - **`prompt`** takes `{name}` values, `**bold**`, `*italic*`, colour and size tags like a line
   does (not `{nw}` or `{p}`).
 - **`default`**: the field shows it dimmed as a hint.
@@ -2389,13 +2390,37 @@ blinking caret and an OK button.
   against the limit.
 - Enter or OK confirms.
 
+**A number answer.** When `var` is a number variable (`vars: { code: 0 }`), the field asks for a whole
+number and stores it as a number:
+
+````markdown
+---
+vars: { code: 0 }
+---
+::input{var=code prompt="Enter the door code" max=4}
+
+::if{code == 1234}
+**Mika:** The lock clicks open.
+::else
+**Mika:** Nothing happens.
+::endif
+````
+
+- The field takes only digits, and a `-` as the first character. Anything else typed or pasted is
+  dropped, so a stored answer is always a whole number (leading zeros go: `007` is 7).
+- `max` counts the digits (a `-` is free). It is at most 18, so the number always fits; the default is 9.
+- `default` must be a whole number (`default=1234`, quoted or not), and `check` refuses anything else.
+  An empty field stores it; with no default, OK is dimmed and Enter does nothing until a number is typed
+  (a lone `-` is not one).
+
 **What is stored**
 
 - Control characters (newlines, tabs) are dropped, spaces at both ends are trimmed, and the
   text is cut to `max`.
 - An empty answer stores the `default`. With no default, OK is dimmed and Enter does nothing
   until something is typed.
-- The value is always text, even when it looks like a number: `n == "42"`, not `n == 42`.
+- A text variable gets text, even when it looks like a number: `n == "42"`, not `n == 42`. Use a number
+  variable (above) for a number.
 - Whatever the player types shows exactly as typed: `{`, `}`, `*` and `\` in a name can't
   become text tags when `{hero.name}` appears in a line or a prompt.
 
@@ -2421,7 +2446,7 @@ blinking caret and an OK button.
 
 - `quillstone test` answers with the `default` (or `Player` when there is none) and goes on.
   So a line that only another answer reaches, like `::if{hero.name == "Zed"}`, is reported as
-  never shown.
+  never shown. For a number, it answers `0` and the numbers the script compares the variable to.
 - `quillstone run` in the terminal asks on the command line. An empty line takes the default;
   `!back` and `!quit` are the commands there.
 

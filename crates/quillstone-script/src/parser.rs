@@ -1614,37 +1614,48 @@ impl Parser {
             "input" => {
                 let var = match a.value("var") {
                     Some(v) if !v.is_empty() => v,
-                    _ => return Err("`::input` needs `var=` (the text variable that receives the answer, like `var=hero.name`)".into()),
+                    _ => return Err("`::input` needs `var=` (the text or number variable that receives the answer, like `var=hero.name`)".into()),
                 };
-                match self.program.vars.get(&var) {
-                    Some(Value::Str(_)) => {}
-                    Some(_) => return Err(format!("`var={var}`: `{var}` must be a text variable (declare it with a text default, like `vars: {{ {var}: \"Alex\" }}`)")),
-                    None => return Err(format!("`var={var}`: no text variable `{var}` (declare it in the front matter, like `vars: {{ {var}: \"Alex\" }}`)")),
-                }
+                let number = match self.program.vars.get(&var) {
+                    Some(Value::Str(_)) => false,
+                    Some(Value::Int(_)) => true,
+                    Some(_) => return Err(format!("`var={var}`: `{var}` must be a text or number variable (declare it with a text or number default, like `vars: {{ {var}: \"Alex\" }}` or `vars: {{ {var}: 0 }}`)")),
+                    None => return Err(format!("`var={var}`: no text or number variable `{var}` (declare it in the front matter, like `vars: {{ {var}: \"Alex\" }}` or `vars: {{ {var}: 0 }}`)")),
+                };
                 let prompt = match a.value("prompt") {
                     Some(p) if !p.trim().is_empty() => p.trim().to_string(),
                     _ => return Err("`::input` needs `prompt=\"...\"` (the question shown above the text field)".into()),
                 };
                 crate::markup::check_inline_markup(&prompt, "an `::input` prompt")?;
-                let default = a.value("default").map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+                let mut default = a.value("default").map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+                if let (true, Some(d)) = (number, &mut default) {
+                    // Kept as text (like a text default), in its plain form: `+5` and `007` become `5` and `7`.
+                    let n = d.parse::<i64>().map_err(|_| format!("`default={d}` must be a whole number for the number variable `{var}`"))?;
+                    *d = n.to_string();
+                }
                 if let Some(d) = &default {
                     if d.chars().any(char::is_control) {
                         return Err("`default=` can't hold control characters".into());
                     }
                 }
                 let max = match a.value("max") {
+                    None if number => INPUT_NUMBER_DEFAULT,
                     None => INPUT_MAX_DEFAULT,
-                    Some(v) => match v.parse::<usize>() {
-                        Ok(n) if (1..=INPUT_MAX_CAP).contains(&n) => n,
-                        _ => return Err(format!("bad `max={v}` (a whole number from 1 to {INPUT_MAX_CAP})")),
-                    },
+                    Some(v) => {
+                        let cap = if number { INPUT_NUMBER_CAP } else { INPUT_MAX_CAP };
+                        match v.parse::<usize>() {
+                            Ok(n) if (1..=cap).contains(&n) => n,
+                            _ => return Err(format!("bad `max={v}` (a whole number from 1 to {cap}{})", if number { ", the digits of a number" } else { "" })),
+                        }
+                    }
                 };
                 if let Some(d) = &default {
-                    if d.chars().count() > max {
+                    // A number's `-` is not a digit.
+                    if d.trim_start_matches('-').chars().count() > max {
                         return Err(format!("`default=` is longer than `max={max}`"));
                     }
                 }
-                Ok((Op::Input { var, prompt, default, max }, None))
+                Ok((Op::Input { var, prompt, default, max, number }, None))
             }
             "timing" => {
                 let var = self.result_var(a, "timing")?;
@@ -4449,18 +4460,18 @@ mod tests {
         e("::item{id=a colour=red}\n", 1, "unknown attribute `colour`");
     }
 
-    const ASK: &str = "---\nvars: { hero.name: \"x\", n: 0 }\npersistent: { kept: \"k\" }\n---\n# a\n";
+    const ASK: &str = "---\nvars: { hero.name: \"x\", n: 0, flag: true }\npersistent: { kept: \"k\" }\n---\n# a\n";
 
     #[test]
     fn an_input_asks_for_a_text_variable() {
         let p = ok(&format!("{ASK}::input{{var=hero.name prompt=\"What is your name?\" default=\"Alex\" max=16}}\nHi {{hero.name}}.\n"));
         assert_eq!(
             p.ops[0],
-            Op::Input { var: "hero.name".into(), prompt: "What is your name?".into(), default: Some("Alex".into()), max: 16 }
+            Op::Input { var: "hero.name".into(), prompt: "What is your name?".into(), default: Some("Alex".into()), max: 16, number: false }
         );
         assert_eq!(p.lines[0], 6);
         let p = ok(&format!("{ASK}::input{{var=kept prompt=\"Name, **please**?\"}}\n"));
-        assert_eq!(p.ops[0], Op::Input { var: "kept".into(), prompt: "Name, **please**?".into(), default: None, max: 24 });
+        assert_eq!(p.ops[0], Op::Input { var: "kept".into(), prompt: "Name, **please**?".into(), default: None, max: 24, number: false });
     }
 
     #[test]
@@ -4480,6 +4491,14 @@ mod tests {
     }
 
     #[test]
+    fn a_number_input_has_digit_limits_and_a_whole_number_default() {
+        let p = ok(&format!("{ASK}::input{{var=n prompt=\"Code?\"}}\n::input{{var=n prompt=\"Code?\" default=\"-0042\" max=18}}\n"));
+        assert_eq!(p.ops[0], Op::Input { var: "n".into(), prompt: "Code?".into(), default: None, max: 9, number: true });
+        assert!(matches!(&p.ops[1], Op::Input { default: Some(d), number: true, .. } if d == "-42"));
+        ok(&format!("{ASK}::input{{var=n prompt=\"Code?\" default=-1234 max=4}}\n"));
+    }
+
+    #[test]
     fn input_errors_name_the_line() {
         let e = |body: &str, needle: &str| {
             let errors = errs(&format!("{ASK}{body}"));
@@ -4488,8 +4507,12 @@ mod tests {
         e("::input{prompt=\"Name?\"}\n", "needs `var=");
         e("::input{var=hero.name}\n", "needs `prompt=");
         e("::input{var=hero.name prompt=\"  \"}\n", "needs `prompt=");
-        e("::input{var=nosuch prompt=\"Name?\"}\n", "no text variable `nosuch`");
-        e("::input{var=n prompt=\"Name?\"}\n", "must be a text variable");
+        e("::input{var=nosuch prompt=\"Name?\"}\n", "no text or number variable `nosuch`");
+        e("::input{var=flag prompt=\"Name?\"}\n", "must be a text or number variable");
+        e("::input{var=n prompt=\"Code?\" default=abc}\n", "must be a whole number");
+        e("::input{var=n prompt=\"Code?\" default=1.5}\n", "must be a whole number");
+        e("::input{var=n prompt=\"Code?\" max=19}\n", "bad `max=19` (a whole number from 1 to 18");
+        e("::input{var=n prompt=\"Code?\" default=12345 max=4}\n", "longer than `max=4`");
         e("::input{var=hero.name prompt=\"Name?\" bogus=1}\n", "unknown attribute `bogus`");
         e("::input{var=hero.name prompt=\"Name?\" max=0}\n", "bad `max=0`");
         e("::input{var=hero.name prompt=\"Name?\" max=1025}\n", "bad `max=1025`");

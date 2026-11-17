@@ -69,6 +69,9 @@ pub const SEEN: &str = "seen:";
 pub const INPUT_MAX_DEFAULT: usize = 24;
 pub const INPUT_MAX_LIMIT: usize = 64;
 pub const INPUT_MAX_CAP: usize = 1024;
+/// A number answer counts digits: 18 always fits an `i64`.
+pub const INPUT_NUMBER_DEFAULT: usize = 9;
+pub const INPUT_NUMBER_CAP: usize = 18;
 
 /// Most items a list variable holds: `+=` stops adding there, and a save with a longer list is refused
 /// (real games hold dozens; the limit keeps a damaged or hostile file from costing memory or time).
@@ -1743,10 +1746,10 @@ pub enum Op {
     /// A shop: items for sale, paid with the int variable `pay`, bought into the
     /// list `into`. Waits until the player leaves.
     Shop { pay: String, into: String, stock: Vec<ShopEntry> },
-    /// Ask the player to type a text into the text variable `var`; waits for it.
-    /// `prompt` is tagged text with `{name}` interpolation (like narration). `max`
-    /// counts characters. With a `default`, confirming an empty field stores it.
-    Input { var: String, prompt: String, default: Option<String>, max: usize },
+    /// Ask the player to type a text into the text variable `var` (or, with `number`, a whole number into the
+    /// number variable); waits for it. `prompt` is tagged text with `{name}` interpolation (like narration).
+    /// `max` counts characters (digits for a number). With a `default`, confirming an empty field stores it.
+    Input { var: String, prompt: String, default: Option<String>, max: usize, number: bool },
     /// A timing bar: waits for the player to stop the marker (or for `bar.time` to run out), then sets
     /// the text variable `var` to "perfect", "good" or "miss". `prompt` is tagged text like `Input`'s
     /// (empty: none).

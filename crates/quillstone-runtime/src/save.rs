@@ -1056,7 +1056,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "shop" => Cmd::ShowShop { pay: String::new(), money: 0, items: Vec::new() },
                     "inventory" => Cmd::ShowInventory,
                     "journal" => Cmd::ShowJournal,
-                    "input" => Cmd::AskInput { prompt: String::new(), default: None, max: 1 },
+                    "input" => Cmd::AskInput { prompt: String::new(), default: None, max: 1, number: false },
                     // Rebuilt from the script at `end`.
                     "timing" => Cmd::ShowTiming { prompt: String::new(), bar: TimingBar { speed: 1.0, good: [0.0, 1.0], perfect: None, time: None } },
                     "press" => Cmd::ShowPress { prompt: String::new(), press: KeyPress { key: String::new(), count: 1, time: 1.0 } },

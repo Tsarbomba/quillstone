@@ -8,7 +8,7 @@
 //! There is no caret movement: text is added at the end and deleted from the end.
 //! The typed text is only in the game's memory, not in saves.
 
-use quillstone_runtime::{filter_typed, finish_input};
+use quillstone_runtime::{filter_typed, finish_input, finish_number};
 
 use super::*;
 use crate::input::{self, InputScreen};
@@ -36,10 +36,10 @@ impl Game<'_> {
         self.console.is_some() || self.in_story && self.screen == Screen::Input && self.confirm.is_none()
     }
 
-    /// The prompt, default and character limit of the input the story waits at.
-    fn asking(&self) -> Option<(&str, Option<&str>, usize)> {
+    /// The prompt, default, character limit and whether it is a number, of the input the story waits at.
+    fn asking(&self) -> Option<(&str, Option<&str>, usize, bool)> {
         match &self.session.state().pending {
-            Some(Cmd::AskInput { prompt, default, max }) => Some((prompt, default.as_deref(), *max)),
+            Some(Cmd::AskInput { prompt, default, max, number }) => Some((prompt, default.as_deref(), *max, *number)),
             _ => None,
         }
     }
@@ -90,7 +90,10 @@ impl Game<'_> {
 
     /// Whether confirming now would work: something typed, or a default to use.
     fn can_confirm_input(&self) -> bool {
-        self.asking().is_some_and(|(_, default, max)| finish_input(&self.input.text, default, max).is_some())
+        self.asking().is_some_and(|(_, default, max, number)| {
+            let text = &self.input.text;
+            if number { finish_number(text, default, max).is_some() } else { finish_input(text, default, max).is_some() }
+        })
     }
 
     pub(super) fn tick_input(&mut self, dt: f32) {
@@ -98,7 +101,7 @@ impl Game<'_> {
     }
 
     pub(super) fn draw_input_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
-        let Some((prompt, default, max)) = self.asking() else { return };
+        let Some((prompt, default, max, _)) = self.asking() else { return };
         let shown = self.pending_shown();
         let prompt = match &shown {
             Some(Cmd::AskInput { prompt, .. }) => prompt.as_str(),
@@ -141,9 +144,24 @@ impl Game<'_> {
 
     /// Add typed characters (control characters dropped, the limit kept).
     fn type_text(&mut self, s: &str) {
-        let Some((_, _, max)) = self.asking() else { return };
-        let room = max.saturating_sub(self.input.text.chars().count());
-        let add: String = filter_typed(s).chars().take(room).collect();
+        let Some((_, _, max, number)) = self.asking() else { return };
+        let add: String = if number {
+            // A `-` only first; `max` counts the digits.
+            let mut room = max.saturating_sub(self.input.text.chars().filter(char::is_ascii_digit).count());
+            let mut first = self.input.text.is_empty();
+            let mut add = String::new();
+            for c in s.chars() {
+                if c == '-' && first || c.is_ascii_digit() && room > 0 {
+                    add.push(c);
+                    room -= usize::from(c != '-');
+                }
+                first &= add.is_empty();
+            }
+            add
+        } else {
+            let room = max.saturating_sub(self.input.text.chars().count());
+            filter_typed(s).chars().take(room).collect()
+        };
         if !add.is_empty() {
             self.input.text.push_str(&add);
             self.input.since_key = 0.0;

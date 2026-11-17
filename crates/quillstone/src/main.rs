@@ -1291,9 +1291,10 @@ fn print_cmds(cmds: &[Cmd]) {
                     println!("  {}. {} - {} {pay}{state}", i + 1, s.item.name, s.price);
                 }
             }
-            Cmd::AskInput { prompt, default, max } => {
+            Cmd::AskInput { prompt, default, max, number } => {
                 let default = default.as_ref().map(|d| format!(", default \"{d}\"")).unwrap_or_default();
-                println!("\n[input] {} (up to {max} characters{default})", plain(prompt));
+                let what = if *number { "digits" } else { "characters" };
+                println!("\n[input] {} (up to {max} {what}{default})", plain(prompt));
             }
             Cmd::ShowTiming { prompt, bar } => {
                 let [from, to] = bar.good.map(|v| v * 100.0);

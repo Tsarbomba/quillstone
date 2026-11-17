@@ -218,8 +218,9 @@ pub enum Cmd {
     /// Ask the player to type a text (from `::input`) and wait for [`Input::Text`].
     /// `prompt` is tagged text with its `{name}` values already put in (see
     /// [`interpolate`]); `max` counts characters. With a `default`, an empty answer
-    /// stores it instead; the frontend may show it as a placeholder.
-    AskInput { prompt: String, default: Option<String>, max: usize },
+    /// stores it instead; the frontend may show it as a placeholder. With `number`, the answer is a whole
+    /// number (a `-` first, then digits, `max` counts the digits) and `default` is one, as text.
+    AskInput { prompt: String, default: Option<String>, max: usize, number: bool },
     /// Show a timing bar (from `::timing`) and wait for [`Input::Choose`]: 0 = miss, 1 = good, 2 = perfect
     /// (only with a perfect zone). The frontend works out where the marker was from the time since the
     /// bar appeared ([`TimingBar::hit`]) and sends `Choose(0)` when `bar.time` runs out. `prompt` is
@@ -343,6 +344,20 @@ pub fn finish_input(raw: &str, default: Option<&str>, max: usize) -> Option<Stri
         return Some(typed);
     }
     default.map(clean).filter(|d| !d.is_empty())
+}
+
+/// What a number `::input` answer becomes: spaces trimmed, then an optional `-` and 1 to `max` digits, as an
+/// `i64` (`max` is at most 18, so it fits); anything else is refused, not cut. When nothing is typed, the
+/// `default`; `None` when that is empty too.
+pub fn finish_number(raw: &str, default: Option<&str>, max: usize) -> Option<i64> {
+    let typed = filter_typed(raw);
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return default.and_then(|d| d.trim().parse().ok());
+    }
+    let digits = typed.strip_prefix('-').unwrap_or(typed);
+    let ok = !digits.is_empty() && digits.len() <= max && digits.bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| typed.parse().ok()).flatten()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1046,8 +1061,8 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dy
         Op::Inventory => Some(Cmd::ShowInventory),
         Op::Journal => Some(Cmd::ShowJournal),
         Op::Shop { pay, into, stock } => Some(shop_cmd(program, pay, into, stock, vars)),
-        Op::Input { prompt, default, max, .. } => {
-            Some(Cmd::AskInput { prompt: interpolate(&text(prompt), vars), default: default.clone(), max: *max })
+        Op::Input { prompt, default, max, number, .. } => {
+            Some(Cmd::AskInput { prompt: interpolate(&text(prompt), vars), default: default.clone(), max: *max, number: *number })
         }
         Op::Timing { prompt, bar, .. } => Some(Cmd::ShowTiming { prompt: interpolate(&text(prompt), vars), bar: bar.clone() }),
         Op::Press { prompt, press, .. } => Some(Cmd::ShowPress { prompt: interpolate(&text(prompt), vars), press: press.clone() }),
@@ -1293,9 +1308,14 @@ pub(crate) fn step_traced(
                 call_from_line(state, program, &label);
             }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
-                let Some(Op::Input { var, default, max, .. }) = program.ops.get(state.pc) else { return Vec::new() };
-                let Some(answer) = finish_input(&raw, default.as_deref(), *max) else { return Vec::new() };
-                state.vars.insert(var.clone(), Value::Str(answer));
+                let Some(Op::Input { var, default, max, number, .. }) = program.ops.get(state.pc) else { return Vec::new() };
+                let answer = if *number {
+                    finish_number(&raw, default.as_deref(), *max).map(Value::Int)
+                } else {
+                    finish_input(&raw, default.as_deref(), *max).map(Value::Str)
+                };
+                let Some(answer) = answer else { return Vec::new() };
+                state.vars.insert(var.clone(), answer);
                 state.pc += 1;
             }
             (Cmd::ShowTiming { .. }, Some(Input::Choose(i))) => {

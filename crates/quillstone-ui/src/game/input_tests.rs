@@ -375,3 +375,24 @@ fn the_greeting_demo_plays_with_a_typed_name() {
         assert!(line(&g).contains(shown), "{}", line(&g));
     }
 }
+
+#[test]
+fn a_number_field_takes_a_leading_minus_and_digits_up_to_max_and_stores_a_number() {
+    let p = parse("---\nvars: { code: 0 }\n---\n**A:** First.\n::input{var=code prompt=\"Code?\" max=3}\n**A:** Got {code}.\n").unwrap();
+    let mut g = at_input(&p);
+    type_in(&mut g, "a1-2b");
+    assert_eq!(field(&g), "12", "letters and a minus after the start are dropped");
+    type_in(&mut g, "345");
+    assert_eq!(field(&g), "123", "max counts digits");
+    g.input.text.clear();
+    type_in(&mut g, "-4-5678");
+    assert_eq!(field(&g), "-456", "the minus is not a digit");
+    key(&mut g, Key::Enter);
+    assert_eq!(g.state().vars["code"], Value::Int(-456));
+    assert_eq!(line(&g), "Got -456.");
+    // a lone minus can't be confirmed
+    let mut g = at_input(&p);
+    type_in(&mut g, "-");
+    key(&mut g, Key::Enter);
+    assert_eq!(g.screen(), Screen::Input);
+}
