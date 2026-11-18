@@ -1290,16 +1290,18 @@ pub enum HudScreen {
     Save,
     Load,
     Settings,
+    Extras,
 }
 
 impl HudScreen {
-    pub const NAMES: [(&'static str, HudScreen); 6] = [
+    pub const NAMES: [(&'static str, HudScreen); 7] = [
         ("inventory", HudScreen::Inventory),
         ("journal", HudScreen::Journal),
         ("history", HudScreen::History),
         ("save", HudScreen::Save),
         ("load", HudScreen::Load),
         ("settings", HudScreen::Settings),
+        ("extras", HudScreen::Extras),
     ];
 
     pub fn from_name(name: &str) -> Option<HudScreen> {
@@ -1559,6 +1561,20 @@ pub struct Area {
     pub call: bool,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
+    /// `text=`: tagged text drawn centred in the region (then it has no tooltip and no outline).
+    pub text: Option<RegionText>,
+}
+
+/// The text of a `::hotspots` region (`text=`, `color=`, `size=`, `hover_color=`). In a `Spot` the text has its `{name}` values put in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionText {
+    pub text: String,
+    /// Default: the theme's text colour.
+    pub color: Option<[f32; 4]>,
+    /// In pixels of the 1920x1080 screen, like a HUD text's; default the theme's text size.
+    pub size: Option<f32>,
+    /// While hovered or focused; without one the region gets the theme's button hover panel instead.
+    pub hover_color: Option<[f32; 4]>,
 }
 
 /// `::hotspots{ground=map.png hover=map_hover.png}`: two full-screen pictures; while a region is hovered, the part of
@@ -1572,7 +1588,7 @@ pub struct Imagemap {
 impl Area {
     /// The stand-in region of a timed `::hotspots` screen's timeout: hidden, empty and on nothing, so nothing can click it.
     pub fn timeout() -> Area {
-        Area { rect: [0.0; 4], sprite: None, image: None, hover: None, call: false, hidden: true }
+        Area { rect: [0.0; 4], sprite: None, image: None, hover: None, call: false, hidden: true, text: None }
     }
 
     pub fn is_timeout(&self) -> bool {

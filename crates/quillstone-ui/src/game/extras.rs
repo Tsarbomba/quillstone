@@ -119,14 +119,19 @@ impl Game<'_> {
 
     fn close_extras(&mut self) {
         if self.extras.playing.take().is_some() {
-            // Back to the menu's own music.
+            // Back to the music the screen under it had: the story's, or the menu's own.
             let mut cmds = vec![Cmd::StopMusic { fade: 1.0 }];
-            if let Some(src) = self.theme().menu_music.clone() {
+            if self.in_story {
+                if let Some(m) = &self.session.state().music {
+                    let (src, intro) = (m.src.clone(), m.intro.clone());
+                    cmds.push(Cmd::PlayMusic { src, intro, fade: 1.0, looped: m.looped, volume: m.volume });
+                }
+            } else if let Some(src) = self.theme().menu_music.clone() {
                 cmds.push(Cmd::PlayMusic { src, intro: None, fade: 1.0, looped: true, volume: 1.0 });
             }
             self.show(&cmds);
         }
-        self.screen = Screen::MainMenu;
+        self.screen = self.home();
     }
 
     /// The current page's entries and whether each is unlocked.

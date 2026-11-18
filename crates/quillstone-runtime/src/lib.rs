@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, RegionText, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -272,12 +272,14 @@ pub struct Spot {
     pub hover: Option<String>,
     /// No tint, outline or tooltip, and skipped by keyboard focus; still clickable.
     pub hidden: bool,
+    /// Drawn centred in the region, instead of a tooltip.
+    pub text: Option<RegionText>,
 }
 
 impl Spot {
     /// The timeout of a timed `::hotspots` screen (see [`Area::timeout`]), which has no text of its own.
     pub fn is_timeout(&self) -> bool {
-        let area = Area { rect: self.rect, sprite: self.sprite.clone(), image: self.image.clone(), hover: self.hover.clone(), call: false, hidden: self.hidden };
+        let area = Area { rect: self.rect, sprite: self.sprite.clone(), image: self.image.clone(), hover: self.hover.clone(), call: false, hidden: self.hidden, text: None };
         self.label.is_empty() && area.is_timeout()
     }
 }
@@ -1088,7 +1090,8 @@ fn choice_cmd(options: &[ChoiceOption], map: &Option<Imagemap>, visible: &[usize
             .filter_map(|&i| {
                 let o = &options[i];
                 let area = o.area.as_ref()?;
-                Some(Spot { label: interpolate(&text(&o.text), vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hover: area.hover.clone(), hidden: area.hidden })
+                let region_text = area.text.as_ref().map(|t| RegionText { text: interpolate(&text(&t.text), vars), ..t.clone() });
+                Some(Spot { label: interpolate(&text(&o.text), vars), rect: area.rect, sprite: area.sprite.clone(), image: area.image.clone(), hover: area.hover.clone(), hidden: area.hidden, text: region_text })
             })
             .collect();
         Cmd::ShowHotspots { spots, map: map.clone() }

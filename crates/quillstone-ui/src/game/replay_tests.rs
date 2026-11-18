@@ -520,3 +520,52 @@ fn the_replay_demo_plays_as_described() {
     assert_eq!(g.screen(), Screen::Extras, "{}", line(&g));
     assert_eq!(storage.read("persistent.txt").unwrap().matches("roof_visits\" int 1").count(), 1);
 }
+
+// ---- Extras opened from the story ----------------------------------------------------------
+
+const IN_GAME: &str = "---\nvars: { trust: 0 }\nreplays: { walk: \"Night walk\" }\n---\n# start\n::hud{id=ex text=\"Extras\" open=extras x=0.9 y=0.05}\n**A:** one\n::set{trust += 1}\n**A:** two\n**A:** three\n::end\n# walk\n::set{trust += 10}\n**A:** walking\n::end_replay\n";
+
+#[test]
+fn a_hud_button_opens_extras_and_closing_comes_back_to_the_same_line() {
+    let p = parse(IN_GAME).unwrap();
+    let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
+    g.start_story();
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Down); // focus the HUD button
+    key(&mut g, Key::Enter);
+    assert_eq!((g.screen(), g.in_story()), (Screen::Extras, true));
+    key(&mut g, Key::Escape);
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"));
+    assert_eq!(g.state().vars["trust"], Value::Int(1));
+}
+
+#[test]
+fn a_replay_started_in_the_game_gives_the_game_back_when_it_ends_or_is_left() {
+    let p = parse(IN_GAME).unwrap();
+    let mut g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
+    g.unlock_all = true;
+    g.start_story();
+    key(&mut g, Key::Space);
+    for leave in [false, true] {
+        key(&mut g, Key::Down);
+        key(&mut g, Key::Enter);
+        assert_eq!(g.screen(), Screen::Extras);
+        key(&mut g, Key::Down);
+        key(&mut g, Key::Enter); // the replay
+        assert!(g.in_replay());
+        assert_eq!(line(&g), "walking");
+        assert_eq!(g.state().vars["trust"], Value::Int(10), "the replay has its own variables");
+        if leave {
+            to_menu(&mut g); // Settings -> "Leave this replay?" -> yes
+        } else {
+            key(&mut g, Key::Space);
+        }
+        assert!(!g.in_replay());
+        assert_eq!((g.screen(), g.in_story()), (Screen::Extras, true), "back at the in-game Extras");
+        assert_eq!(g.state().vars["trust"], Value::Int(1), "the game's own variables");
+        key(&mut g, Key::Escape);
+        assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"));
+        assert!(g.state().hud.iter().any(|h| h.id == "ex"), "the HUD is back");
+    }
+}

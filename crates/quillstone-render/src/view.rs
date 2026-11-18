@@ -1966,7 +1966,7 @@ impl View {
         // reaches under it can be seen (hit-testing gives it the click, too).
         // A picture is the highlight when there is one (a hover picture or an imagemap); the tooltip stays.
         let map_hover = self.imagemap.as_ref().is_some_and(|m| image_size(&m.hover).is_some());
-        let outlined = hovered_spot.filter(|(s, _)| !has_hover(s) && !map_hover);
+        let outlined = hovered_spot.filter(|(s, _)| !has_hover(s) && !map_hover && s.text.is_none());
         if let Some((_, rect)) = outlined {
             let [r, g, b, _] = theme.accent_color;
             out.push(Draw::Rect { rect, color: [r, g, b, 0.18] });
@@ -1979,6 +1979,19 @@ impl View {
             ] {
                 out.push(Draw::Rect { rect: bar, color: theme.accent_color });
             }
+        }
+
+        // A region's text, centred in it; hovered or focused it takes its `hover_color`, else the button hover panel.
+        for spot in self.hotspots.iter().filter(|_| ui) {
+            let (Some(t), Some(rect)) = (&spot.text, self.spot_rect(spot)) else { continue };
+            let on = hovered_spot.is_some_and(|(h, _)| std::ptr::eq(h, spot));
+            if on && t.hover_color.is_none() {
+                out.push(Draw::Rect { rect, color: theme.button_hover_color });
+            }
+            let color = if on { t.hover_color.or(t.color) } else { t.color }.unwrap_or(theme.text_color);
+            let Rich { text, runs, .. } = rich(&t.text);
+            let size = t.size.unwrap_or(theme.text_size);
+            out.push(Draw::Text { text, runs, visible_chars: usize::MAX, rect, size, color, align: Align::Center, outline: None });
         }
 
         let choices = if ui { self.choices.as_slice() } else { &[] };
@@ -2028,7 +2041,7 @@ impl View {
         }
 
         // The hovered hotspot's label, next to the mouse (or under the region when the keyboard is on it).
-        if let Some((spot, r)) = hovered_spot {
+        if let Some((spot, r)) = hovered_spot.filter(|(s, _)| s.text.is_none()) {
             let Rich { text, runs, .. } = rich(&spot.label);
             let size = (self.text_size() * 0.8).round();
             let w = (text.chars().map(|c| if is_wide(c) { size } else { size * 0.55 }).sum::<f32>() + 2.0 * TIP_PAD)
@@ -3198,7 +3211,7 @@ mod tests {
     }
 
     fn spot(label: &str, rect: [f32; 4], image: Option<&str>) -> Spot {
-        Spot { label: label.into(), rect, sprite: None, image: image.map(String::from), hover: None, hidden: false }
+        Spot { label: label.into(), rect, sprite: None, image: image.map(String::from), hover: None, hidden: false, text: None }
     }
 
     #[test]
@@ -3260,6 +3273,32 @@ mod tests {
         // keyboard focus (no pointer): under the region, still on screen
         let hot = v.draw_list_hud(&all_1080p, Some(0), None, HudLook::default());
         assert!(hot.iter().any(|d| matches!(d, Draw::Text { rect, .. } if rect.y + rect.h <= VIRTUAL.h)));
+    }
+
+    #[test]
+    fn a_region_with_text_draws_it_centred_with_no_tooltip_and_lights_up_when_hovered() {
+        let mut v = View::new();
+        let mut yes = spot("Yes", [0.0, 0.0, 0.2, 0.1], None);
+        yes.text = Some(quillstone_script::RegionText { text: "YES".into(), color: Some([1.0; 4]), size: Some(40.0), hover_color: None });
+        let mut no = spot("No", [0.3, 0.0, 0.2, 0.1], None);
+        no.text = Some(quillstone_script::RegionText { text: "NO".into(), color: None, size: None, hover_color: Some([1.0, 1.0, 0.0, 1.0]) });
+        v.apply(&[Cmd::ShowHotspots { spots: vec![yes, no], map: None }]);
+        let colors = |d: &[Draw]| -> Vec<(String, [f32; 4], f32)> {
+            d.iter().filter_map(|d| if let Draw::Text { text, color, size, .. } = d { Some((text.clone(), *color, *size)) } else { None }).collect()
+        };
+        let rects = |d: &[Draw]| -> Vec<[f32; 4]> { d.iter().filter_map(|d| if let Draw::Rect { color, .. } = d { Some(*color) } else { None }).collect() };
+        let idle = v.draw_list_hud(&no_images, None, None, HudLook::default());
+        assert_eq!(colors(&idle), [("YES".into(), [1.0; 4], 40.0), ("NO".into(), theme().text_color, theme().text_size)]);
+        assert!(rects(&idle).is_empty(), "no outline while idle");
+        // hovered with no hover colour: the button panel under the text, no outline, no tooltip
+        let hot = v.draw_list_hud(&no_images, Some(0), Some((100.0, 50.0)), HudLook::default());
+        assert_eq!(colors(&hot).len(), 2, "no tooltip");
+        assert_eq!(rects(&hot).len(), 1);
+        assert_eq!(rects(&hot)[0], theme().button_hover_color);
+        // hovered with a hover colour: only the text changes
+        let hot = v.draw_list_hud(&no_images, Some(1), None, HudLook::default());
+        assert!(rects(&hot).is_empty());
+        assert_eq!(colors(&hot)[1].1, [1.0, 1.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -3369,7 +3408,7 @@ mod tests {
     }
 
     fn follower(sprite: &str, rect: [f32; 4]) -> Cmd {
-        Cmd::ShowHotspots { spots: vec![Spot { label: "Fly".into(), rect, sprite: Some(sprite.into()), image: None, hover: None, hidden: false }], map: None }
+        Cmd::ShowHotspots { spots: vec![Spot { label: "Fly".into(), rect, sprite: Some(sprite.into()), image: None, hover: None, hidden: false, text: None }], map: None }
     }
 
     /// Where the first (only) picture is drawn now, and where the first hotspot is: they must agree.
@@ -3855,7 +3894,7 @@ mod tests {
 
     #[test]
     fn a_hotspot_map_with_a_hidden_box_draws_no_line() {
-        let spot = quillstone_runtime::Spot { label: "Door".into(), rect: [0.1, 0.1, 0.2, 0.2], sprite: None, image: None, hover: None, hidden: false };
+        let spot = quillstone_runtime::Spot { label: "Door".into(), rect: [0.1, 0.1, 0.2, 0.2], sprite: None, image: None, hover: None, hidden: false, text: None };
         let mut v = View::new().with_speed(0.0);
         v.apply(&[say(None, "Where to?"), Cmd::ShowHotspots { spots: vec![spot.clone()], map: None }]);
         assert!(v.draw_list(&no_images, None).iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Where to?")));
@@ -4101,7 +4140,7 @@ mod tests {
             bg("bg.png", 0.0),
             show("m", "m.png", 0.5, 0.0),
             Cmd::ShowImage { src: "inline.png".into(), alt: String::new() },
-            Cmd::ShowHotspots { spots: vec![Spot { label: "Map".into(), rect: [0.0, 0.0, 0.2, 0.2], sprite: None, image: Some("art.png".into()), hover: None, hidden: false }], map: None },
+            Cmd::ShowHotspots { spots: vec![Spot { label: "Map".into(), rect: [0.0, 0.0, 0.2, 0.2], sprite: None, image: Some("art.png".into()), hover: None, hidden: false, text: None }], map: None },
             say(Some("A"), "hello"),
             Cmd::FadeOut { time: 0.0, color: [0.0; 3] },
             Cmd::Flash { time: 1.0, color: [1.0; 3] },

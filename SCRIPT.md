@@ -1454,8 +1454,10 @@ check` tests it as a picture and `package` includes it.
   (like an item's Use). The label must exist and take no parameters; `check` says which line
   is wrong.
 - **`open=`** opens a screen as the quick menu and keys do: `journal` (J), `inventory` (I),
-  `history` (H), `save` (S), `load` (L) or `settings` (the quick menu's Settings button).
-  `journal` and `inventory` need a game that has one.
+  `history` (H), `save` (S), `load` (L), `settings` (the quick menu's Settings button) or
+  `extras` (the Extras screen: gallery, music room and scene replays; closing it returns to the
+  story). `journal` and `inventory` need a game that has one, and `extras` a `gallery:`,
+  `music_room:` or `replays:`.
 - **`hover=`** needs `call=` or `open=`, and is checked and packaged like the picture. A text
   button simply lights up under the mouse.
 - `call=` and `open=` can't be combined.
@@ -1877,6 +1879,45 @@ instead of `image=` while it is hovered or the keyboard is on it.
 - Without an `image=`, the region shows nothing until hovered.
 - It works for regions that follow a sprite. A `hidden` region never shows it.
 - `check` tests it as a picture and `package` includes it.
+
+### Text on regions
+
+`text="YES"` draws text inside the region's rect, centred: a button, a menu entry or an option on
+a settings screen, with or without a picture (text is drawn over `image=`).
+
+| Attribute | |
+| --- | --- |
+| `text="YES"` | the text; quote it when it has spaces or commas |
+| `color=#ffffff` | its colour (default: the theme's text colour) |
+| `size=40` | its size, 8 to 300, in pixels of the 1920x1080 screen like a HUD text (default: the theme's text size) |
+| `hover_color=#ffff00` | its colour while the mouse or keyboard is on the region |
+
+- The text takes `{name}` values, `**bold**`, `*italic*` and colour and size tags like a line
+  does (not `{nw}` or `{p}`). It is worked out each time the screen is shown, so a screen the
+  story returns to (a `call` region, or a jump back) shows the new values.
+- Without `hover_color=`, a hovered or focused region gets the theme's button hover panel behind its
+  text, as a HUD text button does. A text region has no outline, tint or tooltip: the text is
+  its label. (The label in `[...]` is still what `quillstone test` and translations use.)
+- Keyboard and gamepad reach it like any region. `hidden` stops the highlight and the keyboard
+  focus but not the text.
+
+A phone's settings screen with a YES / NO toggle: two regions per option, the one that is on
+in white (it only returns to the screen) and the other grey (it sets the variable):
+
+````markdown
+---
+vars: { minimap: true }
+---
+# phone
+::hud{id=label text="Minimap:" x=0.3 y=0.3}
+::hotspots
+- [Minimap is on](#phone){rect=50%,28%,10%,8% text=YES color=#ffffff, if minimap}
+- [Turn the minimap on](#phone){rect=50%,28%,10%,8% text=YES color=#808080, minimap=true, if not minimap}
+- [Minimap is off](#phone){rect=62%,28%,10%,8% text=NO color=#ffffff, if not minimap}
+- [Turn the minimap off](#phone){rect=62%,28%,10%,8% text=NO color=#808080, minimap=false, if minimap}
+- [Back](#out){rect=50%,50%,10%,8% text=Back}
+::
+````
 
 ### Imagemaps
 
@@ -2587,6 +2628,11 @@ where a scene ends and the story carries on after it. It takes no attributes.
 - Skip uses the player's real read record, so it stops at lines the player has not read yet.
 - Settings' "Main menu" asks "Leave this replay?" and goes back to Extras. Quit still quits
   the program.
+
+**From inside the game.** A HUD button with `open=extras` opens the same Extras screen over the
+running story. A scene started there is a replay like any other, and the running game is kept
+aside: when the replay ends (or the player leaves it) the Extras screen is back, and closing it
+returns to the story on the same line, with the same variables, stage, music and HUD.
 
 **The tools.** `quillstone test` warns about a replay whose label no branch can reach ("can
 never be unlocked"). `quillstone check` warns when no `::end_replay` follows a scene, so it

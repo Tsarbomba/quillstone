@@ -2465,6 +2465,10 @@ impl Parser {
                 if let Some((what, key)) = missing {
                     return Err(format!("`open={o}` needs {what} to open: add `{key}: <list variable>` to the front matter"));
                 }
+                let p = &self.program;
+                if screen == HudScreen::Extras && p.gallery.is_empty() && p.music_room.is_empty() && self.replay_decls.is_empty() {
+                    return Err("`open=extras` needs something to show: add `gallery:`, `music_room:` or `replays:` to the front matter".into());
+                }
                 HudAction::Open(screen)
             }
         };
@@ -2951,9 +2955,32 @@ impl Parser {
                 }
                 let image = image.map(|i| check_hotspot_image(&i)).transpose()?;
                 let hover = hover.map(|h| check_image_path(&h, "hover", "a hotspot hover picture")).transpose()?;
-                area = Some(Area { rect, sprite, image, hover, call: false, hidden: false });
-            } else if ["rect", "image", "sprite", "hover"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
-                return Err("`rect=`, `image=`, `hover=` and `sprite=` only belong in a `::hotspots` block".into());
+                let (text, color, size, hover_color) =
+                    (take_attr(&mut inner, "text"), take_attr(&mut inner, "color"), take_attr(&mut inner, "size"), take_attr(&mut inner, "hover_color"));
+                let text = match text {
+                    None if color.is_some() || size.is_some() || hover_color.is_some() => {
+                        return Err("`color=`, `size=` and `hover_color=` need `text=` (the text they style)".into());
+                    }
+                    None => None,
+                    Some(t) if t.trim().is_empty() => return Err("`text=` needs some text, like `text=\"YES\"`".into()),
+                    Some(t) => {
+                        crate::markup::check_inline_markup(&t, "a hotspot `text=`")?;
+                        let colour = |key: &str, v: Option<String>| {
+                            v.map(|v| parse_color_alpha(&v).map_err(|m| format!("`{key}`: {m}"))).transpose()
+                        };
+                        let size = match size {
+                            None => None,
+                            Some(s) => match s.parse::<f32>() {
+                                Ok(n) if (8.0..=300.0).contains(&n) => Some(n),
+                                _ => return Err(format!("bad `size={s}` (a text size from 8 to 300)")),
+                            },
+                        };
+                        Some(RegionText { text: t, color: colour("color", color)?, size, hover_color: colour("hover_color", hover_color)? })
+                    }
+                };
+                area = Some(Area { rect, sprite, image, hover, call: false, hidden: false, text });
+            } else if ["rect", "image", "sprite", "hover", "text", "color", "size", "hover_color"].iter().any(|k| take_attr(&mut inner.clone(), k).is_some()) {
+                return Err("`rect=`, `image=`, `hover=`, `sprite=`, `text=`, `color=`, `size=` and `hover_color=` only belong in a `::hotspots` block".into());
             }
             let inner = inner.as_str();
             for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
@@ -3038,6 +3065,14 @@ fn take_attr(inner: &mut String, key: &str) -> Option<String> {
             continue;
         }
         let start = pos + needle.len();
+        // A quoted value may hold spaces and commas: `text="Pick one, please"`.
+        if let Some(rest) = inner[start..].strip_prefix('"') {
+            if let Some(end) = rest.find('"') {
+                let value = rest[..end].to_string();
+                inner.replace_range(pos..start + end + 2, "");
+                return Some(value);
+            }
+        }
         let len = inner[start..]
             .find(|c: char| c.is_whitespace() || (key != "rect" && c == ','))
             .unwrap_or(inner.len() - start);
@@ -4499,6 +4534,16 @@ mod tests {
     }
 
     #[test]
+    fn open_extras_needs_a_gallery_a_music_room_or_replays() {
+        let hud = "::hud{id=x text=\"Extras\" open=extras}\n";
+        let e = errs(&format!("---\nvars: {{ n: 0 }}\n---\n# a\n{hud}"));
+        assert!(e.iter().any(|e| e.message.contains("`open=extras` needs something to show")), "{e:?}");
+        for front in ["gallery: [a.png]", "music_room: [a.ogg]", "replays: { a: \"A\" }"] {
+            ok(&format!("---\n{front}\n---\n# a\n{hud}"));
+        }
+    }
+
+    #[test]
     fn input_errors_name_the_line() {
         let e = |body: &str, needle: &str| {
             let errors = errs(&format!("{ASK}{body}"));
@@ -4693,6 +4738,29 @@ mod tests {
         let found: Vec<_> = p.assets_with_lines().map(|(l, _, a)| (l, a)).collect();
         assert_eq!(found, [(3, "h.png"), (2, "map_hover.png")]);
         assert!(matches!(&ok("# a\n::hotspots\n- [x](#a){rect=0,0,1,1}\n::\n").ops[0], Op::Choice { map: None, .. }));
+    }
+
+    #[test]
+    fn a_region_takes_text_with_color_size_and_hover_color() {
+        let p = ok("---\nvars: { on: true }\n---\n# a\n::hotspots\n- [Yes](#a){rect=0,0,0.2,0.1 text=\"Yes, **sure**\" color=#ffffff size=40 hover_color=#ffff00, if on}\n- [No](#a){rect=0.2,0,0.2,0.1 text=NO}\n::\n");
+        let Op::Choice { options, .. } = &p.ops[0] else { panic!("{:?}", p.ops[0]) };
+        let t = options[0].area.as_ref().unwrap().text.as_ref().unwrap();
+        assert_eq!((t.text.as_str(), t.size, t.color, t.hover_color), ("Yes, **sure**", Some(40.0), Some([1.0; 4]), Some([1.0, 1.0, 0.0, 1.0])));
+        assert!(options[0].cond.is_some(), "the condition after the comma still works");
+        let t = options[1].area.as_ref().unwrap().text.as_ref().unwrap();
+        assert_eq!((t.text.as_str(), t.size, t.color), ("NO", None, None));
+        let region = |tail: &str| errs(&format!("# a\n::hotspots\n- [x](#a){{rect=0,0,1,1 {tail}}}\n::\n"));
+        let has = |tail: &str, needle: &str| {
+            let e = region(tail);
+            assert!(e.iter().any(|e| e.line == 3 && e.message.contains(needle)), "{tail}: {e:?}");
+        };
+        has("color=#fff", "need `text=`");
+        has("text=\" \"", "needs some text");
+        has("text=A size=2", "bad `size=2`");
+        has("text=A color=nope", "`color`");
+        has("text=\"{nw}\"", "only work in dialogue");
+        let e = errs("# a\n::choice\n- [x](#a){text=A}\n::\n");
+        assert!(e.iter().any(|e| e.message.contains("only belong in a `::hotspots` block")), "{e:?}");
     }
 
     #[test]

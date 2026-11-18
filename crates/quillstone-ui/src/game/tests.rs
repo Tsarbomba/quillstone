@@ -3429,3 +3429,32 @@ fn after_a_use_the_line_returns_with_its_picture_and_is_not_in_the_history_twice
     key(&mut g, Key::Space);
     assert_eq!(g.session.backlog().len(), 2, "the choice now");
 }
+
+const TOGGLE: &str = "---\nvars: { minimap: true }\n---\n# phone\n::hud{id=label text=\"Minimap:\" x=0.3 y=0.3}\n::hotspots\n- [On](#phone){rect=0.5,0.3,0.1,0.06 text=YES color=#ffffff, if minimap}\n- [Turn on](#phone){rect=0.5,0.3,0.1,0.06 text=YES color=#808080, minimap=true, if not minimap}\n- [Off](#phone){rect=0.62,0.3,0.1,0.06 text=NO color=#ffffff, if not minimap}\n- [Turn off](#phone){rect=0.62,0.3,0.1,0.06 text=NO color=#808080, minimap=false, if minimap}\n- [Back](#out){rect=0.5,0.5,0.1,0.06 text=\"Back {minimap}\"}\n::\n# out\n**A:** Bye.\n::end\n";
+
+#[test]
+fn text_regions_are_reached_by_the_keyboard_and_a_toggle_sets_its_variable() {
+    let p = parse(TOGGLE).unwrap();
+    let mut g = new_game(&p, instant());
+    let colour = |g: &Game, what: &str| {
+        g.draw_list(&|_| None).into_iter().find_map(|d| match d {
+            quillstone_render::Draw::Text { text, color, .. } if text == what => Some(color),
+            _ => None,
+        })
+    };
+    assert_eq!(colour(&g, "YES"), Some([1.0; 4]));
+    assert!(colour(&g, "NO").is_some_and(|c| c[0] < 0.6 && c[3] == 1.0), "the other is grey");
+    assert!(colour(&g, "Back true").is_some(), "{{name}} values are put in");
+    // the arrows (and so a gamepad's D-pad) walk the text regions like picture ones: YES, NO, Back
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.state().vars["minimap"], Value::Bool(false));
+    assert_eq!(colour(&g, "NO"), Some([1.0; 4]), "now NO is the white one");
+    assert!(colour(&g, "Back false").is_some(), "re-read when the screen shows again");
+    for _ in 0..3 {
+        key(&mut g, Key::Right);
+    }
+    key(&mut g, Key::Enter);
+    assert_eq!(line(&g), "Bye.", "Back is the third region");
+}

@@ -477,6 +477,9 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             Some(("open", s)) => HudScreen::from_name(s).map(HudAction::Open).filter(|a| match a {
                 HudAction::Open(HudScreen::Inventory) => program.inventory.is_some(),
                 HudAction::Open(HudScreen::Journal) => program.journal.is_some(),
+                HudAction::Open(HudScreen::Extras) => {
+                    !program.gallery.is_empty() || !program.music_room.is_empty() || !program.replays.is_empty()
+                }
                 _ => true,
             }),
             _ => None,

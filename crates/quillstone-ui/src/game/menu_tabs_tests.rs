@@ -149,7 +149,7 @@ fn escape_in_a_replay_opens_settings_where_main_menu_leaves_it() {
     // a replay has nothing to save, so the Save screen would only say "not in a replay"
     let p = parse(STORY).unwrap();
     let mut g = new_game(&p, instant());
-    g.replay = Some(super::replay::ReplayRun { label: "x".into(), persistent: Default::default() });
+    g.replay = Some(super::replay::ReplayRun { label: "x".into(), persistent: Default::default(), resume: None });
     key(&mut g, Key::Escape);
     assert_eq!(g.screen(), Screen::Settings);
 }

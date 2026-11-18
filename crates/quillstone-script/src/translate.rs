@@ -399,6 +399,9 @@ impl Program {
                     for o in options {
                         let place = format!("{label}:{}", self.locate(o.line).1);
                         add(&o.text, place.clone(), None);
+                        if let Some(t) = o.area.as_ref().and_then(|a| a.text.as_ref()) {
+                            add(&t.text, place.clone(), None);
+                        }
                         if let Some(l) = &o.lock {
                             add(&l.reason, place, None); // empty = no reason, skipped
                         }
