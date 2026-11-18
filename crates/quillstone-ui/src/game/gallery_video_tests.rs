@@ -177,3 +177,20 @@ fn unlock_all_shows_every_entry_unlocked_and_writes_nothing() {
     assert!(!g.session.unlocked("a.png"), "nothing was recorded");
     assert!(g.storage.load("persistent.txt").unwrap().is_none(), "and nothing was written");
 }
+
+#[test]
+fn a_bonus_entry_is_open_with_nothing_unlocked_and_the_story_shows_it_without_recording() {
+    let p = parse("---\ngallery: [a.png]\nbonus: [b.png, c.png]\n---\n::bg{src=b.png}\n**A:** hi\n").unwrap();
+    let mut g = Game::new(&p, Settings::default(), Box::new(crate::MemoryStorage::default()));
+    g.open_extras();
+    assert_eq!(g.extras_entries().iter().map(|e| e.1).collect::<Vec<_>>(), [false, true, true]);
+    click_cell(&mut g, 1);
+    assert_eq!(g.extras.viewing, Some(1));
+    key(&mut g, Key::Right);
+    assert_eq!(g.extras.viewing, Some(2), "arrows go through bonus entries");
+    key(&mut g, Key::Right);
+    assert_eq!(g.extras.viewing, Some(1), "and skip the locked one");
+    g.save_persistent();
+    assert!(!g.session.unlocked("b.png") && g.storage.load("persistent.txt").unwrap().is_none());
+    assert!(Game::new(&parse("---\nbonus: [a.png]\n---\nHi.\n").unwrap(), Settings::default(), Box::new(crate::MemoryStorage::default())).has_extras());
+}

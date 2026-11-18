@@ -655,7 +655,7 @@ impl Parser {
                 },
                 "vars" => self.front_vars(line, val, false),
                 "persistent" => self.front_vars(line, val, true),
-                "gallery" | "music_room" => self.front_list(line, key, val),
+                "gallery" | "bonus" | "music_room" => self.front_list(line, key, val),
                 "replays" => self.front_replays(line, val),
                 "languages" => self.front_languages(line, val),
                 "inventory" => match unquote(val) {
@@ -743,8 +743,9 @@ impl Parser {
         }
     }
 
-    /// `gallery: [a.png, b.png]` or `music_room: [...]`; the key may repeat. A gallery entry may name
-    /// its own thumbnail, `clip.webm | thumbs/clip.png`.
+    /// `gallery: [a.png, b.png]`, `bonus: [...]` (always open, listed after the gallery ones) or
+    /// `music_room: [...]`; the key may repeat. A gallery or bonus entry may name its own thumbnail,
+    /// `clip.webm | thumbs/clip.png`.
     fn front_list(&mut self, line: usize, key: &str, val: &str) {
         let Some(inner) = val.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
             self.err(line, format!("`{key}` must look like `[assets/one.png, assets/two.png]`"));
@@ -753,8 +754,9 @@ impl Parser {
         for item in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
             // `|` inside quotes is part of a name
             let parts = split_top_level(item, '|');
-            if parts.len() > 1 && key != "gallery" {
-                self.err(line, format!("`{key}` entries have no thumbnail (`|` is only for `gallery`): `{}`", item.trim()));
+            let pictures = key != "music_room";
+            if parts.len() > 1 && !pictures {
+                self.err(line, format!("`{key}` entries have no thumbnail (`|` is only for `gallery` and `bonus`): `{}`", item.trim()));
                 continue;
             }
             let (entry, thumb) = match parts[..] {
@@ -781,9 +783,21 @@ impl Parser {
                     Ok(t) => drop(self.program.gallery_thumbs.entry(entry.clone()).or_insert(t)),
                 }
             }
-            let list = if key == "gallery" { &mut self.program.gallery } else { &mut self.program.music_room };
-            if !list.contains(&entry) {
-                list.push(entry);
+            if !pictures {
+                if !self.program.music_room.contains(&entry) {
+                    self.program.music_room.push(entry);
+                }
+                continue;
+            }
+            // `bonus` entries are the tail of `gallery`, so the gallery ones come first whatever the key order
+            let (gallery, bonus) = (&mut self.program.gallery, &mut self.program.bonus);
+            if gallery.contains(&entry) && (key == "bonus") != bonus.contains(&entry) {
+                self.err(line, format!("`{entry}` is in both `gallery:` and `bonus:` (`gallery:` unlocks it in the story, `bonus:` has it open from the start)"));
+            } else if !gallery.contains(&entry) {
+                gallery.insert(if key == "bonus" { gallery.len() } else { gallery.len() - bonus.len() }, entry.clone());
+                if key == "bonus" {
+                    bonus.push(entry);
+                }
             }
         }
     }
@@ -5143,6 +5157,19 @@ mod tests {
         assert_eq!(kinds, [AssetKind::Image, AssetKind::Video, AssetKind::Video]);
         assert!(has_err("---\ngallery: [../x.webm]\n---\nHi.\n", "inside the game folder"));
         assert!(has_err("---\nvars: { n: \"a\" }\ngallery: [clips/{n}.webm]\n---\nHi.\n", "{"));
+    }
+
+    #[test]
+    fn bonus_entries_are_gallery_entries_that_are_always_open_and_listed_last() {
+        let p = ok("---\nbonus: [a.png, c.webm | t.png]\ngallery: [b.png]\nbonus: [d.png]\n---\nHi.\n");
+        assert_eq!(p.gallery, ["b.png", "a.png", "c.webm", "d.png"]);
+        assert_eq!(p.bonus, ["a.png", "c.webm", "d.png"]);
+        assert_eq!(p.gallery_thumbs["c.webm"], "t.png");
+        assert!(has_err("---\ngallery: [a.png]\nbonus: [a.png]\n---\nHi.\n", "both `gallery:` and `bonus:`"));
+        assert!(has_err("---\nbonus: [a.png]\ngallery: [a.png]\n---\nHi.\n", "both `gallery:` and `bonus:`"));
+        assert!(has_err("---\nbonus: [../a.png]\n---\nHi.\n", "inside the game folder"));
+        assert!(has_err("---\nbonus: a.png\n---\nHi.\n", "must look like"));
+        assert!(has_err("---\nbonus: [a.webm | b.webm]\n---\nHi.\n", "must be a picture"));
     }
 
     #[test]

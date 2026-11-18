@@ -776,6 +776,13 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> Vec<Finding> {
         program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } | Op::Unlock { src: s } if s == src))
     };
     let mut found = Vec::new();
+    for op in &program.ops {
+        if let Op::Unlock { src } = op {
+            if program.bonus.contains(src) {
+                found.push((false, format!("{}: warning: `::unlock{{src={src}}}`: `{src}` is a `bonus:` entry, already unlocked", path.display())));
+            }
+        }
+    }
     let mut problem = |msg: String| found.push((true, format!("{}: error: {msg}", path.display())));
     for (kind, asset) in program.extra_assets() {
         let file = root.join(asset);
@@ -788,7 +795,7 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> Vec<Finding> {
             problem(format!("`{asset}` in the gallery isn't a picture or a video"));
         } else if let Some(why) = if kind == AssetKind::Image { picture::read_picture(&file).err() } else { unplayable(&file, kind) } {
             problem(format!("`{asset}` won't play in a shipped game: {why}"));
-        } else if in_gallery && !shown(asset) {
+        } else if in_gallery && !program.bonus.contains(&asset.to_string()) && !shown(asset) {
             problem(format!("`{asset}` is in the gallery, but no `::bg`, `::video` or image shows it, so it can never unlock"));
         } else if !in_gallery && !thumb_only && !played(asset) {
             problem(format!("`{asset}` is in the music room, but no `::music` plays it, so it can never unlock"));
@@ -2130,6 +2137,11 @@ mod tests {
         assert_eq!(errors(&story("assets/a.png | assets/bad.png", "::bg{src=assets/a.png}"), &[("assets/a.png", &png), ("assets/bad.png", b"x")]), 1, "not a picture");
         assert_eq!(errors(&story("assets/a.png | assets/t.png", ""), files), 1, "the entry, not its thumbnail, must be shown");
         assert_eq!(errors(&story("assets/a.png | assets/t.png", "::unlock{src=assets/a.png}"), files), 0, "::unlock is enough");
+        let bonus = |body: &str| format!("---\nbonus: [assets/a.png | assets/t.png]\n---\n{body}\nHi.\n");
+        assert_eq!(errors(&bonus(""), files), 0, "a bonus entry needs no story event");
+        assert_eq!(errors(&bonus(""), &[("assets/t.png", &png)]), 1, "but the file must exist");
+        let msg = |script: &str| in_dir(files, |dir| check_extras(&parse(script).unwrap(), &dir.join("s.quill.md"), dir));
+        assert!(msg(&bonus("::unlock{src=assets/a.png}")).iter().any(|(error, m)| !error && m.contains("already unlocked")));
         const CALM: &[u8] = include_bytes!("../../../examples/assets/calm.ogg");
         let music = "---\nmusic_room: [assets/m.ogg]\n---\n::unlock{src=assets/m.ogg}\nHi.\n";
         assert_eq!(errors(music, &[("assets/m.ogg", CALM)]), 0, "a track never played but unlocked");

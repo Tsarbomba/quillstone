@@ -47,6 +47,11 @@ impl Game<'_> {
         !self.program.gallery.is_empty() || !self.program.music_room.is_empty() || !self.program.replays.is_empty()
     }
 
+    /// Whether an entry is unlocked: `--unlock-all`, a `bonus:` entry, or one the story has reached.
+    fn open(&self, src: &str) -> bool {
+        self.unlock_all || self.program.bonus.iter().any(|b| b == src) || self.session.unlocked(src)
+    }
+
     /// The gallery video open in the viewer, if that is what Extras is showing.
     pub(super) fn viewed_video(&self) -> Option<&str> {
         let src = self.program.gallery.get(self.extras.viewing?)?;
@@ -142,7 +147,7 @@ impl Game<'_> {
             return rows.map(|r| (self.tr(r.title.as_str()), self.unlock_all || self.session.replay_unlocked(&r.label))).collect();
         }
         let list = self.extras_list();
-        list.iter().skip(self.extras.page * per).take(per).map(|s| (self.tr(s.as_str()), self.unlock_all || self.session.unlocked(s))).collect()
+        list.iter().skip(self.extras.page * per).take(per).map(|s| (self.tr(s.as_str()), self.open(s))).collect()
     }
 
     fn extras_pages(&self) -> usize {
@@ -260,7 +265,7 @@ impl Game<'_> {
             return;
         }
         let Some(src) = self.extras_list().get(index).cloned() else { return };
-        if !self.unlock_all && !self.session.unlocked(&src) {
+        if !self.open(&src) {
             return self.notify_ui("Not unlocked yet", &[]);
         }
         match self.extras.tab {
@@ -289,7 +294,7 @@ impl Game<'_> {
             _ => return,
         };
         let n = self.program.gallery.len();
-        let next = (1..n).map(|k| (i + k * step) % n).find(|&j| self.unlock_all || self.session.unlocked(&self.program.gallery[j]));
+        let next = (1..n).map(|k| (i + k * step) % n).find(|&j| self.open(&self.program.gallery[j]));
         if let Some(j) = next {
             self.extras.viewing = Some(j);
         }

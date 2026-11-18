@@ -66,7 +66,7 @@ She looks away.
   Times are in seconds.
 - **Paths** are relative to the script file, with `/` between folders. They must stay in its
   folder or below it: no `..`, no drive letters, no backslashes. A `src=`, `icon=`, `image=`,
-  `sprites=`, inline image, `gallery:`, `music_room:` or `theme:` path that breaks this is a
+  `sprites=`, inline image, `gallery:`, `bonus:`, `music_room:` or `theme:` path that breaks this is a
   line-numbered error (otherwise the game's saves could never be loaded again). Braces can't be
   part of a file name; see [Picture names from variables](#picture-names-from-variables) for the
   one place a `{variable}` may stand in a name.
@@ -84,7 +84,7 @@ She looks away.
 | `inventory:` | see [Inventory](#inventory) |
 | `journal:`, `journal_done:` | see [Journal](#journal) |
 | `languages:` | see [Translating a game](#translating-a-game) |
-| `persistent:`, `gallery:`, `music_room:` | see [Kept across playthroughs](#kept-across-playthroughs) |
+| `persistent:`, `gallery:`, `bonus:`, `music_room:` | see [Kept across playthroughs](#kept-across-playthroughs) |
 | `replays:` | see [Scene replays](#scene-replays) |
 | `sprite_size:`, `art_scale:` | how big sprites are drawn, see [Sprites at their picture's size](#sprites-at-their-pictures-size) |
 
@@ -114,7 +114,7 @@ game is compiled, so saves, rollback and the tester see one story.
   path, and must be inside it. Assets keep that same base inside an included file:
   `assets/x.png`, not a path relative to the included file.
 - The file name ends in `.quill.md` (or `.md`). It can't hold a `{variable}`.
-- The **main script** keeps the front matter: `title`, `vars`, `theme`, `gallery`, `replays`,
+- The **main script** keeps the front matter: `title`, `vars`, `theme`, `gallery`, `bonus`, `replays`,
   `persistent` and the rest. An included file has none, and starting with `---` is an error.
 - Labels are global: the same label in two files is an error that names both places.
 - A file can be included once. Including it a second time, or a cycle (`a` includes `b`
@@ -1457,7 +1457,7 @@ check` tests it as a picture and `package` includes it.
   `history` (H), `save` (S), `load` (L), `settings` (the quick menu's Settings button) or
   `extras` (the Extras screen: gallery, music room and scene replays; closing it returns to the
   story). `journal` and `inventory` need a game that has one, and `extras` a `gallery:`,
-  `music_room:` or `replays:`. `messages` opens the [Messages](#messages) screen, and needs a game
+  `bonus:`, `music_room:` or `replays:`. `messages` opens the [Messages](#messages) screen, and needs a game
   that uses `::message` or `::reply`.
 - **`hover=`** needs `call=` or `open=`, and is checked and packaged like the picture. A text
   button simply lights up under the mouse.
@@ -2682,6 +2682,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 | --- | --- |
 | `persistent:` | variables that outlive a playthrough |
 | `gallery:` | pictures and video clips for the main menu's **Extras** screen |
+| `bonus:` | pictures and video clips in Extras that are open from the first launch |
 | `music_room:` | music tracks for the Extras screen |
 | `replays:` | scenes players can watch again from Extras: see [Scene replays](#scene-replays) |
 
@@ -2720,6 +2721,21 @@ gallery: [assets/cg1.png, assets/clip1.webm | assets/thumbs/clip1.png]
   unlocks as above, never the thumbnail.
 - Without a thumbnail, a picture's tile shows the picture. A clip's tile is a dark placeholder
   with a play symbol and the clip's name: no thumbnail is made from the video.
+
+**Always open: `bonus:`.** Bonus art (wallpapers, concept art, a making-of clip) needs no story
+event. `bonus:` takes the same entries as `gallery:`, thumbnails included, and its entries are
+unlocked from the first launch:
+
+```
+gallery: [assets/cg1.png]
+bonus: [assets/art1.png, assets/art2.png | assets/thumbs/art2.png]
+```
+
+- They show in the Extras gallery after the `gallery:` entries, and open, play and move with
+  Left/Right just like an unlocked one. A game with only `bonus:` still has an Extras screen.
+- The key may repeat. An entry can't be in both `gallery:` and `bonus:`.
+- `quillstone check` looks at the files like any gallery entry, but doesn't ask the story to
+  show them. `::unlock` on one is harmless: `check` warns that it is already unlocked.
 
 **Watching a clip.** Opening a clip plays it on repeat, full screen and fitted like a picture,
 with its sound. Click, Esc or Enter closes it; Left/Right move to the next unlocked entry,

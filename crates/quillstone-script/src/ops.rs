@@ -716,8 +716,10 @@ pub struct Program {
     /// Variables kept across playthroughs (front matter `persistent:`). Their
     /// starting values are in `vars` like any other.
     pub persistent: BTreeSet<String>,
-    /// Pictures for the extras gallery, unlocked when the story shows them.
+    /// Pictures for the extras gallery, unlocked when the story shows them (and the `bonus` ones).
     pub gallery: Vec<String>,
+    /// The entries of `gallery` that are always open (front matter `bonus:`); they come last in `gallery`.
+    pub bonus: Vec<String>,
     /// Gallery entry -> the picture its unlocked tile shows instead of the entry itself (`a.webm | t.png`).
     pub gallery_thumbs: BTreeMap<String, String>,
     /// Tracks for the extras music room, unlocked when the story plays them.

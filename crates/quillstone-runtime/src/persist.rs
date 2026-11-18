@@ -126,7 +126,9 @@ impl<'p> Session<'p> {
             if let Cmd::SetBackground { src, .. } = cmd {
                 if let Some(anim) = quillstone_script::anim_id(src).and_then(|id| program.anims.get(id)) {
                     for frame in anim.frames.iter().filter(|f| program.gallery.contains(&f.file)) {
-                        self.keep(format!("{UNLOCKED}{}", frame.file));
+                        if !program.bonus.contains(&frame.file) {
+                            self.keep(format!("{UNLOCKED}{}", frame.file));
+                        }
                     }
                     continue;
                 }
@@ -142,7 +144,7 @@ impl<'p> Session<'p> {
                 Cmd::Unlock { src } => (src, &program.music_room),
                 _ => continue,
             };
-            if list.contains(src) {
+            if list.contains(src) && !program.bonus.contains(src) {
                 self.keep(format!("{UNLOCKED}{src}"));
             }
         }

@@ -2,6 +2,7 @@
 title: Gallery Demo
 theme: theme.txt
 gallery: [assets/rooftop.png, assets/flashback.webm | assets/thumbs/flashback.png, assets/night.png]
+bonus: [assets/mika_happy.png]
 ---
 
 <!-- A gallery can mix pictures and video clips. A picture unlocks when the story shows it;
@@ -18,4 +19,4 @@ A picture for the gallery: the rooftop.
 A looping clip for the gallery: the same rooftop, remembered.
 
 ::bg{src=assets/night.png fade=1}
-And the night sky to end on. Open Extras at the main menu to see all three.
+And the night sky to end on. Open Extras at the main menu to see all three, and a fourth that was open from the start: bonus art needs no story.
