@@ -139,7 +139,11 @@ impl Game<'_> {
     }
 
     fn shelf(&self) -> Shelf {
-        let info_detail = |i: &ItemInfo, price: Option<String>| Detail { name: i.name.clone(), text: i.text.clone(), price };
+        // An item's name and text may hold `{name}` values (and tags): put in each time they are shown, after the
+        // translation of the script's own text. A cell's name is one plain row.
+        let fill = |s: &str| quillstone_runtime::interpolate(s, &self.session.state().vars);
+        let cell_name = |s: &str| quillstone_script::markup::plain(&fill(s));
+        let info_detail = |i: &ItemInfo, price: Option<String>| Detail { name: fill(&i.name), text: fill(&i.text), price };
         let tr = self.ui();
         let price_line = |p: i64| tr.f("Price: {n}", &[("n", &p)]);
         let shown = self.pending_shown();
@@ -155,7 +159,7 @@ impl Game<'_> {
                 let cells = items
                     .iter()
                     .map(|s| BagCell {
-                        name: s.item.name.clone(),
+                        name: cell_name(&s.item.name),
                         icon: s.item.icon.clone(),
                         price: Some(match s.item.count {
                             Some(n) => tr.f("{price} {label} (owned: {n})", &[("price", &s.price), ("label", &label), ("n", &n)]),
@@ -181,7 +185,7 @@ impl Game<'_> {
                 let cells = entries
                     .iter()
                     .map(|(i, done)| BagCell {
-                        name: i.name.clone(),
+                        name: cell_name(&i.name),
                         icon: i.icon.clone(),
                         price: done.then(|| tr.t("Done").to_string()),
                         state: if *done { CellState::Disabled } else { CellState::Normal },
@@ -194,7 +198,7 @@ impl Game<'_> {
                 let items: Vec<ItemInfo> = inventory_items(self.program, &self.session.state().vars).into_iter().map(localize).collect();
                 let cells = items
                     .iter()
-                    .map(|i| BagCell { name: i.name.clone(), icon: i.icon.clone(), price: i.count.map(|n| format!("x{n}")), state: CellState::Normal })
+                    .map(|i| BagCell { name: cell_name(&i.name), icon: i.icon.clone(), price: i.count.map(|n| format!("x{n}")), state: CellState::Normal })
                     .collect();
                 let details = items.iter().map(|i| info_detail(i, i.price.map(price_line))).collect();
                 let uses = items.iter().map(|i| i.has_use.then(|| i.id.clone())).collect();

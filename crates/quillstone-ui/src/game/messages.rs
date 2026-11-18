@@ -153,7 +153,8 @@ impl Game<'_> {
                 let placed = ui::layout_thread(&ui::Geo::new(theme), &bubbles, self.msgs.scroll, options.len(), image_size);
                 let texts: Vec<String> = options.into_iter().map(|(_, t)| t).collect();
                 let hover = pointer.and_then(|(x, y)| ui::Geo::new(self.view.theme()).option_at(x, y, texts.len())).or(self.msgs.focus);
-                ui::draw_thread(out, theme, tr, &self.contact_name(id), &bubbles, &placed, &texts, hover, back_hover, image_size);
+                let portrait = self.program.characters.get(id.as_str()).and_then(|c| c.portrait.as_ref()).map(|(_, p)| p.as_str());
+                ui::draw_thread(out, theme, tr, &self.contact_name(id), portrait, &bubbles, &placed, &texts, hover, back_hover, image_size);
                 if let Some(p) = self.msgs.pic_focus.and_then(|i| placed.iter().find(|p| p.index == i)).and_then(|p| p.pic) {
                     for r in [
                         Rect::new(p.x - 4.0, p.y - 4.0, p.w + 8.0, 4.0),

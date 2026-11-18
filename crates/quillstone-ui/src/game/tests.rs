@@ -3458,3 +3458,19 @@ fn text_regions_are_reached_by_the_keyboard_and_a_toggle_sets_its_variable() {
     key(&mut g, Key::Enter);
     assert_eq!(line(&g), "Bye.", "Back is the third region");
 }
+
+#[test]
+fn an_item_name_and_text_hold_values_and_tags_and_the_journal_button_and_title_follow_journal_title() {
+    let src = "---\nvars: { hints: [mika], mika.hint: \"Try the gym\" }\njournal: hints\n---\n::item{id=mika name=\"Mika {mika.hint}\" text=\"**Hint:** {mika.hint}\"}\nHi.\n";
+    let p = parse(src).unwrap();
+    let mut g = new_game(&p, instant());
+    g.set_theme(quillstone_render::Theme::parse("journal_title = Hints\n").0);
+    key(&mut g, Key::Char('j'));
+    g.handle(Event::CursorMoved(Some((432.0, 340.0))));
+    let list = g.draw_list(&|_| None);
+    let has = |t: &str| list.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == t));
+    assert!(has("Hints") && has("Mika Try the gym") && has("Hint: Try the gym"), "{:?}", list.iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.as_str()) } else { None }).collect::<Vec<_>>());
+    key(&mut g, Key::Escape);
+    let labels: Vec<String> = g.draw_list(&|_| None).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.clone()) } else { None }).collect();
+    assert!(labels.contains(&"Hints".to_string()) && !labels.contains(&"Journal".to_string()), "the quick menu button is renamed: {labels:?}");
+}

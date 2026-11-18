@@ -249,7 +249,8 @@ pub fn draw_quick(
             QuickButton::Items => "Items",
             QuickButton::Journal => "Journal",
         };
-        let label = tr.t(label);
+        // The journal is the writer's to name (`journal_title`): its button says so too.
+        let label = if b == QuickButton::Journal && theme.journal_title != "Journal" { theme.journal_title.as_str() } else { tr.t(label) };
         let color = if on {
             theme.accent_color
         } else if hovered {

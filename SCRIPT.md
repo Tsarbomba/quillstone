@@ -2179,6 +2179,10 @@ used, like characters:
   `_` and `-`. Declaring an id twice is an error.
 - `name` is what the screens show (the id if left out). `text` is the description
   shown when the item is hovered or selected.
+  Both may hold `{name}` values and the tags a line takes (`**bold**`, colours...; not `{nw}` or
+  `{p}`), put in again each time a screen shows them: `name="{hero}'s sword"`,
+  `text="{mika.hint}"` with a `::set{mika.hint = "..."}` somewhere in the story.
+  A name in the grid is one plain row (tags are dropped); the description keeps them.
 - `icon` is a picture (PNG, JPEG or WebP) drawn above the name. `price` is a whole
   number, 0 or more: what a shop asks unless its line says otherwise.
 - `count=potions` makes a stack. It names a whole-number variable declared in `vars:` (or
@@ -2321,12 +2325,29 @@ name.
 close keys.
 
 - Only J, not I, closes the journal.
-- `journal_title` sets its title (default "Journal"). The look of a done quest is
-  `inventory_cell_disabled`.
+- `journal_title` (a theme key) sets its title (default "Journal"), and the quick-menu button
+  says the same. The look of a done quest is `inventory_cell_disabled`.
 - Opened by the player it sits over the story. `::journal` leaves the story waiting until it
   is closed, and `quillstone test` treats it as one click.
 - The title and the "Done" label are not translated. The quest names and descriptions are,
   like any item's (see [Translating a game](#translating-a-game)).
+
+**A hints list.** The journal can hold one entry per character, with a face and a line about what
+to do next, kept up to date by the story. Name it "Hints" with `journal_title = Hints` in the theme:
+
+````markdown
+---
+vars: { hints: [mika, ren], mika.hint: "I need to get stronger first. Maybe the gym?", ren.hint: "Ren is waiting on the rooftop." }
+journal: hints
+---
+::item{id=mika name="Mika" icon=assets/faces/mika.png text="{mika.hint}"}
+::item{id=ren name="Ren" icon=assets/faces/ren.png text="{ren.hint}"}
+
+# gym
+::set{mika.hint = "Now ask Ren about the key."}
+````
+
+A HUD button with `open=journal` shows it (see [HUD](#hud-text-bars-and-pictures-over-the-story)).
 
 ## Shop
 
@@ -2598,9 +2619,22 @@ messages_text_size = 26
 # bubble colours (default: button_color for theirs, a see-through accent_color for the player's)
 bubble_them = #46587c
 bubble_me = #2f8f6bdd
-# bubble pictures, stretched over the whole bubble (no nine-slice) and used instead of the colours
+# bubble pictures, used instead of the colours. With a border (the corner size in the picture's own pixels)
+# they are drawn as nine pieces, so rounded corners keep their shape at any bubble size; without one the
+# picture is stretched whole
 bubble_them_image = gui/bubble_them.png
 bubble_me_image = gui/bubble_me.png
+bubble_border = 24
+# the contact rows, the reply options and the Back button (a picture for hovering too), nine-sliced the same way
+messages_button_image = gui/row.png
+messages_button_hover = gui/row_hover.png
+messages_button_border = 26
+# a small picture (a "‹") instead of the labelled Back button; Esc and a right click still go back
+messages_back_image = gui/back.png
+messages_back_hover = gui/back_hover.png
+# drawn over the contact's portrait (`portrait=` of the character) in a chat's header: an opaque picture with a
+# round hole in the colour of the header shows the portrait as a circle. Without a portrait the header is the name only
+messages_avatar_frame = gui/avatar_frame.png
 # text colours in bubbles (default text_color)
 bubble_text_them = #ffffff
 bubble_text_me = #ffffff
@@ -2609,6 +2643,7 @@ bubble_text_me = #ffffff
 - A frame picture and a rect are enough for a custom phone: draw the screen where the rect is.
 - The enlarged picture panel is not bound to the rect: it stays centred over everything.
 - The font is the theme's `font`; there is no separate font for the phone.
+- A chat's header shows the contact's portrait left of the name when the character has one.
 - `check` tests the keys and pictures like any other theme key, and `package` ships the pictures.
 
 The demo `examples/phone.quill.md` sends messages and has both kinds of reply.

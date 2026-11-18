@@ -312,9 +312,14 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     out.push(Draw::Rect { rect: d, color: theme.panel_color });
     if let Some(detail) = s.detail {
         let inner = Rect::new(d.x + 24.0, d.y + 10.0, d.w - 48.0, d.h - 20.0);
-        text(out, detail.name.clone(), Rect::new(inner.x, inner.y, inner.w, 40.0), 32.0, name_color, Align::Left);
+        // The writer's name and text may carry tags: drawn as lines are.
+        let tagged = |out: &mut Vec<Draw>, s: &str, rect: Rect, size: f32, color: [f32; 4]| {
+            let r = quillstone_script::markup::rich(s);
+            out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align: Align::Left, outline: None });
+        };
+        tagged(out, &detail.name, Rect::new(inner.x, inner.y, inner.w, 40.0), 32.0, name_color);
         let body = description_body(theme, detail.price.is_some());
-        text(out, detail.text.clone(), body, 26.0, text_color, Align::Left);
+        tagged(out, &detail.text, body, 26.0, text_color);
         if let Some(price) = &detail.price {
             let row = Rect::new(inner.x, inner.y + inner.h - 34.0, inner.w, 34.0);
             text(out, price.clone(), row, 26.0, price_color, Align::Left);

@@ -2203,6 +2203,12 @@ impl Parser {
             self.item_uses.push((l.clone(), line));
         }
         let name = name.filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
+        // Both may hold `{name}` values and line tags, put in each time a screen shows them.
+        for (what, t) in [("an item name", Some(&name)), ("an item text", text.as_ref())] {
+            if let Some(m) = t.and_then(|t| crate::markup::check_inline_markup(t, what).err()) {
+                return self.err(line, m);
+            }
+        }
         let item = Item { id: id.clone(), name, icon, price, text: text.unwrap_or_default(), count, use_label, line };
         self.program.items.insert(id, item);
     }
@@ -4912,6 +4918,13 @@ mod tests {
         }
         let hud = errs("# a\n::hud{id=p text=Phone open=messages}\nHi.\n");
         assert!(hud.iter().any(|e| e.message.contains("`open=messages` needs a game that uses")), "{hud:?}");
+    }
+
+    #[test]
+    fn an_item_name_and_text_take_values_and_check_their_tags() {
+        let p = ok("---\nvars: { h: \"x\" }\n---\n::item{id=a name=\"Mika {h}\" text=\"**Hint:** {h}\"}\nHi.\n");
+        assert_eq!(p.items["a"].text, "**Hint:** {h}");
+        assert!(has_err("::item{id=a text=\"{nw}\"}\nHi.\n", "only work in dialogue"));
     }
 
     #[test]

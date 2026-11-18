@@ -1,0 +1,33 @@
+# The look of examples/phone.quill.md: a modern phone for the Messages screen (see SCRIPT.md, "Your own phone").
+accent_color = #ffd98c
+name_color = #ffd98c
+button_color = #1b2240f0
+button_hover_color = #36306ef0
+dim_color = #9aa3c4ff
+overlay_color = #05060ccc
+
+# The phone body, its wallpaper, status bar, chat header band and message bar are one picture (1920x1080).
+messages_image = assets/gui/phone.png
+# Everything the screen draws (Back, the title, contacts, bubbles, reply options) stays inside the glass,
+# between the status bar and the message bar of the picture.
+messages_rect = 745, 104, 430, 831
+messages_text_size = 26
+bubble_them = #2b3556ff
+bubble_me = #6a5be8ff
+bubble_text_them = #f4f6ffff
+bubble_text_me = #ffffffff
+
+# Rounded bubbles, rows and buttons: pictures drawn as nine pieces, so the corners keep their shape at any size.
+# The number is the corner size in the picture's own pixels.
+bubble_them_image = assets/gui/phone_bubble_them.png
+bubble_me_image = assets/gui/phone_bubble_me.png
+bubble_border = 24
+# Contact rows and reply options (a picture for hovering too).
+messages_button_image = assets/gui/phone_button.png
+messages_button_hover = assets/gui/phone_button_hover.png
+messages_button_border = 26
+# A "‹" instead of the labelled Back button (Esc and a right click still go back).
+messages_back_image = assets/gui/phone_back.png
+messages_back_hover = assets/gui/phone_back_hover.png
+# Drawn over the contact's portrait in a chat's header: opaque with a round hole, so the portrait shows as a circle.
+messages_avatar_frame = assets/gui/phone_avatar_frame.png

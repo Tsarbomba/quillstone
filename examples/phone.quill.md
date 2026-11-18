@@ -1,5 +1,6 @@
 ---
 title: Phone Demo
+theme: phone_theme.txt
 vars: { going: false }
 ---
 
@@ -24,6 +25,10 @@ vars: { going: false }
 ::message{from=mika text="Hi! It's Mika. The roof at eight?"}
 
 **Mika:** There. Take a look.
+
+**Mika:** You answered me earlier, remember? Your own messages show on the right.
+<!-- `to=` is a message from the player: it never shows a notice. -->
+::message{to=mika text="Sure, I'll bring tea."}
 
 <!-- A picture, or a video with a thumbnail, shows in its bubble and opens enlarged when picked. -->
 ::message{from=mika image=assets/night.png text="This is how it looks at night."}

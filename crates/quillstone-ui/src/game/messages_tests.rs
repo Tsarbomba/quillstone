@@ -2,6 +2,8 @@
 
 use super::test_util::{instant, key, line, new_game};
 use super::*;
+use crate::messages as ui;
+use quillstone_render::Size;
 use quillstone_script::parse;
 
 const PHONE: &str = "---\nvars: { met: 0 }\n---\n::character{id=mika name=Mika}\n::hud{id=ph text=Phone open=messages x=0.9 y=0.05}\n**A:** one\n::message{from=mika text=\"Hi\"}\n::message{from=mika video=c.webm}\n::message{from=mika image=a.png}\n::reply{to=mika later}\n- [Fine](#fine){met+=1}\n::\n**A:** two\n::reply{to=mika}\n- [Sure](#end)\n::\n# end\n**A:** done\n::end\n# fine\n**B:** fine!\n::return\n";
@@ -102,4 +104,41 @@ fn a_message_notice_is_shown_unless_quiet_and_never_for_the_players_own() {
     let mut g = new_game(&p2, instant());
     key(&mut g, Key::Space);
     assert!(g.notice.is_none());
+}
+
+#[test]
+fn a_back_picture_replaces_the_label_and_still_goes_back_by_click_and_esc() {
+    use quillstone_render::Theme;
+    let p = parse(PHONE).unwrap();
+    let theme = Theme::parse("messages_back_image = back.png\nmessages_back_hover = back_h.png\nmessages_avatar_frame = f.png\n").0;
+    let mut g = new_game(&p, instant());
+    g.set_theme(theme.clone());
+    open_thread(&mut g);
+    let geo = ui::Geo::new(&theme);
+    assert!(geo.back_rect().w < 100.0, "a small picture, not the labelled button");
+    let known = |s: &str| (s == "back.png" || s == "back_h.png" || s == "f.png").then_some(Size::new(56.0, 56.0));
+    let pictures: Vec<String> = g.draw_list(&known).iter().filter_map(|d| if let Draw::Image { src, .. } = d { Some(src.clone()) } else { None }).collect();
+    assert!(pictures.contains(&"back.png".to_string()) && !g.draw_list(&known).iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Back")), "{pictures:?}");
+    // hovering it shows the hover picture
+    let r = geo.back_rect();
+    g.handle(Event::CursorMoved(Some((r.x + 5.0, r.y + 5.0))));
+    assert!(g.draw_list(&known).iter().any(|d| matches!(d, Draw::Image { src, .. } if src == "back_h.png")));
+    // a click goes back to the list, Esc closes it (the keys work as with the label)
+    g.handle(Event::Press(Button::Left));
+    assert_eq!(g.msgs.thread, None);
+    key(&mut g, Key::Escape);
+    assert_eq!(g.screen(), Screen::Story);
+}
+
+#[test]
+fn bubbles_and_buttons_are_drawn_as_nine_pieces_when_the_theme_gives_a_border() {
+    use quillstone_render::Theme;
+    let p = parse(PHONE).unwrap();
+    let mut g = new_game(&p, instant());
+    g.set_theme(Theme::parse("bubble_them_image = b.png\nbubble_border = 20\nmessages_button_image = k.png\nmessages_button_border = 20\n").0);
+    open_thread(&mut g);
+    let known = |s: &str| (s == "b.png" || s == "k.png").then_some(Size::new(64.0, 64.0));
+    let count = |g: &Game, name: &str| g.draw_list(&known).iter().filter(|d| matches!(d, Draw::Image { src, .. } if src == name)).count();
+    assert!(count(&g, "b.png") % 9 == 0 && count(&g, "b.png") >= 9, "each bubble is nine pieces");
+    assert!(count(&g, "k.png") >= 9, "the Back button and the reply option too");
 }

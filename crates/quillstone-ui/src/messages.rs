@@ -33,21 +33,42 @@ pub struct Geo {
     pub x: f32,
     pub w: f32,
     pub text: f32,
+    /// Width of the Back control: a labelled button, or a small picture when the theme has `messages_back_image`.
+    pub back_w: f32,
 }
 
 impl Geo {
     pub fn new(theme: &Theme) -> Geo {
         let [x, y, w, h] = theme.messages_rect;
         let cw = (w - 2.0 * MARGIN).min(CONTENT_MAX);
-        Geo { area: Rect::new(x, y, w, h), x: x + (w - cw) / 2.0, w: cw, text: theme.messages_text_size }
+        Geo { area: Rect::new(x, y, w, h), x: x + (w - cw) / 2.0, w: cw, text: theme.messages_text_size, back_w: if theme.messages_back_image.is_some() { 56.0 } else { 150.0 } }
     }
 
     pub fn back_rect(&self) -> Rect {
-        Rect::new(self.area.x + MARGIN, self.area.y + MARGIN, 150.0, 52.0)
+        Rect::new(self.area.x + MARGIN, self.area.y + MARGIN, self.back_w, 52.0)
     }
 
-    fn title_rect(&self) -> Rect {
-        Rect::new(self.area.x + 190.0, self.area.y + MARGIN, (self.area.w - 380.0).max(100.0), 52.0)
+    /// The round portrait in a chat's header, right of Back.
+    pub fn avatar_rect(&self) -> Rect {
+        let b = self.back_rect();
+        Rect::new(b.x + b.w + 10.0, b.y - 2.0, 56.0, 56.0)
+    }
+
+    /// Centred over the area, or (in a narrow one, like a phone's) in the space right of Back; with an avatar,
+    /// left-aligned right of it.
+    fn title_rect(&self, avatar: bool) -> Rect {
+        if avatar {
+            let a = self.avatar_rect();
+            let x = a.x + a.w + 12.0;
+            return Rect::new(x, self.area.y + MARGIN, (self.area.x + self.area.w - x - MARGIN).max(60.0), 52.0);
+        }
+        let left = self.back_rect().x + self.back_rect().w + 16.0 - self.area.x;
+        let wide = self.area.w - 2.0 * left;
+        if wide >= 240.0 {
+            Rect::new(self.area.x + left, self.area.y + MARGIN, wide, 52.0)
+        } else {
+            Rect::new(self.area.x + left, self.area.y + MARGIN, (self.area.w - left - MARGIN).max(60.0), 52.0)
+        }
     }
 
     /// Contact rows that fit.
@@ -173,28 +194,58 @@ fn image_in(out: &mut Vec<Draw>, src: &str, into: Rect, image_size: &dyn Fn(&str
 }
 
 /// The backdrop (the dim, then the theme's `messages_image` covering the screen), the title and the Back button.
-fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
+/// `pic` over `dest`: as a 9-slice with `border` picture pixels (stretched whole when 0), or `color` without a picture.
+fn skin(out: &mut Vec<Draw>, pic: Option<&str>, border: f32, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
+    match pic.and_then(|s| image_size(s).map(|z| (s, z))) {
+        Some((s, z)) if border > 0.0 => crate::screens::nine_slice(out, s, z, dest, border),
+        Some((s, _)) => out.push(Draw::Image { src: s.to_string(), dest, uv: quillstone_render::FULL_UV, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false }),
+        None => out.push(Draw::Rect { rect: dest, color }),
+    }
+}
+
+/// A contact row, reply option or Back button: the theme's button picture (its hover one while lit), else the colour.
+fn button(out: &mut Vec<Draw>, theme: &Theme, dest: Rect, on: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
+    let pic = if on { theme.messages_button_hover.as_deref().or(theme.messages_button_image.as_deref()) } else { theme.messages_button_image.as_deref() };
+    skin(out, pic, theme.messages_button_border, dest, lit(theme, on), image_size);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, avatar: Option<Option<&str>>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     if let Some((src, size)) = theme.messages_image.as_deref().and_then(|s| image_size(s).map(|z| (s, z))) {
         let p = place(size, screen(), Fit::Cover);
         out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
     }
-    text(out, title, g.title_rect(), 40.0, theme.text_color, Align::Center);
-    out.push(Draw::Rect { rect: g.back_rect(), color: lit(theme, back_hover) });
-    text(out, tr.t("Back"), g.back_rect(), 28.0, theme.text_color, Align::Center);
+    // `avatar`: a chat header (with the contact's portrait, if it has one); none: the list.
+    text(out, title, g.title_rect(avatar.is_some()), 40.0, theme.text_color, if avatar.is_some() { Align::Left } else { Align::Center });
+    if let Some(portrait) = avatar {
+        let r = g.avatar_rect();
+        if let Some(src) = portrait {
+            image_in(out, src, r, image_size);
+            skin(out, theme.messages_avatar_frame.as_deref(), 0.0, r, [0.0; 4], image_size);
+        }
+    }
+    let back = if back_hover { theme.messages_back_hover.as_deref().or(theme.messages_back_image.as_deref()) } else { theme.messages_back_image.as_deref() };
+    match back.filter(|s| image_size(s).is_some()) {
+        Some(src) => image_in(out, src, g.back_rect(), image_size),
+        None => {
+            button(out, theme, g.back_rect(), back_hover, image_size);
+            text(out, tr.t("Back"), g.back_rect(), 28.0, theme.text_color, Align::Center);
+        }
+    }
 }
 
 /// The contact list, `rows` already cut to the visible window. `hover` is a visible row.
 pub fn draw_contacts(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, rows: &[ContactRow], hover: Option<usize>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
     let g = Geo::new(theme);
-    draw_frame(out, theme, tr, &g, tr.t("Messages"), back_hover, image_size);
+    draw_frame(out, theme, tr, &g, tr.t("Messages"), None, back_hover, image_size);
     if rows.is_empty() {
         text(out, tr.t("No messages yet."), Rect::new(g.area.x, g.area.y + HEAD + 40.0, g.area.w, 60.0), g.text, theme.dim_color, Align::Center);
         return;
     }
     for (i, row) in rows.iter().enumerate() {
         let r = g.contact_rect(i);
-        out.push(Draw::Rect { rect: r, color: lit(theme, hover == Some(i)) });
+        button(out, theme, r, hover == Some(i), image_size);
         let face = Rect::new(r.x + 12.0, r.y + 12.0, r.h - 24.0, r.h - 24.0);
         out.push(Draw::Rect { rect: face, color: theme.panel_color });
         if let Some(src) = &row.portrait {
@@ -226,6 +277,7 @@ pub fn draw_thread(
     theme: &Theme,
     tr: Tr,
     name: &str,
+    portrait: Option<&str>,
     bubbles: &[Bubble],
     placed: &[Placed],
     options: &[String],
@@ -234,7 +286,7 @@ pub fn draw_thread(
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     let g = Geo::new(theme);
-    draw_frame(out, theme, tr, &g, name, back_hover, image_size);
+    draw_frame(out, theme, tr, &g, name, portrait.map(Some), back_hover, image_size);
     if bubbles.is_empty() {
         text(out, tr.t("No messages yet."), Rect::new(g.area.x, g.area.y + HEAD + 40.0, g.area.w, 60.0), g.text, theme.dim_color, Align::Center);
     }
@@ -247,10 +299,7 @@ pub fn draw_thread(
             (theme.bubble_them.unwrap_or(theme.button_color), theme.bubble_them_image.as_deref(), theme.bubble_text_them)
         };
         let text_color = text_color.unwrap_or(theme.text_color);
-        match image.filter(|s| image_size(s).is_some()) {
-            Some(src) => out.push(Draw::Image { src: src.to_string(), dest: p.rect, uv: quillstone_render::FULL_UV, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false }),
-            None => out.push(Draw::Rect { rect: p.rect, color }),
-        }
+        skin(out, image, theme.bubble_border, p.rect, color, image_size);
         let mut y = p.rect.y + PAD;
         if let (Some(pic), Some(area)) = (&b.pic, p.pic) {
             match pic.src.as_deref().filter(|s| image_size(s).is_some()) {
@@ -272,7 +321,7 @@ pub fn draw_thread(
     }
     for (i, o) in options.iter().enumerate().take(MAX_OPTIONS) {
         let r = g.option_rect(i, options.len());
-        out.push(Draw::Rect { rect: r, color: lit(theme, option_hover == Some(i)) });
+        button(out, theme, r, option_hover == Some(i), image_size);
         let t = rich(o);
         out.push(Draw::Text { text: t.text, runs: t.runs, visible_chars: usize::MAX, rect: r, size: g.text * 0.85, color: theme.accent_color, align: Align::Center, outline: None });
     }

@@ -237,6 +237,18 @@ pub struct Theme {
     pub bubble_text_them: Option<[f32; 4]>,
     pub bubble_text_me: Option<[f32; 4]>,
     pub messages_text_size: f32,
+    /// Messages: corner size (picture pixels) of the bubble pictures, drawn as a 9-slice (0: stretched whole).
+    pub bubble_border: f32,
+    /// Messages: a picture (and a hover one) for the contact rows, the reply options and the Back button, drawn as a
+    /// 9-slice with `messages_button_border` picture pixels (0: stretched); `messages_back_image` (and hover) replaces
+    /// the labelled Back button with a small picture (a "‹"); `messages_avatar_frame` is drawn over the contact's
+    /// portrait in a chat's header (an opaque picture with a round hole shows the portrait as a circle).
+    pub messages_button_image: Option<String>,
+    pub messages_button_hover: Option<String>,
+    pub messages_button_border: f32,
+    pub messages_back_image: Option<String>,
+    pub messages_back_hover: Option<String>,
+    pub messages_avatar_frame: Option<String>,
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -348,6 +360,13 @@ impl Default for Theme {
             bubble_text_them: None,
             bubble_text_me: None,
             messages_text_size: DEFAULT_MESSAGES_TEXT_SIZE,
+            bubble_border: 0.0,
+            messages_button_image: None,
+            messages_button_hover: None,
+            messages_button_border: 0.0,
+            messages_back_image: None,
+            messages_back_hover: None,
+            messages_avatar_frame: None,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -688,7 +707,7 @@ file_keys! {
     pub fonts: font, font_bold, font_italic, font_bold_italic;
     // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
     screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, options_panel_image,
-        timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image;
+        timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image, messages_button_image, messages_button_hover, messages_back_image, messages_back_hover, messages_avatar_frame;
     music: menu_music;
     // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).
     inventory_files: inventory_background, shop_background, inventory_panel;
@@ -696,12 +715,14 @@ file_keys! {
 
 /// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
 type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
-const NUMBER_KEYS: [NumberKey; 12] = [
+const NUMBER_KEYS: [NumberKey; 14] = [
     ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
     ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
     ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
     ("history_text_size", 8.0, 200.0, "", |t| &mut t.history_text_size),
     ("messages_text_size", 8.0, 200.0, "", |t| &mut t.messages_text_size),
+    ("bubble_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.bubble_border),
+    ("messages_button_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.messages_button_border),
     ("text_outline_size", 0.0, 8.0, "", |t| &mut t.text_outline_size),
     ("options_panel_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.options_panel_border),
     ("inventory_cell_gap", 0.0, 100.0, "", |t| &mut t.inventory_cell_gap),
@@ -1130,6 +1151,10 @@ mod tests {
         assert_eq!(t.bubble_me, Some([170.0 / 255.0, 51.0 / 255.0, 85.0 / 255.0, 204.0 / 255.0]));
         assert!(t.bubble_text_them.is_some() && t.bubble_text_me.is_some());
         assert_eq!(t.assets(), vec!["g/phone.png", "g/t.png", "g/m.png"], "the pictures ship with the game");
+        let (t, problems) = Theme::parse("bubble_border = 24\nmessages_button_border = 30\nmessages_button_image = a.png\nmessages_button_hover = b.png\nmessages_back_image = c.png\nmessages_back_hover = d.png\nmessages_avatar_frame = e.png\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.bubble_border, t.messages_button_border), (24.0, 30.0));
+        assert_eq!(t.assets().len(), 5, "the new pictures ship too");
         let (_, problems) = Theme::parse("messages_rect = 0, 0, 100, 100\nmessages_text_size = 3\nbubble_me = red\n");
         assert_eq!(problems.len(), 3, "{problems:?}");
     }
