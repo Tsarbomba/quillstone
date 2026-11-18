@@ -191,6 +191,8 @@ pub struct Game<'p> {
     extras: Extras,
     /// Where the Messages screen is (see `game/messages.rs`).
     msgs: messages::MsgUi,
+    /// The frontend's text measuring (see `measure.rs`).
+    measure: Option<crate::measure::MeasureFn>,
     /// Auto-voice: recordings found in the script's voice folder, by
     /// `voice_name` (see [`Game::set_voice_files`]).
     voice_files: std::collections::HashMap<String, String>,
@@ -292,6 +294,7 @@ impl<'p> Game<'p> {
             cutscene_playing: false,
             extras: Extras::default(),
             msgs: messages::MsgUi::default(),
+            measure: None,
             voice_files: std::collections::HashMap::new(),
             choice_focus: None,
             hud_focus: None,
@@ -442,6 +445,12 @@ impl<'p> Game<'p> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// The frontend's text engine, so layouts that fit their text (chat bubbles, journal rows) use the real
+    /// wrapping instead of an estimate that errs long. Set it again when the theme's font changes.
+    pub fn set_text_measure(&mut self, measure: Option<crate::measure::MeasureFn>) {
+        self.measure = measure;
     }
 
     /// Draw everything with this theme (see `quillstone_render::Theme`). At the

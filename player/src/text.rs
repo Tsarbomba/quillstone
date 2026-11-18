@@ -13,9 +13,9 @@ pub struct Bitmap {
 }
 
 #[cfg(feature = "text")]
-pub use real::TextRenderer;
+pub use real::{Measurer, TextRenderer};
 #[cfg(not(feature = "text"))]
-pub use stub::TextRenderer;
+pub use stub::{Measurer, TextRenderer};
 
 #[cfg(not(feature = "text"))]
 mod stub {
@@ -33,6 +33,19 @@ mod stub {
         }
 
         pub fn recycle(&mut self, _bitmap: Bitmap) {}
+    }
+
+    /// Without text there is nothing to measure: layouts fall back to their estimate.
+    pub struct Measurer;
+
+    impl Measurer {
+        pub fn new(_fonts: Vec<Vec<u8>>) -> Self {
+            Measurer
+        }
+
+        pub fn measure(&self, _text: &str, _size: f32, _width: f32) -> Option<(usize, f32)> {
+            None
+        }
     }
 }
 
@@ -146,6 +159,37 @@ mod real {
         spare: Vec<u8>,
     }
 
+    /// Measures text for layouts that fit themselves to it (see `quillstone_ui::measure`). It has a text engine of its
+    /// own, made when first asked, and remembers its answers (a screen asks the same ones every frame).
+    type MeasureKey = (String, u32, u32);
+
+    pub struct Measurer {
+        files: Vec<Vec<u8>>,
+        engine: std::cell::RefCell<Option<TextRenderer>>,
+        cache: std::cell::RefCell<HashMap<MeasureKey, (usize, f32)>>,
+    }
+
+    impl Measurer {
+        pub fn new(files: Vec<Vec<u8>>) -> Self {
+            Measurer { files, engine: Default::default(), cache: Default::default() }
+        }
+
+        pub fn measure(&self, text: &str, size: f32, width: f32) -> Option<(usize, f32)> {
+            let key = (text.to_string(), size.to_bits(), width.to_bits());
+            if let Some(found) = self.cache.borrow().get(&key) {
+                return Some(*found);
+            }
+            let mut engine = self.engine.borrow_mut();
+            let found = engine.get_or_insert_with(|| TextRenderer::new(self.files.clone())).measure(text, size, width);
+            let mut cache = self.cache.borrow_mut();
+            if cache.len() >= 512 {
+                cache.clear();
+            }
+            cache.insert(key, found);
+            Some(found)
+        }
+    }
+
     /// Layouts kept before the cache starts afresh (a screen shows a few dozen texts).
     const MAX_LAYOUTS: usize = 128;
 
@@ -185,6 +229,29 @@ mod real {
             }
             self.layouts.insert(layout_key, buffer);
             Some(bitmap)
+        }
+
+        /// How `text` wraps at `size` px in `width` px: the lines it makes and the widest one's width, as
+        /// [`TextRenderer::rasterize`] will lay it out.
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> (usize, f32) {
+            let size = size.max(1.0);
+            let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(size, quillstone_render::line_height(size)));
+            {
+                let mut b = buffer.borrow_with(&mut self.fonts);
+                b.set_size(Some(width.max(1.0)), None);
+                let attrs = match &self.family {
+                    Some(name) => Attrs::new().family(Family::Name(name)),
+                    None => Attrs::new(),
+                };
+                b.set_text(text, &attrs, Shaping::Advanced, None);
+            }
+            buffer.shape_until_scroll(&mut self.fonts, false);
+            let (mut lines, mut widest) = (0, 0.0f32);
+            for run in buffer.layout_runs() {
+                lines += 1;
+                widest = widest.max(run.line_w);
+            }
+            (lines.max(1), widest)
         }
 
         /// Give a bitmap's pixel buffer back once it is uploaded, to be drawn into again.

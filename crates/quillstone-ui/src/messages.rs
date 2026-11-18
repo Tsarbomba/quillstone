@@ -4,11 +4,12 @@
 //! bubbles), `accent_color` (the player's), `overlay_color`, `text_color` and `dim_color`, unless the theme's `bubble_*`,
 //! `messages_*` keys say otherwise.
 
-use quillstone_render::{estimate_lines, one_row, place, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{line_height, place, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::markup::{plain, rich};
 use quillstone_script::Fit;
 
 use crate::input::{screen, text};
+use crate::measure::{fit_row, lines_of, Measure};
 use crate::texts::Tr;
 
 /// Most reply options drawn at the foot of a thread.
@@ -136,10 +137,6 @@ pub struct Placed {
     pub pic: Option<Rect>,
 }
 
-fn text_width(s: &str, size: f32) -> f32 {
-    s.chars().map(|c| if c.is_ascii() { size * 0.55 } else { size }).sum()
-}
-
 /// The size a picture is drawn at in its bubble (fitted into `PIC_MAX` and the bubble's width, never enlarged), or a
 /// video's default shape.
 fn pic_size(pic: &Pic, max_w: f32, image_size: &dyn Fn(&str) -> Option<Size>) -> Size {
@@ -149,7 +146,7 @@ fn pic_size(pic: &Pic, max_w: f32, image_size: &dyn Fn(&str) -> Option<Size>) ->
 }
 
 /// The bubbles that fit above `options` reply buttons, newest at the bottom; `scroll` skips that many of the newest.
-pub fn layout_thread(g: &Geo, bubbles: &[Bubble], scroll: usize, options: usize, image_size: &dyn Fn(&str) -> Option<Size>) -> Vec<Placed> {
+pub fn layout_thread(g: &Geo, bubbles: &[Bubble], scroll: usize, options: usize, image_size: &dyn Fn(&str) -> Option<Size>, measure: Option<Measure>) -> Vec<Placed> {
     let top = g.area.y + HEAD;
     let mut bottom = g.thread_bottom(options);
     let mut out = Vec::new();
@@ -158,10 +155,10 @@ pub fn layout_thread(g: &Geo, bubbles: &[Bubble], scroll: usize, options: usize,
         let plain_text = b.text.as_deref().map(plain);
         let inner_max = bubble_max - 2.0 * PAD;
         let pic = b.pic.as_ref().map(|p| pic_size(p, inner_max, image_size));
-        let lines = plain_text.as_deref().map_or(0, |t| estimate_lines(t, g.text, inner_max));
-        let text_w = plain_text.as_deref().map_or(0.0, |t| if lines > 1 { inner_max } else { text_width(t, g.text).min(inner_max) });
-        let inner_w = text_w.max(pic.map_or(0.0, |s| s.w));
-        let text_h = lines as f32 * g.text * 1.35;
+        // The bubble is as wide as its widest line and as tall as the lines the text really wraps to.
+        let (lines, text_w) = plain_text.as_deref().map_or((0, 0.0), |t| lines_of(measure, t, g.text, inner_max));
+        let inner_w = (text_w + 3.0).min(inner_max).max(pic.map_or(0.0, |s| s.w));
+        let text_h = lines as f32 * line_height(g.text);
         let h = 2.0 * PAD + pic.map_or(0.0, |s| s.h + if lines > 0 { 10.0 } else { 0.0 }) + text_h;
         let w = inner_w + 2.0 * PAD;
         let y = bottom - h;
@@ -195,7 +192,7 @@ fn image_in(out: &mut Vec<Draw>, src: &str, into: Rect, image_size: &dyn Fn(&str
 
 /// The backdrop (the dim, then the theme's `messages_image` covering the screen), the title and the Back button.
 /// `pic` over `dest`: as a 9-slice with `border` picture pixels (stretched whole when 0), or `color` without a picture.
-fn skin(out: &mut Vec<Draw>, pic: Option<&str>, border: f32, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
+pub(crate) fn skin(out: &mut Vec<Draw>, pic: Option<&str>, border: f32, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
     match pic.and_then(|s| image_size(s).map(|z| (s, z))) {
         Some((s, z)) if border > 0.0 => crate::screens::nine_slice(out, s, z, dest, border),
         Some((s, _)) => out.push(Draw::Image { src: s.to_string(), dest, uv: quillstone_render::FULL_UV, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false }),
@@ -236,7 +233,8 @@ fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, 
 }
 
 /// The contact list, `rows` already cut to the visible window. `hover` is a visible row.
-pub fn draw_contacts(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, rows: &[ContactRow], hover: Option<usize>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
+#[allow(clippy::too_many_arguments)]
+pub fn draw_contacts(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, rows: &[ContactRow], hover: Option<usize>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>, measure: Option<Measure>) {
     let g = Geo::new(theme);
     draw_frame(out, theme, tr, &g, tr.t("Messages"), None, back_hover, image_size);
     if rows.is_empty() {
@@ -255,8 +253,8 @@ pub fn draw_contacts(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, rows: &[Contact
         let w = r.x + r.w - x - 20.0;
         let (name_size, small) = (g.text * 1.05, g.text * 0.8);
         let name_color = if row.unread > 0 { theme.accent_color } else { theme.text_color };
-        text(out, one_row(&row.name, name_size, w * 0.6), Rect::new(x, r.y + 10.0, w * 0.6, name_size * 1.3), name_size, name_color, Align::Left);
-        text(out, one_row(&row.preview, small, w), Rect::new(x, r.y + r.h - small * 1.3 - 12.0, w, small * 1.3), small, theme.dim_color, Align::Left);
+        text(out, fit_row(measure, &row.name, name_size, w * 0.6), Rect::new(x, r.y + 10.0, w * 0.6, name_size * 1.3), name_size, name_color, Align::Left);
+        text(out, fit_row(measure, &row.preview, small, w), Rect::new(x, r.y + r.h - small * 1.3 - 12.0, w, small * 1.3), small, theme.dim_color, Align::Left);
         let badge = if row.waiting {
             Some(tr.t("Waiting for your reply").to_string())
         } else if row.unread > 0 {
@@ -365,14 +363,26 @@ mod tests {
     fn bubbles_stack_up_from_the_bottom_on_their_own_side_and_scroll_by_whole_bubbles() {
         let g = Geo::new(&Theme::default());
         let bubbles: Vec<Bubble> = (0..30).map(|i| msg(i % 2 == 1, &format!("Message number {i}"))).collect();
-        let placed = layout_thread(&g, &bubbles, 0, 0, &none);
+        let placed = layout_thread(&g, &bubbles, 0, 0, &none, None);
         assert_eq!(placed[0].index, 29, "the newest is at the bottom");
         assert!(placed[0].rect.x > g.x && placed[1].rect.x == g.x, "the player's on the right, theirs on the left");
         assert!(placed.len() < 30 && placed.iter().all(|p| p.rect.y >= g.area.y + HEAD && p.rect.y + p.rect.h <= VIRTUAL.h));
-        assert_eq!(layout_thread(&g, &bubbles, 5, 0, &none)[0].index, 24);
-        let with = layout_thread(&g, &bubbles, 0, 2, &none);
+        assert_eq!(layout_thread(&g, &bubbles, 5, 0, &none, None)[0].index, 24);
+        let with = layout_thread(&g, &bubbles, 0, 2, &none, None);
         assert!(with[0].rect.y + with[0].rect.h < g.option_rect(0, 2).y);
         assert_eq!(g.option_at(g.option_rect(1, 2).x + 5.0, g.option_rect(1, 2).y + 5.0, 2), Some(1));
+    }
+
+    #[test]
+    fn a_bubble_is_one_line_tall_when_the_text_really_measures_one_line() {
+        let g = Geo::new(&Theme::default());
+        let b = [msg(true, "Sure, I'll bring tea. A longer phrase the estimate would call two lines at this width")];
+        let measure = |_: &str, _: f32, _: f32| Some((1, 240.0));
+        let p = layout_thread(&g, &b, 0, 0, &none, Some(&measure));
+        assert_eq!(p[0].rect.h, 2.0 * PAD + line_height(g.text), "one line plus padding");
+        assert_eq!(p[0].rect.w, 243.0 + 2.0 * PAD, "as wide as the widest line");
+        let two = |_: &str, _: f32, _: f32| Some((2, 300.0));
+        assert_eq!(layout_thread(&g, &b, 0, 0, &none, Some(&two))[0].rect.h, 2.0 * PAD + 2.0 * line_height(g.text));
     }
 
     #[test]
@@ -380,7 +390,7 @@ mod tests {
         let g = Geo::new(&Theme::default());
         let b = [Bubble { mine: false, text: Some("look".into()), pic: Some(Pic { src: Some("big.png".into()), video: false }) }];
         let size = |s: &str| (s == "big.png").then_some(Size::new(2000.0, 1000.0));
-        let placed = layout_thread(&g, &b, 0, 0, &size);
+        let placed = layout_thread(&g, &b, 0, 0, &size, None);
         let r = placed[0].pic.unwrap();
         assert!(r.w <= PIC_MAX.w && (r.w / r.h - 2.0).abs() < 0.01, "{r:?}");
         assert_eq!(picture_at(&placed, r.x + 3.0, r.y + 3.0), Some(0));
@@ -394,7 +404,7 @@ mod tests {
         let inside = |r: Rect| r.x >= 700.0 && r.y >= 100.0 && r.x + r.w <= 1200.0 && r.y + r.h <= 980.0;
         assert!(inside(g.back_rect()) && (0..g.rows()).all(|i| inside(g.contact_rect(i))) && (0..3).all(|i| inside(g.option_rect(i, 3))));
         let bubbles = vec![msg(false, "A fairly long message that must wrap inside the narrow phone"), msg(true, "ok")];
-        assert!(layout_thread(&g, &bubbles, 0, 2, &none).iter().all(|p| inside(p.rect)));
+        assert!(layout_thread(&g, &bubbles, 0, 2, &none, None).iter().all(|p| inside(p.rect)));
     }
 
     #[test]

@@ -3474,3 +3474,37 @@ fn an_item_name_and_text_hold_values_and_tags_and_the_journal_button_and_title_f
     let labels: Vec<String> = g.draw_list(&|_| None).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.clone()) } else { None }).collect();
     assert!(labels.contains(&"Hints".to_string()) && !labels.contains(&"Journal".to_string()), "the quick menu button is renamed: {labels:?}");
 }
+
+#[test]
+fn the_journal_as_a_list_shows_whole_texts_scrolls_and_follows_the_focus() {
+    let items: String = ('a'..='h').map(|c| format!("::item{{id={c} name=\"Item {c}\" text=\"The full hint for {c}, long enough to wrap.\"}}\n")).collect();
+    let src = format!("---\nvars: {{ hints: [a, b, c, d, e, f, g, h], fin: [b] }}\njournal: hints\njournal_done: fin\n---\n{items}Hi.\n");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    g.set_theme(quillstone_render::Theme::parse("journal_layout = list\n").0);
+    g.set_text_measure(Some(Box::new(|_, _, _| Some((3, 300.0)))));
+    let names = |g: &Game| -> Vec<String> {
+        g.draw_list(&|_| None).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(text.clone()) } else { None }).collect()
+    };
+    key(&mut g, Key::Char('j'));
+    let first = names(&g);
+    assert!(first.contains(&"Item a".to_string()) && !first.contains(&"Item h".to_string()), "rows as tall as three lines do not all fit: {first:?}");
+    assert!(first.contains(&"The full hint for a, long enough to wrap.".to_string()), "the whole text, not a tooltip");
+    // the wheel scrolls by rows, End and Home go to the ends
+    g.handle(Event::Wheel(-1.0));
+    assert!(!names(&g).contains(&"Item a".to_string()));
+    key(&mut g, Key::End);
+    assert!(names(&g).contains(&"Item h".to_string()) && !names(&g).contains(&"Item a".to_string()));
+    assert!(names(&g).contains(&"Done".to_string()), "a finished entry (listed last) says Done");
+    key(&mut g, Key::Home);
+    assert!(names(&g).contains(&"Item a".to_string()));
+    // the arrows move a focus and scroll to keep it in view
+    for _ in 0..8 {
+        key(&mut g, Key::Down);
+    }
+    assert!(names(&g).contains(&"Item h".to_string()), "the focused last row is shown");
+    assert_eq!(g.bag.focus, Some(7));
+    key(&mut g, Key::Char('j'));
+    assert_eq!(g.screen(), Screen::Story, "J closes it as before");
+}
+

@@ -19,6 +19,8 @@ pub(super) struct Bag {
     pub page: usize,
     /// The cell the keyboard (or a click, in the inventory) is on: an index into all cells.
     pub focus: Option<usize>,
+    /// `journal_layout = list`: the first row shown.
+    pub scroll: usize,
 }
 
 /// What the grid lists right now.
@@ -64,7 +66,7 @@ impl Game<'_> {
     fn open_bag(&mut self, screen: Screen, overlay: bool, journal: bool) {
         self.stop_skip();
         self.screen = screen;
-        self.bag = Bag { overlay, journal, page: 0, focus: None };
+        self.bag = Bag { overlay, journal, page: 0, focus: None, scroll: 0 };
     }
 
     /// The shop or inventory this game is at: the screen showing, or the one
@@ -104,7 +106,7 @@ impl Game<'_> {
                 // leave it be, and show the screen when it closes.
                 _ if self.under == Some(Screen::Shop) && want == Screen::Shop => self.clamp_bag(),
                 _ => {
-                    self.bag = Bag { overlay: false, journal, page: 0, focus: None };
+                    self.bag = Bag { overlay: false, journal, page: 0, focus: None, scroll: 0 };
                     self.under = Some(want);
                 }
             }
@@ -230,8 +232,84 @@ impl Game<'_> {
         }
     }
 
+    /// The journal's entries for `journal_layout = list`: the same as the grid's, with their whole text.
+    fn journal_rows(&self) -> Vec<bag::JournalRow> {
+        let shelf = self.shelf();
+        shelf
+            .cells
+            .iter()
+            .zip(&shelf.details)
+            .map(|(c, d)| bag::JournalRow {
+                name: c.name.clone(),
+                icon: c.icon.clone(),
+                text: d.text.clone(),
+                done: (c.state == CellState::Disabled).then(|| c.price.clone()).flatten(),
+            })
+            .collect()
+    }
+
+    /// The journal as a list (see `Theme::journal_list`).
+    fn draw_journal_list_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
+        let (theme, tr) = (self.view.theme(), self.ui());
+        let rows = self.journal_rows();
+        let measure = |t: &str, s: f32, w: f32| self.measure.as_ref().and_then(|m| m(t, s, w));
+        let placed = bag::layout_journal(theme, &rows, self.bag.scroll, Some(&measure));
+        let hover = self.pointer().and_then(|(x, y)| bag::row_at(&placed, x, y)).or(self.bag.focus);
+        let close_hover = self.pointer().is_some_and(|(x, y)| bag::list_close_at(theme, x, y));
+        let title = if theme.journal_title == "Journal" { tr.t("Journal") } else { &theme.journal_title };
+        bag::draw_journal_list(out, theme, tr, title, &rows, &placed, hover, close_hover, theme.inventory_background.as_deref(), image_size);
+    }
+
+    /// Scrolling and focus of the journal list; `true` when the event was for it (the rest is the grid's keys: Esc, J, ...).
+    fn journal_list_event(&mut self, event: &Event) -> bool {
+        let theme = self.view.theme();
+        let rows = self.journal_rows();
+        let n = rows.len();
+        let m = &self.measure;
+        let measure = |t: &str, s: f32, w: f32| m.as_ref().and_then(|f| f(t, s, w));
+        let visible = |scroll: usize| bag::layout_journal(theme, &rows, scroll, Some(&measure)).len();
+        let max_scroll = (0..n).find(|&s| s + visible(s) >= n).unwrap_or(0);
+        let mut scroll = self.bag.scroll.min(max_scroll);
+        let mut focus = self.bag.focus.filter(|&f| f < n);
+        match event {
+            Event::Wheel(dy) => scroll = if *dy > 0.0 { scroll.saturating_sub(1) } else { (scroll + 1).min(max_scroll) },
+            Event::Key(Key::PageUp) => scroll = scroll.saturating_sub(visible(scroll).max(1)),
+            Event::Key(Key::PageDown) => scroll = (scroll + visible(scroll).max(1)).min(max_scroll),
+            Event::Key(Key::Home) => scroll = 0,
+            Event::Key(Key::End) => scroll = max_scroll,
+            Event::Key(Key::Down | Key::Right) if n > 0 => {
+                let f = focus.map_or(0, |f| (f + 1).min(n - 1));
+                while f >= scroll + visible(scroll) && scroll < max_scroll {
+                    scroll += 1;
+                }
+                focus = Some(f);
+            }
+            Event::Key(Key::Up | Key::Left) if n > 0 => {
+                let f = focus.map_or(0, |f| f.saturating_sub(1));
+                scroll = scroll.min(f);
+                focus = Some(f);
+            }
+            Event::Key(Key::Enter | Key::Space) => {}
+            Event::Press(Button::Left) => {
+                let at = self.cursor;
+                if at.is_some_and(|(x, y)| bag::list_close_at(theme, x, y)) {
+                    return false;
+                }
+                let placed = bag::layout_journal(theme, &rows, scroll, Some(&measure));
+                focus = at.and_then(|(x, y)| bag::row_at(&placed, x, y)).or(focus);
+            }
+            _ => return false,
+        }
+        self.bag.scroll = scroll;
+        self.bag.focus = focus;
+        true
+    }
+
     /// The screen as drawn.
     pub(super) fn draw_bag_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
+        if self.bag.journal && self.view.theme().journal_list {
+            return self.draw_journal_list_screen(out, image_size);
+        }
         let theme = self.view.theme();
         let tr = self.ui();
         let shelf = self.shelf();
@@ -279,6 +357,9 @@ impl Game<'_> {
     }
 
     pub(super) fn bag_event(&mut self, event: Event) {
+        if self.bag.journal && self.view.theme().journal_list && self.journal_list_event(&event) {
+            return;
+        }
         let shelf = self.shelf(); // built once for the whole event
         let shelf_len = shelf.cells.len();
         let theme = self.view.theme();

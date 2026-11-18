@@ -178,6 +178,10 @@ fn main() {
     game.set_unlock_all(unlock_all);
     game.set_dev(dev);
     game.set_theme(theme);
+    game.set_text_measure(Some(Box::new({
+        let measurer = text::Measurer::new(fonts.clone());
+        move |t: &str, size, width| measurer.measure(t, size, width)
+    })));
     let (translations, problems) = quillstone_ui::source::load_translations_in(&assets, program);
     for p in &problems {
         eprintln!("warning: {p}");
@@ -396,7 +400,12 @@ impl App {
         }
         match self.game.reload(program) {
             Ok(()) => {
+                let fonts = load_fonts(&theme, &self.assets);
                 self.game.set_theme(theme);
+                self.game.set_text_measure(Some(Box::new({
+                    let measurer = text::Measurer::new(fonts);
+                    move |t: &str, size, width| measurer.measure(t, size, width)
+                })));
                 self.game.set_translations(translations);
                 self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());
                 match problems.first() {

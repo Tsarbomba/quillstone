@@ -272,6 +272,13 @@ pub struct Theme {
     pub inventory_title: String,
     /// The title of the journal screen (`journal_title`, default "Journal").
     pub journal_title: String,
+    /// `journal_layout = list`: one row per entry (icon, name, the whole text under it, as tall as the text needs,
+    /// scrolling) instead of the inventory's grid. The rows are `journal_row_image` (and `journal_row_hover`) drawn
+    /// as a 9-slice with `journal_row_border` picture pixels, or `button_color` rectangles.
+    pub journal_list: bool,
+    pub journal_row_image: Option<String>,
+    pub journal_row_hover: Option<String>,
+    pub journal_row_border: f32,
     pub shop_title: String,
     /// What the shop calls its money ("Gold"); the pay variable's name if unset.
     pub shop_currency: Option<String>,
@@ -381,6 +388,10 @@ impl Default for Theme {
             inventory_cell_disabled: None,
             inventory_title: "Items".into(),
             journal_title: "Journal".into(),
+            journal_list: false,
+            journal_row_image: None,
+            journal_row_hover: None,
+            journal_row_border: 0.0,
             shop_title: "Shop".into(),
             shop_currency: None,
             inventory_description_rect: None,
@@ -573,6 +584,11 @@ impl Theme {
                          (width from 48, height from {MIN_CELL_HEIGHT}: a cell holds an icon, a name and a price)"
                     )),
                 },
+                "journal_layout" => match unquote(value) {
+                    "list" => t.journal_list = true,
+                    "grid" => t.journal_list = false,
+                    _ => bad("`journal_layout` must be `grid` (the default) or `list`".into()),
+                },
                 "inventory_title" | "journal_title" | "shop_title" | "shop_currency" => match unquote(value) {
                     "" => bad(format!("`{key}` needs a text")),
                     text if key == "inventory_title" => t.inventory_title = text.to_string(),
@@ -707,7 +723,7 @@ file_keys! {
     pub fonts: font, font_bold, font_italic, font_bold_italic;
     // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
     screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, options_panel_image,
-        timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image, messages_button_image, messages_button_hover, messages_back_image, messages_back_hover, messages_avatar_frame;
+        timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image, messages_button_image, messages_button_hover, messages_back_image, messages_back_hover, messages_avatar_frame, journal_row_image, journal_row_hover;
     music: menu_music;
     // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).
     inventory_files: inventory_background, shop_background, inventory_panel;
@@ -715,12 +731,13 @@ file_keys! {
 
 /// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
 type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
-const NUMBER_KEYS: [NumberKey; 14] = [
+const NUMBER_KEYS: [NumberKey; 15] = [
     ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
     ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
     ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
     ("history_text_size", 8.0, 200.0, "", |t| &mut t.history_text_size),
     ("messages_text_size", 8.0, 200.0, "", |t| &mut t.messages_text_size),
+    ("journal_row_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.journal_row_border),
     ("bubble_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.bubble_border),
     ("messages_button_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.messages_button_border),
     ("text_outline_size", 0.0, 8.0, "", |t| &mut t.text_outline_size),

@@ -2337,7 +2337,7 @@ to do next, kept up to date by the story. Name it "Hints" with `journal_title = 
 
 ````markdown
 ---
-vars: { hints: [mika, ren], mika.hint: "I need to get stronger first. Maybe the gym?", ren.hint: "Ren is waiting on the rooftop." }
+vars: { hints: [mika, ren], mika.hint: "I need to get stronger first. Maybe the gym?", ren.hint: "He wants to see the city at night. Meet him on the rooftop." }
 journal: hints
 ---
 ::item{id=mika name="Mika" icon=assets/faces/mika.png text="{mika.hint}"}
@@ -2346,6 +2346,26 @@ journal: hints
 # gym
 ::set{mika.hint = "Now ask Ren about the key."}
 ````
+
+The grid shows one description at a time, under the cells. For a hints list, where every entry's whole text
+should be readable at once, switch the screen to a list in the theme:
+
+```text
+# one row per entry instead of the grid (default grid)
+journal_layout = list
+# row pictures (and a hover one), drawn as nine pieces with this corner size in the picture's pixels;
+# without them the rows are button_color rectangles. The Close button wears the same picture
+journal_row_image = gui/row.png
+journal_row_hover = gui/row_hover.png
+journal_row_border = 26
+```
+
+- A row is the entry's picture on the left, its name, and its whole text (values filled in, tags kept) wrapped
+  under the name. A row is as tall as its text, so long hints are never cut.
+- When the rows do not fit, the wheel, Up/Down (the D-pad), Page Up/Page Down, Home and End scroll; the arrows
+  move a highlight and keep it in view. A finished entry (`journal_done:`) is greyed and says "Done", as in the grid.
+- The grid stays the default because it also suits entries that are only a picture and a name; the layout is a
+  theme key like the screen's title (`journal_title`) because it is about how the screen looks, not what is in it.
 
 A HUD button with `open=journal` shows it (see [HUD](#hud-text-bars-and-pictures-over-the-story)).
 

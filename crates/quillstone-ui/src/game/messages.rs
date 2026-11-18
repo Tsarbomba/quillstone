@@ -146,11 +146,13 @@ impl Game<'_> {
             None => {
                 let rows: Vec<ui::ContactRow> = self.contact_rows().into_iter().skip(self.msgs.scroll).take(self.rows()).map(|(_, r)| r).collect();
                 let hover = pointer.and_then(|(x, y)| ui::Geo::new(theme).contact_at(x, y, rows.len())).or(self.msgs.focus);
-                ui::draw_contacts(out, theme, tr, &rows, hover, back_hover, image_size);
+                let measure = |t: &str, s: f32, w: f32| self.measure.as_ref().and_then(|m| m(t, s, w));
+                ui::draw_contacts(out, theme, tr, &rows, hover, back_hover, image_size, Some(&measure));
             }
             Some(id) => {
                 let (bubbles, options) = (self.bubbles(id), self.thread_options(id));
-                let placed = ui::layout_thread(&ui::Geo::new(theme), &bubbles, self.msgs.scroll, options.len(), image_size);
+                let measure = |t: &str, s: f32, w: f32| self.measure.as_ref().and_then(|m| m(t, s, w));
+                let placed = ui::layout_thread(&ui::Geo::new(theme), &bubbles, self.msgs.scroll, options.len(), image_size, Some(&measure));
                 let texts: Vec<String> = options.into_iter().map(|(_, t)| t).collect();
                 let hover = pointer.and_then(|(x, y)| ui::Geo::new(self.view.theme()).option_at(x, y, texts.len())).or(self.msgs.focus);
                 let portrait = self.program.characters.get(id.as_str()).and_then(|c| c.portrait.as_ref()).map(|(_, p)| p.as_str());
@@ -321,7 +323,7 @@ impl Game<'_> {
     /// sizes lay out as the placeholder shape, which is what a click on an unloaded picture is tested against).
     fn picture_under(&self, id: &str, x: f32, y: f32) -> Option<usize> {
         let (bubbles, options) = (self.bubbles(id), self.thread_options(id));
-        let placed = ui::layout_thread(&ui::Geo::new(self.view.theme()), &bubbles, self.msgs.scroll, options.len(), &|s| self.msg_sizes.borrow().get(s).copied());
+        let placed = ui::layout_thread(&ui::Geo::new(self.view.theme()), &bubbles, self.msgs.scroll, options.len(), &|s| self.msg_sizes.borrow().get(s).copied(), Some(&|t: &str, s: f32, w: f32| self.measure.as_ref().and_then(|m| m(t, s, w))));
         ui::picture_at(&placed, x, y)
     }
 

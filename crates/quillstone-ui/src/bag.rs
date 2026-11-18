@@ -6,10 +6,11 @@
 //! shop the player's money, a grid of cells (icon, name, price), the description
 //! of the hovered or selected item, a page control and a Close/Leave button.
 
-use quillstone_render::{place, Align, CellStyle, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{line_height, place, Align, CellStyle, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
 use crate::input::{screen, text};
+use crate::measure::{lines_of, Measure};
 use crate::texts::Tr;
 
 const MARGIN: f32 = 40.0;
@@ -346,9 +347,144 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     text(out, s.close_label, close, 34.0, theme.text_color, Align::Center);
 }
 
+// ---- the journal as a list ---------------------------------------------------------------------------
+
+/// One entry of the journal in `journal_layout = list`: `text` keeps its tags.
+#[derive(Debug, Clone)]
+pub struct JournalRow {
+    pub name: String,
+    pub icon: Option<String>,
+    pub text: String,
+    /// The "Done" label of a finished entry.
+    pub done: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowGeo {
+    pub index: usize,
+    pub rect: Rect,
+    pub icon: Rect,
+    pub name: Rect,
+    pub body: Rect,
+}
+
+const ROW_PAD: f32 = 18.0;
+const ROW_ICON: f32 = 96.0;
+const ROW_GAP: f32 = 12.0;
+const ROW_NAME: f32 = 32.0;
+const ROW_TEXT: f32 = 26.0;
+
+/// Where the rows may be: between the title and the Close button.
+fn list_area(theme: &Theme) -> Rect {
+    let top = title_rect(theme).y + title_rect(theme).h + 20.0;
+    let p = panel_rect(theme);
+    let w = p.w.min(1400.0);
+    Rect::new(p.x + (p.w - w) / 2.0, top, w, (close_rect(theme).y - 20.0 - top).max(100.0))
+}
+
+/// The rows that fit from the `scroll`th, each as tall as its text wraps to (whole rows only; a tall one alone is shown).
+pub fn layout_journal(theme: &Theme, rows: &[JournalRow], scroll: usize, measure: Option<Measure>) -> Vec<RowGeo> {
+    let area = list_area(theme);
+    let body_x = ROW_PAD + ROW_ICON + ROW_GAP;
+    let mut y = area.y;
+    let mut out = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(scroll) {
+        let text_w = (area.w - body_x - ROW_PAD).max(40.0);
+        let lines = if row.text.is_empty() { 0 } else { lines_of(measure, &quillstone_script::markup::plain(&row.text), ROW_TEXT, text_w).0 };
+        let h = (2.0 * ROW_PAD + ROW_ICON).max(ROW_PAD + line_height(ROW_NAME) + lines as f32 * line_height(ROW_TEXT) + ROW_PAD);
+        if y + h > area.y + area.h && !out.is_empty() {
+            break;
+        }
+        let rect = Rect::new(area.x, y, area.w, h);
+        let name = Rect::new(rect.x + body_x, y + ROW_PAD - 4.0, text_w, line_height(ROW_NAME));
+        let body = Rect::new(rect.x + body_x, name.y + name.h + 2.0, text_w, h - (name.y + name.h + 2.0 - y) - ROW_PAD + 4.0);
+        out.push(RowGeo { index, rect, icon: Rect::new(rect.x + ROW_PAD, y + ROW_PAD, ROW_ICON, ROW_ICON), name, body });
+        y += h + 12.0;
+    }
+    out
+}
+
+/// The journal as a list: title, rows, Close. `hover` is a row index.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_journal_list(
+    out: &mut Vec<Draw>,
+    theme: &Theme,
+    tr: Tr,
+    title: &str,
+    rows: &[JournalRow],
+    placed: &[RowGeo],
+    hover: Option<usize>,
+    close_hover: bool,
+    background: Option<&str>,
+    image_size: &dyn Fn(&str) -> Option<Size>,
+) {
+    match background.and_then(|src| Some((src, image_size(src)?))) {
+        Some((src, size)) => {
+            let p = place(size, screen(), Fit::Stretch);
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+        }
+        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
+    }
+    text(out, title, title_rect(theme), 48.0, theme.text_color, Align::Center);
+    if rows.is_empty() {
+        text(out, tr.t("Nothing here yet."), list_area(theme), 32.0, theme.dim_color, Align::Center);
+    }
+    let name_color = theme.inventory_name_color.unwrap_or(theme.text_color);
+    let text_color = theme.inventory_text_color.unwrap_or(theme.text_color);
+    for g in placed {
+        let row = &rows[g.index];
+        let on = hover == Some(g.index);
+        let pic = if on { theme.journal_row_hover.as_deref().or(theme.journal_row_image.as_deref()) } else { theme.journal_row_image.as_deref() };
+        let [br, bg, bb, ba] = theme.button_color;
+        let fill = if on { theme.button_hover_color } else if row.done.is_some() { [br, bg, bb, ba * 0.6] } else { theme.button_color };
+        crate::messages::skin(out, pic, theme.journal_row_border, g.rect, fill, image_size);
+        let alpha = if row.done.is_some() { 0.45 } else { 1.0 };
+        if let Some((src, size)) = row.icon.as_deref().and_then(|s| image_size(s).map(|z| (s, z))) {
+            let p = place(size, g.icon, Fit::Contain);
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
+        }
+        let dim = |c: [f32; 4]| if row.done.is_some() { theme.dim_color } else { c };
+        text(out, row.name.clone(), g.name, ROW_NAME, dim(name_color), Align::Left);
+        if let Some(done) = &row.done {
+            text(out, done.clone(), g.name, ROW_TEXT, theme.dim_color, Align::Right);
+        }
+        let t = quillstone_script::markup::rich(&row.text);
+        out.push(Draw::Text { text: t.text, runs: t.runs, visible_chars: usize::MAX, rect: g.body, size: ROW_TEXT, color: dim(text_color), align: Align::Left, outline: None });
+    }
+    let close = close_rect(theme);
+    let pic = if close_hover { theme.journal_row_hover.as_deref().or(theme.journal_row_image.as_deref()) } else { theme.journal_row_image.as_deref() };
+    let fill = if close_hover { theme.button_hover_color } else { theme.button_color };
+    crate::messages::skin(out, pic, theme.journal_row_border, close, fill, image_size);
+    text(out, tr.t("Close"), close, 34.0, theme.text_color, Align::Center);
+}
+
+/// Whether the Close button is at the point.
+pub fn list_close_at(theme: &Theme, x: f32, y: f32) -> bool {
+    close_rect(theme).contains(x, y)
+}
+
+/// The row at the point.
+pub fn row_at(placed: &[RowGeo], x: f32, y: f32) -> Option<usize> {
+    placed.iter().find(|g| g.rect.contains(x, y)).map(|g| g.index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_rows_are_as_tall_as_their_text_and_have_a_floor_for_the_icon() {
+        let theme = Theme::default();
+        let row = |t: &str| JournalRow { name: "N".into(), icon: None, text: t.into(), done: None };
+        let rows = [row(""), row("one line"), row("many lines")];
+        let lines = |t: &str, _: f32, _: f32| Some((if t == "many lines" { 4 } else { 1 }, 100.0));
+        let g = layout_journal(&theme, &rows, 0, Some(&lines));
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].rect.h, g[1].rect.h, "short texts: the icon sets the height");
+        assert!(g[2].rect.h > g[1].rect.h + 2.0 * line_height(ROW_TEXT), "four lines are taller");
+        assert!(g.windows(2).all(|w| w[1].rect.y >= w[0].rect.y + w[0].rect.h), "no overlap");
+        assert!(g.iter().all(|r| r.rect.y + r.rect.h <= close_rect(&theme).y), "above the Close button");
+    }
 
     fn cells(n: usize) -> Vec<BagCell> {
         (0..n)
