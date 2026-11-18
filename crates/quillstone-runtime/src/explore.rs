@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, HudAction, KeyPress, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{can_press, can_use, finish_input, finish_number, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
+use crate::{can_press, can_reply, can_use, finish_input, finish_number, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -155,6 +155,16 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                     if !x.used.contains(id) && can_use(program, &state, id) {
                         x.used.insert(id.clone());
                         inputs.push((Input::Use(id.clone()), Some(format!("use {}", program.items[id].name))));
+                    }
+                }
+                // And each pending `::reply{.. later}` option, once.
+                for t in state.threads.iter().filter(|t| t.reply.is_some()) {
+                    for (k, text) in crate::reply_options(program, &state, &t.id, &|s| s.to_string()) {
+                        let key = format!("reply:{}:{}:{k}", t.id, t.reply.unwrap_or(0));
+                        if !x.used.contains(&key) && can_reply(program, &state, &t.id, k) {
+                            x.used.insert(key);
+                            inputs.push((Input::Reply(t.id.clone(), k), Some(format!("reply to {}: {}", t.id, text))));
+                        }
                     }
                 }
                 // The same for each HUD button that calls a label (`open=` buttons need nothing).
@@ -568,6 +578,7 @@ impl Explorer<'_> {
                         read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     }
                 }
+                Op::Message { text: Some(text), .. } => read.extend(braces(text).into_iter().map(|n| (at, n, true))),
                 Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Press { prompt, .. } | Op::Notify { text: prompt, .. } => read.extend(braces(prompt).into_iter().map(|n| (at, n, true))),
                 // A picture named from variables (`assets/{place}.png`).
                 Op::Bg { src, .. } | Op::Image { src, .. } => {

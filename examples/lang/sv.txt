@@ -329,6 +329,38 @@
 > OK
 = OK
 
+#: messages
+> Messages
+= Meddelanden
+
+#: messages
+> No messages yet.
+= Inga meddelanden ännu.
+
+#: messages
+> Waiting for your reply
+= Väntar på ditt svar
+
+#: messages
+> {n} new
+= {n} nya
+
+#: messages
+> Picture
+= Bild
+
+#: messages
+> Video
+= Video
+
+#: messages
+> Click outside or Esc to go back
+= Klicka utanför eller tryck Esc för att gå tillbaka
+
+#: message
+> New message from {name}
+= Nytt meddelande från {name}
+
 #: message
 > Loaded
 = Laddad

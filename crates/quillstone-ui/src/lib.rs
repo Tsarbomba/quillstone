@@ -19,6 +19,7 @@ pub mod console;
 pub mod extras;
 pub mod game;
 pub mod input;
+pub mod messages;
 pub mod screens;
 pub mod settings;
 pub mod slots;

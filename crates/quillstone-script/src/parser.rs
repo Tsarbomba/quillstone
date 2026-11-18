@@ -99,7 +99,7 @@ pub const SPRITE_BLUR: RangeInclusive<f32> = 0.0..=64.0;
 pub const MAX_MOVE_STEPS: usize = 32;
 
 const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, page, hud, music, sfx, voice, wait, video, \
-                        choice, hotspots, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
+                        choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
@@ -118,6 +118,8 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
         "notify" => &["text", "time"],
+        "message" => &["from", "to", "text", "image", "video", "thumb", "quiet"],
+        "reply" => &["to", "later", "none"],
         "unlock" => &["src"],
         "fade" => &["out", "in", "time", "color"],
         "camera" => &["zoom", "x", "y", "time", "ease", "reset"],
@@ -211,6 +213,8 @@ struct Parser {
     item_uses: Vec<(String, usize)>,
     /// `call=#label` of each HUD button, checked the same way: (label, line).
     hud_calls: Vec<(String, usize)>,
+    /// Lines of `open=messages` buttons, checked once the script is read (the game must use messages).
+    messages_open: Vec<usize>,
     /// `sprite=id` of each hotspot, checked against the sprites the script shows: (id, line).
     sprite_refs: Vec<(String, usize)>,
     /// `::sfx{stop=file}` targets, checked against the files the script plays.
@@ -380,6 +384,12 @@ impl Parser {
                             }
                             problems.extend(needs_call(&f.label, params.as_deref(), "a choice or hotspot link"));
                         }
+                        Op::Reply { options, .. } => {
+                            if let Some(k) = f.option {
+                                options[k].target = target;
+                            }
+                            problems.extend(needs_call(&f.label, params.as_deref(), "a reply option"));
+                        }
                         _ => {}
                     }
                     for m in problems {
@@ -410,6 +420,10 @@ impl Parser {
             }
         }
 
+        let uses_messages = self.program.ops.iter().any(|op| matches!(op, Op::Message { .. } | Op::Reply { .. } | Op::Choice { reply: Some(_), .. }));
+        for line in std::mem::take(&mut self.messages_open).into_iter().filter(|_| !uses_messages) {
+            self.err(line, "`open=messages` needs a game that uses `::message` or `::reply`");
+        }
         for (label, line) in std::mem::take(&mut self.hud_calls) {
             if !self.program.labels.contains_key(&label) {
                 self.err(line, format!("`call=#{label}`: unknown label `{label}`"));
@@ -1107,6 +1121,7 @@ impl Parser {
         match name {
             "choice" => return self.choice(lines, i, inner, false),
             "hotspots" => return self.choice(lines, i, inner, true),
+            "reply" => return self.reply(lines, i, inner),
             "shop" => return self.shop(lines, i, inner),
             "item" => {
                 self.item(line, inner);
@@ -1453,6 +1468,39 @@ impl Parser {
                     },
                 };
                 Ok((Op::Notify { text, time }, None))
+            }
+            "message" => {
+                let (from, to) = (a.value("from"), a.value("to"));
+                let quiet = a.flag("quiet");
+                let (who, mine) = match (from, to) {
+                    (Some(f), None) => (f, false),
+                    (None, Some(t)) => (t, true),
+                    _ => return Err("`::message` needs one of `from=` (their message) or `to=` (yours), with a character, like `::message{from=mika text=\"Hi\"}`".into()),
+                };
+                if quiet && mine {
+                    return Err("`quiet` is for a message `from=` a character (yours never show a notice)".into());
+                }
+                let contact = self.contact(&who, "message")?;
+                let text = a.value("text").filter(|t| !t.trim().is_empty());
+                if let Some(t) = &text {
+                    crate::markup::check_inline_markup(t, "a `::message` text")?;
+                }
+                let image = a.value("image").map(|i| check_image_path(&i, "image", "a message picture")).transpose()?;
+                let video = a.value("video").map(|v| check_inside("video", &v)).transpose()?;
+                if video.as_deref().is_some_and(|v| kind_from_path(v) != AssetKind::Video) {
+                    return Err("`video=` must be a video file (like `video=assets/clip.webm`)".into());
+                }
+                let thumb = a.value("thumb").map(|t| check_image_path(&t, "thumb", "a message video thumbnail")).transpose()?;
+                if thumb.is_some() && video.is_none() {
+                    return Err("`thumb=` is the picture a `video=` shows in its bubble: add `video=`".into());
+                }
+                if image.is_some() && video.is_some() {
+                    return Err("`::message` takes `image=` or `video=`, not both".into());
+                }
+                if text.is_none() && image.is_none() && video.is_none() {
+                    return Err("`::message` needs `text=\"...\"`, `image=...` or `video=...` (a text may go with a picture or a video)".into());
+                }
+                Ok((Op::Message { contact, mine, text, image, video, thumb, quiet }, None))
             }
             "unlock" => {
                 let src = self.require(name, a, "src")?;
@@ -2469,6 +2517,9 @@ impl Parser {
                 if screen == HudScreen::Extras && p.gallery.is_empty() && p.music_room.is_empty() && self.replay_decls.is_empty() {
                     return Err("`open=extras` needs something to show: add `gallery:`, `music_room:` or `replays:` to the front matter".into());
                 }
+                if screen == HudScreen::Messages {
+                    self.messages_open.push(line);
+                }
                 HudAction::Open(screen)
             }
         };
@@ -2895,7 +2946,71 @@ impl Parser {
             for (k, (label, ln)) in labels.into_iter().enumerate() {
                 self.fixups.push(Fixup { op, option: Some(k), label, line: ln });
             }
-            self.push(Op::Choice { options, time, map }, line);
+            self.push(Op::Choice { options, time, map, reply: None }, line);
+        }
+        j
+    }
+
+    /// The id of the `::character` a message or reply names.
+    fn contact(&self, who: &str, command: &str) -> Result<String, String> {
+        let id = who.to_lowercase();
+        if self.program.characters.contains_key(&id) {
+            Ok(id)
+        } else {
+            Err(format!("`::{command}`: unknown character `{who}` (declare it first with `::character`)"))
+        }
+    }
+
+    /// `::reply{to=mika}` (the story waits, like `::choice`), `::reply{to=mika later}` (the options wait in the thread)
+    /// or `::reply{to=mika none}` (no block: takes a pending later reply away), then `- [text](#label){effects}` options.
+    fn reply(&mut self, lines: &[&str], start: usize, inner: &str) -> usize {
+        let line = self.base + start + 1;
+        let (mut who, mut later, mut none) = (String::new(), false, false);
+        match Attrs::parse(inner) {
+            Ok(mut a) => {
+                let to = a.value("to");
+                (later, none) = (a.flag("later"), a.flag("none"));
+                match to.map(|t| self.contact(&t, "reply")) {
+                    Some(Ok(id)) => who = id,
+                    Some(Err(m)) => self.err(line, m),
+                    None => self.err(line, "`::reply` needs `to=` a character, like `::reply{to=mika}`"),
+                }
+                if let Some(extra) = a.leftover(&[]) {
+                    self.err(line, unknown_attr("reply", extra));
+                }
+                if later && none {
+                    self.err(line, "`later` and `none` can't be combined");
+                }
+            }
+            Err(m) => self.err(line, m),
+        }
+        if none {
+            // No options follow: it is a single line.
+            self.push(Op::Reply { to: who, options: Vec::new() }, line);
+            return start;
+        }
+        let mut options = Vec::new();
+        let mut labels = Vec::new();
+        let j = self.block_lines(lines, start, "::reply", |p, t, ln| match p.option(t, false, ln) {
+            Ok((opt, label)) if opt.default || opt.lock.is_some() => {
+                let _ = label;
+                p.err(ln, "`default` and `show` don't belong in a `::reply`");
+            }
+            Ok((opt, label)) => {
+                options.push(opt);
+                labels.push((label, ln));
+            }
+            Err(m) => p.err(ln, m),
+        });
+        if options.is_empty() {
+            self.err(line, "`::reply` has no options");
+        } else {
+            let op = self.here();
+            for (k, (label, ln)) in labels.into_iter().enumerate() {
+                self.fixups.push(Fixup { op, option: Some(k), label, line: ln });
+            }
+            let op = if later { Op::Reply { to: who.clone(), options } } else { Op::Choice { options, time: None, map: None, reply: Some(who.clone()) } };
+            self.push(op, line);
         }
         j
     }
@@ -4724,7 +4839,7 @@ mod tests {
     #[test]
     fn a_region_takes_a_hover_picture_and_call_and_a_block_takes_an_imagemap() {
         let p = ok("# a\n::hotspots{ground=assets/map.png hover=assets/map_hover.png time=3 default=#a}\n- [Door](#a){rect=0,0,0.5,0.5 image=assets/d.png hover=assets/d2.png, call, once}\n- [Hall](#a){rect=0.5,0.5,0.5,0.5 hover=assets/h2.png}\n::\n");
-        let Op::Choice { options, map, time } = &p.ops[0] else { panic!() };
+        let Op::Choice { options, map, time, .. } = &p.ops[0] else { panic!() };
         assert_eq!(time, &Some(3.0));
         let map = map.as_ref().unwrap();
         assert_eq!((map.ground.as_deref(), map.hover.as_str()), (Some("assets/map.png"), "assets/map_hover.png"));
@@ -4761,6 +4876,42 @@ mod tests {
         has("text=\"{nw}\"", "only work in dialogue");
         let e = errs("# a\n::choice\n- [x](#a){text=A}\n::\n");
         assert!(e.iter().any(|e| e.message.contains("only belong in a `::hotspots` block")), "{e:?}");
+    }
+
+    const PHONE: &str = "---\nvars: { n: 0 }\n---\n::character{id=mika name=Mika}\n";
+
+    #[test]
+    fn messages_and_replies_parse_into_ops_and_their_mistakes_name_the_line() {
+        let p = ok(&format!("{PHONE}::message{{from=mika text=\"Hi {{n}}\" quiet}}\n::message{{to=mika image=a.png}}\n::message{{from=mika video=c.webm thumb=t.png text=Look}}\n::reply{{to=mika}}\n- [Yes](#a){{n+=1}}\n::\n::reply{{to=mika later}}\n- [No](#a){{if n > 1}}\n::\n::reply{{to=mika none}}\n# a\nHi.\n::hud{{id=p text=Phone open=messages}}\n"));
+        assert!(matches!(&p.ops[0], Op::Message { mine: false, quiet: true, text: Some(t), .. } if t == "Hi {n}"));
+        assert!(matches!(&p.ops[1], Op::Message { mine: true, image: Some(_), .. }));
+        assert!(matches!(&p.ops[2], Op::Message { video: Some(v), thumb: Some(t), .. } if v == "c.webm" && t == "t.png"));
+        assert!(matches!(&p.ops[3], Op::Choice { reply: Some(c), .. } if c == "mika"));
+        assert!(matches!(&p.ops[4], Op::Reply { options, .. } if options.len() == 1 && options[0].target != usize::MAX));
+        assert!(matches!(&p.ops[5], Op::Reply { options, .. } if options.is_empty()));
+        let e = |body: &str, needle: &str| {
+            let errors = errs(&format!("{PHONE}{body}"));
+            assert!(errors.iter().any(|e| e.line == 5 && e.message.contains(needle)), "{body:?}: {errors:?}");
+        };
+        e("::message{text=hi}\n", "one of `from=`");
+        e("::message{from=mika to=mika text=hi}\n", "one of `from=`");
+        e("::message{from=zed text=hi}\n", "unknown character `zed`");
+        e("::message{from=mika}\n", "needs `text=");
+        e("::message{from=mika image=a.png video=c.webm}\n", "not both");
+        e("::message{from=mika video=c.png}\n", "must be a video");
+        e("::message{from=mika thumb=t.png text=hi}\n", "add `video=`");
+        e("::message{to=mika text=hi quiet}\n", "`quiet` is for");
+        e("::message{from=mika image=../a.png}\n", "inside the game folder");
+        e("::reply{to=zed}\n- [x](#a)\n::\n# a\nHi.\n", "unknown character");
+        e("::reply\n- [x](#a)\n::\n# a\nHi.\n", "needs `to=`");
+        e("::reply{to=mika}\n::\n", "no options");
+        e("::reply{to=mika later none}\n", "can't be combined");
+        for (body, needle) in [("::reply{to=mika}\n- [x](#nowhere)\n::\n", "unknown label"), ("::reply{to=mika}\n- [x](#a){default}\n::\n# a\nHi.\n", "don't belong in a `::reply`")] {
+            let errors = errs(&format!("{PHONE}{body}"));
+            assert!(errors.iter().any(|e| e.line == 6 && e.message.contains(needle)), "{body:?}: {errors:?}");
+        }
+        let hud = errs("# a\n::hud{id=p text=Phone open=messages}\nHi.\n");
+        assert!(hud.iter().any(|e| e.message.contains("`open=messages` needs a game that uses")), "{hud:?}");
     }
 
     #[test]

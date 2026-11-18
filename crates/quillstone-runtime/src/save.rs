@@ -96,6 +96,7 @@ impl Session<'_> {
                     Input::Buy(i) => out.push_str(&format!("input buy {i}\n")),
                     Input::Use(id) => out.push_str(&format!("input use {}\n", q(id))),
                     Input::Hud(id) => out.push_str(&format!("input hud {}\n", q(id))),
+                    Input::Reply(id, i) => out.push_str(&format!("input reply {} {i}\n", q(id))),
                     Input::Text(t) => out.push_str(&format!("input text {}\n", q(t))),
                 }
                 out
@@ -155,6 +156,9 @@ impl<'p> Session<'p> {
                         (Some("buy"), Some(i)) => Input::Buy(num(i, n)?),
                         (Some("use"), Some(id)) => Input::Use(id.clone()),
                         (Some("hud"), Some(id)) if quillstone_script::is_plain_ident(id) => Input::Hud(id.clone()),
+                        (Some("reply"), Some(id)) if quillstone_script::is_plain_ident(id) && words.len() == 4 => {
+                            Input::Reply(id.clone(), num(&words[3], n)?)
+                        }
                         // Only kept so the history lines up: the state before it is what rollback uses.
                         (Some("text"), Some(t)) => Input::Text(filter_typed(t).chars().take(INPUT_MAX_CAP).collect()),
                         _ => return Err(format!("line {n}: bad input record")),
@@ -477,6 +481,9 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             Some(("open", s)) => HudScreen::from_name(s).map(HudAction::Open).filter(|a| match a {
                 HudAction::Open(HudScreen::Inventory) => program.inventory.is_some(),
                 HudAction::Open(HudScreen::Journal) => program.journal.is_some(),
+                HudAction::Open(HudScreen::Messages) => {
+                    program.ops.iter().any(|op| matches!(op, Op::Message { .. } | Op::Reply { .. } | Op::Choice { reply: Some(_), .. }))
+                }
                 HudAction::Open(HudScreen::Extras) => {
                     !program.gallery.is_empty() || !program.music_room.is_empty() || !program.replays.is_empty()
                 }
@@ -598,6 +605,15 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     // Saves from before `::hud` existed have no such records: they load with none.
     for h in &s.hud {
         w(hud_record(h));
+    }
+    // Saves from before `::message` existed have no such records: they load with no threads.
+    // `thread "id" unread reply` (`-`: no later reply waiting), then its `msg mine "text" "image"` records ("" is none).
+    for t in &s.threads {
+        w(format!("thread {} {} {}", q(&t.id), t.unread, t.reply.map_or("-".to_string(), |pc| pc.to_string())));
+        for m in &t.msgs {
+            let (video, thumb) = m.video.as_ref().map_or(("", ""), |(v, t)| (v.as_str(), t.as_deref().unwrap_or("")));
+            w(format!("msg {} {} {} {} {}", u8::from(m.mine), q(m.text.as_deref().unwrap_or("")), q(m.image.as_deref().unwrap_or("")), q(video), q(thumb)));
+        }
     }
     // The intro, if any, is a fourth value; saves from before it existed load without one.
     if let Some(m) = &s.music {
@@ -1007,6 +1023,40 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 if !s.sfx_loops.iter().any(|l| l.src == src) {
                     s.sfx_loops.push(SfxLoopState { src, volume: sane(volume, 0.0, 1.0, 1.0) });
                 }
+            }
+            "thread" => {
+                let id = arg(1)?.to_string();
+                if !quillstone_script::is_plain_ident(&id) || s.threads.len() >= program.characters.len().max(1) {
+                    return Err(format!("line {n}: a bad or surplus `thread` record"));
+                }
+                let reply = match arg(3)? {
+                    "-" => None,
+                    pc => {
+                        let pc: usize = num(pc, n)?;
+                        match program.ops.get(pc) {
+                            Some(Op::Reply { to, .. }) if *to == id => Some(pc),
+                            _ if edited => None,
+                            _ => return Err(format!("line {n}: the `thread` reply is not one this script offers")),
+                        }
+                    }
+                };
+                s.threads.push(crate::Thread { id, msgs: Vec::new(), unread: num::<usize>(arg(2)?, n)?.min(crate::MAX_THREAD_MSGS), reply });
+            }
+            "msg" => {
+                let image = match arg(3)? {
+                    "" => None,
+                    _ => Some(path(3)?),
+                };
+                // Saves with a picture only (no video words) are fine: `-` words are absent.
+                let video = match t.get(4).map(String::as_str) {
+                    None | Some("") => None,
+                    Some(_) => Some((path(4)?, match t.get(5).map(String::as_str) { None | Some("") => None, Some(_) => Some(path(5)?) })),
+                };
+                let text = Some(arg(2)?.to_string()).filter(|t| !t.is_empty());
+                let Some(thread) = s.threads.last_mut().filter(|t| t.msgs.len() < crate::MAX_THREAD_MSGS) else {
+                    return Err(format!("line {n}: a `msg` record without a `thread`, or too many"));
+                };
+                thread.msgs.push(crate::Msg { mine: num::<u8>(arg(1)?, n)? != 0, text, image, video });
             }
             "inline" if s.inline.len() >= MAX_INLINE => {
                 return Err(format!("line {n}: more than {MAX_INLINE} `inline` records in a state"));

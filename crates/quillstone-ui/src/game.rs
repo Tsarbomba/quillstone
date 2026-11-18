@@ -21,6 +21,9 @@ mod console;
 mod hud;
 mod input;
 mod lang;
+mod messages;
+#[cfg(test)]
+mod messages_tests;
 mod replay;
 mod saves;
 mod skip;
@@ -106,6 +109,8 @@ pub enum Screen {
     Load,
     /// The main menu's Extras: gallery and music room.
     Extras,
+    /// The phone-style Messages screen (`open=messages`, or a `::reply{to=..}` the story waits at).
+    Messages,
     /// The items the game's inventory list holds (the quick menu's Items, the `I`
     /// key, or `::inventory`, which keeps the story waiting). The journal (Journal, `J`,
     /// `::journal`) is this screen too, fed by its own list.
@@ -184,6 +189,8 @@ pub struct Game<'p> {
     /// Whether the frontend is really playing the cutscene (it may have no decoder).
     cutscene_playing: bool,
     extras: Extras,
+    /// Where the Messages screen is (see `game/messages.rs`).
+    msgs: messages::MsgUi,
     /// Auto-voice: recordings found in the script's voice folder, by
     /// `voice_name` (see [`Game::set_voice_files`]).
     voice_files: std::collections::HashMap<String, String>,
@@ -209,6 +216,8 @@ pub struct Game<'p> {
     /// Sizes of the theme's quick menu pictures, noted by every draw (hit-testing needs them
     /// and has no picture loader of its own).
     quick_sizes: std::cell::RefCell<std::collections::HashMap<String, Size>>,
+    /// The sizes of the pictures the Messages screen drew, for hit-testing them.
+    msg_sizes: std::cell::RefCell<std::collections::HashMap<String, Size>>,
     /// Whether a quick save exists, once known (only asked for a picture Q.Load button).
     quick_saved: std::cell::Cell<Option<bool>>,
     /// Where the next new game's `random` rolls start (see [`Game::set_seed`]).
@@ -282,6 +291,7 @@ impl<'p> Game<'p> {
             video_generation: 0,
             cutscene_playing: false,
             extras: Extras::default(),
+            msgs: messages::MsgUi::default(),
             voice_files: std::collections::HashMap::new(),
             choice_focus: None,
             hud_focus: None,
@@ -292,6 +302,7 @@ impl<'p> Game<'p> {
             console: None,
             quick_alpha: 0.0,
             quick_sizes: Default::default(),
+            msg_sizes: Default::default(),
             quick_saved: std::cell::Cell::new(None),
             seed: quillstone_runtime::DEFAULT_SEED,
             replay: None,
@@ -553,6 +564,7 @@ impl<'p> Game<'p> {
             Screen::Backlog => self.backlog_event(event),
             Screen::Save | Screen::Load => self.slots_event(event),
             Screen::Extras => self.extras_event(event),
+            Screen::Messages => self.messages_event(event),
             Screen::Inventory | Screen::Shop => self.bag_event(event),
             Screen::Input => self.input_event(event),
         }
@@ -840,6 +852,7 @@ impl<'p> Game<'p> {
                 draw_slots(&mut out, theme, tr, &view, image_size);
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
+            Screen::Messages => self.draw_messages_screen(&mut out, image_size),
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
             Screen::Input => self.draw_input_screen(&mut out, image_size),
         }
@@ -904,6 +917,10 @@ impl<'p> Game<'p> {
         if let Some(src) = self.viewed_video() {
             return vec![Wanted { sound: true, ..looping(src) }];
         }
+        // A clip enlarged from a message plays once, with its sound, over the story (whose music keeps playing).
+        if let Some(src) = self.viewed_message_video() {
+            return vec![Wanted { src: src.to_string(), looped: false, sound: true, generation: self.video_generation }];
+        }
         if !self.in_story {
             out.extend(self.theme().menu_background.as_deref().filter(|s| is_video(s)).map(looping));
             return out;
@@ -926,7 +943,7 @@ impl<'p> Game<'p> {
 
     /// Whether video clocks should stand still (a menu or dialog is over the story, or the window is minimised).
     pub fn media_paused(&self) -> bool {
-        self.minimized || self.in_story && (self.screen != Screen::Story || self.confirm.is_some())
+        self.minimized || self.in_story && ((self.screen != Screen::Story && self.viewed_message_video().is_none()) || self.confirm.is_some())
     }
 
     /// The frontend reports on the cutscene each frame: whether it is really
@@ -1249,6 +1266,12 @@ impl<'p> Game<'p> {
         if let Some(Cmd::Stopped { reason }) = cmds.iter().find(|c| matches!(c, Cmd::Stopped { .. })) {
             self.notify(format!("The story was stopped: {reason}"));
         }
+        for name in cmds.iter().filter_map(|c| match c {
+            Cmd::Message { name, mine: false, quiet: false, .. } => Some(name),
+            _ => None,
+        }) {
+            self.notify_ui("New message from {name}", &[("name", name)]);
+        }
         for message in cmds.iter().filter_map(|c| match c {
             Cmd::Warning { message } => Some(message),
             _ => None,
@@ -1264,6 +1287,7 @@ impl<'p> Game<'p> {
         }
         self.bag_arrived(cmds);
         self.input_arrived(cmds);
+        self.messages_arrived();
         // Skipping plays no voices, so the mixer must not duck for one.
         let mut actions = if self.skip.is_some() {
             let kept: Vec<Cmd> = cmds.iter().filter(|c| !matches!(c, Cmd::PlayVoice { .. })).cloned().collect();

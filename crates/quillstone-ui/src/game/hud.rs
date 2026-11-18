@@ -81,6 +81,7 @@ impl Game<'_> {
             HudAction::Open(HudScreen::Save) => self.open_slots(Screen::Save),
             HudAction::Open(HudScreen::Load) => self.open_slots(Screen::Load),
             HudAction::Open(HudScreen::Settings) => self.open_settings(),
+            HudAction::Open(HudScreen::Messages) => self.open_messages(),
             HudAction::Open(HudScreen::Extras) => {
                 self.stop_skip();
                 self.open_extras();

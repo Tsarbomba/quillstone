@@ -364,6 +364,7 @@ The `examples/` folder has a script for each area:
 | `layers.quill.md` | a sprite built from body, eyes and mouth layers, with blinking eyes |
 | `places.quill.md` | the background and a pose picked from variables |
 | `weather.quill.md` | snow, rain and falling petals |
+| `phone.quill.md` | phone-style messages with pictures, a video and both kinds of reply |
 | `gallery.quill.md`, `replay.quill.md` | the Extras screen: a gallery with pictures and clips, and scene replays |
 | `iconmenu.quill.md` + `icons_theme.txt` | picture buttons in the quick menu, placed by the theme |
 | `page.quill.md` | a letter read on a full-screen page, then back to the textbox |

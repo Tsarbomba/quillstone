@@ -87,6 +87,10 @@ pub const MIN_SLOTS_RECT: [f32; 2] = [760.0, 495.0];
 /// The History screen's area (title, log, hint), the least size of it and the text size its layout is made for.
 pub const DEFAULT_HISTORY_RECT: [f32; 4] = [160.0, 40.0, 1600.0, 990.0];
 pub const MIN_HISTORY_RECT: [f32; 2] = [800.0, 495.0];
+/// The Messages screen's area (the whole screen, or the inside of a `messages_image`) and the least it may be.
+pub const DEFAULT_MESSAGES_RECT: [f32; 4] = [0.0, 0.0, 1920.0, 1080.0];
+pub const MIN_MESSAGES_RECT: [f32; 2] = [320.0, 420.0];
+pub const DEFAULT_MESSAGES_TEXT_SIZE: f32 = 34.0;
 pub const DEFAULT_HISTORY_TEXT_SIZE: f32 = 32.0;
 pub const DEFAULT_MENU_TITLE_RECT: [f32; 4] = [0.0, 180.0, 1920.0, 160.0];
 
@@ -220,6 +224,19 @@ pub struct Theme {
     /// (the name column and the spacing of the lines follow it).
     pub history_rect: [f32; 4],
     pub history_text_size: f32,
+    /// Messages: a picture drawn (fitted, centred) behind the screen, the area inside it the contacts, thread and
+    /// reply options are laid out in (the whole screen by default), the bubbles' colours (`None`: derived from
+    /// `button_color` and `accent_color`) and pictures (stretched to the bubble), their text colours (`None`:
+    /// `text_color`) and the text size the bubbles are laid out for.
+    pub messages_image: Option<String>,
+    pub messages_rect: [f32; 4],
+    pub bubble_them: Option<[f32; 4]>,
+    pub bubble_me: Option<[f32; 4]>,
+    pub bubble_them_image: Option<String>,
+    pub bubble_me_image: Option<String>,
+    pub bubble_text_them: Option<[f32; 4]>,
+    pub bubble_text_me: Option<[f32; 4]>,
+    pub messages_text_size: f32,
     /// Full-screen picture behind the inventory (and the shop, unless
     /// `shop_background` is set). Without one the screen is dimmed with `overlay_color`.
     pub inventory_background: Option<String>,
@@ -322,6 +339,15 @@ impl Default for Theme {
             slots_rect: DEFAULT_SLOTS_RECT,
             history_rect: DEFAULT_HISTORY_RECT,
             history_text_size: DEFAULT_HISTORY_TEXT_SIZE,
+            messages_image: None,
+            messages_rect: DEFAULT_MESSAGES_RECT,
+            bubble_them: None,
+            bubble_me: None,
+            bubble_them_image: None,
+            bubble_me_image: None,
+            bubble_text_them: None,
+            bubble_text_me: None,
+            messages_text_size: DEFAULT_MESSAGES_TEXT_SIZE,
             inventory_background: None,
             shop_background: None,
             inventory_panel: None,
@@ -399,6 +425,10 @@ impl Theme {
                 "inventory_price_color" => Some(&mut t.inventory_price_color),
                 "inventory_text_color" => Some(&mut t.inventory_text_color),
                 "choice_timer_color" => Some(&mut t.choice_timer_color),
+                "bubble_them" => Some(&mut t.bubble_them),
+                "bubble_me" => Some(&mut t.bubble_me),
+                "bubble_text_them" => Some(&mut t.bubble_text_them),
+                "bubble_text_me" => Some(&mut t.bubble_text_me),
                 "timing_good_color" => Some(&mut t.timing_good_color),
                 "timing_perfect_color" => Some(&mut t.timing_perfect_color),
                 "timing_marker_color" => Some(&mut t.timing_marker_color),
@@ -658,7 +688,7 @@ file_keys! {
     pub fonts: font, font_bold, font_italic, font_bold_italic;
     // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
     screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, options_panel_image,
-        timing_bar_image, timing_marker_image, press_key_image;
+        timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image;
     music: menu_music;
     // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).
     inventory_files: inventory_background, shop_background, inventory_panel;
@@ -666,11 +696,12 @@ file_keys! {
 
 /// Plain number keys of the theme file: the range each allows, what to add to its message, and its field.
 type NumberKey = (&'static str, f32, f32, &'static str, fn(&mut Theme) -> &mut f32);
-const NUMBER_KEYS: [NumberKey; 11] = [
+const NUMBER_KEYS: [NumberKey; 12] = [
     ("text_size", 8.0, 200.0, "", |t| &mut t.text_size),
     ("name_size", 8.0, 200.0, "", |t| &mut t.name_size),
     ("options_text_size", 8.0, 200.0, "", |t| &mut t.options_text_size),
     ("history_text_size", 8.0, 200.0, "", |t| &mut t.history_text_size),
+    ("messages_text_size", 8.0, 200.0, "", |t| &mut t.messages_text_size),
     ("text_outline_size", 0.0, 8.0, "", |t| &mut t.text_outline_size),
     ("options_panel_border", 0.0, 400.0, " (picture pixels)", |t| &mut t.options_panel_border),
     ("inventory_cell_gap", 0.0, 100.0, "", |t| &mut t.inventory_cell_gap),
@@ -682,12 +713,13 @@ const NUMBER_KEYS: [NumberKey; 11] = [
 
 /// Plain `x, y, w, h` keys of the theme file: the least size each allows (none: any), and its field.
 type RectKey = (&'static str, Option<[f32; 2]>, fn(&mut Theme) -> &mut [f32; 4]);
-const RECT_KEYS: [RectKey; 7] = [
+const RECT_KEYS: [RectKey; 8] = [
     ("page_rect", Some(MIN_PAGE_RECT), |t| &mut t.page_rect),
     ("options_rect", Some(MIN_OPTIONS_RECT), |t| &mut t.options_rect),
     ("menu_rect", Some(MIN_MENU_RECT), |t| &mut t.menu_rect),
     ("slots_rect", Some(MIN_SLOTS_RECT), |t| &mut t.slots_rect),
     ("history_rect", Some(MIN_HISTORY_RECT), |t| &mut t.history_rect),
+    ("messages_rect", Some(MIN_MESSAGES_RECT), |t| &mut t.messages_rect),
     ("menu_title_rect", None, |t| &mut t.menu_title_rect),
     ("inventory_panel_rect", None, |t| &mut t.inventory_panel_rect),
 ];
@@ -1084,6 +1116,22 @@ mod tests {
         for (i, p) in problems.iter().enumerate() {
             assert!(p.starts_with(&format!("line {}:", i + 1)), "{p}");
         }
+    }
+
+    #[test]
+    fn the_messages_keys_default_to_the_theme_and_are_read_and_checked() {
+        let d = Theme::default();
+        assert_eq!((d.messages_rect, d.messages_text_size, d.bubble_them, d.bubble_me), (DEFAULT_MESSAGES_RECT, 34.0, None, None));
+        let text = "messages_image = g/phone.png\nmessages_rect = 700, 100, 500, 880\nmessages_text_size = 26\nbubble_them = #223344\nbubble_me = #aa3355cc\n\
+                    bubble_text_them = #ffffff\nbubble_text_me = #000000\nbubble_them_image = g/t.png\nbubble_me_image = g/m.png\n";
+        let (t, problems) = Theme::parse(text);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((t.messages_rect, t.messages_text_size), ([700.0, 100.0, 500.0, 880.0], 26.0));
+        assert_eq!(t.bubble_me, Some([170.0 / 255.0, 51.0 / 255.0, 85.0 / 255.0, 204.0 / 255.0]));
+        assert!(t.bubble_text_them.is_some() && t.bubble_text_me.is_some());
+        assert_eq!(t.assets(), vec!["g/phone.png", "g/t.png", "g/m.png"], "the pictures ship with the game");
+        let (_, problems) = Theme::parse("messages_rect = 0, 0, 100, 100\nmessages_text_size = 3\nbubble_me = red\n");
+        assert_eq!(problems.len(), 3, "{problems:?}");
     }
 
     #[test]

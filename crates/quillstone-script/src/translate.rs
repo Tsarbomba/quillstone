@@ -407,6 +407,12 @@ impl Program {
                         }
                     }
                 }
+                Op::Message { text: Some(text), .. } => add(text, place, None),
+                Op::Reply { options, .. } => {
+                    for o in options {
+                        add(&o.text, format!("{label}:{}", self.locate(o.line).1), None);
+                    }
+                }
                 Op::Input { prompt, .. } | Op::Timing { prompt, .. } | Op::Press { prompt, .. } | Op::Notify { text: prompt, .. } => add(prompt, place, None),
                 Op::Hud { elem, .. } => {
                     if let HudKind::Text { text, .. } = &elem.kind {

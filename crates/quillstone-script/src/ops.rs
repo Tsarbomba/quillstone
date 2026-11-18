@@ -802,6 +802,7 @@ impl Program {
                 Op::Jump { target, .. } => queue.extend([*target, at + 1]),
                 Op::Call { target, .. } => queue.extend([*target, at + 1]),
                 Op::Choice { options, .. } => queue.extend(options.iter().map(|o| o.target)),
+                Op::Reply { options, .. } => queue.extend(options.iter().map(|o| o.target).chain([at + 1])),
                 Op::Return | Op::End => {}
                 _ => queue.push_back(at + 1),
             }
@@ -894,7 +895,7 @@ impl Program {
             .iter()
             .map(|op| match op {
                 Op::Set(_) | Op::Input { .. } | Op::Timing { .. } | Op::Press { .. } => 1,
-                Op::Choice { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
+                Op::Choice { options, .. } | Op::Reply { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
                 Op::Call { args, .. } => args.len(),
                 _ => 0,
             })
@@ -981,7 +982,7 @@ impl Program {
         for (at, op) in self.ops.iter().enumerate() {
             let effects: Vec<&Effect> = match op {
                 Op::Set(e) => vec![e],
-                Op::Choice { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
+                Op::Choice { options, .. } | Op::Reply { options, .. } => options.iter().flat_map(|o| &o.effects).collect(),
                 _ => Vec::new(),
             };
             let mut texts: Vec<&str> = effects
@@ -1291,10 +1292,11 @@ pub enum HudScreen {
     Load,
     Settings,
     Extras,
+    Messages,
 }
 
 impl HudScreen {
-    pub const NAMES: [(&'static str, HudScreen); 7] = [
+    pub const NAMES: [(&'static str, HudScreen); 8] = [
         ("inventory", HudScreen::Inventory),
         ("journal", HudScreen::Journal),
         ("history", HudScreen::History),
@@ -1302,6 +1304,7 @@ impl HudScreen {
         ("load", HudScreen::Load),
         ("settings", HudScreen::Settings),
         ("extras", HudScreen::Extras),
+        ("messages", HudScreen::Messages),
     ];
 
     pub fn from_name(name: &str) -> Option<HudScreen> {
@@ -1754,7 +1757,15 @@ pub enum Op {
     /// `area`, to click a region of the screen). With a `time` (seconds, `MIN_CHOICE_TIME` to
     /// `MAX_CHOICE_TIME`) the frontend picks the `default` option when it runs out; the
     /// runtime itself never counts time.
-    Choice { options: Vec<ChoiceOption>, time: Option<f32>, map: Option<Imagemap> },
+    /// `reply`: a `::reply{to=mika}` (the contact): the story waits like at a choice, with the Messages screen
+    /// open on that thread, and the picked option's text joins it as the player's message.
+    Choice { options: Vec<ChoiceOption>, time: Option<f32>, map: Option<Imagemap>, reply: Option<String> },
+    /// `::message{from=mika text=".." image=".." video=".." thumb=".."}`: a message joins the thread with that character (`mine`: the player's,
+    /// `to=`). `quiet`: no "New message" notice. Instant.
+    Message { contact: String, mine: bool, text: Option<String>, image: Option<String>, video: Option<String>, thumb: Option<String>, quiet: bool },
+    /// `::reply{to=mika later}`: the story goes on, and the thread offers these options until one is picked (that
+    /// calls its label, like a HUD `call=` button). No options (`::reply{to=mika none}`) takes a pending one away.
+    Reply { to: String, options: Vec<ChoiceOption> },
     /// The inventory screen; waits until the player closes it.
     Inventory,
     /// The journal screen (`::journal`); waits until the player closes it.
@@ -1805,7 +1816,7 @@ impl Op {
             Op::Hud { elem, .. } => elem.exprs(),
             Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),
             Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
-            Op::Choice { options, .. } => options
+            Op::Choice { options, .. } | Op::Reply { options, .. } => options
                 .iter()
                 .flat_map(|o| o.cond.iter().chain(o.effects.iter().map(|e| &e.value)))
                 .collect(),
@@ -1817,6 +1828,10 @@ impl Op {
     pub fn all_assets(&self) -> Vec<(AssetKind, &str)> {
         match self {
             Op::Choice { .. } => self.hotspot_pictures(0).into_iter().map(|(_, i)| (AssetKind::Image, i)).collect(),
+            Op::Message { image, video, thumb, .. } => {
+                let pics = image.iter().chain(thumb).map(|p| (AssetKind::Image, p.as_str()));
+                video.iter().map(|v| (AssetKind::Video, v.as_str())).chain(pics).collect()
+            }
             Op::Music { src, intro, .. } => {
                 let intro = intro.iter().map(|i| (AssetKind::Audio, i.as_str()));
                 std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()

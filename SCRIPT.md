@@ -1457,7 +1457,8 @@ check` tests it as a picture and `package` includes it.
   `history` (H), `save` (S), `load` (L), `settings` (the quick menu's Settings button) or
   `extras` (the Extras screen: gallery, music room and scene replays; closing it returns to the
   story). `journal` and `inventory` need a game that has one, and `extras` a `gallery:`,
-  `music_room:` or `replays:`.
+  `music_room:` or `replays:`. `messages` opens the [Messages](#messages) screen, and needs a game
+  that uses `::message` or `::reply`.
 - **`hover=`** needs `call=` or `open=`, and is checked and packaged like the picture. A text
   button simply lights up under the mouse.
 - `call=` and `open=` can't be combined.
@@ -2492,6 +2493,125 @@ vars: { code: 0 }
   `!back` and `!quit` are the commands there.
 
 The demo `examples/greeting.quill.md` asks for a name and uses it in a few lines.
+
+## Messages
+
+Phone-style chats with the game's characters: messages arrive from the story, the player reads
+them on a Messages screen, and answers either right now or later.
+
+````markdown
+---
+vars: { going: false }
+---
+::character{id=mika name=Mika portrait=assets/mika_face.png}
+::hud{id=phone text="Phone" open=messages x=0.9 y=0.05 back=#00000099 pad=10}
+
+::message{from=mika text="Hi! The roof at eight?"}
+::message{from=mika image=assets/selfie_cafe.png text="Look where I am"}
+::message{to=mika text="Sure, I'll bring tea."}
+
+::reply{to=mika}
+- [Sure, see you at 8](#yes){going=true}
+- [Can't tonight](#no)
+::
+````
+
+**Sending.** `::message` is an instant step: the message joins the thread with a character and the
+story goes on.
+
+| Attribute | |
+| --- | --- |
+| `from=mika` | the character's message (left bubble). One of `from=` and `to=` is required |
+| `to=mika` | the player's message to that character (right bubble) |
+| `text="..."` | the text: `{name}` values, `**bold**`, colour and size tags like a line (not `{nw}` or `{p}`) |
+| `image=assets/selfie.png` | a picture (PNG, JPEG or WebP), shown in the bubble |
+| `video=assets/clip.webm` | a video, shown in the bubble as its thumbnail with a play mark |
+| `thumb=assets/clip.png` | the video's thumbnail picture (without one the bubble shows a plain tile) |
+| `quiet` | no notice for this message (`from=` only) |
+
+- The contact is a `::character` (declared first), and the thread, the list and the portrait use
+  its name and `portrait=`.
+- At least one of `text`, `image` and `video` is needed; a text may go with a picture or a video as
+  its caption, but not `image` and `video` together. `check` tests the files and `package` ships them.
+- A message `from=` a character shows the notice "New message from Mika" (the same corner notice as
+  `::notify`, in the player's language). The player's own messages never do.
+- The text is worked out when it is sent: a later change to a variable does not change it.
+  A thread keeps its last 100 messages.
+
+**The Messages screen.** A HUD button with `open=messages` opens it (see [HUD](#hud-text-bars-and-pictures-over-the-story)); there is no key. It needs
+a game that uses `::message` or `::reply`, and, like other HUD buttons, works while the story waits at a normal line.
+
+- The **contact list** shows each character with a message or a reply: the portrait, the name, the last message,
+  and how many are unread, or "Waiting for your reply". The most recent conversation is first.
+- A **thread** shows the bubbles, theirs on the left and the player's on the right, with the newest at the
+  bottom. Opening a thread marks it read. The wheel, Up, Down, Page Up, Page Down, Home and End scroll
+  (on a gamepad the D-pad), and Back or Esc return to the list, then to the story.
+- A **picture or video** in a bubble opens in a centred panel (up to two thirds of the screen, in its own shape)
+  over the dimmed screen when clicked, or with Left/Right and Enter. A video plays there once with its
+  sound; its clip is not played in the bubble. Click it to play it again; Back, Esc or a click outside closes
+  the panel (and stops the video). The story's music keeps playing under it.
+- Messages are not added to the History screen: the Messages screen is their history.
+
+**Answering right now.** `::reply{to=mika}` followed by options and a closing `::` makes the story wait, like a
+`::choice`: the Messages screen opens on that thread with the options at the bottom. The options are written
+as in a choice (`- [text](#label){effects, if condition, once}`); the picked option's text joins the thread
+as the player's message and the story goes to its label. Esc or a right click open the game menu, as
+at a choice.
+
+**Answering later.** `::reply{to=mika later}` has the same options, but the story does not wait: the
+options sit in Mika's thread (the list marks it "Waiting for your reply") until the player opens it and picks one.
+
+```
+::reply{to=mika later}
+- [Sounds good](#thanks){going=true}
+- [Sorry, no](#sorry)
+::
+```
+
+- The pick adds the player's message and **calls** the option's label, then the story comes back to the line it
+  was at, like a HUD `call=` button: the label ends with `::return`, and can't take parameters.
+- Like those buttons, it works only while the story waits at a normal line; otherwise a pick says "Can't use that now".
+- A new `::reply{to=mika later}` for the same character replaces a pending one. `::reply{to=mika none}` (one
+  line, no options) takes it away. `later` options have no `{default}` or `{show}`.
+
+**Rollback, saves and replays.** Threads, unread marks and a waiting reply are part of the game: they are saved,
+and going back un-sends what was sent after that point. A scene replay starts with no messages, and what it sends is not kept.
+
+**Tools.** `quillstone check` names the line of every mistake (an unknown character, a missing picture, both `image=` and
+`video=`, an option without a label...). `quillstone test` follows every option of a reply as a branch, a later one
+too (once per option, like a HUD call button). `quillstone run` prints messages as `[Mika] text` (and
+`[you to Mika] text`) and asks a reply the story waits for like a choice. Message texts and reply options are in
+the translation export; a message whose text holds `{name}` values keeps the language it was sent in.
+
+### Your own phone
+
+Without any key the screen uses the theme's colours. These theme keys (see [Themes](#themes)) dress it:
+
+```text
+# a picture drawn behind the screen, covering it like a background (a phone body, a tablet...)
+messages_image = gui/phone.png
+# x, y, width, height of the area inside it where the list, thread, options and Back are laid out
+# (at least 320x420; default the whole screen)
+messages_rect = 722, 100, 476, 880
+# the text size of bubbles, names and options (8 to 200, default 34)
+messages_text_size = 26
+# bubble colours (default: button_color for theirs, a see-through accent_color for the player's)
+bubble_them = #46587c
+bubble_me = #2f8f6bdd
+# bubble pictures, stretched over the whole bubble (no nine-slice) and used instead of the colours
+bubble_them_image = gui/bubble_them.png
+bubble_me_image = gui/bubble_me.png
+# text colours in bubbles (default text_color)
+bubble_text_them = #ffffff
+bubble_text_me = #ffffff
+```
+
+- A frame picture and a rect are enough for a custom phone: draw the screen where the rect is.
+- The enlarged picture panel is not bound to the rect: it stays centred over everything.
+- The font is the theme's `font`; there is no separate font for the phone.
+- `check` tests the keys and pictures like any other theme key, and `package` ships the pictures.
+
+The demo `examples/phone.quill.md` sends messages and has both kinds of reply.
 
 ## Kept across playthroughs
 

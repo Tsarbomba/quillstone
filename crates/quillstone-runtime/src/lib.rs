@@ -62,6 +62,8 @@ mod hud_button_tests;
 mod hotspot_call_tests;
 #[cfg(test)]
 mod page_tests;
+#[cfg(test)]
+mod message_tests;
 mod localize;
 #[cfg(test)]
 mod localize_tests;
@@ -150,6 +152,10 @@ pub enum Cmd {
     /// A passing message in a corner of the screen for `time` seconds. `text` has the `{var}` values
     /// filled in; `source` is the script's own text, which a translation is looked up by.
     Notify { text: String, time: f32, source: String },
+    /// A message joined the thread with the character `name` (`mine`: the player's). A moment, not part of the scene: the
+    /// thread is in [`State::threads`]. The frontend shows a notice for one that is not `mine` or `quiet`;
+    /// `media` is `picture` or `video` when it has one.
+    Message { name: String, mine: bool, quiet: bool, text: Option<String>, media: Option<&'static str> },
     /// Fade the stage to `color` over `time` seconds and keep it covered (0: at
     /// once; a redraw sends it that way). Part of the scene: see [`State::cover`].
     /// The story then waits (a [`Cmd::Wait`] of `time` follows), so a click ends the fade.
@@ -312,6 +318,9 @@ pub struct ShopItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
+    /// Pick the option with this index (in the script's own list) of the contact's pending `::reply{.. later}`: its
+    /// label is called, like a [`Input::Hud`] button's, and the story comes back to the line it waits at.
+    Reply(String, usize),
     Advance,
     Choose(usize),
     /// Buy the item at this index of the shop's offered list.
@@ -509,6 +518,30 @@ pub struct Line {
     pub text: String,
 }
 
+/// A message in a thread: the player's (`mine`) or the contact's. Text is tagged text with its values put in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Msg {
+    pub mine: bool,
+    pub text: Option<String>,
+    pub image: Option<String>,
+    /// A video (shown as its `thumb`, or a placeholder, with a play mark) and its thumbnail picture.
+    pub video: Option<(String, Option<String>)>,
+}
+
+/// The messages with one contact (a `::character`), and what is waiting in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Thread {
+    pub id: String,
+    pub msgs: Vec<Msg>,
+    /// Messages from the contact not opened yet.
+    pub unread: usize,
+    /// The op index of the `::reply{.. later}` whose options wait in this thread.
+    pub reply: Option<usize>,
+}
+
+/// The most messages a thread keeps (the oldest go first): it bounds the size of a save.
+pub const MAX_THREAD_MSGS: usize = 100;
+
 /// One active call: where `::return` goes back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Frame {
@@ -554,6 +587,8 @@ pub struct State {
     /// The HUD elements (`::hud`), in the order they were created: that is the drawing
     /// order, and an id that is created again keeps its place.
     pub hud: Vec<HudElem>,
+    /// The message threads, the one with the newest activity last.
+    pub threads: Vec<Thread>,
     pub music: Option<MusicState>,
     /// Looping sound effects, in the order they started.
     pub sfx_loops: Vec<SfxLoopState>,
@@ -581,6 +616,28 @@ impl State {
         }
     }
 
+    /// The thread with `id`, made (and brought to the newest place) when there is none.
+    fn thread(&mut self, id: &str) -> &mut Thread {
+        let at = self.threads.iter().position(|t| t.id == id);
+        let thread = match at {
+            Some(i) => self.threads.remove(i),
+            None => Thread { id: id.to_string(), msgs: Vec::new(), unread: 0, reply: None },
+        };
+        self.threads.push(thread);
+        self.threads.last_mut().expect("just pushed")
+    }
+
+    /// Add a message to the contact's thread (see [`MAX_THREAD_MSGS`]); one from the contact is unread.
+    fn post(&mut self, id: &str, msg: Msg) {
+        let t = self.thread(id);
+        t.unread += usize::from(!msg.mine);
+        t.msgs.push(msg);
+        if t.msgs.len() > MAX_THREAD_MSGS {
+            t.msgs.remove(0);
+            t.unread = t.unread.min(t.msgs.len());
+        }
+    }
+
     pub fn new(program: &Program) -> State {
         State::with_seed(program, DEFAULT_SEED)
     }
@@ -604,6 +661,7 @@ impl State {
             textbox_hidden: false,
             cover: None,
             hud: Vec::new(),
+            threads: Vec::new(),
             music: None,
             sfx_loops: Vec::new(),
             inline: Vec::new(),
@@ -860,7 +918,7 @@ pub(crate) fn returned_to_line(before: &State, after: &State, input: &Input) -> 
     matches!(after.pending, Some(Cmd::Say { .. }))
         && (after.stack.len() < before.stack.len()
             && matches!(before.stack.get(after.stack.len()), Some(Frame { ret, line: true }) if *ret == after.pc)
-            || matches!(input, Input::Use(_) | Input::Hud(_))
+            || matches!(input, Input::Use(_) | Input::Hud(_) | Input::Reply(..))
                 && matches!(before.pending, Some(Cmd::Say { .. }))
                 && (after.pc, after.stack.len()) == (before.pc, before.stack.len()))
 }
@@ -893,6 +951,21 @@ pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
             Some(HudAction::Open(_)) => true,
             None => false,
         }
+}
+
+/// The options (index in the script's list, text with its values put in) the contact's pending later reply
+/// offers now; `text` looks the script's text up (a translation).
+pub fn reply_options(program: &Program, state: &State, id: &str, text: &dyn Fn(&str) -> String) -> Vec<(usize, String)> {
+    let Some(thread) = state.threads.iter().find(|t| t.id == id) else { return Vec::new() };
+    let Some(Op::Reply { options, .. }) = thread.reply.and_then(|pc| program.ops.get(pc)) else { return Vec::new() };
+    let shown = options.iter().enumerate().filter(|(_, o)| pickable(o, &state.vars));
+    shown.map(|(i, o)| (i, interpolate(&text(&o.text), &state.vars))).collect()
+}
+
+/// Whether the player may pick option `i` of the contact's later reply now: it is offered, the story waits at a
+/// line (see [`waits_at_line`]) and the call stack has room (the same rule as a HUD `call=` button).
+pub fn can_reply(program: &Program, state: &State, id: &str, i: usize) -> bool {
+    waits_at_line(state) && state.stack.len() < MAX_CALL_DEPTH && reply_options(program, state, id, &|s| s.to_string()).iter().any(|(k, _)| *k == i)
 }
 
 /// Whether the player may use the item `id` now: the inventory shows it, it has a `use=` label, and
@@ -1310,6 +1383,23 @@ pub(crate) fn step_traced(
                 let Some(label) = hud_call(program, state, &id).filter(|_| can_press(program, state, &id)) else { return Vec::new() };
                 call_from_line(state, program, &label);
             }
+            (Cmd::Say { .. }, Some(Input::Reply(id, i))) => {
+                if !can_reply(program, state, &id, i) {
+                    return Vec::new();
+                }
+                let pc = state.threads.iter().find(|t| t.id == id).and_then(|t| t.reply).expect("checked by can_reply");
+                let Some(Op::Reply { options, .. }) = program.ops.get(pc) else { return Vec::new() };
+                let chosen = &options[i];
+                let text = interpolate(&chosen.text, &state.vars);
+                state.post(&id, Msg { mine: true, text: Some(text), image: None, video: None });
+                state.thread(&id).reply = None;
+                for effect in &chosen.effects {
+                    run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
+                }
+                unshow_page_line(state);
+                state.stack.push(Frame { ret: state.pc, line: true });
+                state.pc = chosen.target;
+            }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
                 let Some(Op::Input { var, default, max, number, .. }) = program.ops.get(state.pc) else { return Vec::new() };
                 let answer = if *number {
@@ -1334,7 +1424,7 @@ pub(crate) fn step_traced(
                 state.pc += 1;
             }
             (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Some(Input::Choose(i))) => {
-                let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) else {
+                let Some(Op::Choice { options: all, reply, .. }) = program.ops.get(state.pc) else {
                     return Vec::new();
                 };
                 let visible = visible_options(all, &state.vars);
@@ -1344,6 +1434,10 @@ pub(crate) fn step_traced(
                 let call = chosen.area.as_ref().is_some_and(|a| a.call);
                 if call && state.stack.len() >= MAX_CALL_DEPTH {
                     return Vec::new();
+                }
+                if let Some(id) = reply {
+                    let text = interpolate(&chosen.text, &state.vars);
+                    state.post(id, Msg { mine: true, text: Some(text), image: None, video: None });
                 }
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
@@ -1551,6 +1645,24 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
+            Op::Message { contact, mine, text, image, video, thumb, quiet } => {
+                let text = text.as_ref().map(|t| interpolate(t, &state.vars));
+                let stored = video.clone().map(|v| (v, thumb.clone()));
+                state.post(contact, Msg { mine: *mine, text, image: image.clone(), video: stored });
+                let name = program.characters.get(contact).map_or(contact.as_str(), |c| c.name.as_str());
+                let media = if image.is_some() { Some("picture") } else { video.as_ref().map(|_| "video") };
+                let text = state.threads.last().and_then(|t| t.msgs.last()).and_then(|m| m.text.clone());
+                out.push(Cmd::Message { name: fill_name(name, &state.vars), mine: *mine, quiet: *quiet, text, media });
+                state.pc += 1;
+            }
+            Op::Reply { to, options } => {
+                match options.is_empty() {
+                    // Taking a reply away makes no thread of its own.
+                    true => state.threads.iter_mut().filter(|t| t.id == *to).for_each(|t| t.reply = None),
+                    false => state.thread(to).reply = Some(state.pc),
+                }
+                state.pc += 1;
+            }
             Op::Notify { text, time } => {
                 out.push(Cmd::Notify { text: interpolate(text, &state.vars), time: *time, source: text.clone() });
                 state.pc += 1;
@@ -1755,6 +1867,13 @@ impl<'p> Session<'p> {
 
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    /// The player opened the thread with `id`: its messages are read. Not an input (rolling back doesn't un-read it).
+    pub fn mark_read(&mut self, id: &str) {
+        if let Some(t) = self.state.threads.iter_mut().find(|t| t.id == id) {
+            t.unread = 0;
+        }
     }
 
     pub fn can_rollback(&self) -> bool {

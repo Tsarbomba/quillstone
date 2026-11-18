@@ -1233,6 +1233,11 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
             Cmd::Notify { text, .. } => println!("[notice: {text}]"),
+            Cmd::Message { name, mine, text, media, .. } => {
+                let who = if *mine { format!("you to {name}") } else { name.clone() };
+                let media = media.map(|m| format!(" [{m}]")).unwrap_or_default();
+                println!("[{who}]{media} {}", text.as_deref().map(plain).unwrap_or_default());
+            }
             Cmd::HudShow { elem, .. } => println!("[hud: {}]", elem.id),
             Cmd::HudHide { id, .. } => println!("[hud hidden: {id}]"),
             Cmd::HudClear { .. } => println!("[hud cleared]"),

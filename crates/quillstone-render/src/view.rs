@@ -1228,6 +1228,7 @@ impl View {
                 Cmd::Flash { time, color } => {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
+                Cmd::Message { .. } => {} // the frontend words the notice (it has the translation of its own texts)
                 Cmd::Notify { text, time, .. } => {
                     self.notice = Some(Notice { text: text.clone(), time: *time, elapsed: 0.0 });
                 }
