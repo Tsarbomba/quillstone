@@ -29,6 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Tag matches the Cargo.toml versions
+        if: github.ref_type == 'tag'
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          for f in Cargo.toml player/Cargo.toml; do
+            got=$(sed -n 's/^version = "\(.*\)"/\1/p' "$f" | head -1)
+            [ "$got" = "$want" ] || { echo "::error::$f has version $got, tag is $GITHUB_REF_NAME"; exit 1; }
+          done
+
       # Third-party actions are pinned to a commit: a moved tag can't change what runs.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:

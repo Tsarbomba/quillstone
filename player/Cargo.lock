@@ -2026,14 +2026,14 @@ dependencies = [
 
 [[package]]
 name = "quillstone-audio"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-runtime",
 ]
 
 [[package]]
 name = "quillstone-player"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "quillstone-render"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-runtime",
  "quillstone-script",
@@ -2065,18 +2065,18 @@ dependencies = [
 
 [[package]]
 name = "quillstone-runtime"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-script",
 ]
 
 [[package]]
 name = "quillstone-script"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "quillstone-ui"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-audio",
  "quillstone-render",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "quillstone-video"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "quote"

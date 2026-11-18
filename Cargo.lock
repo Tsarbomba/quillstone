@@ -281,7 +281,7 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quillstone"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "editpe",
  "image",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "quillstone-audio"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-runtime",
  "quillstone-script",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "quillstone-render"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-runtime",
  "quillstone-script",
@@ -311,18 +311,18 @@ dependencies = [
 
 [[package]]
 name = "quillstone-runtime"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-script",
 ]
 
 [[package]]
 name = "quillstone-script"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "quillstone-ui"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "quillstone-audio",
  "quillstone-render",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "quillstone-video"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "quote"
