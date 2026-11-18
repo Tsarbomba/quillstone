@@ -796,9 +796,9 @@ fn any_pickable(options: &[ChoiceOption], shown: &[usize], vars: &Vars) -> bool 
     shown.iter().any(|&i| pickable(&options[i], vars) && !is_timeout(&options[i]))
 }
 
-/// The invisible option of a timed `::hotspots` that carries `default=#label` (see `ChoiceOption::default`).
+/// The invisible option of a timed `::hotspots` or `::choice` that carries `default=#label` (see `ChoiceOption::default`).
 pub fn is_timeout(option: &ChoiceOption) -> bool {
-    option.default && option.area.is_some()
+    option.default && (option.area.is_some() || option.text.is_empty())
 }
 
 /// The time limit of the timed `::choice` or `::hotspots` the state waits at. The runtime never counts the
@@ -1169,6 +1169,8 @@ fn choice_cmd(options: &[ChoiceOption], map: &Option<Imagemap>, visible: &[usize
             .collect();
         Cmd::ShowHotspots { spots, map: map.clone() }
     } else {
+        // the timeout of a timed `::choice` is no button
+        let visible: Vec<usize> = visible.iter().copied().filter(|&i| !is_timeout(&options[i])).collect();
         let locked = visible
             .iter()
             .map(|&i| match &options[i].lock {

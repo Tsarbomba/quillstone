@@ -619,7 +619,9 @@ impl<'p> Game<'p> {
                     // time is up: as if the default had been clicked
                     _ => {
                         if let Some(timer) = self.running_timer() {
-                            self.pick(timer.default);
+                            // (a `default=#label` timeout is no button, so not through `pick`)
+                            self.choice_focus = None;
+                            self.forward(Input::Choose(timer.default));
                         }
                     }
                 };

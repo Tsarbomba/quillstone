@@ -1733,6 +1733,17 @@ answer is an answer too:
 ::
 ````
 
+- **A label instead of an option.** `default=#label` in the braces jumps to a label when time
+  runs out, with no option picked, like a timed `::hotspots`:
+
+  ````markdown
+  ::choice{time=8 default=#too-slow}
+  - [Tell the truth](#truth)
+  - [Lie](#lie)
+  ::
+  ````
+
+  It needs `time=`, and can't be combined with an option marked `default`.
 - **The time** is in seconds, a plain number, 0.5 and up. `quillstone check` warns when it is
   under 2 seconds (too quick to read) or over 600 (a typo?); 86400 is the most.
 - **`default`** combines with the other settings (`{default, once, trust-=1, if met}`). If the
@@ -1745,9 +1756,11 @@ answer is an answer too:
   the active one.
 - **Picking** by click or key works as usual, and hovering changes nothing. Auto-forward never
   picks for the player, and skipping stops at the choice.
-- **Errors.** A timed choice without `default` (or with two), and `default` without `time`.
+- **Errors.** A timed choice with neither a `default` option nor `default=#label` (or with two
+  default options, or with both kinds), and `default` without `time`.
   `::shop` can't be timed; a `::hotspots` block can (see [Hotspots](#hotspots)).
-- `quillstone test` plays the default like any other option.
+- `quillstone test` plays the default like any other option, and the `default=#label` jump as
+  one more branch.
 
 ### Labels with parameters
 

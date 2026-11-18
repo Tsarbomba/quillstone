@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use quillstone_script::{is_ident, Cmp, Expr, HudAction, KeyPress, Op, Program, Value, Vars, ONCE, SEEN};
 
-use crate::{can_press, can_reply, can_use, finish_input, finish_number, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
+use crate::{is_timeout, can_press, can_reply, can_use, finish_input, finish_number, offered_stock, pickable, step_traced, visible_options, Cmd, Input, Spot, State};
 
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
@@ -93,7 +93,15 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                     x.offered.extend(open.map(|i| (state.pc, i)));
                 }
                 let (labels, locked) = match pending {
-                    Cmd::ShowChoices { options, locked } => (options.clone(), locked.clone()),
+                    Cmd::ShowChoices { options, locked } => {
+                        let (mut labels, mut locked) = (options.clone(), locked.clone());
+                        // a `default=#label` timeout is one more branch, the last of the visible options
+                        if matches!(program.ops.get(state.pc), Some(Op::Choice { options, .. }) if options.last().is_some_and(is_timeout)) {
+                            labels.push("(time out)".to_string());
+                            locked.push(None);
+                        }
+                        (labels, locked)
+                    }
                     Cmd::ShowHotspots { spots, .. } => {
                         // A region bound to a sprite that isn't shown can't be clicked (the explorer doesn't know
                         // where sprites are, so a shown one counts); the timeout is told apart by `Spot::is_timeout`.
@@ -1211,6 +1219,14 @@ mod tests {
         let r = test(src);
         assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
         assert_eq!(r.endings.len(), 2, "both options are played, whatever the timer");
+    }
+
+    #[test]
+    fn the_tester_plays_the_label_timeout_of_a_timed_choice_as_one_more_branch() {
+        let src = "# a\n::choice{time=5 default=#slow}\n- [Speak](#spoke)\n::\n# spoke\nSpoke.\n::end\n# slow\nToo slow.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert_eq!(r.endings.len(), 2, "the option and the timeout");
     }
 
     #[test]

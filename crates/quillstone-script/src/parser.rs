@@ -108,7 +108,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "portrait"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
-        "choice" => &["time"],
+        "choice" => &["time", "default"],
         "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur", "mask"],
         "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
@@ -2889,7 +2889,7 @@ impl Parser {
         match Attrs::parse(inner) {
             Ok(mut a) => {
                 let value = a.take("time");
-                let jump = if hot { a.take("default") } else { None };
+                let jump = a.take("default");
                 let (ground, hover) = if hot { (a.take("ground"), a.take("hover")) } else { (None, None) };
                 match (ground, hover) {
                     (None, None) => {}
@@ -2933,6 +2933,7 @@ impl Parser {
             }
             Err(m) => p.err(ln, m),
         });
+        let defaults: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.default).map(|(k, _)| k).collect();
         if hot && time.is_some() != default_to.is_some() {
             let msg = if time.is_some() {
                 "a timed `::hotspots` needs `default=#label`: where to go when time runs out"
@@ -2940,10 +2941,12 @@ impl Parser {
                 "`default=#label` needs a timed block (`::hotspots{time=3 default=#too-slow}`)"
             };
             self.err(line, msg);
-        }
-        let defaults: Vec<usize> = options.iter().enumerate().filter(|(_, o)| o.default).map(|(k, _)| k).collect();
-        if !hot && time.is_some() && defaults.is_empty() && !options.is_empty() {
-            self.err(line, "a timed `::choice` needs one option marked `{default}`: the one picked when time runs out");
+        } else if !hot && default_to.is_some() && time.is_none() {
+            self.err(line, "`default=#label` needs a timed block (`::choice{time=8 default=#too-slow}`)");
+        } else if !hot && default_to.is_some() && !defaults.is_empty() {
+            self.err(options[defaults[0]].line, "a `::choice` with `default=#label` can't also have an option marked `{default}`: use one of the two");
+        } else if !hot && time.is_some() && default_to.is_none() && defaults.is_empty() && !options.is_empty() {
+            self.err(line, "a timed `::choice` needs one option marked `{default}` (the one picked when time runs out) or `default=#label`");
         }
         for &k in defaults.iter().skip(1) {
             self.err(options[k].line, "only one option of a `::choice` can be the `{default}`");
@@ -2960,7 +2963,9 @@ impl Parser {
             if let Some(label) = default_to.filter(|_| time.is_some()) {
                 // The timeout is one more outcome, like a timed choice's default: a hidden option
                 // nothing can click, so the explorer, graph, rollback and saves need no new case.
-                options.push(ChoiceOption { text: String::new(), target: UNSET, effects: Vec::new(), cond: None, area: Some(Area::timeout()), default: true, lock: None, line });
+                // (a `::choice` has no region: the empty text tells it apart, see `is_timeout`)
+                let area = hot.then(Area::timeout);
+                options.push(ChoiceOption { text: String::new(), target: UNSET, effects: Vec::new(), cond: None, area, default: true, lock: None, line });
                 labels.push((label, line));
             }
             for (k, (label, ln)) in labels.into_iter().enumerate() {
@@ -4376,8 +4381,20 @@ mod tests {
         assert_eq!(line(&block("{time=3 default=#b speed=2}"), "unknown attribute `speed`"), 3);
         ok(&block("{time=0.5 default=#b}"));
         ok(&block("{time=600 default=#b}"));
-        // a choice still takes only `time`, and its default is an option
-        assert!(has_err("# a\n::choice{time=3 default=#a}\n- [x](#a){default}\n::\n", "unknown attribute `default`"));
+    }
+
+    #[test]
+    fn a_timed_choice_can_jump_to_a_label_when_time_runs_out() {
+        let p = ok("# a\n::choice{time=8 default=#slow}\n- [x](#a)\n::\n# slow\n::end\n");
+        let Op::Choice { options, time, .. } = &p.ops[0] else { panic!() };
+        assert_eq!((*time, options.len()), (Some(8.0), 2));
+        let late = &options[1];
+        assert!(late.default && late.text.is_empty() && late.area.is_none() && late.target == p.labels["slow"]);
+        assert!(has_err("# a\n::choice{time=3 default=#a}\n- [x](#a){default}\n::\n", "can't also have an option marked `{default}`"));
+        assert!(has_err("# a\n::choice{default=#a}\n- [x](#a)\n::\n", "needs a timed block"));
+        assert!(has_err("# a\n::choice{time=3 default=#nowhere}\n- [x](#a)\n::\n", "unknown label `nowhere`"));
+        assert!(has_err("# a\n::choice{time=3 default=a}\n- [x](#a)\n::\n", "`default` needs a label"));
+        assert!(has_err("# a\n::choice{time=3}\n- [x](#a)\n::\n", "or `default=#label`"));
     }
 
     #[test]

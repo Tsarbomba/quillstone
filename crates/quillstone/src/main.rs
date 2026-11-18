@@ -653,7 +653,7 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
                         format!("this choice gives {t} s to answer; under {MIN_READABLE_TIME} s is too quick to read the options"),
                     ));
                 }
-                let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none()).collect();
+                let buttons: Vec<_> = options.iter().filter(|o| o.area.is_none() && !quillstone_runtime::is_timeout(o)).collect();
                 let Some(rect) = quillstone_render::view::choice_rects(theme, buttons.len()).first().copied() else { continue };
                 let size = quillstone_render::view::choice_text_size(theme.text_size, rect);
                 let fit = (rect.h / quillstone_render::line_height(size)).floor() as usize;

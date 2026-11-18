@@ -158,6 +158,20 @@ fn a_timed_hotspot_screen_has_a_timer_whose_default_is_the_timeout_jump() {
 }
 
 #[test]
+fn a_timed_choice_with_a_label_default_shows_only_its_buttons_and_times_out_to_the_label() {
+    let p = parse("# a\n::choice{time=4 default=#slow}\n- [One](#one)\n- [Two](#one)\n::\n# one\nOne.\n::end\n# slow\nToo slow.\n::end\n").unwrap();
+    let (mut game, first) = Session::start(&p);
+    assert!(first.iter().any(|c| matches!(c, Cmd::ShowChoices { options, locked } if options.len() == 2 && locked.len() == 2)));
+    assert_eq!(timer(&game, &p), Some(ChoiceTimer { seconds: 4.0, default: 2 }));
+    let text = game.save();
+    let (loaded, _) = Session::load(&p, &text).unwrap();
+    assert_eq!(timer(&loaded, &p), Some(ChoiceTimer { seconds: 4.0, default: 2 }), "a save keeps it");
+    let cmds = game.input(Input::Choose(2));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Say { text, .. } if text == "Too slow.")));
+    assert!(game.rollback().is_some() && timer(&game, &p).is_some(), "rollback comes back to the timed choice");
+}
+
+#[test]
 fn a_timed_hotspot_screen_with_nothing_to_click_is_skipped_not_waited_out() {
     let p = parse("---\nvars: { open: false }\n---\n# a\n::hotspots{time=3 default=#slow}\n- [Door](#a){rect=0,0,0.1,0.1, if open}\n::\n# slow\nToo slow.\n::end\n").unwrap();
     let (game, _) = Session::start(&p);
