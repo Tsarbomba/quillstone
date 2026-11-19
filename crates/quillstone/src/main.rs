@@ -1699,14 +1699,14 @@ mod tests {
 
     #[test]
     fn the_input_and_options_pictures_are_checked_like_other_theme_pictures() {
-        let keys = "input_image = assets/in.png\noptions_background = assets/ob.png\noptions_panel_image = assets/op.png\n";
+        let keys = "input_image = assets/in.png\noptions_background = assets/ob.png\noptions_panel_image = assets/op.png\nextras_background = assets/eb.png\nchapters_background = assets/cb.png\n";
         let missing = themed(keys, &[]);
-        assert_eq!(missing.len(), 3, "{missing:?}");
+        assert_eq!(missing.len(), 5, "{missing:?}");
         assert!(missing.iter().all(|m| m.contains("missing theme picture")), "{missing:?}");
-        assert!(missing[0].contains("t.txt:1:") && missing[2].contains("t.txt:3:"), "{missing:?}");
+        assert!(missing[0].contains("t.txt:1:") && missing[4].contains("t.txt:3:"), "{missing:?}");
         let fake = themed("input_image = assets/in.png\n", &[("assets/in.png", b"not a picture")]);
         assert!(fake.len() == 1 && fake[0].contains("won't play"), "{fake:?}");
-        let files: &[(&str, &[u8])] = &[("assets/in.png", KEY), ("assets/ob.png", KEY), ("assets/op.png", KEY)];
+        let files: &[(&str, &[u8])] = &[("assets/in.png", KEY), ("assets/ob.png", KEY), ("assets/op.png", KEY), ("assets/eb.png", KEY), ("assets/cb.png", KEY)];
         assert!(themed(keys, files).is_empty());
         let rect = themed("input_rect = 0, 0, 100, 100\n", &[]);
         assert!(rect.len() == 1 && rect[0].contains("line 1:") && rect[0].contains("input_rect"), "{rect:?}");

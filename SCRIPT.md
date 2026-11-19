@@ -2730,6 +2730,7 @@ optional):
 gallery: [assets/cg1.png, assets/clip1.webm | assets/thumbs/clip1.png]
 ```
 
+- The Extras screen can have a picture behind it: `extras_background` (see The Extras and Chapters screens).
 - A thumbnail is a picture (PNG, JPEG or WebP) in the game folder. `quillstone check` reports
   a missing or unreadable one, and `package` ships it.
 - It is only the tile of an unlocked entry. A locked tile stays a `?`, and the entry itself
@@ -2867,7 +2868,8 @@ chapters: { part-1: "Part 1" | assets/ch1.jpg, part-2: "Part 2" | assets/ch2.jpg
   normally, so saving, loading and rollback work as always.
 - **The screen** shows 12 tiles a page, with arrows and "Page 1 of 2" when there are more. The
   thumbnail fills an open tile (a tile without one shows its title); the title is under it. Mouse,
-  arrow keys with Enter, and a gamepad all work; Esc goes back to the main menu.
+  arrow keys with Enter, and a gamepad all work; Esc goes back to the main menu. A picture can
+  go behind the screen: `chapters_background` (see The Extras and Chapters screens).
 - **Errors** (line-numbered): a label that doesn't exist or takes parameters, the same label or
   title twice, or a thumbnail that is not a picture inside the game folder.
 - `quillstone check` reads each thumbnail and warns about a chapter the story can never reach
@@ -3252,6 +3254,22 @@ menu_title = hide
   (96 px at the default 160).
 - Mouse and keyboard follow the new places. Save, Load, Settings and the other screens opened
   from the main menu are not moved by these keys.
+
+### The Extras and Chapters screens
+
+The Extras screen (gallery, music room, scenes) and the Chapters screen can each have a picture
+behind them. Without these keys they look as they always have.
+
+```text
+# full-screen picture instead of overlay_color
+extras_background = assets/gui/extras.png
+# the same for the Chapters screen
+chapters_background = assets/gui/chapters.png
+```
+
+- The picture fills the screen, cropped to fit. A picture opened full-size from the gallery keeps
+  its own black backdrop.
+- `check` reports a missing or unreadable picture; `package` includes the pictures.
 
 ### The Save and Load screens
 

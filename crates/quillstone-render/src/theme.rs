@@ -212,6 +212,9 @@ pub struct Theme {
     pub options_rect: [f32; 4],
     pub options_text_size: f32,
     pub options_background: Option<String>,
+    /// A picture behind the whole Extras screen / Chapters screen, instead of `overlay_color`.
+    pub extras_background: Option<String>,
+    pub chapters_background: Option<String>,
     pub options_panel_image: Option<String>,
     pub options_panel_border: f32,
     /// Main menu: the area the buttons stack in, the area the title is centred in, and whether it is drawn.
@@ -350,6 +353,8 @@ impl Default for Theme {
             options_rect: DEFAULT_OPTIONS_RECT,
             options_text_size: DEFAULT_OPTIONS_TEXT_SIZE,
             options_background: None,
+            extras_background: None,
+            chapters_background: None,
             options_panel_image: None,
             options_panel_border: 0.0,
             menu_rect: DEFAULT_MENU_RECT,
@@ -722,7 +727,7 @@ file_keys! {
     // The font files to load, regular first.
     pub fonts: font, font_bold, font_italic, font_bold_italic;
     // The pictures of the textbox, name plate, menus, `::input` panel, settings screen, `::timing` bar and `::press` key.
-    screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, options_panel_image,
+    screen_images: textbox_image, name_plate_image, menu_background, menu_overlay, game_menu_overlay, input_image, options_background, extras_background, chapters_background, options_panel_image,
         timing_bar_image, timing_marker_image, press_key_image, messages_image, bubble_them_image, bubble_me_image, messages_button_image, messages_button_hover, messages_back_image, messages_back_hover, messages_avatar_frame, journal_row_image, journal_row_hover;
     music: menu_music;
     // The pictures behind the inventory and shop screens (their cells are in `inventory_images`).
@@ -1115,16 +1120,17 @@ mod tests {
         let d = Theme::default();
         assert_eq!((d.text_outline_size, d.input_rect, d.options_rect, d.options_text_size), (0.0, None, DEFAULT_OPTIONS_RECT, 36.0));
         assert!(d.input_image.is_none() && d.options_background.is_none() && d.options_panel_image.is_none());
+        assert!(d.extras_background.is_none() && d.chapters_background.is_none());
         let (t, problems) = Theme::parse(
             "text_outline_color = #102030\ntext_outline_size = 1.5\ninput_image = g/in.png\ninput_rect = 100, 100, 900, 500\n\
-             options_rect = 40, 50, 800, 900\noptions_text_size = 28\noptions_background = g/o.png\n\
+             options_rect = 40, 50, 800, 900\noptions_text_size = 28\noptions_background = g/o.png\nextras_background = g/e.png\nchapters_background = g/c.png\n\
              options_panel_image = g/p.png\noptions_panel_border = 24\n",
         );
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!((t.text_outline_color, t.text_outline_size), (parse_color("#102030").unwrap(), 1.5));
         assert_eq!((t.input_rect, t.options_rect, t.options_text_size), (Some([100.0, 100.0, 900.0, 500.0]), [40.0, 50.0, 800.0, 900.0], 28.0));
         assert_eq!(t.options_panel_border, 24.0);
-        for pic in ["g/in.png", "g/o.png", "g/p.png"] {
+        for pic in ["g/in.png", "g/o.png", "g/p.png", "g/e.png", "g/c.png"] {
             assert!(t.assets().contains(&pic) && t.images().contains(&pic), "{pic}");
         }
     }

@@ -401,6 +401,21 @@ pub fn menu_at(x: f32, y: f32, buttons: &[MenuButton], t: &Theme) -> Option<Menu
     (0..buttons.len()).find(|&i| menu_button_rect(i, t).contains(x, y)).map(|i| buttons[i])
 }
 
+fn loaded<'a>(p: &'a Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) -> Option<(&'a str, Size)> {
+    p.as_deref().and_then(|src| image_size(src).map(|size| (src, size)))
+}
+
+/// A screen's backdrop: its picture Cover-fit over the whole screen, or the `overlay_color` rect if there is none or it isn't loaded.
+pub(crate) fn draw_backdrop(out: &mut Vec<Draw>, theme: &Theme, pic: &Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) {
+    match loaded(pic, image_size) {
+        Some((src, size)) => {
+            let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+        }
+        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
+    }
+}
+
 /// A theme picture over the whole screen (nothing if there is none or it isn't loaded).
 fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
     if let Some((src, size)) = src.and_then(|src| image_size(src).map(|size| (src, size))) {
@@ -728,16 +743,7 @@ pub fn draw_settings(
 ) {
     let rows = rows(language.is_some());
     let language = language.unwrap_or("");
-    fn loaded<'a>(p: &'a Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) -> Option<(&'a str, Size)> {
-        p.as_deref().and_then(|src| image_size(src).map(|size| (src, size)))
-    }
-    match loaded(&theme.options_background, image_size) {
-        Some((src, size)) => {
-            let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
-        }
-        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
-    }
+    draw_backdrop(out, theme, &theme.options_background, image_size);
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     let (p, k) = (panel(theme), factor(theme));
     if let Some((src, size)) = loaded(&theme.options_panel_image, image_size) {
@@ -1923,6 +1929,17 @@ mod tests {
         assert_eq!((images(&with), images(&without)), (1 + 9, 0));
         assert!(!with.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "the picture is the background");
         assert!(without.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)), "not loaded: today's look");
+    }
+
+    #[test]
+    fn draw_backdrop_is_the_picture_when_known_and_the_overlay_rect_when_not() {
+        let t = Theme::default();
+        let pic = Some("bg.png".to_string());
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        draw_backdrop(&mut a, &t, &pic, &|_| Some(Size::new(1920.0, 1080.0)));
+        draw_backdrop(&mut b, &t, &pic, &|_| None);
+        assert!(matches!(a.as_slice(), [Draw::Image { src, .. }] if src == "bg.png"));
+        assert!(matches!(b.as_slice(), [Draw::Rect { color, .. }] if *color == t.overlay_color));
     }
 
     #[test]

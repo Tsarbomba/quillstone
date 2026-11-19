@@ -5,8 +5,8 @@ use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
 use crate::extras::{next_rect, prev_rect};
-use crate::input::{screen, text};
-use crate::screens::{extras_back_rect, fit_value};
+use crate::input::text;
+use crate::screens::{draw_backdrop, extras_back_rect, fit_value};
 use crate::texts::Tr;
 
 /// Tiles per page: 4 columns, 3 rows.
@@ -77,7 +77,7 @@ pub struct ChaptersScreen<'a> {
 
 pub fn draw_chapters(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ChaptersScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
-    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_backdrop(out, theme, &theme.chapters_background, image_size);
     text(out, tr.t("Chapters"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, tile) in s.tiles.iter().enumerate() {
         let r = tile_rect(i);
@@ -121,6 +121,21 @@ pub fn draw_chapters(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ChaptersScr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chapters_background_picture_replaces_the_overlay_rect_when_known() {
+        let t = Theme::parse("chapters_background = bg.png\n").0;
+        let screen = ChaptersScreen { page: 0, pages: 1, tiles: &[], focus: None, hover: None };
+        let draw = |size: &dyn Fn(&str) -> Option<Size>| {
+            let mut out = Vec::new();
+            draw_chapters(&mut out, &t, Tr::default(), &screen, size);
+            out
+        };
+        let (with, without) = (draw(&|_| Some(Size::new(1920.0, 1080.0))), draw(&|_| None));
+        assert!(matches!(&with[0], Draw::Image { src, .. } if src == "bg.png"));
+        assert!(!with.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)));
+        assert!(matches!(&without[0], Draw::Rect { color, .. } if *color == t.overlay_color));
+    }
 
     #[test]
     fn pages_hold_twelve_tiles_and_the_grid_clears_the_page_label_and_back() {

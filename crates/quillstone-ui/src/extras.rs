@@ -7,7 +7,7 @@ use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::input::{screen, text};
 use crate::texts::Tr;
-use crate::screens::{fit_value, extras_back_rect};
+use crate::screens::{draw_backdrop, fit_value, extras_back_rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -143,7 +143,7 @@ pub struct ExtrasScreen<'a> {
 
 pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
     let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
-    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_backdrop(out, theme, &theme.extras_background, image_size);
     text(out, tr.t("Extras"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, &t) in s.tabs.iter().enumerate() {
         let r = tab_rect(i, s.tabs.len());
@@ -231,6 +231,22 @@ mod tests {
         assert_eq!(track_name("calm.ogg"), "Calm");
         assert_eq!(track_name("music\\Ending Theme.opus"), "Ending Theme");
         assert_eq!(track_name("noext"), "Noext");
+    }
+
+    #[test]
+    fn the_extras_background_picture_replaces_the_overlay_rect_when_known() {
+        let t = Theme::parse("extras_background = bg.png\n").0;
+        let tabs = [Tab::Gallery];
+        let screen = ExtrasScreen { tabs: &tabs, tab: Tab::Gallery, page: 0, pages: 1, entries: &[], thumbs: &[], focus: None, playing: None, hover: None };
+        let draw = |size: &dyn Fn(&str) -> Option<Size>| {
+            let mut out = Vec::new();
+            draw_extras(&mut out, &t, Tr::default(), &screen, size);
+            out
+        };
+        let (with, without) = (draw(&|_| Some(Size::new(1920.0, 1080.0))), draw(&|_| None));
+        assert!(matches!(&with[0], Draw::Image { src, .. } if src == "bg.png"));
+        assert!(!with.iter().any(|d| matches!(d, Draw::Rect { color, .. } if *color == t.overlay_color)));
+        assert!(matches!(&without[0], Draw::Rect { color, .. } if *color == t.overlay_color));
     }
 
     #[test]
