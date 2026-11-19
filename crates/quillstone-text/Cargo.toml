@@ -1,0 +1,20 @@
+[package]
+name = "quillstone-text"
+description = "Quillstone's text engine (cosmic-text): rasterizing and measuring text, shared by the player and `check`"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# Without `cosmic` nothing can be drawn or measured (the player's `--no-default-features` build).
+default = ["cosmic"]
+cosmic = ["dep:cosmic-text"]
+
+[dependencies]
+quillstone-render.workspace = true
+cosmic-text = { version = "0.19", optional = true }
+
+[dev-dependencies]
+quillstone-script.workspace = true

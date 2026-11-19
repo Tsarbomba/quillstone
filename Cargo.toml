@@ -17,6 +17,7 @@ quillstone-video = { path = "crates/quillstone-video" }
 quillstone-render = { path = "crates/quillstone-render" }
 quillstone-audio = { path = "crates/quillstone-audio" }
 quillstone-ui = { path = "crates/quillstone-ui" }
+quillstone-text = { path = "crates/quillstone-text", default-features = false }
 
 [profile.release]
 lto = "thin"

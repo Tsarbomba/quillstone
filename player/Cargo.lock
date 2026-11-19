@@ -2038,7 +2038,6 @@ dependencies = [
  "arboard",
  "bytemuck",
  "chrono",
- "cosmic-text",
  "ffmpeg-next",
  "gilrs",
  "image",
@@ -2048,6 +2047,7 @@ dependencies = [
  "quillstone-audio",
  "quillstone-render",
  "quillstone-script",
+ "quillstone-text",
  "quillstone-ui",
  "quillstone-video",
  "symphonia",
@@ -2073,6 +2073,14 @@ dependencies = [
 [[package]]
 name = "quillstone-script"
 version = "0.1.2"
+
+[[package]]
+name = "quillstone-text"
+version = "0.1.2"
+dependencies = [
+ "cosmic-text",
+ "quillstone-render",
+]
 
 [[package]]
 name = "quillstone-ui"

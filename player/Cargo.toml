@@ -18,7 +18,7 @@ publish = false
 default = ["text", "audio", "video", "gamepad"]
 # Text rendering with cosmic-text. Build with --no-default-features to get the
 # window, images and panels without text (useful if only that part fails to compile).
-text = ["dep:cosmic-text"]
+text = ["quillstone-text/cosmic"]
 # Music, sound effects and voice with kira. Without it the game runs silent.
 audio = ["dep:kira", "dep:symphonia"]
 # Video playback with FFmpeg, which also plays Opus sound files. Needs FFmpeg
@@ -38,6 +38,7 @@ quillstone-render = { path = "../crates/quillstone-render" }
 quillstone-audio = { path = "../crates/quillstone-audio" }
 quillstone-ui = { path = "../crates/quillstone-ui" }
 quillstone-video = { path = "../crates/quillstone-video" }
+quillstone-text = { path = "../crates/quillstone-text", default-features = false }
 ffmpeg-next = { version = "9", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
 
 wgpu = "30"
@@ -45,7 +46,6 @@ winit = "0.30"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-cosmic-text = { version = "0.19", optional = true }
 kira = { version = "0.12", optional = true, default-features = false, features = ["cpal", "ogg", "vorbis", "wav", "mp3", "flac"] }
 # Only for its `MediaSource` trait, which kira's decoders take (same version and features as kira's own).
 symphonia = { version = "0.6", optional = true, default-features = false }

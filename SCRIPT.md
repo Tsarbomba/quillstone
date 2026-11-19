@@ -3139,7 +3139,9 @@ name_align = center
 - `page_rect` is the area the text of a full-screen page (see [Full-screen pages](#full-screen-pages))
   is laid out in: inside the screen, at least 600x300. `page_color` is drawn over the whole screen
   under it.
-- `quillstone check` warns about lines too long for the real textbox and padding, and checks
+- `quillstone check` lays lines out with the same text engine and fonts as the player, and warns about
+  lines the player would shrink or cut off in the real textbox and padding (the warning says
+  how much it is shrunk), and checks
   `name_plate_image` and `textbox_image` as pictures; `package` includes them.
 - The history screen is not affected.
 - `font` applies to the dialogue, the names and every other text of the game; `check` reports a

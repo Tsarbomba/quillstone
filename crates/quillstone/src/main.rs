@@ -244,7 +244,10 @@ fn check(path: &Path) -> Result<(), String> {
             "every region of this `::hotspots` block is `hidden`: players using only keyboard or gamepad can't pick anything here; add a visible region such as an exit".into(),
         ));
     }
-    for (line, msg) in line_warnings(&program, theme) {
+    let fonts = quillstone_text::Measurer::new(
+        theme.fonts().into_iter().filter_map(|f| read_font(&root.join(f))).collect(),
+    );
+    for (line, msg) in line_warnings(&program, theme, Some(&fonts)) {
         found.push(warning(line, msg));
     }
     for (line, msg) in range_warnings(&program) {
@@ -620,31 +623,63 @@ fn range_warnings(program: &Program) -> Vec<(usize, String)> {
     out
 }
 
-/// Text clearly too long for where it is drawn: `(line, message)`. The player shrinks text that
-/// doesn't fit, so these are warnings; the estimate errs long, so only clear cases count.
+/// How the player draws `tagged` in `rect` at `size` (virtual px): whole, shrunk, or cut off. It lays the text out
+/// with the real text engine and the same fit test as the player (`None`: no font, so the caller estimates).
+fn drawn(fonts: &quillstone_text::Measurer, tagged: &str, rect: quillstone_render::Rect, size: f32) -> Option<quillstone_text::Fit> {
+    use quillstone_render::{Align, Draw};
+    let quillstone_script::markup::Rich { text, runs, .. } = quillstone_script::markup::rich(tagged);
+    let draw = Draw::Text { text, runs, visible_chars: usize::MAX, rect, size, color: [1.0; 4], align: Align::Left, outline: None };
+    let job = quillstone_render::build_frame(&[draw], quillstone_render::VIRTUAL).texts.pop()?;
+    fonts.fit(&job)
+}
+
+/// What a shrunk or cut-off text says: how it is drawn, and where.
+fn fit_message(fit: quillstone_text::Fit, what: &str, room: &str, advice: &str) -> Option<String> {
+    if fit.cut {
+        Some(format!("{what} doesn't fit {room} even at {}% size: its end is cut off ({advice})", (fit.scale * 100.0).round()))
+    } else if fit.scale < 1.0 {
+        Some(format!("{what} is too long for {room}: it is drawn at {}% size ({advice})", (fit.scale * 100.0).round()))
+    } else {
+        None
+    }
+}
+
+/// Text too long for where it is drawn: `(line, message)`. The player shrinks text that doesn't fit its box (and cuts
+/// off what still doesn't fit at 60%), so these are warnings. With `fonts` the text is laid out as the player does and
+/// a warning means the player really shrinks it; the estimate (which errs long on purpose) only decides which texts
+/// are worth laying out, and is the whole judgement without fonts.
 /// Covers dialogue lines, item descriptions and (non-hotspot) choice options.
-fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(usize, String)> {
+fn line_warnings(program: &Program, theme: &quillstone_render::Theme, fonts: Option<&quillstone_text::Measurer>) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
-            // A page line is judged against the page: too long only if it alone doesn't fit a page.
-            Op::Say { speaker, text, page, .. } => {
-                let (lines, fit, room) = if *page {
-                    let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
-                    (lines, fit, "a page")
-                } else {
-                    let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
-                    (lines, fit, "the textbox")
-                };
+            // A page line is judged against the page: too long only if it alone doesn't fit a page. (The player
+            // lays pages out by the estimate too, so that is the judgement.)
+            Op::Say { speaker, text, page: true, .. } => {
+                let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
                 if lines > fit + 1 {
                     out.push((
                         program.lines[pc],
                         format!(
-                            "this line takes about {lines} lines and {room} fits {fit}; it will be shown \
+                            "this line takes about {lines} lines and a page fits {fit}; it will be shown \
                              smaller, or cut off if very long (split it into two lines?)"
                         ),
                     ));
                 }
+            }
+            Op::Say { speaker, text, .. } => {
+                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
+                let body = quillstone_render::dialogue_body(theme, speaker.is_some());
+                let real = fonts.filter(|_| lines > fit).and_then(|f| drawn(f, text, body, theme.text_size));
+                let msg = match (fonts.is_some(), real) {
+                    (true, Some(r)) => fit_message(r, "this line", "the textbox", "split it into two lines?"),
+                    _ if lines > fit + 1 => Some(format!(
+                        "this line takes about {lines} lines and the textbox fits {fit}; it will be shown \
+                         smaller, or cut off if very long (split it into two lines?)"
+                    )),
+                    _ => None,
+                };
+                out.extend(msg.map(|m| (program.lines[pc], m)));
             }
             Op::Choice { options, time, .. } => {
                 if let Some(t) = time.filter(|t| *t < MIN_READABLE_TIME) {
@@ -659,15 +694,16 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
                 let fit = (rect.h / quillstone_render::line_height(size)).floor() as usize;
                 for o in buttons {
                     let lines = quillstone_render::estimate_lines(&plain(&o.text), size, rect.w);
-                    if lines > fit + 1 {
-                        out.push((
-                            o.line,
-                            format!(
-                                "this choice takes about {lines} lines and its button fits {fit}; it will be shown \
-                                 smaller, or cut off if very long (shorten it?)"
-                            ),
-                        ));
-                    }
+                    let real = fonts.filter(|_| lines > fit).and_then(|f| drawn(f, &o.text, rect, size));
+                    let msg = match (fonts.is_some(), real) {
+                        (true, Some(r)) => fit_message(r, "this choice", "its button", "shorten it?"),
+                        _ if lines > fit + 1 => Some(format!(
+                            "this choice takes about {lines} lines and its button fits {fit}; it will be shown \
+                             smaller, or cut off if very long (shorten it?)"
+                        )),
+                        _ => None,
+                    };
+                    out.extend(msg.map(|m| (o.line, m)));
                 }
             }
             _ => {}
@@ -680,18 +716,27 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme) -> Vec<(us
         let body = quillstone_ui::bag::description_body(theme, item.price.is_some());
         let fit = (body.h / quillstone_render::line_height(26.0)).floor() as usize;
         let lines = quillstone_render::estimate_lines(&plain(&item.text), 26.0, body.w);
-        if lines > fit + 1 {
-            out.push((
-                item.line,
-                format!(
-                    "the description of `{}` takes about {lines} lines and the description box fits {fit}; it will be shown \
-                     smaller, or cut off if very long (shorten it?)",
-                    item.id
-                ),
-            ));
-        }
+        let real = fonts.filter(|_| lines > fit).and_then(|f| drawn(f, &item.text, body, 26.0));
+        let what = format!("the description of `{}`", item.id);
+        let msg = match (fonts.is_some(), real) {
+            (true, Some(r)) => fit_message(r, &what, "the description box", "shorten it?"),
+            _ if lines > fit + 1 => Some(format!(
+                "{what} takes about {lines} lines and the description box fits {fit}; it will be shown \
+                 smaller, or cut off if very long (shorten it?)"
+            )),
+            _ => None,
+        };
+        out.extend(msg.map(|m| (item.line, m)));
     }
     out
+}
+
+/// A theme font file, as the player reads it (at most 64 MB; an unreadable one is left out: `check` reports it elsewhere).
+fn read_font(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take((64 << 20) + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 64 << 20).then_some(bytes)
 }
 
 /// Every line's auto-voice name, in script order: (op index, name).
@@ -1880,16 +1925,50 @@ mod tests {
             "---\ninventory: bag\nvars: {{ bag: [] }}\n---\n::item{{id=a text=\"short\"}}\n::item{{id=b text=\"{long}\"}}\n::choice\n- [Fine](#x)\n- [{long}](#x)\n::\n# x\nHi.\n"
         );
         let program = parse(&script).unwrap();
-        let found = line_warnings(&program, &Default::default());
+        let found = line_warnings(&program, &Default::default(), None);
         let at: Vec<usize> = found.iter().map(|(l, _)| *l).collect();
         assert_eq!(at, [9, 6], "the choice option's line, then the item's declaration line: {found:?}");
         assert!(found[0].1.contains("button") && found[1].1.contains("description of `b`"));
     }
 
     #[test]
+    fn the_long_line_warning_means_the_player_really_shrinks_the_line() {
+        use quillstone_render::view::dialogue_body;
+        let fonts = quillstone_text::Measurer::new(Vec::new());
+        let theme = quillstone_render::Theme::default();
+        let body = dialogue_body(&theme, true);
+        let said = |n: usize| "lorem ipsum dolor sit amet ".repeat(n);
+        let scale = |n: usize| drawn(&fonts, &said(n), body, theme.text_size);
+        let Some(whole) = scale(1) else { return }; // no font on this machine: nothing to measure with
+        assert_eq!(whole.scale, 1.0);
+        // the first length the player shrinks, found by laying the text out as it does
+        let n = (1..200).find(|&n| scale(n).is_some_and(|f| f.scale < 1.0)).expect("a long enough line is shrunk");
+        let warns = |n: usize| line_warnings(&parse(&format!("**A:** {}\n", said(n))).unwrap(), &theme, Some(&fonts));
+        assert!(warns(n - 1).is_empty(), "fits whole: no warning");
+        let found = warns(n);
+        assert!(found.len() == 1 && found[0].1.contains("% size"), "{found:?}");
+        let cut = (n..400).find(|&n| scale(n).is_some_and(|f| f.cut)).expect("a very long line is cut off");
+        assert!(warns(cut)[0].1.contains("cut off"), "{:?}", warns(cut));
+    }
+
+    #[test]
+    fn choice_buttons_and_item_descriptions_are_judged_by_the_real_layout_too() {
+        let fonts = quillstone_text::Measurer::new(Vec::new());
+        let theme = quillstone_render::Theme::default();
+        if drawn(&fonts, "x", quillstone_render::Rect::new(0.0, 0.0, 100.0, 100.0), 38.0).is_none() {
+            return;
+        }
+        let long = "word ".repeat(300);
+        let script = format!("---\ninventory: bag\nvars: {{ bag: [] }}\n---\n::item{{id=a text=\"short\"}}\n::item{{id=b text=\"{long}\"}}\n::choice\n- [Fine](#x)\n- [{long}](#x)\n::\n# x\nHi.\n");
+        let found = line_warnings(&parse(&script).unwrap(), &theme, Some(&fonts));
+        assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [9, 6], "{found:?}");
+        assert!(found[0].1.contains("its button") && found[1].1.contains("description of `b`"), "{found:?}");
+    }
+
+    #[test]
     fn check_warns_when_a_timed_choice_is_too_quick_to_read_and_refuses_a_badly_marked_one() {
         let script = |attrs: &str, default: &str| format!("# a\n::choice{attrs}\n- [Go](#a)\n- [Stay](#a){default}\n::\n");
-        let warns = |src: &str| line_warnings(&parse(src).unwrap(), &Default::default());
+        let warns = |src: &str| line_warnings(&parse(src).unwrap(), &Default::default(), None);
         let quick = warns(&script("{time=1.5}", "{default}"));
         assert!(quick.len() == 1 && quick[0].0 == 2 && quick[0].1.contains("1.5 s"), "{quick:?}");
         assert!(warns(&script("{time=2}", "{default}")).is_empty() && warns(&script("", "")).is_empty());
@@ -1986,7 +2065,7 @@ mod tests {
     #[test]
     fn a_long_page_line_is_judged_against_the_page_not_the_textbox() {
         let long = "word ".repeat(120); // 600 characters: far over the textbox, a few lines on a page
-        let warns = |src: &str, theme: &str| line_warnings(&parse(src).unwrap(), &quillstone_render::Theme::parse(theme).0);
+        let warns = |src: &str, theme: &str| line_warnings(&parse(src).unwrap(), &quillstone_render::Theme::parse(theme).0, None);
         assert_eq!(warns(&format!("**A:** {long}\n"), "").len(), 1, "too long for the textbox");
         assert!(warns(&format!("::page\n**A:** {long}\n"), "").is_empty(), "fits a page");
         let huge = "word ".repeat(1200);
@@ -2001,7 +2080,7 @@ mod tests {
         let script = format!("---\ntheme: t.txt\n---\n**A:** {line}\n");
         let warns = |theme: &str| {
             in_dir(&[("t.txt", theme.as_bytes()), ("s.quill.md", script.as_bytes())], |_| {
-                line_warnings(&parse(&script).unwrap(), &quillstone_render::Theme::parse(theme).0)
+                line_warnings(&parse(&script).unwrap(), &quillstone_render::Theme::parse(theme).0, None)
             })
         };
         assert!(warns("").is_empty(), "fits the default textbox");
