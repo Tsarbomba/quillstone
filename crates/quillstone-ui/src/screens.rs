@@ -743,7 +743,8 @@ pub fn draw_settings(
 ) {
     let rows = rows(language.is_some());
     let language = language.unwrap_or("");
-    draw_backdrop(out, theme, &theme.options_background, image_size);
+    let pic = if loaded(&theme.options_background, image_size).is_some() { &theme.options_background } else { &theme.game_menu_background };
+    draw_backdrop(out, theme, pic, image_size);
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     let (p, k) = (panel(theme), factor(theme));
     if let Some((src, size)) = loaded(&theme.options_panel_image, image_size) {
@@ -863,7 +864,7 @@ pub fn draw_backlog(
     image_size: &dyn Fn(&str) -> Option<Size>,
     measure: Option<Measure>,
 ) {
-    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_backdrop(out, theme, &theme.game_menu_background, image_size);
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     let k = area_scale(DEFAULT_HISTORY_RECT, theme.history_rect).2;
     text(out, tr.t("History"), history_map(Rect::new(160.0, 40.0, 1600.0, 70.0), theme), 48.0 * k, theme.text_color, Align::Center);
@@ -1016,7 +1017,7 @@ pub fn draw_slots(
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     let SlotScreen { title, tabs, page, slots, hover } = *shown;
-    out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
+    draw_backdrop(out, theme, &theme.game_menu_background, image_size);
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
     let k = slots_scale(theme).2;
     text(out, title, slots_map(Rect::new(200.0, 40.0, 1520.0, 70.0), theme), 48.0 * k, theme.text_color, Align::Center);
@@ -1940,6 +1941,25 @@ mod tests {
         draw_backdrop(&mut b, &t, &pic, &|_| None);
         assert!(matches!(a.as_slice(), [Draw::Image { src, .. }] if src == "bg.png"));
         assert!(matches!(b.as_slice(), [Draw::Rect { color, .. }] if *color == t.overlay_color));
+    }
+
+    #[test]
+    fn settings_prefers_options_background_then_game_menu_background_then_the_rect() {
+        let src = |keys: &str, size: &dyn Fn(&str) -> Option<Size>| {
+            let t = Theme::parse(keys).0;
+            let mut out = Vec::new();
+            draw_settings(&mut out, &t, Tr::default(), &Settings::default(), true, 0, None, None, size, None);
+            match &out[0] {
+                Draw::Image { src, .. } => src.clone(),
+                _ => "rect".into(),
+            }
+        };
+        let sized = |_: &str| Some(Size::new(1920.0, 1080.0));
+        let both = "options_background = ob.png\ngame_menu_background = gb.png\n";
+        assert_eq!(src(both, &sized), "ob.png");
+        assert_eq!(src("game_menu_background = gb.png\n", &sized), "gb.png");
+        assert_eq!(src(both, &|s: &str| (s == "gb.png").then(|| Size::new(1920.0, 1080.0))), "gb.png");
+        assert_eq!(src(both, &|_| None), "rect");
     }
 
     #[test]

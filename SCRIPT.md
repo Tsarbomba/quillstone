@@ -3323,6 +3323,14 @@ screens: Save, Load, Settings, History, Main menu and Quit.
   `text_color` and `accent_color` (the current tab's label).
 - A Settings panel placed with `options_rect` above y = 40 is covered by them.
 
+```text
+# full-screen picture behind Save, Load, Settings and History instead of overlay_color
+game_menu_background = assets/gui/game_menu.png
+```
+
+- On Settings, `options_background` still wins when it is set; `game_menu_background` is the
+  fallback. `game_menu_overlay`, if set, is drawn over the picture.
+
 ### The quick menu
 
 The quick menu sits in a row directly below the textbox: Back, History, Skip, Auto, Save,
