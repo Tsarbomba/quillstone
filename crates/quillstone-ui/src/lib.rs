@@ -15,6 +15,7 @@
 pub mod archive;
 pub mod assets;
 pub mod bag;
+pub mod chapters;
 pub mod console;
 pub mod extras;
 pub mod game;

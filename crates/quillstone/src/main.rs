@@ -247,6 +247,13 @@ fn check(path: &Path) -> Result<(), String> {
     let fonts = quillstone_text::Measurer::new(
         theme.fonts().into_iter().filter_map(|f| read_font(&root.join(f))).collect(),
     );
+    for label in graph::unreachable_chapters(&program) {
+        let line = program.lines.get(program.labels[&label]).copied().unwrap_or(0);
+        found.push(warning(
+            line,
+            format!("the chapter `{label}` is never reached from the start, so it can never unlock; mark it `{{open}}` in `chapters:` if players should have it from the beginning"),
+        ));
+    }
     for (line, msg) in line_warnings(&program, theme, Some(&fonts)) {
         found.push(warning(line, msg));
     }
@@ -846,6 +853,14 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> Vec<Finding> {
             problem(format!("`{asset}` is in the gallery, but no `::bg`, `::video` or image shows it, so it can never unlock"));
         } else if !in_gallery && !thumb_only && !played(asset) {
             problem(format!("`{asset}` is in the music room, but no `::music` plays it, so it can never unlock"));
+        }
+    }
+    for thumb in program.chapter_thumbs() {
+        let file = root.join(thumb);
+        if !file.exists() {
+            problem(format!("missing chapter thumbnail `{thumb}`"));
+        } else if let Err(why) = picture::read_picture(&file) {
+            problem(format!("`{thumb}` won't play in a shipped game: {why}"));
         }
     }
     found
@@ -1965,6 +1980,19 @@ mod tests {
         let found = line_warnings(&parse(&script).unwrap(), &theme, Some(&fonts));
         assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [9, 6], "{found:?}");
         assert!(found[0].1.contains("its button") && found[1].1.contains("description of `b`"), "{found:?}");
+    }
+
+    #[test]
+    fn check_looks_at_chapter_thumbnails_and_warns_about_a_chapter_nothing_reaches() {
+        let png = picture::fake_png(10, 10);
+        let story = |chapters: &str| format!("---\nid: g\nchapters: {{ {chapters} }}\n---\n# start\nHi.\n::jump{{to=a}}\n# a\nA.\n::end\n# lost\nL.\n");
+        let errors = |script: &str, files: &[(&str, &[u8])]| in_dir(files, |dir| check_extras(&parse(script).unwrap(), &dir.join("s.quill.md"), dir).len());
+        assert_eq!(errors(&story("a: \"A\" | assets/t.png"), &[("assets/t.png", &png)]), 0);
+        assert_eq!(errors(&story("a: \"A\" | assets/t.png"), &[]), 1, "missing thumbnail");
+        assert_eq!(errors(&story("a: \"A\" | assets/t.png"), &[("assets/t.png", b"x")]), 1, "not a picture");
+        let lost = |c: &str| graph::unreachable_chapters(&parse(&story(c)).unwrap());
+        assert_eq!(lost("a: \"A\", lost: \"Lost\""), ["lost"]);
+        assert!(lost("a: \"A\", lost: \"Lost\" {open}").is_empty(), "an open chapter needs no way in");
     }
 
     #[test]

@@ -1109,7 +1109,7 @@ fn menu_music_resumes_when_the_story_returns_to_the_menu() {
 fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     let p = parse(THREE).unwrap();
     let mut g = at_menu(&p);
-    assert_eq!(menu_buttons(g.newest_save.is_some(), false).len(), 4, "no Continue yet");
+    assert_eq!(menu_buttons(g.newest_save.is_some(), false, false).len(), 4, "no Continue yet");
     g.start_story();
     key(&mut g, Key::Space);
     key(&mut g, Key::F5); // quick save on "two"
@@ -1117,7 +1117,7 @@ fn continue_appears_once_there_is_a_save_and_loads_the_newest() {
     click_at(&mut g, centre(button_rect(SettingsButton::MainMenu, true, 8, &Theme::default())));
     key(&mut g, Key::Char('y'));
     assert_eq!(g.screen(), Screen::MainMenu);
-    let buttons = menu_buttons(g.newest_save.is_some(), false);
+    let buttons = menu_buttons(g.newest_save.is_some(), false, false);
     assert_eq!(buttons[1], MenuButton::Continue);
     click_at(&mut g, centre(menu_button_rect(1, &Theme::default())));
     assert_eq!(g.screen(), Screen::Story);
@@ -1134,7 +1134,7 @@ fn an_overlay_opened_from_the_menu_hides_the_menus_title_and_buttons() {
         assert!(has_text(&menu, what), "the menu shows {what}");
     }
     for (open, shown) in [(MenuButton::Settings, "Settings"), (MenuButton::Load, "Load")] {
-        let at = menu_buttons(false, false).iter().position(|b| *b == open).unwrap();
+        let at = menu_buttons(false, false, false).iter().position(|b| *b == open).unwrap();
         click_at(&mut g, centre(menu_button_rect(at, &Theme::default())));
         let list = g.draw_list(&none);
         assert!(has_text(&list, shown));
@@ -1150,7 +1150,7 @@ fn an_overlay_opened_from_the_menu_hides_the_menus_title_and_buttons() {
 fn screens_opened_from_the_menu_return_to_it() {
     let p = parse(THREE).unwrap();
     let mut g = at_menu(&p);
-    let buttons = menu_buttons(false, false);
+    let buttons = menu_buttons(false, false, false);
     let settings = buttons.iter().position(|b| *b == MenuButton::Settings).unwrap();
     click_at(&mut g, centre(menu_button_rect(settings, &Theme::default())));
     assert_eq!(g.screen(), Screen::Settings);
@@ -1327,7 +1327,7 @@ fn next_playthrough<'p>(p: &'p Program, earlier: &Game) -> Game<'p> {
 }
 
 fn open_extras(g: &mut Game) {
-    let buttons = menu_buttons(g.newest_save.is_some(), g.has_extras());
+    let buttons = menu_buttons(g.newest_save.is_some(), g.has_extras(), false);
     let at = buttons.iter().position(|b| *b == MenuButton::Extras).expect("an Extras button");
     click_at(g, centre(menu_button_rect(at, &Theme::default())));
     assert_eq!(g.screen(), Screen::Extras);
@@ -1398,8 +1398,8 @@ fn games_without_extras_have_no_extras_button() {
     let p = parse(THREE).unwrap();
     let g = at_menu(&p);
     assert!(!g.has_extras());
-    assert!(!menu_buttons(true, g.has_extras()).contains(&MenuButton::Extras));
-    assert_eq!(menu_buttons(true, true).len(), 6);
+    assert!(!menu_buttons(true, g.has_extras(), false).contains(&MenuButton::Extras));
+    assert_eq!(menu_buttons(true, true, false).len(), 6);
     let last = menu_button_rect(5, &Theme::default());
     assert!(last.y + last.h <= 1000.0, "six buttons fit on screen");
 }

@@ -361,18 +361,23 @@ pub enum MenuButton {
     /// Load the newest save; only offered when there is one.
     Continue,
     Load,
+    /// The chapter tiles; only offered when the game has `chapters:`.
+    Chapters,
     /// The gallery and music room; only offered when the game has either.
     Extras,
     Settings,
     Quit,
 }
 
-pub fn menu_buttons(can_continue: bool, extras: bool) -> Vec<MenuButton> {
+pub fn menu_buttons(can_continue: bool, extras: bool, chapters: bool) -> Vec<MenuButton> {
     let mut out = vec![MenuButton::Start];
     if can_continue {
         out.push(MenuButton::Continue);
     }
     out.push(MenuButton::Load);
+    if chapters {
+        out.push(MenuButton::Chapters);
+    }
     if extras {
         out.push(MenuButton::Extras);
     }
@@ -430,6 +435,7 @@ pub fn draw_main_menu(
             MenuButton::Start => "Start",
             MenuButton::Continue => "Continue",
             MenuButton::Load => "Load",
+            MenuButton::Chapters => "Chapters",
             MenuButton::Extras => "Extras",
             MenuButton::Settings => "Settings",
             MenuButton::Quit => "Quit",
@@ -1522,8 +1528,8 @@ mod tests {
 
     #[test]
     fn main_menu_buttons() {
-        assert_eq!(menu_buttons(false, false).len(), 4);
-        let with = menu_buttons(true, false);
+        assert_eq!(menu_buttons(false, false, false).len(), 4);
+        let with = menu_buttons(true, false, false);
         assert_eq!(with[1], MenuButton::Continue);
         let d = Theme::default();
         for (i, b) in with.iter().enumerate() {
@@ -1552,7 +1558,7 @@ mod tests {
         let r = menu_button_rect(2, &t);
         assert_eq!((r.x, r.w), (120.0, 360.0));
         assert!((r.y - (420.0 + 192.0 * k)).abs() < 0.01 && (r.h - 76.0 * k).abs() < 0.01, "{r:?}");
-        let b = menu_buttons(false, false);
+        let b = menu_buttons(false, false, false);
         let (x, y) = centre(menu_button_rect(1, &t));
         assert_eq!(menu_at(x, y, &b, &t), Some(b[1]));
         let (x, y) = centre(menu_button_rect(1, &Theme::default()));

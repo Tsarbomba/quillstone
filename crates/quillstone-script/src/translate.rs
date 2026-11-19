@@ -370,6 +370,9 @@ impl Program {
         for r in &self.replays {
             add(&r.title, format!("replay {}", r.label), None);
         }
+        for c in &self.chapters {
+            add(&c.title, format!("chapter {}", c.label), None);
+        }
         for g in &self.gallery {
             add(g, "gallery".into(), None);
         }

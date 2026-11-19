@@ -21,6 +21,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("game menu", "Back"),
     ("main menu", "Start"),
     ("main menu", "Continue"),
+    ("main menu", "Chapters"),
     ("main menu", "Extras"),
     ("quick menu", "Skip"),
     ("quick menu", "Auto"),

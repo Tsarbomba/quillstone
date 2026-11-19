@@ -130,6 +130,7 @@ fn used_files(root: &Path, script_name: &str, program: &Program) -> Result<Files
         }
     }
     files.extend(program.extra_assets().map(|(_, a)| a.to_string()));
+    files.extend(program.chapter_thumbs().map(str::to_string));
     files.extend(program.item_icons().map(|(_, a)| a.to_string()));
     files.extend(program.portraits().map(|(_, a)| a.to_string()));
     // Auto-voice recordings that belong to a line (leftovers stay behind).

@@ -653,6 +653,18 @@ pub struct Replay {
     pub title: String,
 }
 
+/// One tile of the main menu's Chapters screen (front matter `chapters:`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chapter {
+    /// A label without parameters (its slug, as `::jump` writes it): the new game starts there.
+    pub label: String,
+    pub title: String,
+    /// The picture the tile shows once it is open (else a placeholder with the title).
+    pub thumb: Option<String>,
+    /// Open from the first launch, instead of when the story reaches the label.
+    pub open: bool,
+}
+
 /// A heading that became a label.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heading {
@@ -727,7 +739,10 @@ pub struct Program {
     /// Scenes the player can replay from Extras (front matter `replays:`), in
     /// declaration order; each unlocks the first time the story reaches its label.
     pub replays: Vec<Replay>,
-    /// Op index -> the `replays` labels that start there (the unlock points).
+    /// The Chapters screen's tiles (front matter `chapters:`), in declaration order; each unlocks the first time
+    /// the story reaches its label, unless it is `open`.
+    pub chapters: Vec<Chapter>,
+    /// Op index -> the `replays` and `chapters` labels that start there (the unlock points).
     pub replay_at: BTreeMap<usize, Vec<String>>,
     /// Auto-voice: the folder of voice files named after their lines (front
     /// matter `voice:`), relative to the script. See `voice_name` in the runtime.
@@ -778,6 +793,11 @@ impl Program {
     /// The included files (game-folder paths), for a hot reload to watch and a package to ship.
     pub fn included_files(&self) -> impl Iterator<Item = &str> {
         self.sources.iter().map(|s| s.file.as_str())
+    }
+
+    /// The pictures the chapter tiles show.
+    pub fn chapter_thumbs(&self) -> impl Iterator<Item = &str> {
+        self.chapters.iter().filter_map(|c| c.thumb.as_deref())
     }
 
     /// Files named in the front matter (gallery pictures and thumbnails, music room tracks).

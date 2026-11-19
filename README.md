@@ -180,8 +180,8 @@ The details:
 ### Menus, saves and the window
 
 **Menus.** The game opens at a main menu and returns to it at the end of the story: Start,
-Continue, Load, Settings, Quit, and Extras when the game has a gallery, music room or scene
-replays.
+Continue, Load, Settings, Quit, Chapters when the game lists `chapters:`, and Extras when the
+game has a gallery, music room or scene replays.
 
 The quick menu under the textbox does with the mouse what the keys do: Back, History, Skip,
 Auto, Save, Load, Q.Save, Q.Load, Settings, and Items and Journal in a game with an inventory or
@@ -366,6 +366,7 @@ The `examples/` folder has a script for each area:
 | `weather.quill.md` | snow, rain and falling petals |
 | `phone.quill.md` | phone-style messages with pictures, a video and both kinds of reply |
 | `gallery.quill.md`, `replay.quill.md` | the Extras screen: a gallery with pictures and clips, and scene replays |
+| `chapter_select.quill.md` | a Chapters screen on the main menu, starting a new game at a label |
 | `iconmenu.quill.md` + `icons_theme.txt` | picture buttons in the quick menu, placed by the theme |
 | `page.quill.md` | a letter read on a full-screen page, then back to the textbox |
 | `chapters.quill.md` + `chapters/` | a story split over several files with `::include` |

@@ -68,7 +68,7 @@ fn cond_text(c: &Expr) -> String {
     }
 }
 
-fn build(program: &Program) -> Graph {
+fn build(program: &Program, chapter_roots: bool) -> Graph {
     let hs = &program.headings;
     let at = |k: usize| program.labels[&hs[k].label];
     // A start node holds the ops before the first heading (all of them, in a script with no headings).
@@ -219,6 +219,8 @@ fn build(program: &Program) -> Graph {
     todo.extend(nodes.iter().position(|n| is_hub(n, "Inventory")));
     todo.extend(nodes.iter().position(|n| is_hub(n, "HUD")));
     todo.extend(program.replays.iter().filter_map(|r| by_label(&r.label)));
+    // (a chapter is a way in once it is open; `check` asks without them which ones the story itself reaches)
+    todo.extend(program.chapters.iter().filter(|_| chapter_roots).filter_map(|c| by_label(&c.label)));
     while let Some(n) = todo.pop() {
         if !std::mem::replace(&mut live[n], true) {
             todo.extend(edges.iter().filter(|e| e.0 == n).map(|e| e.1));
@@ -350,8 +352,21 @@ fn dot(g: &Graph) -> String {
     out + "}\n"
 }
 
+/// The labels of the chapters (not `{open}` ones) that the story itself never reaches from its start (or a replay, the
+/// inventory or a HUD button): they could never unlock.
+pub fn unreachable_chapters(program: &Program) -> Vec<String> {
+    let hs = &program.headings;
+    if hs.is_empty() {
+        return Vec::new();
+    }
+    let g = build(program, false);
+    let off = usize::from(program.labels[&hs[0].label] > 0);
+    let lost = |label: &str| hs.iter().position(|h| h.label == label).is_some_and(|k| g.nodes[k + off].unreachable);
+    program.chapters.iter().filter(|c| !c.open && lost(&c.label)).map(|c| c.label.clone()).collect()
+}
+
 pub fn render(program: &Program, format: Format) -> String {
-    let g = build(program);
+    let g = build(program, true);
     match format {
         Format::Mermaid => mermaid(&g),
         Format::Dot => dot(&g),

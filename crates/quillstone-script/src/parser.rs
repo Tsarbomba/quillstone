@@ -221,6 +221,8 @@ struct Parser {
     sfx_stops: Vec<(String, usize)>,
     /// `replays:` entries (line, label, title), checked once all labels are known.
     replay_decls: Vec<(usize, String, String)>,
+    /// `chapters:` entries (line, chapter), checked once all labels are known.
+    chapter_decls: Vec<(usize, Chapter)>,
     /// Ops a command adds right after its own (the fade back in of `::bg{through}`).
     trailing: Vec<Op>,
     /// Characters an earlier `::show` gave layers to (a later one may then leave layers out).
@@ -523,6 +525,27 @@ impl Parser {
                 }
             }
         }
+        // `chapters:` likewise; reaching the label is what unlocks the tile.
+        for (line, chapter) in std::mem::take(&mut self.chapter_decls) {
+            match self.program.labels.get(&chapter.label).copied() {
+                None => {
+                    let hint = label_hint(&self.program, &chapter.label, typos);
+                    typos += 1;
+                    self.err(line, format!("`chapters`: there is no label `{}` ({hint})", chapter.label));
+                }
+                Some(_) if self.program.params.contains_key(&chapter.label) => self.err(
+                    line,
+                    format!("`chapters`: label `{}` has parameters, so it can't start a chapter (a chapter starts without a `::call`)", chapter.label),
+                ),
+                Some(at) => {
+                    let here = self.program.replay_at.entry(at).or_default();
+                    if !here.contains(&chapter.label) {
+                        here.push(chapter.label.clone());
+                    }
+                    self.program.chapters.push(chapter);
+                }
+            }
+        }
         for (line, label) in unknown {
             self.err(line, format!("`seen({label})`: there is no label `{label}`"));
         }
@@ -657,6 +680,7 @@ impl Parser {
                 "persistent" => self.front_vars(line, val, true),
                 "gallery" | "bonus" | "music_room" => self.front_list(line, key, val),
                 "replays" => self.front_replays(line, val),
+                "chapters" => self.front_chapters(line, val),
                 "languages" => self.front_languages(line, val),
                 "inventory" => match unquote(val) {
                     name if is_ident(name) => inventory = Some((line, name.to_string())),
@@ -855,6 +879,65 @@ impl Parser {
                 self.err(line, format!("two replays are titled \"{title}\"; titles must differ"));
             } else {
                 self.replay_decls.push((line, label, title));
+            }
+        }
+    }
+
+    /// `chapters: { part-1: "Part 1" | assets/ch1.jpg, part-2: "Part 2" {open} }`: label -> title, an optional
+    /// thumbnail after a `|`, and `{open}` for a chapter that is open from the first launch.
+    fn front_chapters(&mut self, line: usize, val: &str) {
+        let Some(inner) = val.strip_prefix('{').and_then(|v| v.strip_suffix('}')) else {
+            self.err(line, "`chapters` must look like `{ part-1: \"Part 1\" | assets/ch1.jpg, part-2: \"Part 2\" {open} }`");
+            return;
+        };
+        for part in split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()) {
+            let Some((key, rest)) = part.split_once(':') else {
+                self.err(line, format!("bad chapter `{part}` (expected `label: \"Title\"`)"));
+                continue;
+            };
+            let label = slug(unquote(key.trim()));
+            let rest = rest.trim();
+            let (rest, open) = match rest.strip_suffix("{open}") {
+                Some(r) => (r.trim_end(), true),
+                None => (rest, false),
+            };
+            let (title, thumb) = match split_top_level(rest, '|')[..] {
+                [t, th] => (t, Some(unquote(th.trim()))),
+                [t] => (t, None),
+                _ => {
+                    self.err(line, format!("bad chapter `{part}`: more than one `|`"));
+                    continue;
+                }
+            };
+            let title = unescape_title(unquote(title.trim()).trim());
+            let thumb = match thumb.map(|t| (t.is_empty(), check_inside("thumbnail", t), t)) {
+                None => None,
+                Some((true, ..)) => {
+                    self.err(line, format!("chapter `{label}` has a `|` but no thumbnail after it"));
+                    continue;
+                }
+                Some((_, Err(m), _)) => {
+                    self.err(line, m);
+                    continue;
+                }
+                Some((_, Ok(_), t)) if kind_from_path(t) != AssetKind::Image => {
+                    self.err(line, format!("the thumbnail `{t}` of chapter `{label}` must be a picture (PNG, JPEG or WebP)"));
+                    continue;
+                }
+                Some((_, Ok(path), _)) => Some(path),
+            };
+            if label.is_empty() {
+                self.err(line, format!("bad chapter `{part}`: the label is empty"));
+            } else if title.is_empty() {
+                self.err(line, format!("chapter `{label}` needs a title, like `{label}: \"Part 1\"`"));
+            } else if title.chars().any(char::is_control) {
+                self.err(line, format!("the title of chapter `{label}` can't hold control characters"));
+            } else if self.chapter_decls.iter().any(|(_, c)| c.label == label) {
+                self.err(line, format!("chapter `{label}` is listed twice"));
+            } else if self.chapter_decls.iter().any(|(_, c)| c.title == title) {
+                self.err(line, format!("two chapters are titled \"{title}\"; titles must differ"));
+            } else {
+                self.chapter_decls.push((line, Chapter { label, title, thumb, open }));
             }
         }
     }
@@ -6456,6 +6539,40 @@ mod tests {
         assert!(has_err("# a\n::end_replay{x=1}\n", "unknown attribute `x`"));
         assert_eq!(ok("# a\n::end_replay\nHi.\n").ops[0], Op::EndReplay);
         assert!(has_err("# a\n::end_repaly\n", "end_replay"), "the command list names it");
+    }
+
+    // ---- chapters ----
+
+    const CHAPTERED: &str = "# Start\nHi.\n# Part two\nTwo.\n# Part three\nThree.\n::end\n# heal(amount)\nHeal.\n::return\n";
+
+    #[test]
+    fn chapters_name_labels_with_titles_thumbnails_and_open() {
+        let p = ok(&format!("---\nchapters: {{ start: \"Part 1\" | assets/ch1.jpg, part-two: \"Part 2\" {{open}} }}\nchapters: {{ part-three: \"Part 3\" {{open}} }}\n---\n{CHAPTERED}"));
+        let got: Vec<_> = p.chapters.iter().map(|c| (c.label.as_str(), c.title.as_str(), c.thumb.as_deref(), c.open)).collect();
+        assert_eq!(got, [("start", "Part 1", Some("assets/ch1.jpg"), false), ("part-two", "Part 2", None, true), ("part-three", "Part 3", None, true)]);
+        assert_eq!(p.chapter_thumbs().collect::<Vec<_>>(), ["assets/ch1.jpg"]);
+        assert_eq!(p.replay_at[&p.labels["part-two"]], ["part-two"], "reaching the label is reported");
+        assert!(ok("Hi.\n").chapters.is_empty());
+    }
+
+    #[test]
+    fn bad_chapters_are_errors_with_the_front_matter_line() {
+        let front = |c: &str| format!("---\ntitle: T\nchapters: {c}\n---\n{CHAPTERED}");
+        for (bad, want) in [
+            ("a: \"A\"", "must look like".to_string()),
+            ("{ nowhere: \"N\" }", "there is no label `nowhere`".to_string()),
+            ("{ heal: \"H\" }", "has parameters".to_string()),
+            ("{ start: \"A\", start: \"B\" }", "listed twice".to_string()),
+            ("{ start: \"A\", part-two: \"A\" }", "titles must differ".to_string()),
+            ("{ start: \"A\" | ../x.png }", "inside the game folder".to_string()),
+            ("{ start: \"A\" | x.ogg }", "must be a picture".to_string()),
+            ("{ start: \"A\" | }", "no thumbnail after it".to_string()),
+            ("{ start }", "bad chapter".to_string()),
+            ("{ start: }", "needs a title".to_string()),
+        ] {
+            let errors = errs(&front(bad));
+            assert!(errors.iter().any(|e| e.line == 3 && e.message.contains(want.as_str())), "{bad}: {errors:?}");
+        }
     }
 
     #[test]

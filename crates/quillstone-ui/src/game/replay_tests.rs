@@ -44,7 +44,7 @@ fn notice(g: &Game) -> Option<String> {
 }
 
 fn open_extras(g: &mut Game) {
-    let buttons = menu_buttons(g.newest_save.is_some(), g.has_extras());
+    let buttons = menu_buttons(g.newest_save.is_some(), g.has_extras(), false);
     let at = buttons.iter().position(|b| *b == MenuButton::Extras).expect("an Extras button");
     click(g, menu_button_rect(at, &Theme::default()));
     assert_eq!(g.screen(), Screen::Extras);
@@ -139,7 +139,7 @@ fn replays_alone_make_an_extras_button() {
     let p = parse("---\nreplays: { a: \"A\" }\n---\n# a\nHi.\n").unwrap();
     let g = Game::new(&p, instant(), Box::new(crate::MemoryStorage::default()));
     assert!(g.has_extras());
-    assert!(menu_buttons(false, g.has_extras()).contains(&MenuButton::Extras));
+    assert!(menu_buttons(false, g.has_extras(), false).contains(&MenuButton::Extras));
 }
 
 #[test]

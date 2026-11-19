@@ -16,6 +16,7 @@ use crate::settings::Settings;
 use crate::slots::{Page, SlotInfo, Storage};
 
 mod bag;
+mod chapters;
 mod extras;
 mod console;
 mod hud;
@@ -109,6 +110,8 @@ pub enum Screen {
     Load,
     /// The main menu's Extras: gallery and music room.
     Extras,
+    /// The main menu's Chapters: a new game at a chapter's label.
+    Chapters,
     /// The phone-style Messages screen (`open=messages`, or a `::reply{to=..}` the story waits at).
     Messages,
     /// The items the game's inventory list holds (the quick menu's Items, the `I`
@@ -189,6 +192,8 @@ pub struct Game<'p> {
     /// Whether the frontend is really playing the cutscene (it may have no decoder).
     cutscene_playing: bool,
     extras: Extras,
+    /// Where the Chapters screen is.
+    chapters: chapters::Chapters,
     /// Where the Messages screen is (see `game/messages.rs`).
     msgs: messages::MsgUi,
     /// The frontend's text measuring (see `measure.rs`).
@@ -293,6 +298,7 @@ impl<'p> Game<'p> {
             video_generation: 0,
             cutscene_playing: false,
             extras: Extras::default(),
+            chapters: Default::default(),
             msgs: messages::MsgUi::default(),
             measure: None,
             voice_files: std::collections::HashMap::new(),
@@ -442,6 +448,8 @@ impl<'p> Game<'p> {
         match self.screen {
             Screen::Extras if self.has_extras() => self.refresh_extras(),
             Screen::Extras => self.screen = Screen::MainMenu,
+            Screen::Chapters if self.has_chapters() => self.refresh_chapters(),
+            Screen::Chapters => self.screen = Screen::MainMenu,
             Screen::Save | Screen::Load => self.refresh_slots(),
             _ => {}
         }
@@ -580,6 +588,7 @@ impl<'p> Game<'p> {
             Screen::Backlog => self.backlog_event(event),
             Screen::Save | Screen::Load => self.slots_event(event),
             Screen::Extras => self.extras_event(event),
+            Screen::Chapters => self.chapters_event(event),
             Screen::Messages => self.messages_event(event),
             Screen::Inventory | Screen::Shop => self.bag_event(event),
             Screen::Input => self.input_event(event),
@@ -793,7 +802,7 @@ impl<'p> Game<'p> {
                 self.view.draw_scene(image_size)
             }
         } else {
-            let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
+            let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras(), self.has_chapters());
             let menu = self.screen == Screen::MainMenu;
             let hover = self.pointer().filter(|_| menu).and_then(|(x, y)| menu_at(x, y, &buttons, self.theme()));
             let title = self.tr(self.program.title.as_deref().unwrap_or("Quillstone"));
@@ -870,6 +879,7 @@ impl<'p> Game<'p> {
                 draw_slots(&mut out, theme, tr, &view, image_size);
             }
             Screen::Extras => self.draw_extras_screen(&mut out, image_size),
+            Screen::Chapters => self.draw_chapters_screen(&mut out, image_size),
             Screen::Messages => self.draw_messages_screen(&mut out, image_size),
             Screen::Inventory | Screen::Shop => self.draw_bag_screen(&mut out, image_size),
             Screen::Input => self.draw_input_screen(&mut out, image_size),
@@ -978,7 +988,7 @@ impl<'p> Game<'p> {
     // ---- the main menu ---------------------------------------------------------------
 
     fn menu_event(&mut self, event: Event) {
-        let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras());
+        let buttons = menu_buttons(self.newest_save.is_some(), self.has_extras(), self.has_chapters());
         let pick = match event {
             Event::Press(Button::Left) => self.cursor.and_then(|(x, y)| menu_at(x, y, &buttons, self.theme())),
             Event::Key(Key::Up) => {
@@ -1001,6 +1011,7 @@ impl<'p> Game<'p> {
             }
             Some(MenuButton::Load) => self.open_slots(Screen::Load),
             Some(MenuButton::Extras) => self.open_extras(),
+            Some(MenuButton::Chapters) => self.open_chapters(),
             Some(MenuButton::Settings) => self.open_settings(),
             Some(MenuButton::Quit) => {
                 self.save_read();
@@ -1669,6 +1680,8 @@ mod vignette_tests;
 mod filter_tests;
 #[cfg(test)]
 mod replay_tests;
+#[cfg(test)]
+mod chapters_tests;
 #[cfg(test)]
 mod timed_tests;
 #[cfg(test)]

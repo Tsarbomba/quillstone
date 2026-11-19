@@ -86,6 +86,7 @@ She looks away.
 | `languages:` | see [Translating a game](#translating-a-game) |
 | `persistent:`, `gallery:`, `bonus:`, `music_room:` | see [Kept across playthroughs](#kept-across-playthroughs) |
 | `replays:` | see [Scene replays](#scene-replays) |
+| `chapters:` | a Chapters screen on the main menu: see [Chapter select](#chapter-select) |
 | `sprite_size:`, `art_scale:` | how big sprites are drawn, see [Sprites at their picture's size](#sprites-at-their-pictures-size) |
 
 **`id:`** is 1 to 64 lowercase letters, digits and `-`, like `id: my-story`. Set it once and the
@@ -114,7 +115,7 @@ game is compiled, so saves, rollback and the tester see one story.
   path, and must be inside it. Assets keep that same base inside an included file:
   `assets/x.png`, not a path relative to the included file.
 - The file name ends in `.quill.md` (or `.md`). It can't hold a `{variable}`.
-- The **main script** keeps the front matter: `title`, `vars`, `theme`, `gallery`, `bonus`, `replays`,
+- The **main script** keeps the front matter: `title`, `vars`, `theme`, `gallery`, `bonus`, `replays`, `chapters`,
   `persistent` and the rest. An included file has none, and starting with `---` is an error.
 - Labels are global: the same label in two files is an error that names both places.
 - A file can be included once. Including it a second time, or a cycle (`a` includes `b`
@@ -2698,6 +2699,7 @@ music_room: [assets/calm.ogg, assets/theme.ogg]
 | `bonus:` | pictures and video clips in Extras that are open from the first launch |
 | `music_room:` | music tracks for the Extras screen |
 | `replays:` | scenes players can watch again from Extras: see [Scene replays](#scene-replays) |
+| `chapters:` | tiles on the main menu's Chapters screen, each starting a new game at a label: see [Chapter select](#chapter-select) |
 
 ### Persistent variables
 
@@ -2844,6 +2846,36 @@ would run to the end of the game; that is a scan along every jump and choice, so
 
 The demo `examples/replay.quill.md` has two scenes.
 
+## Chapter select
+
+`chapters:` gives the main menu a **Chapters** button. Its screen shows one tile per chapter, and
+picking an open tile starts a new game at that chapter's label:
+
+```
+chapters: { part-1: "Part 1" | assets/ch1.jpg, part-2: "Part 2" | assets/ch2.jpg {open} }
+```
+
+- **Each entry** is a label (as in `replays:`, written like a `::jump` target), a title in quotes,
+  an optional thumbnail picture after a `|` (PNG, JPEG or WebP, in the game folder), and an
+  optional `{open}`. The key may repeat to make a long list, and tiles show in the order written.
+- **Unlocking.** A chapter unlocks the first time the story reaches its label, and stays unlocked
+  in every later game; rollback and loading a save never take it away. `{open}` makes it
+  available from the first launch. A locked tile shows `?`, like the gallery. `--unlock-all` opens
+  every tile.
+- **Starting.** An open tile starts a new game: the variables begin as in the front matter (as
+  for New Game) and the story starts at the label. Persistent variables are kept. It plays
+  normally, so saving, loading and rollback work as always.
+- **The screen** shows 12 tiles a page, with arrows and "Page 1 of 2" when there are more. The
+  thumbnail fills an open tile (a tile without one shows its title); the title is under it. Mouse,
+  arrow keys with Enter, and a gamepad all work; Esc goes back to the main menu.
+- **Errors** (line-numbered): a label that doesn't exist or takes parameters, the same label or
+  title twice, or a thumbnail that is not a picture inside the game folder.
+- `quillstone check` reads each thumbnail and warns about a chapter the story can never reach
+  from its start (it could never unlock) unless it is `{open}`; `package` ships the thumbnails.
+  `quillstone test` also plays on from every chapter label.
+
+The demo `examples/chapter_select.quill.md` shows it.
+
 ## Translating a game
 
 ````markdown
@@ -2920,7 +2952,7 @@ A file is plain lines that start with a marker. Nothing needs escaping: texts ar
 - choice and hotspot texts, with the reason of a locked option;
 - character names, and item names and descriptions;
 - `::hud` texts, `::input` prompts and `::notify` texts;
-- the title and `replays:` titles;
+- the title, `replays:` titles and `chapters:` titles;
 - the file names listed in `gallery:` and `music_room:`.
 
 A text with no translation shows in the script's language, without any message.

@@ -96,6 +96,10 @@
 = Fortsätt
 
 #: main menu
+> Chapters
+= Kapitel
+
+#: main menu
 > Extras
 = Extra
 

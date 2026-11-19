@@ -23,6 +23,10 @@ pub const UNLOCKED: &str = "unlocked:";
 /// the Extras menu then lets the player replay.
 pub const REPLAY: &str = "replay:";
 
+/// Persistent entries `chapter:<label>` mark chapters the story has reached, which the main menu's Chapters
+/// screen then lets the player start from.
+pub const CHAPTER: &str = "chapter:";
+
 const MAGIC: &str = "quillstone-persistent 1";
 
 impl<'p> Session<'p> {
@@ -41,7 +45,7 @@ impl<'p> Session<'p> {
         (session, cmds)
     }
 
-    /// Begin a scene replay: a fresh game (the script's starting variables, `persistent`
+    /// Begin a scene replay, or a chapter from the Chapters screen: a fresh game (the script's starting variables, `persistent`
     /// applied, an empty scene, an empty call stack) that starts at `label`. `None` if
     /// there is no such label. The host decides what to keep of what happens in it.
     pub fn start_replay(program: &'p Program, persistent: Vars, seed: u64, label: &str) -> Option<(Session<'p>, Vec<Cmd>)> {
@@ -100,6 +104,12 @@ impl<'p> Session<'p> {
         self.persistent.get(&format!("{UNLOCKED}{file}")).is_some_and(Value::truthy)
     }
 
+    /// Whether the story has reached the label of the chapter `label` (an `open` chapter never needs it).
+    pub fn chapter_unlocked(&self, label: &str) -> bool {
+        self.program.chapters.iter().any(|c| c.label == label && c.open)
+            || self.persistent.get(&format!("{CHAPTER}{label}")).is_some_and(Value::truthy)
+    }
+
     /// Whether the story has reached the label of the replay `label`.
     pub fn replay_unlocked(&self, label: &str) -> bool {
         self.persistent.get(&format!("{REPLAY}{label}")).is_some_and(Value::truthy)
@@ -118,7 +128,13 @@ impl<'p> Session<'p> {
         }
         for cmd in cmds {
             if let Cmd::ReplayReached { label } = cmd {
-                self.keep(format!("{REPLAY}{label}"));
+                // (`ReplayReached` also marks the labels of chapters: each list keeps its own)
+                if program.replays.iter().any(|r| r.label == *label) {
+                    self.keep(format!("{REPLAY}{label}"));
+                }
+                if program.chapters.iter().any(|c| c.label == *label && !c.open) {
+                    self.keep(format!("{CHAPTER}{label}"));
+                }
                 continue;
             }
             // An animation as the background shows each of its frames: the ones the gallery
@@ -340,6 +356,30 @@ mod tests {
         odd.insert("other".into(), Value::List(vec!["x".into()]));
         let (s, _) = Session::start_with(&p, odd);
         assert_eq!(s.state().vars["other"], Value::Int(0));
+    }
+
+    // ---- chapters ----
+
+    const CHAPTERS: &str = "---\nchapters: { one: \"One\", two: \"Two\", free: \"Free\" {open} }\n---\n# start\nHi.\n::jump{to=one}\n# one\nIn one.\n::choice\n- [Go](#free)\n::\n# two\nIn two.\n# free\nFree.\n";
+
+    #[test]
+    fn a_chapter_unlocks_when_the_story_reaches_its_label_and_an_open_one_writes_nothing() {
+        let p = parse(CHAPTERS).unwrap();
+        let (mut s, _) = Session::start(&p);
+        assert!(!s.chapter_unlocked("one"), "not yet reached");
+        s.input(Input::Advance); // Hi. -> jumps to `one`
+        assert!(s.chapter_unlocked("one") && s.chapter_unlocked("free") && !s.chapter_unlocked("two"));
+        assert!(s.persistent().contains_key("chapter:one"));
+        assert!(!s.persistent().contains_key("chapter:two") && !s.persistent().contains_key("chapter:free"));
+        assert!(!s.persistent().keys().any(|k| k.starts_with("replay:")), "a chapter is no replay");
+        s.input(Input::Advance);
+        s.input(Input::Choose(0));
+        assert!(!s.persistent().contains_key("chapter:free"), "an open chapter is never written");
+        // kept across playthroughs; rollback never takes it away
+        let (next, _) = Session::start_with(&p, read_persistent(&write_persistent(s.persistent())));
+        assert!(next.chapter_unlocked("one") && !next.chapter_unlocked("two"));
+        s.rollback();
+        assert!(s.chapter_unlocked("one"));
     }
 
     // ---- scene replays ----

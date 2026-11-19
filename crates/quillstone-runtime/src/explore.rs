@@ -77,9 +77,14 @@ pub fn explore(program: &Program, limit: usize) -> Report {
     for (origin, kept) in playthroughs(program) {
         let mut state = State::new(program);
         state.vars.extend(kept);
-        for (after, trace) in x.outcomes(&state, None) {
-            if let Some(root) = x.visit(after, trace, None) {
-                x.nodes[root].origin = origin.clone();
+        // a new game from the start, and one from each chapter (the Chapters screen starts a game at its label)
+        let mut starts = vec![state.clone()];
+        starts.extend(program.chapters.iter().filter_map(|c| program.labels.get(&c.label)).map(|&pc| State { pc, ..state.clone() }));
+        for state in starts {
+            for (after, trace) in x.outcomes(&state, None) {
+                if let Some(root) = x.visit(after, trace, None) {
+                    x.nodes[root].origin = origin.clone();
+                }
             }
         }
     }
@@ -1219,6 +1224,14 @@ mod tests {
         let r = test(src);
         assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
         assert_eq!(r.endings.len(), 2, "both options are played, whatever the timer");
+    }
+
+    #[test]
+    fn the_tester_also_plays_from_each_chapter_label() {
+        let src = "---\nchapters: { late: \"Late\" {open} }\n---\n# a\nHi.\n::end\n# late\n::choice\n- [X](#x)\n- [Y](#y)\n::\n# x\nX.\n::end\n# y\nY.\n::end\n";
+        let r = test(src);
+        assert!(!r.partial && r.errors.is_empty() && r.warnings.is_empty(), "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert_eq!(r.endings.len(), 3, "the start's ending and the two from the chapter");
     }
 
     #[test]
