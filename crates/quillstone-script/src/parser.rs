@@ -98,7 +98,7 @@ pub const SPRITE_BLUR: RangeInclusive<f32> = 0.0..=64.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, page, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, page, center, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -1164,7 +1164,22 @@ impl Parser {
         if let Err(m) = crate::markup::check_markup(&text) {
             self.err(line, m);
         }
-        self.push(Op::Say { speaker, color: None, text, page: self.page }, line);
+        self.push(Op::Say { speaker, color: None, text, page: self.page, centred: false }, line);
+    }
+
+    /// `::center text`: a line of narration shown alone, centred on the screen (no textbox, not a page line).
+    fn center(&mut self, line: usize, raw: &str, text: &str) {
+        let block = text.starts_with('{') && text.find('}') == Some(text.len() - 1);
+        if raw.starts_with('{') || block {
+            return self.err(line, "`::center` takes no attributes yet: write the text after it, like `::center Three days later…`");
+        }
+        if text.is_empty() {
+            return self.err(line, "`::center` needs the text to show after it");
+        }
+        if let Err(m) = crate::markup::check_markup(text) {
+            self.err(line, m);
+        }
+        self.push(Op::Say { speaker: None, color: None, text: text.to_string(), page: false, centred: true }, line);
     }
 
     fn image(&mut self, line: usize, alt: &str, path: &str) {
@@ -1206,6 +1221,10 @@ impl Parser {
             return i;
         }
         let rest = body[name_len..].trim();
+        if name == "center" {
+            self.center(line, &body[name_len..], rest);
+            return i;
+        }
         let inner = if rest.is_empty() {
             ""
         } else if let Some(x) = rest.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
@@ -3767,7 +3786,7 @@ mod tests {
     }
 
     fn say(speaker: Option<&str>, text: &str) -> Op {
-        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), page: false }
+        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), page: false, centred: false }
     }
 
     fn int(n: i64) -> Expr {
@@ -3914,6 +3933,16 @@ mod tests {
     // ---- prose ---------------------------------------------------------
 
     #[test]
+    fn a_centred_line_is_narration_marked_centred() {
+        let p = parse("::center Three days {u}later{/u}…\n\n**Mia:** Hi.\n").unwrap();
+        assert!(matches!(&p.ops[0], Op::Say { speaker: None, text, page: false, centred: true, .. } if text == "Three days {u}later{/u}…"));
+        assert!(matches!(&p.ops[1], Op::Say { centred: false, .. }));
+        assert!(parse("::center\n").is_err());
+        assert!(parse("::center{x=1}\n").is_err());
+        assert!(parse("::center {x=1}\n").is_err());
+    }
+
+    #[test]
     fn dialogue_and_narration() {
         let p = ok("**Mika:** Hello\nthere.\n\nThe wind blows.\n");
         assert_eq!(p.ops[0], say(Some("Mika"), "Hello there."));
@@ -4047,7 +4076,7 @@ mod tests {
         let col = c.color.unwrap();
         assert!((col[0] - 1.0).abs() < 1e-6 && (col[1] - 0xd9 as f32 / 255.0).abs() < 1e-6);
         // speaker names are matched case-insensitively and normalised to the display name
-        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into(), page: false });
+        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into(), page: false, centred: false });
         assert_eq!(p.ops[1], say(Some("Someone"), "yo"));
     }
 

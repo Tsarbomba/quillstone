@@ -132,7 +132,7 @@ fn the_clock_does_not_run_while_the_line_over_the_options_is_still_typing() {
     let mut g = at_choice(&p);
     // (a line typing out with the options already up: not something the script can do today)
     g.view.set_speed(10.0);
-    let say = Cmd::Say { speaker: None, color: None, text: "A line that takes a while to type".into() };
+    let say = Cmd::Say { speaker: None, color: None, text: "A line that takes a while to type".into(), centred: false };
     let options = ["Speak", "Stay quiet", "Run"].map(String::from).to_vec();
     g.view.apply(&[say, Cmd::ShowChoices { options, locked: Vec::new() }]);
     g.choice_elapsed = 0.0;

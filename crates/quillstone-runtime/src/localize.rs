@@ -55,15 +55,15 @@ impl Session<'_> {
         cmds.into_iter()
             .enumerate()
             .map(|(i, cmd)| match cmd {
-                Cmd::Say { speaker, color, text } => {
+                Cmd::Say { speaker, color, text, centred } => {
                     let from = if i == last && matches!(self.state.pending, Some(Cmd::Say { .. })) {
                         Some((self.state.pc, vars))
                     } else {
                         self.line_source()
                     };
                     match from.and_then(|(pc, v)| self.say_in(pc, v, &speaker, cat)) {
-                        Some((speaker, text)) => Cmd::Say { speaker, color, text },
-                        None => Cmd::Say { speaker, color, text },
+                        Some((speaker, text)) => Cmd::Say { speaker, color, text, centred },
+                        None => Cmd::Say { speaker, color, text, centred },
                     }
                 }
                 // The page lines are looked up like any line: the newest is the one waiting, the earlier ones
@@ -120,7 +120,7 @@ impl Session<'_> {
         }
         if !matches!(self.state.pending, Some(Cmd::Say { .. })) {
             if let Some(line) = &self.state.line {
-                cmds.push(Cmd::Say { speaker: line.speaker.clone(), color: line.color, text: line.text.clone() });
+                cmds.push(Cmd::Say { speaker: line.speaker.clone(), color: line.color, text: line.text.clone(), centred: false });
             }
         }
         cmds.extend(self.state.pending.clone());

@@ -430,7 +430,7 @@ mod tests {
             Cmd::Shake { time: 5.0, strength: 100.0, axis: quillstone_script::Axis::Both },
         ]);
         assert_eq!(drawn(&v), calm, "the camera and the shake don't move them");
-        let say = Cmd::Say { speaker: None, color: None, text: "Hi".into() };
+        let say = Cmd::Say { speaker: None, color: None, text: "Hi".into(), centred: false };
         v.apply(&[say, Cmd::FadeOut { time: 0.0, color: [0.0; 3] }]);
         let list = v.draw_list(&sizes, None);
         let last_particle = list.iter().rposition(|d| matches!(d, Draw::Rect { color, .. } if color[3] < 0.99 && color[0] > 0.9)).unwrap();

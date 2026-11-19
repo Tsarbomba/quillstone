@@ -484,6 +484,7 @@ The commands at a glance. Each group is explained below the table.
 | `::vignette{strength=0.6}` | dark edges: see [Vignette](#vignette) |
 | `::filter{gray=1}` | a colour filter: see [Colour filter](#colour-filter) |
 | `::textbox{hide}` / `::textbox{show}` | hide or show the dialogue box |
+| `::center <text>` | one line shown alone in the middle of the screen, without the textbox: see [Centred lines](#centred-lines) |
 | `::page` / `::page{off}` | lines stack up on a full-screen page, or back to the textbox: see [Full-screen pages](#full-screen-pages) |
 | `![alt](assets/x.png)` | an inline image |
 
@@ -847,13 +848,39 @@ The lamp on the roof still works.
   the backlog and read-tracking all work per line. Only the newest line types out.
 - When the next line doesn't fit the page, it starts a new screen page. A page also holds at
   most 64 lines, after which the next line starts a fresh page.
-- The page is cleared by `::page`, by a textbox line and by a `::video`. Choices, hotspots and
+- The page is cleared by `::page`, by a textbox line, by a [centred line](#centred-lines) and by a `::video`. Choices, hotspots and
   other screens don't clear it: a choice asked after page lines appears over the page, and
   the page's text dims while the choice is up so the buttons can be read.
 - `::textbox{hide}` and the `U` key hide the page too.
 - Rollback, saves and hot reload keep the page. `quillstone check` warns about a page line that
   is too long for a page by itself.
 - The page's area and dimming are set in the theme (`page_rect`, `page_color`).
+
+### Centred lines
+
+A title card or a bit of narration shown on its own, in the middle of the screen:
+
+```
+::bg{src=street.png}
+
+::center Three days later…
+
+**Mia:** You're back.
+```
+
+- `::center` is followed by the text, which runs to the end of the line. It takes the usual
+  inline markup (`{u}`, `{color=..}`, `{w}`, `{nw}`, `{variables}`) like narration. No text, or a
+  `{...}` attribute block right after `::center`, is an error.
+- The textbox, name plate and quick menu are hidden for that line. The text is drawn centred on
+  the screen, wrapped at 1400 px, in the theme's text font, size and colour, with its outline.
+  It types out at text speed and waits for a click like any line.
+- The next ordinary line brings the textbox back, and so does a choice.
+- It is a line in every other way: it goes into the backlog (with no speaker), rollback and saves
+  work on it, it has a translation entry like narration, voice and `{nw}` work on it, and skip,
+  auto-forward and read-tracking count it.
+- Over a [full-screen page](#full-screen-pages) it clears the page, as a textbox line does. It is
+  not a page line.
+- `quillstone check` warns about a line that is too long for the screen at that width.
 
 ### Inline images
 

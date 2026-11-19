@@ -676,6 +676,20 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme, fonts: Opt
                     ));
                 }
             }
+            // A centred line is judged against the screen at the centred width.
+            Op::Say { text, centred: true, .. } => {
+                let quillstone_script::markup::Rich { text: words, runs, .. } = quillstone_script::markup::rich(text);
+                let fit = (quillstone_render::VIRTUAL.h / quillstone_render::line_height(theme.text_size)).floor() as usize;
+                let lines = quillstone_render::view::centred_lines(None, &words, &runs, theme.text_size);
+                let screen = quillstone_render::view::centred_rect(quillstone_render::VIRTUAL.h);
+                let real = fonts.filter(|_| lines > fit).and_then(|f| drawn(f, text, screen, theme.text_size));
+                let msg = match (fonts.is_some(), real) {
+                    (true, Some(r)) => fit_message(r, "this line", "the screen", "split it into two lines?"),
+                    _ if lines > fit + 1 => Some(format!("this line takes about {lines} lines and the screen fits {fit}; it will be shown smaller, or cut off if very long (split it into two lines?)")),
+                    _ => None,
+                };
+                out.extend(msg.map(|m| (program.lines[pc], m)));
+            }
             Op::Say { speaker, text, .. } => {
                 let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
                 let body = quillstone_render::dialogue_body(theme, speaker.is_some());

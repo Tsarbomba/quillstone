@@ -1190,7 +1190,7 @@ impl<'p> Game<'p> {
 
     /// There is a dialogue box for the quick menu to belong to.
     fn quick_menu_possible(&self) -> bool {
-        self.view.dialogue.is_some() && self.view.video.is_none() && !self.view.finished
+        self.view.dialogue.as_ref().is_some_and(|d| !d.centred) && self.view.video.is_none() && !self.view.finished
     }
 
     /// Whether the cursor is where the `hover` mode shows the menu.

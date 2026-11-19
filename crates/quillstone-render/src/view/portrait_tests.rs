@@ -2,7 +2,7 @@ use super::*;
 
 fn speaking(theme: Theme, portrait: Option<&str>) -> View {
     let mut v = View::new().with_theme(theme);
-    v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into() }]);
+    v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into(), centred: false }]);
     v.set_portrait(portrait.map(str::to_string));
     v
 }
@@ -38,7 +38,7 @@ fn the_portrait_is_drawn_after_the_textbox_panel_and_before_the_name_and_the_lin
 #[test]
 fn narration_and_a_speaker_without_a_portrait_draw_none() {
     let mut narrated = speaking(Theme::default(), None);
-    narrated.apply(&[Cmd::Say { speaker: None, color: None, text: "Rain.".into() }]);
+    narrated.apply(&[Cmd::Say { speaker: None, color: None, text: "Rain.".into(), centred: false }]);
     narrated.set_portrait(None);
     assert!(faces(&list(&narrated)).is_empty());
     assert!(faces(&list(&speaking(Theme::default(), None))).is_empty());

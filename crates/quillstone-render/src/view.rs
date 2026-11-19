@@ -563,13 +563,15 @@ pub struct Dialogue {
     revealed: f32,
     /// The line ends in `{nw}`: the story goes on by itself once it is typed.
     pub auto_advance: bool,
+    /// Shown alone in the middle of the screen, without the textbox (`::center`).
+    pub centred: bool,
 }
 
 impl Dialogue {
     fn new(speaker: Option<String>, color: Option<[f32; 3]>, tagged: &str, instant: bool) -> Dialogue {
         let Rich { text, runs, pauses, no_wait } = rich(tagged);
         let total = text.chars().count();
-        let mut d = Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait };
+        let mut d = Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, centred: false };
         if instant {
             d.show_text();
         }
@@ -1248,13 +1250,10 @@ impl View {
                 Cmd::ShowImage { src, alt } => {
                     self.images.push(InlineImage { src: src.clone(), alt: alt.clone() });
                 }
-                Cmd::Say { speaker, color, text } => {
-                    self.dialogue = Some(Dialogue::new(
-                        speaker.clone(),
-                        *color,
-                        text,
-                        redraw || self.chars_per_sec <= 0.0,
-                    ));
+                Cmd::Say { speaker, color, text, centred } => {
+                    let mut d = Dialogue::new(speaker.clone(), *color, text, redraw || self.chars_per_sec <= 0.0);
+                    d.centred = *centred;
+                    self.dialogue = Some(d);
                     if redraw {
                         if let Some(d) = &mut self.dialogue {
                             d.reveal_all();
@@ -1908,6 +1907,22 @@ impl View {
 
         let box_alpha = self.box_alpha();
         let shown = self.dialogue.as_ref().filter(|_| ui && box_alpha > 0.0);
+        if let Some(d) = shown.filter(|d| d.centred) {
+            // A centred line: no textbox or name plate; the words in the middle of the screen.
+            let size = self.text_size();
+            let h = (centred_lines(self.measure(), &d.text, &d.runs, size) as f32 * line_height(size)).min(VIRTUAL.h); // too tall: the engine shrinks it
+            out.push(Draw::Text {
+                text: d.text.clone(),
+                runs: d.runs.clone(),
+                visible_chars: d.visible_chars(),
+                rect: centred_rect(h),
+                size,
+                color: faded(theme.text_color, box_alpha),
+                align: Align::Center,
+                outline: text_outline(theme),
+            });
+        }
+        let shown = shown.filter(|d| !d.centred);
         let paged = !self.page.is_empty();
         if let Some(d) = shown.filter(|_| paged) {
             // A page line: no textbox, name plate or portrait; the page's lines over a dimmed screen.
@@ -2200,6 +2215,19 @@ pub fn page_lines_measured(theme: &Theme, speaker: Option<&str>, tagged: &str, s
     (lines_styled(measure, &para.text, &para.runs, size, w), (h / line_height(size)).floor() as usize)
 }
 
+/// The width a centred line (`::center`) wraps at.
+pub const CENTER_W: f32 = 1400.0;
+
+/// Where a centred line of `h` px goes: in the middle of the screen.
+pub fn centred_rect(h: f32) -> Rect {
+    Rect::new((VIRTUAL.w - CENTER_W) / 2.0, (VIRTUAL.h - h) / 2.0, CENTER_W, h)
+}
+
+/// How many lines a centred line takes at `size` px.
+pub fn centred_lines(measure: Option<Measure>, text: &str, runs: &[TextRun], size: f32) -> usize {
+    lines_styled(measure, text, runs, size, CENTER_W)
+}
+
 /// The theme's outline for dialogue and name text, if it asks for one.
 fn text_outline(theme: &Theme) -> Option<Outline> {
     (theme.text_outline_size > 0.0).then_some(Outline { size: theme.text_outline_size, color: theme.text_outline_color })
@@ -2348,7 +2376,7 @@ mod tests {
     use quillstone_script::parse;
 
     fn say(speaker: Option<&str>, text: &str) -> Cmd {
-        Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into() }
+        Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }
     }
 
     fn bg(src: &str, fade: f32) -> Cmd {
@@ -3136,7 +3164,7 @@ mod tests {
     #[test]
     fn name_plate_uses_the_speakers_colour() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: Some([1.0, 0.0, 0.5]), text: "hi".into() }]);
+        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: Some([1.0, 0.0, 0.5]), text: "hi".into(), centred: false }]);
         let list = v.draw_list(&no_images, None);
         let name_color = list
             .iter()
@@ -3609,6 +3637,23 @@ mod tests {
             _ => None,
         })
         .expect("the line is drawn")
+    }
+
+    #[test]
+    fn a_centred_line_has_no_textbox_and_sits_in_the_middle() {
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[Cmd::Say { speaker: None, color: None, text: "Later".into(), centred: true }]);
+        let list = v.draw_list(&no_images, None);
+        assert!(!list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == textbox_rect(&v.theme))));
+        let rect = list.iter().find_map(|d| match d {
+            Draw::Text { text, rect, align, .. } if text == "Later" => {
+                assert_eq!(*align, Align::Center);
+                Some(*rect)
+            }
+            _ => None,
+        });
+        let r = rect.expect("drawn");
+        assert!((r.x + r.w / 2.0 - VIRTUAL.w / 2.0).abs() < 1e-3 && (r.y + r.h / 2.0 - VIRTUAL.h / 2.0).abs() < 1e-3);
     }
 
     #[test]

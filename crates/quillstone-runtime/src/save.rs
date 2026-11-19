@@ -1088,7 +1088,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.pending = Some(match arg(1)? {
                     "say" => {
                         let l = s.line.as_ref().ok_or(format!("line {n}: pending say without a line"))?;
-                        Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone() }
+                        Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone(), centred: false }
                     }
                     "wait" => Cmd::Wait { seconds: sane(f(2)?, 0.01, MAX_WAIT, 1.0) },
                     "waitclick" => Cmd::WaitClick,

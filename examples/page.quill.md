@@ -2,7 +2,8 @@
 title: Pages
 ---
 
-<!-- Full-screen pages: `::page` makes the lines after it stack up on a page instead of replacing each
+<!-- Centred lines: `::center text` shows one line alone in the middle of the screen. See "Centred lines" in SCRIPT.md.
+     Full-screen pages: `::page` makes the lines after it stack up on a page instead of replacing each
      other in the textbox, until `::page{off}`. See "Full-screen pages" in SCRIPT.md. -->
 
 ::character{id=mika name=Mika color=#ffd98c}
@@ -32,5 +33,9 @@ A page holds as many lines as fit; the one after that starts a fresh page.
 
 ::page{off}
 
-**Mika:** Back in the textbox. The letter goes in my pocket.
+**Mika:** Back in the textbox. The letter goes in my pocket. A line can also stand alone in the middle of the screen, like a title card:
+
+::center The lamp was lit that evening.
+
+**Mika:** That is `::center`. See "Centred lines" in SCRIPT.md.
 ::end

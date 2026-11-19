@@ -103,7 +103,7 @@ mod tests {
     /// What the runtime sends for the newest of `lines` being shown on a page.
     fn shown(lines: &[Line]) -> Vec<Cmd> {
         let last = lines.last().unwrap();
-        vec![Cmd::Page { lines: lines.to_vec() }, Cmd::Say { speaker: last.speaker.clone(), color: last.color, text: last.text.clone() }]
+        vec![Cmd::Page { lines: lines.to_vec() }, Cmd::Say { speaker: last.speaker.clone(), color: last.color, text: last.text.clone(), centred: false }]
     }
 
     fn numbered(n: usize) -> Vec<Line> {
@@ -240,7 +240,7 @@ mod tests {
         v.apply(&shown(&numbered(2)));
         v.apply(&[Cmd::Page { lines: Vec::new() }]);
         assert!(v.dialogue.is_none() && v.page.is_empty());
-        v.apply(&[Cmd::Page { lines: Vec::new() }, Cmd::Say { speaker: None, color: None, text: "Plain.".into() }]);
+        v.apply(&[Cmd::Page { lines: Vec::new() }, Cmd::Say { speaker: None, color: None, text: "Plain.".into(), centred: false }]);
         let list = v.draw_list(&no_images, None);
         assert!(list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == textbox_rect(&Theme::default()))));
     }
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn a_textbox_game_draws_the_same_list_as_before() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into() }]);
+        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into(), centred: false }]);
         let list = v.draw_list(&no_images, None);
         let theme = Theme::default();
         assert!(list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == textbox_rect(&theme))));

@@ -93,7 +93,8 @@ pub enum Cmd {
     ClearScene,
     /// Show a line and wait for [`Input::Advance`]. `speaker: None` is narration.
     /// `color` is the speaker's name plate colour, if the character declared one.
-    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String },
+    /// `centred`: shown alone in the middle of the screen, without the textbox (`::center`).
+    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, centred: bool },
     /// The lines of the full-screen page (`::page`), oldest first, the newest last: it is the line a
     /// [`Cmd::Say`] after it shows (and that stays on screen under choices). Sent whenever the page
     /// changes; an empty list takes the page away. A redraw sends it before the line.
@@ -759,6 +760,7 @@ impl State {
                     speaker: line.speaker.clone(),
                     color: line.color,
                     text: line.text.clone(),
+                    centred: false,
                 });
             }
         }
@@ -1097,7 +1099,7 @@ pub(crate) fn screen_matches(pending: &Cmd, op: &Op) -> bool {
 
 /// A line that is shown is also the current line (what the backlog and the textbox read).
 fn remember_line(state: &mut State, cmd: &Cmd) {
-    if let Cmd::Say { speaker, color, text } = cmd {
+    if let Cmd::Say { speaker, color, text, .. } = cmd {
         state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
     }
 }
@@ -1129,8 +1131,8 @@ fn clear_page(state: &mut State, out: &mut Vec<Cmd>) {
 /// changed variable rebuilds them).
 pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dyn Fn(&str) -> String) -> Option<Cmd> {
     match op {
-        Op::Say { speaker, color, text, .. } => {
-            Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars) })
+        Op::Say { speaker, color, text, centred, .. } => {
+            Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars), centred: *centred })
         }
         Op::Choice { options, map, .. } => Some(choice_cmd(options, map, &visible_options(options, vars), vars, text)),
         Op::Inventory => Some(Cmd::ShowInventory),
@@ -1961,7 +1963,7 @@ mod tests {
     use quillstone_script::{parse, Value};
 
     fn say(speaker: &str, text: &str) -> Cmd {
-        Cmd::Say { speaker: Some(speaker.into()), color: None, text: text.into() }
+        Cmd::Say { speaker: Some(speaker.into()), color: None, text: text.into(), centred: false }
     }
 
     fn int(n: i64) -> Value {
@@ -2272,7 +2274,7 @@ vars: { trust: 0 }
         assert_eq!(game.input(Input::Choose(1)), vec![say_none("done")]);
 
         fn say_none(t: &str) -> Cmd {
-            Cmd::Say { speaker: Some("A".into()), color: None, text: t.into() }
+            Cmd::Say { speaker: Some("A".into()), color: None, text: t.into(), centred: false }
         }
     }
 
