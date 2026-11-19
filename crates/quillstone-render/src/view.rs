@@ -20,7 +20,7 @@ use crate::pixels::vignette_zoom;
 use crate::filter::ColorMatrix;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
-use crate::layout::{clip, estimate_lines, is_wide, line_height, one_row, place, Rect, Size, FULL_UV, VIRTUAL};
+use crate::layout::{clip, fit_row, is_wide, line_height, lines_of, lines_styled, place, Measure, Rect, SharedMeasure, Size, FULL_UV, VIRTUAL};
 use crate::page::{screen_page, PageLine};
 use crate::theme::Theme;
 
@@ -907,6 +907,8 @@ pub struct View {
     anims: BTreeMap<String, Anim>,
     /// Seconds since the background / the outgoing background started being shown.
     bg_clock: f32,
+    /// The frontend's text measuring, for layouts that fit text to a box (else the estimates).
+    measure: Option<SharedMeasure>,
     previous_bg_clock: f32,
 }
 
@@ -919,6 +921,7 @@ impl Default for View {
 impl View {
     pub fn new() -> View {
         View {
+            measure: None,
             background: None,
             previous_background: None,
             previous_blur: 0.0,
@@ -1089,9 +1092,18 @@ impl View {
     /// textbox that big, the largest 10% step down that does (the theme's own size at worst, as `check` judged).
     fn dialogue_size(&self, d: &Dialogue, has_name: bool) -> f32 {
         fitted_size(&self.theme, self.text_scale, |size| {
-            let (lines, fit) = dialogue_lines(&self.theme, &d.text, &d.runs, has_name, size);
+            let (lines, fit) = dialogue_lines(&self.theme, &d.text, &d.runs, has_name, size, self.measure());
             lines <= fit
         })
+    }
+
+    /// Lay text out by the frontend's real text measuring (see `quillstone_render::Measure`) instead of the estimates.
+    pub fn set_measure(&mut self, measure: Option<SharedMeasure>) {
+        self.measure = measure;
+    }
+
+    fn measure(&self) -> Option<Measure<'_>> {
+        self.measure.as_ref().map(|m| &*m.0 as Measure)
     }
 
     /// The theme's text size times the player's text scale.
@@ -1703,7 +1715,7 @@ impl View {
         if self.hide_ui {
             return None;
         }
-        self.hud.button_at(&self.theme, image_size, x, y)
+        self.hud.button_at(&self.theme, image_size, self.measure(), x, y)
     }
 
     /// Only the picture: stage, inline images, video, flash and hotspot art, without
@@ -1884,13 +1896,13 @@ impl View {
         // The HUD is story UI: over the cover and the flash (a title card can sit on a black
         // screen), under the textbox. Not with a full-screen overlay up, nor when the player hid the UI.
         if ui && !self.hide_ui {
-            self.hud.draw(&self.theme, image_size, hud, &mut out);
+            self.hud.draw(&self.theme, image_size, hud, self.measure(), &mut out);
             // A passing message in the top right corner, over the HUD.
             if let Some(n) = &self.notice {
                 let alpha = n.alpha();
                 let (size, pad) = ((self.text_size() * 0.75).round(), 16.0);
                 let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
-                crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad);
+                crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad, self.measure());
             }
         }
 
@@ -1905,7 +1917,7 @@ impl View {
             let last = paras.len() - 1;
             // Choices sit over the page: its text steps back so the buttons can be read.
             let text_alpha = if self.choices.is_empty() { box_alpha } else { box_alpha * 0.3 };
-            for p in screen_page(theme, self.text_scale, &paras) {
+            for p in screen_page(theme, self.text_scale, &paras, self.measure()) {
                 let para = &paras[p.index];
                 out.push(Draw::Text {
                     text: para.text.clone(),
@@ -1936,7 +1948,7 @@ impl View {
                     if let Some(src) = theme.name_plate_image.as_deref() {
                         push_image(&mut out, src, plate, Fit::Stretch, box_alpha, image_size);
                     }
-                    let (name, size) = fit_name(name, theme.name_size, plate.w, plate.h);
+                    let (name, size) = fit_name(self.measure(), name, theme.name_size, plate.w, plate.h);
                     out.push(Draw::Text {
                         text: name,
                         runs: Vec::new(),
@@ -2013,7 +2025,7 @@ impl View {
             // A label too wide for its button at the player's text size is drawn smaller, then the height cap.
             let shrink = if reason.is_some() { 0.8 } else { 1.0 };
             let size = choice_text_size(
-                fitted_size(theme, self.text_scale, |s| crate::estimate_lines_styled(&text, &runs, s * shrink, rect.w) <= 1),
+                fitted_size(theme, self.text_scale, |s| lines_styled(self.measure(), &text, &runs, s * shrink, rect.w) <= 1),
                 rect,
             );
             out.push(Draw::Text {
@@ -2097,15 +2109,15 @@ const NAME_PLATE_H: f32 = 48.0;
 /// The speaker's name and the size to draw it at so that it fits the plate: the
 /// configured size stepped down (never below 60% of it) until one line fits the
 /// plate's height and width, then cut with an ellipsis if it still doesn't.
-fn fit_name(name: &str, size: f32, width: f32, height: f32) -> (String, f32) {
+fn fit_name(measure: Option<Measure>, name: &str, size: f32, width: f32, height: f32) -> (String, f32) {
     let floor = size * 0.6;
-    let fits = |s: f32| line_height(s) <= height + 1.0 && estimate_lines(name, s, width) <= 1;
+    let fits = |s: f32| line_height(s) <= height + 1.0 && lines_of(measure, name, s, width).0 <= 1;
     let mut s = size;
     while s > floor && !fits(s) {
         s -= 1.0;
     }
     let s = s.max(floor);
-    (one_row(name, s, width), s)
+    (fit_row(measure, name, s, width), s)
 }
 
 /// The dialogue box for this theme (`textbox_rect`), in virtual coordinates.
@@ -2166,21 +2178,26 @@ pub fn dialogue_body(theme: &Theme, with_speaker: bool) -> Rect {
 /// line that doesn't fit is drawn smaller by the player. Plain text works too.
 pub fn dialogue_lines_tagged(theme: &Theme, tagged: &str, with_speaker: bool, size: f32) -> (usize, usize) {
     let Rich { text, runs, .. } = rich(tagged);
-    dialogue_lines(theme, &text, &runs, with_speaker, size)
+    dialogue_lines(theme, &text, &runs, with_speaker, size, None)
 }
 
 /// [`dialogue_lines_tagged`] for text already split from its runs.
-fn dialogue_lines(theme: &Theme, text: &str, runs: &[TextRun], with_speaker: bool, size: f32) -> (usize, usize) {
+fn dialogue_lines(theme: &Theme, text: &str, runs: &[TextRun], with_speaker: bool, size: f32, measure: Option<Measure>) -> (usize, usize) {
     let body = dialogue_body(theme, with_speaker);
-    (crate::estimate_lines_styled(text, runs, size, body.w), (body.h / line_height(size)).floor() as usize)
+    (lines_styled(measure, text, runs, size, body.w), (body.h / line_height(size)).floor() as usize)
 }
 
 /// [`dialogue_lines_tagged`] for a page line: about how many lines it takes at `size` px (the speaker's name
 /// in front), and how many the page area fits.
 pub fn page_lines_tagged(theme: &Theme, speaker: Option<&str>, tagged: &str, size: f32) -> (usize, usize) {
+    page_lines_measured(theme, speaker, tagged, size, None)
+}
+
+/// [`page_lines_tagged`] by the real text measure (as the page lays itself out), when there is one.
+pub fn page_lines_measured(theme: &Theme, speaker: Option<&str>, tagged: &str, size: f32, measure: Option<Measure>) -> (usize, usize) {
     let para = PageLine::new(speaker.map(str::to_string), None, tagged).paragraph(theme);
     let [_, _, w, h] = theme.page_rect;
-    (crate::estimate_lines_styled(&para.text, &para.runs, size, w), (h / line_height(size)).floor() as usize)
+    (lines_styled(measure, &para.text, &para.runs, size, w), (h / line_height(size)).floor() as usize)
 }
 
 /// The theme's outline for dialogue and name text, if it asks for one.
@@ -3104,6 +3121,16 @@ mod tests {
         let long = "Professor Bartholomew Fitzgerald-Montgomery the Third of Nowhere ".repeat(4);
         let (text, size, rect) = name_draw(50.0, &long).unwrap();
         assert!(size >= 30.0 && text.ends_with('…') && crate::estimate_lines(&text, size, rect.w) == 1);
+    }
+
+    #[test]
+    fn a_name_is_fitted_to_its_plate_by_the_real_measure_when_there_is_one() {
+        let name = "Bartholomew Fitzgerald-Montgomery the Third";
+        let (_, by_estimate) = fit_name(None, name, 38.0, 300.0, 80.0);
+        let fits = |_: &str, _: f32, _: f32| Some((1, 100.0));
+        let (shown, by_measure) = fit_name(Some(&fits), name, 38.0, 300.0, 80.0);
+        assert_eq!((shown.as_str(), by_measure), (name, 38.0), "the measure says it fits whole");
+        assert!(by_estimate < 38.0);
     }
 
     #[test]

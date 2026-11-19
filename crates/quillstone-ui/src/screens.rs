@@ -4,7 +4,7 @@
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
 use quillstone_render::theme::{DEFAULT_HISTORY_RECT, DEFAULT_HISTORY_TEXT_SIZE, DEFAULT_MENU_RECT, DEFAULT_MENU_TITLE_RECT, DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
-use quillstone_render::{estimate_lines, line_height, place, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
+use quillstone_render::{fit_row, line_height, lines_of, place, Align, Draw, Measure, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
 use quillstone_script::{KeyPress, TimingBar};
@@ -699,12 +699,12 @@ pub fn nine_slice(out: &mut Vec<Draw>, src: &str, size: Size, dest: Rect, border
 
 /// A value and the size to draw it at so that it fits one row `width` wide: stepped
 /// down from `size` (not below 60%), then cut with an ellipsis.
-pub(crate) fn fit_value(value: &str, size: f32, width: f32) -> (String, f32) {
+pub(crate) fn fit_value(value: &str, size: f32, width: f32, measure: Option<Measure>) -> (String, f32) {
     let mut s = size;
-    while s > size * 0.6 && estimate_lines(value, s, width) > 1 {
+    while s > size * 0.6 && lines_of(measure, value, s, width).0 > 1 {
         s -= 1.0;
     }
-    (one_row(value, s, width), s)
+    (fit_row(measure, value, s, width), s)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -718,6 +718,7 @@ pub fn draw_settings(
     hover: Option<SettingsHit>,
     language: Option<&str>,
     image_size: &dyn Fn(&str) -> Option<Size>,
+    measure: Option<Measure>,
 ) {
     let rows = rows(language.is_some());
     let language = language.unwrap_or("");
@@ -754,7 +755,7 @@ pub fn draw_settings(
                 out.push(Draw::Rect { rect: Rect::new(t.x, t.y, t.w * pos, t.h), color: fill });
                 out.push(Draw::Rect { rect: Rect::new(t.x + t.w * pos - 10.0 * k, r.y + 10.0 * k, 20.0 * k, 40.0 * k), color: theme.text_color });
                 let value = value_rect(i, n, theme);
-                let (shown, size) = fit_value(&row_value(tr, s, row, language), 32.0 * k, value.w);
+                let (shown, size) = fit_value(&row_value(tr, s, row, language), 32.0 * k, value.w, measure);
                 text(out, shown, value, size, theme.dim_color, Align::Left);
             }
             None => {
@@ -819,22 +820,22 @@ fn log_line_height(t: &Theme) -> f32 {
     line_height(t.history_text_size)
 }
 
-fn log_entry_height(entry: &Logged, t: &Theme) -> f32 {
-    estimate_lines(&log_body(entry), t.history_text_size, log_area(t).3[1]) as f32 * log_line_height(t)
+fn log_entry_height(entry: &Logged, t: &Theme, measure: Option<Measure>) -> f32 {
+    lines_of(measure, &log_body(entry), t.history_text_size, log_area(t).3[1]).0 as f32 * log_line_height(t)
 }
 
 /// How far back the backlog can scroll (in entries) without running out: until the oldest
 /// entry is on screen (more would only show it alone on an empty page). 0 if all fit.
-pub fn backlog_max_scroll(entries: &[Logged], t: &Theme) -> usize {
+pub fn backlog_max_scroll(entries: &[Logged], t: &Theme, measure: Option<Measure>) -> usize {
     let (top, bottom, ..) = log_area(t);
     let (room, gap) = (bottom - top, LOG_GAP * log_factor(t));
     // Scrolling back by `s` shows the oldest `len - s` entries, bottom-aligned: the oldest is
     // in view once they fit, which is the first `s` for which that prefix is no taller than the room.
     let mut s = 0;
-    let mut total: f32 = entries.iter().map(|e| log_entry_height(e, t)).sum::<f32>() + gap * entries.len().saturating_sub(1) as f32;
+    let mut total: f32 = entries.iter().map(|e| log_entry_height(e, t, measure)).sum::<f32>() + gap * entries.len().saturating_sub(1) as f32;
     while total > room && s + 1 < entries.len() {
         let newest = &entries[entries.len() - 1 - s];
-        total -= log_entry_height(newest, t) + gap;
+        total -= log_entry_height(newest, t, measure) + gap;
         s += 1;
     }
     s
@@ -848,6 +849,7 @@ pub fn draw_backlog(
     entries: &[Logged],
     scroll: usize,
     image_size: &dyn Fn(&str) -> Option<Size>,
+    measure: Option<Measure>,
 ) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     draw_full_picture(out, theme.game_menu_overlay.as_deref(), image_size);
@@ -873,7 +875,7 @@ pub fn draw_backlog(
             Logged::Choice(_) => (None, theme.accent_color, theme.accent_color),
         };
         let body = log_body(entry);
-        let h = log_entry_height(entry, theme);
+        let h = log_entry_height(entry, theme, measure);
         let top = bottom - h;
         if top < log_top {
             break; // only whole entries are drawn
@@ -881,7 +883,7 @@ pub fn draw_backlog(
         if let Some(name) = speaker {
             // A long name steps down in size until it fits on one row (the row is one line tall).
             let mut size = log_size;
-            while size > 20.0 * fs && estimate_lines(name, size, name_col[1]) > 1 {
+            while size > 20.0 * fs && lines_of(measure, name, size, name_col[1]).0 > 1 {
                 size -= 2.0 * fs;
             }
             text(out, name, Rect::new(name_col[0], top, name_col[1], line_h), size, color, Align::Left);
@@ -1148,7 +1150,7 @@ pub fn draw_notice(out: &mut Vec<Draw>, theme: &Theme, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quillstone_render::TEXTBOX;
+    use quillstone_render::{estimate_lines, TEXTBOX};
     use quillstone_runtime::Line;
 
     fn centre(r: Rect) -> (f32, f32) {
@@ -1647,7 +1649,7 @@ mod tests {
     fn backlog_shows_newest_at_the_bottom_and_scrolls() {
         let entries = vec![line("one"), Logged::Choice("Go".into()), line("three")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None, None);
         let t = texts(&out);
         let pos = |s: &str| t.iter().position(|x| x == s).unwrap();
         assert!(pos("three") < pos("» Go") && pos("» Go") < pos("one")); // drawn newest first
@@ -1662,9 +1664,9 @@ mod tests {
         assert!(y("one") < y("» Go") && y("» Go") < y("three"));
 
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 1, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 1, &|_| None, None);
         assert!(!texts(&out).contains(&"three".to_string()));
-        assert_eq!(backlog_max_scroll(&entries, &Theme::default()), 0, "all of it fits: nothing to scroll to");
+        assert_eq!(backlog_max_scroll(&entries, &Theme::default(), None), 0, "all of it fits: nothing to scroll to");
     }
 
     /// The rect of the text drawn as `what`, and its size.
@@ -1684,14 +1686,14 @@ mod tests {
             l.speaker = Some("Mira".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[entry], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[entry], 0, &|_| None, None);
         assert_eq!(drawn(&out, "History"), (Rect::new(160.0, 40.0, 1600.0, 70.0), 48.0));
         let hint = "Wheel / Page Up / Page Down to scroll  ·  Esc to close";
         assert_eq!(drawn(&out, hint), (Rect::new(160.0, 990.0, 1600.0, 40.0), 24.0));
         assert_eq!(drawn(&out, "Mira"), (Rect::new(160.0, 917.0, 320.0, 43.0), 32.0));
         assert_eq!(drawn(&out, "one"), (Rect::new(500.0, 917.0, 1260.0, 43.0), 32.0));
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None, None);
         assert_eq!(drawn(&out, "Nothing yet."), (Rect::new(160.0, 0.0, 1600.0, 1080.0), 36.0));
     }
 
@@ -1703,16 +1705,16 @@ mod tests {
             l.speaker = Some("Mira".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &t, Tr::default(), &[entry], 0, &|_| None);
+        draw_backlog(&mut out, &t, Tr::default(), &[entry], 0, &|_| None, None);
         assert_eq!(drawn(&out, "History"), (Rect::new(400.0, 100.0, 800.0, 35.0), 24.0));
         // 130..960 becomes 145..560; the one row is 43 high, as the text size is the same.
         assert_eq!(drawn(&out, "Mira"), (Rect::new(400.0, 517.0, 320.0, 43.0), 32.0));
         assert_eq!(drawn(&out, "one"), (Rect::new(740.0, 517.0, 460.0, 43.0), 32.0));
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
-        let (full, half) = (backlog_max_scroll(&entries, &Theme::default()), backlog_max_scroll(&entries, &t));
+        let (full, half) = (backlog_max_scroll(&entries, &Theme::default(), None), backlog_max_scroll(&entries, &t, None));
         assert!(half > full, "fewer lines fit in a smaller rect: {half} > {full}");
         let mut out = Vec::new();
-        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None, None);
         let rows: Vec<Rect> = out.iter().filter_map(|d| match d {
             Draw::Text { text, rect, .. } if text.starts_with("line ") => Some(*rect),
             _ => None,
@@ -1728,7 +1730,7 @@ mod tests {
             l.speaker = Some("Mira".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &t, Tr::default(), &entries, 0, &|_| None, None);
         let (one, two) = (drawn(&out, "one"), drawn(&out, "two"));
         assert_eq!((one.1, one.0.h, one.0.x), (64.0, (64.0f32 * 1.35).round(), 160.0 + 640.0 + 40.0));
         assert_eq!(one.0.y + one.0.h + 40.0, two.0.y, "the gap doubles too");
@@ -1739,20 +1741,33 @@ mod tests {
     fn a_paragraph_break_in_the_backlog_is_a_real_line_break_with_room_for_it() {
         let tall = vec![line("a{p}b{p}c")];
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &tall, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &tall, 0, &|_| None, None);
         let h = out.iter().find_map(|d| match d {
             Draw::Text { text, rect, .. } if text == "a\nb\nc" => Some(rect.h),
             _ => None,
         });
         let one = (32.0f32 * 1.35).round();
         assert_eq!(h, Some(3.0 * one), "three lines of room");
+        // a real measure decides how tall an entry is (the estimate, with no measure, errs long)
+        let long = vec![line(&"word ".repeat(100))];
+        let height = |m: Option<Measure>| {
+            let mut out = Vec::new();
+            draw_backlog(&mut out, &Theme::default(), Tr::default(), &long, 0, &|_| None, m);
+            out.iter().find_map(|d| match d {
+                Draw::Text { text, rect, .. } if text.starts_with("word") => Some(rect.h),
+                _ => None,
+            })
+        };
+        let two = |_: &str, _: f32, _: f32| Some((2, 500.0));
+        assert_eq!(height(Some(&two)), Some(2.0 * one));
+        assert!(height(None) > height(Some(&two)));
     }
 
     #[test]
     fn a_long_backlog_only_draws_what_fits() {
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, 0, &|_| None, None);
         let shown = texts(&out).iter().filter(|t| t.starts_with("line ")).count();
         assert!(shown > 5 && shown < 30, "{shown}");
         assert!(out.iter().all(|d| match d {
@@ -1764,18 +1779,18 @@ mod tests {
     #[test]
     fn scrolling_stops_when_the_oldest_entry_is_on_screen() {
         let entries: Vec<Logged> = (0..100).map(|i| line(&format!("line {i}"))).collect();
-        let max = backlog_max_scroll(&entries, &Theme::default());
+        let max = backlog_max_scroll(&entries, &Theme::default(), None);
         assert!(max > 50 && max < 99, "{max}: not all the way to a lone entry");
         let shown = |scroll: usize| {
             let mut out = Vec::new();
-            draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, scroll, &|_| None);
+            draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, scroll, &|_| None, None);
             texts(&out).iter().filter(|t| t.starts_with("line ")).count()
         };
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, max, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &entries, max, &|_| None, None);
         assert!(texts(&out).contains(&"line 0".to_string()), "the oldest line is there at the end");
         assert!(shown(max) > 5, "and so is a page of others");
-        assert_eq!(backlog_max_scroll(&entries[..3], &Theme::default()), 0, "a short history has nothing to scroll");
+        assert_eq!(backlog_max_scroll(&entries[..3], &Theme::default(), None), 0, "a short history has nothing to scroll");
     }
 
     #[test]
@@ -1785,7 +1800,7 @@ mod tests {
             l.speaker = Some("Professor Bartholomew Fitzgerald-Montgomery".into());
         }
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[long], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[long], 0, &|_| None, None);
         let (rect, size) = out
             .iter()
             .find_map(|d| match d {
@@ -1815,20 +1830,20 @@ mod tests {
             assert!(v.x + v.w <= row.x + row.w - 20.0 + 1e-3, "row {i}: value column ends before the row does");
             assert!(v.x >= track_x(&Theme::default()) + track_w(&Theme::default()), "row {i}: and starts after the track");
         }
-        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w);
+        let (text, size) = fit_value("60 chars/s", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w, None);
         assert_eq!(estimate_lines(&text, size, value_rect(0, ROWS.len(), &Theme::default()).w), 1);
         assert!(size >= 32.0 * 0.6 && text == "60 chars/s");
-        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w);
+        let (text, size) = fit_value("999999999 characters per second", 32.0, value_rect(0, ROWS.len(), &Theme::default()).w, None);
         assert!(text.ends_with('…') && estimate_lines(&text, size, value_rect(0, ROWS.len(), &Theme::default()).w) == 1);
         let mut out = Vec::new();
-        draw_settings(&mut out, &Theme::default(), Tr::default(), &Settings::default(), true, 0, None, None, &|_| None);
+        draw_settings(&mut out, &Theme::default(), Tr::default(), &Settings::default(), true, 0, None, None, &|_| None, None);
         assert!(out.iter().any(|d| matches!(d, Draw::Text { rect, .. } if *rect == value_rect(0, ROWS.len(), &Theme::default()))), "drawn in its column");
     }
 
     #[test]
     fn an_empty_backlog_says_so() {
         let mut out = Vec::new();
-        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None);
+        draw_backlog(&mut out, &Theme::default(), Tr::default(), &[], 0, &|_| None, None);
         assert!(texts(&out).contains(&"Nothing yet.".to_string()));
     }
 
@@ -1882,7 +1897,7 @@ mod tests {
         assert_eq!(slider_pos_at(track.x, &t), 0.0);
         assert!((slider_pos_at(track.x + track.w / 2.0, &t) - 0.5).abs() < 1e-5);
         let mut out = Vec::new();
-        draw_settings(&mut out, &t, Tr::default(), &Settings::default(), true, 1, None, None, &|_| None);
+        draw_settings(&mut out, &t, Tr::default(), &Settings::default(), true, 1, None, None, &|_| None, None);
         assert!(out.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == row_rect(1, ROWS.len(), &t) && *color == FOCUS)), "focus follows the row");
         let size = |text: &str| out.iter().find_map(|d| match d { Draw::Text { text: s, size, .. } if s == text => Some(*size), _ => None });
         assert_eq!(size("Back"), Some(28.0), "the buttons use the screen's text size");
@@ -1894,7 +1909,7 @@ mod tests {
         let sized = |s: &str| (s == "bg.png").then(|| Size::new(1920.0, 1080.0)).or((s == "frame.png").then(|| Size::new(100.0, 100.0)));
         let draw = |t: &Theme, size: &dyn Fn(&str) -> Option<Size>| {
             let mut out = Vec::new();
-            draw_settings(&mut out, t, Tr::default(), &Settings::default(), true, 0, None, None, size);
+            draw_settings(&mut out, t, Tr::default(), &Settings::default(), true, 0, None, None, size, None);
             out
         };
         let (with, without) = (draw(&t, &sized), draw(&t, &|_| None));
@@ -1921,10 +1936,10 @@ mod tests {
 
         let mut screens = Vec::new();
         let mut a = Vec::new();
-        draw_settings(&mut a, &t, Tr::default(), &Settings::default(), true, 0, None, None, &sized);
+        draw_settings(&mut a, &t, Tr::default(), &Settings::default(), true, 0, None, None, &sized, None);
         screens.push(a);
         let mut b = Vec::new();
-        draw_backlog(&mut b, &t, Tr::default(), &[], 0, &sized);
+        draw_backlog(&mut b, &t, Tr::default(), &[], 0, &sized, None);
         screens.push(b);
         let mut c = Vec::new();
         let view = SlotScreen { title: "Save", tabs: &[], page: Page::Auto, slots: &[], hover: None };
@@ -1936,7 +1951,7 @@ mod tests {
             assert!(!out.iter().any(image("ov.png")));
         }
         let mut none = Vec::new();
-        draw_backlog(&mut none, &t, Tr::default(), &[], 0, &|_| None);
+        draw_backlog(&mut none, &t, Tr::default(), &[], 0, &|_| None, None);
         assert!(!none.iter().any(image("gm.png")), "not loaded: today's look");
     }
 

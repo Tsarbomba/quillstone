@@ -162,6 +162,65 @@ pub fn one_row(s: &str, size: f32, width: f32) -> String {
     String::new()
 }
 
+/// `(text, size px, width px)` -> `(lines it wraps to, width of the widest line)`; `None`: can't say. The frontend's
+/// text engine knows the real wrapping; layouts that size themselves to text take one, and without one (tests, a
+/// frontend that has none) use the cautious estimates above.
+pub type Measure<'a> = &'a dyn Fn(&str, f32, f32) -> Option<(usize, f32)>;
+
+/// The same as an owned function, as the game is given it.
+pub type MeasureFn = Box<dyn Fn(&str, f32, f32) -> Option<(usize, f32)>>;
+
+/// A measuring function shared by the game's screens and its [`crate::View`].
+#[derive(Clone)]
+pub struct SharedMeasure(pub std::rc::Rc<MeasureDyn>);
+
+/// A measuring function as a trait object.
+pub type MeasureDyn = dyn Fn(&str, f32, f32) -> Option<(usize, f32)>;
+
+impl std::fmt::Debug for SharedMeasure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedMeasure")
+    }
+}
+
+/// How `text` wraps at `size` in `width`: the real measure, else the estimate (a one-line guess is as wide as the
+/// estimate says; a wrapped one fills the width).
+pub fn lines_of(measure: Option<Measure>, text: &str, size: f32, width: f32) -> (usize, f32) {
+    if let Some(m) = measure.and_then(|m| m(text, size, width)) {
+        return m;
+    }
+    let lines = estimate_lines(text, size, width);
+    let one: f32 = text.chars().map(|c| if c.is_ascii() { size * 0.55 } else { size }).sum();
+    (lines, if lines > 1 { width } else { one.min(width) })
+}
+
+/// `s` on one row `width` wide: whole when it fits, else cut with an ellipsis (as `one_row`, but by the real measure).
+pub fn fit_row(measure: Option<Measure>, s: &str, size: f32, width: f32) -> String {
+    let Some(m) = measure else { return one_row(s, size, width) };
+    let fits = |t: &str| m(t, size, width).is_none_or(|(lines, w)| lines <= 1 && w <= width);
+    if fits(s) {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0, chars.len()); // the longest cut that fits
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let cut = chars[..mid].iter().collect::<String>().trim_end().to_string() + "…";
+        if fits(&cut) { lo = mid } else { hi = mid - 1 }
+    }
+    chars[..lo].iter().collect::<String>().trim_end().to_string() + "…"
+}
+
+/// [`estimate_lines_styled`], by the real measure when there is one and the text has no `{size}` or ruby runs (which
+/// the measure can't see; those keep the estimate).
+pub fn lines_styled(measure: Option<Measure>, text: &str, runs: &[quillstone_script::markup::TextRun], size: f32, width: f32) -> usize {
+    let plain = runs.iter().all(|r| r.style.size.is_none() && r.ruby.is_none());
+    match measure.filter(|_| plain).and_then(|m| m(text, size, width)) {
+        Some((lines, _)) => lines,
+        None => estimate_lines_styled(text, runs, size, width),
+    }
+}
+
 /// Like [`estimate_lines`] for text with `{size}` runs (see `quillstone_script::markup`):
 /// each character is as wide as its run's size says, so a `{size=+30}` shout takes
 /// the room it will really need.

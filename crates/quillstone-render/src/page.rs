@@ -5,7 +5,7 @@
 
 use quillstone_script::markup::{rich, Style, TextRun};
 
-use crate::layout::{estimate_lines_styled, line_height, Rect};
+use crate::layout::{line_height, lines_styled, Measure, Rect};
 use crate::theme::Theme;
 
 /// A page line as the view keeps it: its words with the tags taken out (see [`quillstone_script::markup`]).
@@ -63,13 +63,13 @@ pub struct Placed {
 /// pages are cut from the first paragraph on, so they don't depend on which line is the newest. A paragraph is
 /// drawn at the player's text size, or the largest size below it that fits the page by itself (see
 /// [`crate::view::fitted_size`]), so it can be taller than the page only at the theme's own size.
-pub fn screen_page(theme: &Theme, text_scale: f32, paras: &[Paragraph]) -> Vec<Placed> {
+pub fn screen_page(theme: &Theme, text_scale: f32, paras: &[Paragraph], measure: Option<Measure>) -> Vec<Placed> {
     let [x, y, w, h] = theme.page_rect;
     let gap = line_height(theme.text_size * text_scale) / 2.0;
     let mut placed: Vec<Placed> = Vec::new();
     let mut used = 0.0;
     for (index, p) in paras.iter().enumerate() {
-        let height = |size: f32| estimate_lines_styled(&p.text, &p.runs, size, w) as f32 * line_height(size);
+        let height = |size: f32| lines_styled(measure, &p.text, &p.runs, size, w) as f32 * line_height(size);
         let size = crate::view::fitted_size(theme, text_scale, |size| height(size) <= h);
         let tall = height(size);
         if !placed.is_empty() && used + gap + tall > h {
@@ -86,6 +86,7 @@ pub fn screen_page(theme: &Theme, text_scale: f32, paras: &[Paragraph]) -> Vec<P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::estimate_lines_styled;
     use crate::layout::{Size, VIRTUAL};
     use crate::view::{textbox_rect, Draw, View};
     use quillstone_runtime::{Cmd, Input, Line, Session};
@@ -190,6 +191,18 @@ mod tests {
             previous = now;
         }
         assert!(turned >= 2, "forty paragraphs fill the page more than twice: {turned}");
+    }
+
+    #[test]
+    fn a_page_is_laid_out_by_the_real_measure_when_there_is_one() {
+        let theme = Theme::default();
+        let long = line(None, &"word ".repeat(200));
+        let paras = vec![PageLine::new(None, None, &long.text).paragraph(&theme)];
+        let estimated = screen_page(&theme, 1.0, &paras, None)[0].rect.h;
+        let one_line = |_: &str, _: f32, _: f32| Some((1, 100.0));
+        let measured = screen_page(&theme, 1.0, &paras, Some(&one_line))[0].rect.h;
+        assert_eq!(measured, line_height(theme.text_size), "the measure says one line");
+        assert!(estimated > measured, "the estimate says more: {estimated}");
     }
 
     #[test]

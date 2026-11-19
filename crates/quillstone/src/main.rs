@@ -653,11 +653,13 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme, fonts: Opt
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
-            // A page line is judged against the page: too long only if it alone doesn't fit a page. (The player
-            // lays pages out by the estimate too, so that is the judgement.)
+            // A page line is judged against the page: too long only if it alone doesn't fit a page.
             Op::Say { speaker, text, page: true, .. } => {
-                let (lines, fit) = quillstone_render::view::page_lines_tagged(theme, speaker.as_deref(), text, theme.text_size);
-                if lines > fit + 1 {
+                // The page lays itself out by the real measure, so a line is too long as soon as it overflows.
+                let real = fonts.map(|f| move |t: &str, s: f32, w: f32| f.measure(t, s, w));
+                let measure = real.as_ref().map(|m| m as quillstone_render::Measure);
+                let (lines, fit) = quillstone_render::view::page_lines_measured(theme, speaker.as_deref(), text, theme.text_size, measure);
+                if lines > fit + usize::from(measure.is_none()) {
                     out.push((
                         program.lines[pc],
                         format!(

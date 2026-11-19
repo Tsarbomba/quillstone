@@ -187,7 +187,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen,
             }
             (Tab::Scenes, true) => {
                 let label = Rect::new(r.x + 30.0, r.y, r.w - 60.0, r.h);
-                let (title, size) = fit_value(src, 34.0, label.w);
+                let (title, size) = fit_value(src, 34.0, label.w, None);
                 text(out, title, label, size, theme.text_color, Align::Left);
             }
             (Tab::Music | Tab::Scenes, false) => {

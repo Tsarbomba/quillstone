@@ -192,7 +192,7 @@ pub struct Game<'p> {
     /// Where the Messages screen is (see `game/messages.rs`).
     msgs: messages::MsgUi,
     /// The frontend's text measuring (see `measure.rs`).
-    measure: Option<crate::measure::MeasureFn>,
+    measure: Option<std::rc::Rc<quillstone_render::layout::MeasureDyn>>,
     /// Auto-voice: recordings found in the script's voice folder, by
     /// `voice_name` (see [`Game::set_voice_files`]).
     voice_files: std::collections::HashMap<String, String>,
@@ -378,6 +378,7 @@ impl<'p> Game<'p> {
     fn fresh_view(&mut self) {
         let theme = self.view.theme().clone();
         self.view = View::new().with_speed(self.settings.text_speed).with_text_scale(self.settings.text_scale).with_theme(theme).with_anims(&self.program.anims).with_art_scale(self.program.art_scale);
+        self.view.set_measure(self.measure.clone().map(quillstone_render::SharedMeasure));
     }
 
     /// Where closing a screen goes back to.
@@ -450,7 +451,13 @@ impl<'p> Game<'p> {
     /// The frontend's text engine, so layouts that fit their text (chat bubbles, journal rows) use the real
     /// wrapping instead of an estimate that errs long. Set it again when the theme's font changes.
     pub fn set_text_measure(&mut self, measure: Option<crate::measure::MeasureFn>) {
-        self.measure = measure;
+        self.measure = measure.map(std::rc::Rc::from);
+        self.view.set_measure(self.measure.clone().map(quillstone_render::SharedMeasure));
+    }
+
+    /// The frontend's text measuring as the layouts take it.
+    pub(crate) fn measure_ref(&self) -> Option<crate::measure::Measure<'_>> {
+        self.measure.as_deref().map(|m| m as crate::measure::Measure)
     }
 
     /// Draw everything with this theme (see `quillstone_render::Theme`). At the
@@ -851,9 +858,9 @@ impl<'p> Game<'p> {
                 let rows = rows(self.has_language_row());
                 let hover = self.pointer().filter(|_| self.confirm.is_none()).and_then(|(x, y)| settings_at(x, y, self.in_story, rows, theme));
                 let language = self.has_language_row().then(|| self.language_name());
-                draw_settings(&mut out, theme, tr, &self.settings, self.in_story, self.focus, hover, language, image_size);
+                draw_settings(&mut out, theme, tr, &self.settings, self.in_story, self.focus, hover, language, image_size, self.measure_ref());
             }
-            Screen::Backlog => draw_backlog(&mut out, theme, tr, &self.backlog, self.backlog_scroll, image_size),
+            Screen::Backlog => draw_backlog(&mut out, theme, tr, &self.backlog, self.backlog_scroll, image_size, self.measure_ref()),
             Screen::Save | Screen::Load => {
                 let tabs = self.slot_tabs();
                 let hover = self.pointer().and_then(|(x, y)| slots_at(x, y, &tabs, self.slots.len(), self.theme()));
@@ -1616,7 +1623,7 @@ impl<'p> Game<'p> {
     }
 
     fn backlog_event(&mut self, event: Event) {
-        let max = backlog_max_scroll(&self.backlog, self.theme());
+        let max = backlog_max_scroll(&self.backlog, self.theme(), self.measure_ref());
         let scroll_by = |s: usize, d: isize| (s as isize + d).clamp(0, max as isize) as usize;
         match event {
             Event::Wheel(dy) => self.backlog_scroll = scroll_by(self.backlog_scroll, if dy > 0.0 { 1 } else { -1 }),

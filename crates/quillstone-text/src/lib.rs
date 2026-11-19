@@ -218,6 +218,19 @@ mod real {
         }
     }
 
+    /// How far (px) the laid-out text is taller than its `height`; at most 0 when it fits. Off the 1920x1080 size the
+    /// lines' heights are rounded to whole pixels, so N lines that exactly fill a box measured in virtual pixels can be
+    /// up to half a pixel per line taller in the window; that much is allowed, or such a box would shrink its text.
+    fn too_tall(buffer: &Buffer, job: &TextJob, height: u32) -> f32 {
+        let (mut tall, mut lines) = (0.0f32, 0);
+        for run in buffer.layout_runs() {
+            tall += run.line_height;
+            lines += 1;
+        }
+        let slack = if (job.scale - 1.0).abs() < 1e-3 { 0.0 } else { 0.5 * lines as f32 };
+        tall - slack - height as f32
+    }
+
     /// Layouts kept before the cache starts afresh (a screen shows a few dozen texts).
     const MAX_LAYOUTS: usize = 128;
 
@@ -287,8 +300,8 @@ mod real {
             let (width, height) = (job.rect.w.max(1.0) as u32, job.rect.h.max(1.0) as u32);
             let size_px = job.size_px.max(1.0);
             let buffer = self.shape_to_fit(job, width, height, size_px);
-            let tall: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
-            (tall > 0.0).then(|| Fit { scale: buffer.metrics().font_size / size_px, cut: tall > height as f32 })
+            let laid_out = buffer.layout_runs().next().is_some();
+            laid_out.then(|| Fit { scale: buffer.metrics().font_size / size_px, cut: too_tall(&buffer, job, height) > 0.0 })
         }
 
         /// Give a bitmap's pixel buffer back once it is uploaded, to be drawn into again.
@@ -303,8 +316,7 @@ mod real {
             loop {
                 let line_height = quillstone_render::line_height(size);
                 let buffer = self.shape(job, width, Metrics::new(size, line_height));
-                let tall: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
-                if tall <= height as f32 || size <= size_px * 0.6 {
+                if too_tall(&buffer, job, height) <= 0.0 || size <= size_px * 0.6 {
                     return buffer;
                 }
                 size = (size * 0.9).max(size_px * 0.6);
@@ -515,6 +527,26 @@ mod tests {
     use super::*;
     use quillstone_render::{build_frame, Align, Draw, Rect, Size};
     use quillstone_script::markup::rich;
+
+    #[test]
+    fn a_box_sized_to_its_measured_lines_keeps_its_text_whole_at_every_window_size() {
+        let m = Measurer::new(Vec::new());
+        let text = "The quick brown fox jumps over the lazy dog while the committee deliberates at length. ".repeat(6);
+        let (width, size) = (1400.0, 38.0);
+        let Some((lines, _)) = m.measure(&text, size, width) else { return };
+        let height = lines as f32 * quillstone_render::line_height(size);
+        let at = |w: f32, h: f32| {
+            let draw = Draw::Text { text: text.clone(), runs: Vec::new(), visible_chars: usize::MAX, rect: Rect::new(0.0, 0.0, width, height), size, color: [1.0; 4], align: Align::Left, outline: None };
+            m.fit(&build_frame(&[draw], Size::new(w, h)).texts.remove(0))
+        };
+        for (w, h) in [(1920.0, 1080.0), (1280.0, 720.0), (960.0, 540.0), (800.0, 450.0), (1366.0, 768.0)] {
+            let Some(fit) = at(w, h) else { return };
+            assert!(fit.scale == 1.0 && !fit.cut, "{w}x{h}: {fit:?}");
+        }
+        // one line short is still too tall at any size
+        let draw = Draw::Text { text: text.clone(), runs: Vec::new(), visible_chars: usize::MAX, rect: Rect::new(0.0, 0.0, width, height - 2.0 * quillstone_render::line_height(size)), size, color: [1.0; 4], align: Align::Left, outline: None };
+        assert!(m.fit(&build_frame(&[draw], Size::new(960.0, 540.0)).texts.remove(0)).unwrap().scale < 1.0);
+    }
 
     fn job(tagged: &str) -> TextJob {
         let r = rich(tagged);

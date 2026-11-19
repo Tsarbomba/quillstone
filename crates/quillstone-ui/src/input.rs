@@ -6,7 +6,7 @@
 //! theme's colours and font apply; `input_rect` moves and widens the panel, `input_image` dresses it).
 
 use quillstone_render::theme::DEFAULT_INPUT_RECT;
-use quillstone_render::{estimate_lines, Align, Draw, Rect, Size, Theme, FULL_UV, VIRTUAL};
+use quillstone_render::{lines_of, Align, Draw, Measure, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_script::markup::rich;
 
 use crate::texts::Tr;
@@ -145,13 +145,13 @@ pub(crate) fn picture_or_rect(out: &mut Vec<Draw>, pic: Option<&str>, dest: Rect
     }
 }
 
-pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &InputScreen, image_size: &dyn Fn(&str) -> Option<Size>, measure: Option<Measure>) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     let panel = panel_rect(theme);
     picture_or_rect(out, theme.input_image.as_deref(), panel, theme.panel_color, image_size);
 
     let pr = prompt_rect(theme);
-    let size = if estimate_lines(&rich(s.prompt).text, PROMPT_SIZE, pr.w) > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
+    let size = if lines_of(measure, &rich(s.prompt).text, PROMPT_SIZE, pr.w).0 > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
     rich_text(out, s.prompt, pr, size, theme.text_color);
 
     // The field: a dark well with a thin accent outline.
@@ -282,7 +282,7 @@ mod tests {
                     can_confirm: can,
                     hover_ok: false,
                 };
-                draw_input(&mut out, &theme, Tr::default(), &s, &|_| None);
+                draw_input(&mut out, &theme, Tr::default(), &s, &|_| None, None);
                 for d in &out {
                     match d {
                         Draw::Rect { rect, .. } => assert!(inside(*rect, screen), "{rect:?}"),
@@ -292,6 +292,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_prompt_shrinks_by_the_real_measure_when_there_is_one() {
+        let theme = Theme::default();
+        let prompt = "word ".repeat(40); // the estimate says more than three lines
+        let s = InputScreen { prompt: &prompt, text: "", placeholder: None, max: 16, caret: false, can_confirm: true, hover_ok: false };
+        let size = |m: Option<Measure>| {
+            let mut out = Vec::new();
+            draw_input(&mut out, &theme, Tr::default(), &s, &|_| None, m);
+            out.iter().find_map(|d| match d {
+                Draw::Text { text, size, .. } if text.starts_with("word") => Some(*size),
+                _ => None,
+            })
+        };
+        let two = |_: &str, _: f32, _: f32| Some((2, 900.0));
+        assert_eq!((size(None), size(Some(&two))), (Some(PROMPT_SMALL), Some(PROMPT_SIZE)));
     }
 
     #[test]
@@ -310,10 +327,10 @@ mod tests {
             hover_ok: false,
         };
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, Tr::default(), &mk("", true), &|_| None);
+        draw_input(&mut out, &theme, Tr::default(), &mk("", true), &|_| None, None);
         assert!(texts(&out).contains(&"Alex".to_string()) && texts(&out).contains(&"0/16".to_string()));
         let mut out = Vec::new();
-        draw_input(&mut out, &theme, Tr::default(), &mk("Sam", true), &|_| None);
+        draw_input(&mut out, &theme, Tr::default(), &mk("Sam", true), &|_| None, None);
         assert!(!texts(&out).contains(&"Alex".to_string()));
         assert!(texts(&out).contains(&"Sam|".to_string()), "the caret follows the text: {:?}", texts(&out));
         let ok_fill = |out: &[Draw]| out.iter().find_map(|d| match d {
@@ -321,8 +338,8 @@ mod tests {
             _ => None,
         });
         let (mut a, mut b) = (Vec::new(), Vec::new());
-        draw_input(&mut a, &theme, Tr::default(), &mk("", true), &|_| None);
-        draw_input(&mut b, &theme, Tr::default(), &mk("", false), &|_| None);
+        draw_input(&mut a, &theme, Tr::default(), &mk("", true), &|_| None, None);
+        draw_input(&mut b, &theme, Tr::default(), &mk("", false), &|_| None, None);
         assert!(ok_fill(&b).unwrap()[3] < ok_fill(&a).unwrap()[3], "dimmed");
     }
 
@@ -340,8 +357,8 @@ mod tests {
         assert!(!ok_at(&theme, old.x + 5.0, old.y + 5.0), "and no longer where it was");
         let s = InputScreen { prompt: "Name?", text: "", placeholder: None, max: 8, caret: false, can_confirm: true, hover_ok: false };
         let (mut with, mut without) = (Vec::new(), Vec::new());
-        draw_input(&mut with, &theme, Tr::default(), &s, &|_| Some(Size::new(64.0, 64.0)));
-        draw_input(&mut without, &theme, Tr::default(), &s, &|_| None);
+        draw_input(&mut with, &theme, Tr::default(), &s, &|_| Some(Size::new(64.0, 64.0)), None);
+        draw_input(&mut without, &theme, Tr::default(), &s, &|_| None, None);
         assert!(with.iter().any(|d| matches!(d, Draw::Image { src, dest, .. } if src == "gui/in.png" && *dest == panel)));
         assert!(!without.iter().any(|d| matches!(d, Draw::Image { .. })), "a picture that isn't loaded leaves the panel colour");
         assert!(without.iter().any(|d| matches!(d, Draw::Rect { rect, color } if *rect == panel && *color == theme.panel_color)));

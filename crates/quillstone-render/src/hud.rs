@@ -8,7 +8,7 @@ use quillstone_script::markup::rich;
 use quillstone_script::{HudElem, HudKind, Vars};
 
 use crate::fade::Fade;
-use crate::layout::{is_wide, Rect, Size, FULL_UV, VIRTUAL};
+use crate::layout::{is_wide, lines_styled, Measure, Rect, Size, FULL_UV, VIRTUAL};
 use crate::theme::Theme;
 use crate::view::{faded, Align, Draw};
 
@@ -122,9 +122,9 @@ impl HudLayer {
     }
 
     /// Push the draws of every element that is on (its condition true, not faded out).
-    pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, out: &mut Vec<Draw>) {
+    pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, measure: Option<Measure>, out: &mut Vec<Draw>) {
         for item in self.items.iter().filter(|i| i.fade.alpha > 0.0) {
-            self.draw_item(item, theme, image_size, look, out);
+            self.draw_item(item, theme, image_size, look, measure, out);
         }
     }
 
@@ -135,14 +135,14 @@ impl HudLayer {
     }
 
     /// The button under the point, if any: the topmost one, at the rect it is drawn at.
-    pub fn button_at(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, x: f32, y: f32) -> Option<&HudElem> {
+    pub fn button_at(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, measure: Option<Measure>, x: f32, y: f32) -> Option<&HudElem> {
         let look = HudLook::default();
         let mut live = self.items.iter().rev().filter(|i| i.fade.target > 0.0 && i.fade.alpha > 0.0 && i.elem.action.is_some());
-        live.find(|i| self.draw_item(i, theme, image_size, look, &mut Vec::new()).is_some_and(|r| r.contains(x, y))).map(|i| &i.elem)
+        live.find(|i| self.draw_item(i, theme, image_size, look, measure, &mut Vec::new()).is_some_and(|r| r.contains(x, y))).map(|i| &i.elem)
     }
 
     /// Push one element's draws and say where it is (none when it is off or its picture is unknown).
-    fn draw_item(&self, item: &Item, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, out: &mut Vec<Draw>) -> Option<Rect> {
+    fn draw_item(&self, item: &Item, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, measure: Option<Measure>, out: &mut Vec<Draw>) -> Option<Rect> {
         let e = &item.elem;
         if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
             return None;
@@ -157,10 +157,10 @@ impl HudLayer {
                 let size = size.unwrap_or(theme.text_size); // the writer's layout: HUD text does not follow the player's text size
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));
-                let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad);
+                let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad, measure);
                 // A text button under the mouse (or focused) gets the theme's hover colour as its panel.
                 let back = if lit(r) { Some(theme.button_hover_color) } else { back };
-                Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad))
+                Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad, measure))
             }
             HudKind::Bar { value, max, size: [w, h], color, back, border } => {
                 let int = |x: &quillstone_script::HudExpr| x.expr.eval(&self.vars).as_int().unwrap_or(0);
@@ -259,6 +259,7 @@ pub(crate) fn draw_text(
     color: [f32; 4],
     back: Option<[f32; 4]>,
     pad: f32,
+    measure: Option<Measure>,
 ) -> Rect {
     let r = rich(shown);
     // `{size=..}` runs make characters (and so lines) bigger than the base size.
@@ -273,7 +274,7 @@ pub(crate) fn draw_text(
     let (wanted, room) = (widest_line(&r.text, size, &scales) + 2.0 * pad, VIRTUAL.w - 2.0 * inset);
     let width = wanted.min(room);
     let lines = if wanted > room {
-        crate::layout::estimate_lines_styled(&r.text, &r.runs, size, (width - 2.0 * pad).max(1.0)).max(newlines)
+        lines_styled(measure, &r.text, &r.runs, size, (width - 2.0 * pad).max(1.0)).max(newlines)
     } else {
         newlines
     } as f32;
@@ -450,7 +451,7 @@ mod tests {
     fn a_long_notice_at_the_right_wraps_inside_the_screen_instead_of_running_off_the_left_edge() {
         let text = "A very long notice that goes on and on about nothing in particular. ".repeat(2);
         let mut out = Vec::new();
-        draw_text(&mut out, &text, (1.0, 0.0), 40.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 16.0);
+        draw_text(&mut out, &text, (1.0, 0.0), 40.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 16.0, None);
         let Draw::Rect { rect, .. } = &out[0] else { panic!("a panel first") };
         assert!(rect.x >= 40.0 && rect.x + rect.w <= VIRTUAL.w - 40.0 + 0.01, "{rect:?}");
         assert!(rect.h > 30.0 * LINE + 32.0 + 1.0, "taller for the wrapped lines: {rect:?}");
@@ -473,7 +474,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..256 {
             out.clear();
-            draw_text(&mut out, &text, (0.0, 0.0), 0.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0);
+            draw_text(&mut out, &text, (0.0, 0.0), 0.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0, None);
         }
         assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
         assert_eq!(out.len(), 2, "a panel and the text");
