@@ -3484,6 +3484,7 @@ Commands are one line, then Enter. Errors show as a line and leave the console o
 | `vars [prefix]` | lists the variables, sorted, at most 10; the rest is counted, and a prefix narrows it |
 | `set <var> = <expression>` | the same assignment `::set` takes (`=`, `+=`, `-=`, `random(1,6)` too) |
 | `jump <label>` | goes there now, as `::jump` does |
+| `where` | shows the label the story is in and the script file and line (`start (story/02.quill.md:120)`), and with `::call`s open, `called from` their labels, innermost first |
 | `help` | lists the commands |
 
 - **`set`.** A variable the script declares keeps its kind: a number can't become text, and a

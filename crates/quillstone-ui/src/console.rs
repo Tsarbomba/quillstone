@@ -23,14 +23,17 @@ pub enum Command {
     /// An assignment as `::set` writes it: `gold = 5`, `gold += 1`.
     Set(String),
     Jump(String),
+    /// Where the story is: the label, the script line, and who called it.
+    Where,
     Help,
 }
 
-pub const HELP: [&str; 5] = [
+pub const HELP: [&str; 6] = [
     "get <var>   (or just <var>)   show a value",
     "vars [prefix]                 list variables",
     "set <var> = <expr>            change a variable (also += and -=)",
     "jump <label>                  go there now, keeping the variables",
+    "where                         show the label, script line and callers",
     "help; Esc or F12 closes",
 ];
 
@@ -44,6 +47,7 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "get" => need("a variable name").map(Command::Get),
         "set" => need("an assignment like `gold = 5`").map(Command::Set),
         "jump" => need("a label").map(Command::Jump),
+        "where" => Ok(Command::Where),
         _ if is_ident(input) => Ok(Command::Get(input.to_string())),
         _ => Err(format!("unknown command `{word}` (try `help`)")),
     }
@@ -122,6 +126,7 @@ mod tests {
         assert_eq!(parse("set gold = 5"), Ok(Command::Set("gold = 5".into())));
         assert_eq!(parse("jump The Roof"), Ok(Command::Jump("The Roof".into())));
         assert_eq!(parse("help"), Ok(Command::Help));
+        assert_eq!(parse("where"), Ok(Command::Where));
     }
 
     #[test]

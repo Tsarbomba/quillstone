@@ -153,3 +153,20 @@ fn start_dev_begins_at_the_label_with_the_variables() {
     let bad = quillstone_runtime::StartAt { label: Some("nope".into()), sets: vec![] };
     assert!(g.start_dev(&bad).unwrap_err().contains("no label"));
 }
+
+#[test]
+fn where_shows_the_label_the_script_line_and_the_callers() {
+    let src = "# start\n**A:** one\n::call{to=inner}\n**A:** back\n::end\n# inner\n**A:** in inner\n::end\n";
+    let p = parse(src).unwrap();
+    let mut g = dev_game(&p, true);
+    key(&mut g, Key::F12);
+    run(&mut g, "where");
+    assert_eq!(answer(&g), ["start (line 2)"]);
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Space); // on to the call: now in `inner`
+    key(&mut g, Key::F12);
+    run(&mut g, "where");
+    assert_eq!(answer(&g), ["inner (line 7)", "called from start (depth 1)"]);
+    run(&mut g, "help");
+    assert!(answer(&g).iter().any(|l| l.starts_with("where")));
+}

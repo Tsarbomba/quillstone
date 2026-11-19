@@ -72,6 +72,24 @@ impl Game<'_> {
         self.show(&cmds);
     }
 
+    /// `label (file:line)`, then `called from a, b` (innermost first) when inside `::call`s.
+    fn where_lines(&self) -> Vec<String> {
+        let (state, program) = (self.session.state(), self.program);
+        // the label whose section holds the op: the last one that starts at or before it
+        let label_at = |pc: usize| program.labels.iter().filter(|(_, &at)| at <= pc).max_by_key(|(_, &at)| at).map_or("(no label)", |(l, _)| l.as_str());
+        let line = program.lines.get(state.pc).copied().unwrap_or(0);
+        let place = match program.locate(line) {
+            (Some(file), n) => format!("{file}:{n}"),
+            (None, n) => format!("line {n}"),
+        };
+        let mut out = vec![format!("{} ({place})", label_at(state.pc))];
+        if !state.stack.is_empty() {
+            let from: Vec<&str> = state.stack.iter().rev().map(|f| label_at(if f.line { f.ret } else { f.ret.saturating_sub(1) })).collect();
+            out.push(format!("called from {} (depth {})", from.join(", "), from.len()));
+        }
+        out
+    }
+
     fn exec_console(&mut self, cmd: Command) -> Result<Vec<String>, String> {
         let vars = &self.session.state().vars;
         Ok(match cmd {
@@ -84,6 +102,7 @@ impl Game<'_> {
                 let name = src.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).next().unwrap_or("");
                 vec![console::show_var(&self.session.state().vars, name)]
             }
+            Command::Where => self.where_lines(),
             Command::Jump(label) => {
                 let cmds = self.session.dev_jump(&label)?;
                 self.auto = false;
