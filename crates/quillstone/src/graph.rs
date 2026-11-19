@@ -1,7 +1,7 @@
 //! `quillstone graph`: the story's structure as a flowchart (Mermaid or Graphviz dot). Built from the
 //! compiled ops, not by playing: the edges are the ones the writer wrote.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use quillstone_script::{Expr, HudAction, Op, Program, ONCE};
 
@@ -82,9 +82,17 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
         nodes.push(Node { text: h.text.clone(), file, ends: false, unreachable: false, pseudo: false });
     }
     // The node a heading's ops belong to, and the node a jump to op `t` lands in (the first label there).
-    let owner = |i: usize| (0..hs.len()).rev().find(|&k| at(k) <= i).map_or(0, |k| k + off);
-    let target = |t: usize| (0..hs.len()).find(|&k| at(k) == t).map(|k| k + off);
-    let by_label = |l: &str| hs.iter().position(|h| h.label == l).map(|k| k + off);
+    // Lookups are indexed: a big game has thousands of headings and ops. Headings sit in op order.
+    let starts: Vec<usize> = (0..hs.len()).map(at).collect();
+    let owner = |i: usize| starts.partition_point(|&s| s <= i).checked_sub(1).map_or(0, |k| k + off);
+    let mut first_at: HashMap<usize, usize> = HashMap::new();
+    let mut first_label: HashMap<&str, usize> = HashMap::new();
+    for (k, h) in hs.iter().enumerate() {
+        first_at.entry(starts[k]).or_insert(k + off);
+        first_label.entry(h.label.as_str()).or_insert(k + off);
+    }
+    let target = |t: usize| first_at.get(&t).copied();
+    let by_label = |l: &str| first_label.get(l).copied();
 
     let mut edges: Vec<(usize, usize, Kind, String)> = Vec::new();
     let mut seen = HashSet::new();
@@ -215,6 +223,10 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
     }
     // Static reachability from where the story starts, the inventory, HUD buttons and the replay scenes.
     let mut live = vec![false; nodes.len()];
+    let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for e in &edges {
+        out_edges[e.0].push(e.1);
+    }
     let mut todo: Vec<usize> = vec![owner(0)];
     todo.extend(nodes.iter().position(|n| is_hub(n, "Inventory")));
     todo.extend(nodes.iter().position(|n| is_hub(n, "HUD")));
@@ -223,7 +235,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
     todo.extend(program.chapters.iter().filter(|_| chapter_roots).filter_map(|c| by_label(&c.label)));
     while let Some(n) = todo.pop() {
         if !std::mem::replace(&mut live[n], true) {
-            todo.extend(edges.iter().filter(|e| e.0 == n).map(|e| e.1));
+            todo.extend(&out_edges[n]);
         }
     }
     for (n, node) in nodes.iter_mut().enumerate() {
