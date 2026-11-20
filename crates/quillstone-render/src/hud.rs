@@ -38,10 +38,18 @@ struct Item {
     fade: Fade,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HudLayer {
     items: Vec<Item>,
+    /// Opacity of the whole layer: 0 while `::hud{off}` is in effect.
+    master: Fade,
     vars: Vars,
+}
+
+impl Default for HudLayer {
+    fn default() -> Self {
+        HudLayer { items: Vec::new(), master: Fade::at(1.0), vars: Vars::default() }
+    }
 }
 
 impl HudLayer {
@@ -57,15 +65,17 @@ impl HudLayer {
 
     pub fn clear_all(&mut self) {
         self.items.clear();
+        self.master = Fade::at(1.0);
     }
 
     /// Whether a fade is running (so the frontend keeps drawing).
     pub fn fading(&self) -> bool {
-        self.items.iter().any(|i| !i.fade.done())
+        !self.master.done() || self.items.iter().any(|i| !i.fade.done())
     }
 
     /// Finish every fade at once (skipping doesn't wait for them).
     pub fn end_fades(&mut self) {
+        self.master = Fade::at(self.master.target);
         self.items.retain(|i| i.fade.target > 0.0);
         for i in &mut self.items {
             i.fade.alpha = 1.0;
@@ -110,11 +120,15 @@ impl HudLayer {
                     self.items.clear();
                 }
             }
+            Cmd::HudHidden { hidden, fade } => {
+                self.master = Fade { target: if *hidden { 0.0 } else { 1.0 }, rate: Fade::rate_over(*fade), ..self.master };
+            }
             _ => {}
         }
     }
 
     pub fn tick(&mut self, dt: f32) {
+        self.master.tick(dt);
         for i in &mut self.items {
             i.fade.tick(dt);
         }
@@ -123,6 +137,9 @@ impl HudLayer {
 
     /// Push the draws of every element that is on (its condition true, not faded out).
     pub fn draw(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, measure: Option<Measure>, out: &mut Vec<Draw>) {
+        if self.master.alpha <= 0.0 {
+            return;
+        }
         for item in self.items.iter().filter(|i| i.fade.alpha > 0.0) {
             self.draw_item(item, theme, image_size, look, measure, out);
         }
@@ -137,6 +154,9 @@ impl HudLayer {
     /// The button under the point, if any: the topmost one, at the rect it is drawn at.
     pub fn button_at(&self, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, measure: Option<Measure>, x: f32, y: f32) -> Option<&HudElem> {
         let look = HudLook::default();
+        if self.master.target <= 0.0 {
+            return None;
+        }
         let mut live = self.items.iter().rev().filter(|i| i.fade.target > 0.0 && i.fade.alpha > 0.0 && i.elem.action.is_some());
         live.find(|i| self.draw_item(i, theme, image_size, look, measure, &mut Vec::new()).is_some_and(|r| r.contains(x, y))).map(|i| &i.elem)
     }
@@ -144,11 +164,12 @@ impl HudLayer {
     /// Push one element's draws and say where it is (none when it is off or its picture is unknown).
     fn draw_item(&self, item: &Item, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, measure: Option<Measure>, out: &mut Vec<Draw>) -> Option<Rect> {
         let e = &item.elem;
+        let fade = item.fade.alpha * self.master.alpha;
         if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
             return None;
         }
         let button = e.action.is_some();
-        let alpha = if button && !look.active { item.fade.alpha * INERT_ALPHA } else { item.fade.alpha };
+        let alpha = if button && !look.active { fade * INERT_ALPHA } else { fade };
         let focused = look.focused == Some(e.id.as_str());
         let lit = |r: Rect| button && look.active && (focused || look.pointer.is_some_and(|(x, y)| r.contains(x, y)));
         match &e.kind {
@@ -168,7 +189,7 @@ impl HudLayer {
                 let frac = if m <= 0 { 0.0 } else { (v as f64 / m as f64).clamp(0.0, 1.0) as f32 };
                 let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
                 if let Some((c, t)) = border {
-                    let c = faded(*c, item.fade.alpha);
+                    let c = faded(*c, fade);
                     for bar in [
                         Rect::new(r.x - t, r.y - t, r.w + 2.0 * t, *t),
                         Rect::new(r.x - t, r.y + r.h, r.w + 2.0 * t, *t),
@@ -178,9 +199,9 @@ impl HudLayer {
                         out.push(Draw::Rect { rect: bar, color: c });
                     }
                 }
-                out.push(Draw::Rect { rect: r, color: faded(*back, item.fade.alpha) });
+                out.push(Draw::Rect { rect: r, color: faded(*back, fade) });
                 if frac > 0.0 {
-                    let fill = faded(color.unwrap_or(theme.accent_color), item.fade.alpha);
+                    let fill = faded(color.unwrap_or(theme.accent_color), fade);
                     out.push(Draw::Rect { rect: Rect::new(r.x, r.y, r.w * frac, r.h), color: fill });
                 }
                 Some(r)
@@ -570,6 +591,28 @@ mod tests {
         assert!(v.hud().is_empty() && !v.busy());
         v.apply(&[Cmd::HudClear { fade: 0.0 }]);
         assert!(v.hud().is_empty());
+    }
+
+    #[test]
+    fn off_hides_the_layer_without_dropping_elements_and_on_brings_it_back() {
+        let mut v = view("::hud{id=a text=A call=#x x=0 y=0}\n# x\nHi.\n");
+        let button = |v: &View| v.hud_button_at(&no_images, 2.0, 2.0).is_some();
+        assert!(button(&v));
+        assert_eq!(texts(&v.draw_list(&no_images, None)), ["A"]);
+        v.apply(&[Cmd::HudHidden { hidden: true, fade: 0.0 }]);
+        v.tick(0.0);
+        assert!(texts(&v.draw_list(&no_images, None)).is_empty() && !v.hud().is_empty());
+        assert!(!button(&v));
+        let (_, cmds) = Session::start(&parse("::hud{id=a text=A call=#x x=0 y=0}\n# x\nHi.\n").unwrap());
+        v.apply(&cmds.into_iter().filter(|c| matches!(c, Cmd::HudShow { .. })).collect::<Vec<_>>());
+        assert!(texts(&v.draw_list(&no_images, None)).is_empty(), "a replaced element stays hidden");
+        v.apply(&[Cmd::HudHidden { hidden: false, fade: 1.0 }]);
+        assert!(v.busy());
+        v.tick(0.5);
+        assert!((alpha_of(&v, "A").unwrap() - 0.5).abs() < 1e-4);
+        v.tick(0.6);
+        assert_eq!(alpha_of(&v, "A"), Some(1.0));
+        assert!(!v.busy());
     }
 
     #[test]

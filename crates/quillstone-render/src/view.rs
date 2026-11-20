@@ -1234,7 +1234,7 @@ impl View {
                         self.cover = None;
                     }
                 }
-                Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } => self.hud.apply(cmd),
+                Cmd::HudShow { .. } | Cmd::HudHide { .. } | Cmd::HudClear { .. } | Cmd::HudHidden { .. } => self.hud.apply(cmd),
                 Cmd::Particles { set, fade } => self.particles.apply(set, *fade),
                 Cmd::Tint { set, fade } => self.set_tint(set.map(|t| (t.color, t.alpha)), *fade),
                 Cmd::Vignette { set, fade } => self.set_vignette(*set, *fade),

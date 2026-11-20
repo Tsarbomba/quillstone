@@ -606,6 +606,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     for h in &s.hud {
         w(hud_record(h));
     }
+    // Saves from before `::hud{off}` existed have no such record: they load with the HUD on.
+    if s.hud_off {
+        w("hud_off".to_string());
+    }
     // Saves from before `::message` existed have no such records: they load with no threads.
     // `thread "id" unread reply` (`-`: no later reply waiting), then its `msg mine "text" "image"` records ("" is none).
     for t in &s.threads {
@@ -1006,6 +1010,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     saturation: gain(5, d.saturation)?,
                 });
             }
+            "hud_off" => s.hud_off = true,
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {
                 let intro = if t.len() > 4 { Some(path(4)?) } else { None };

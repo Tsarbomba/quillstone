@@ -1324,6 +1324,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::HudShow { elem, .. } => println!("[hud: {}]", elem.id),
             Cmd::HudHide { id, .. } => println!("[hud hidden: {id}]"),
             Cmd::HudClear { .. } => println!("[hud cleared]"),
+            Cmd::HudHidden { hidden, .. } => println!("[hud {}]", if *hidden { "off" } else { "on" }),
             Cmd::FadeOut { time, .. } if *time > 0.0 => println!("[the screen fades out]"),
             Cmd::FadeOut { .. } => println!("[the screen is covered]"),
             Cmd::FadeIn { .. } => println!("[the screen fades in]"),

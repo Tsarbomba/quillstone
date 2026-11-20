@@ -3,7 +3,7 @@
 use quillstone_script::{bg_color, parse, HudKind, Program};
 
 use crate::test_util::replace_records;
-use crate::{Cmd, Input, Session, State};
+use crate::{can_press, Cmd, Input, Session, State};
 
 const SRC: &str = "\
 ---
@@ -103,6 +103,57 @@ fn saves_keep_the_elements_exactly() {
     let text = game.save();
     assert!(text.lines().any(|l| l.starts_with("hud bar \"hp\" 0.02 0.04 \"\" \"hero.hp\" \"hero.max_hp\" 320 26 ")), "{text}");
     assert!(text.lines().any(|l| l.starts_with("hud text \"gold\" 0.9 0.1 \"gold > 0\" \"Gold {gold} a")), "{text}");
+}
+
+const OFF_SRC: &str = "\
+::hud{id=a text=A}
+::hud{id=b text=B call=#x}
+One.
+::hud{off}
+::hud{off}
+::hud{id=c text=C}
+::hud{hide=a}
+Two.
+::hud{on}
+::hud{on}
+Three.
+# x
+Pressed.
+::return
+";
+
+#[test]
+fn off_keeps_the_elements_and_on_brings_them_back() {
+    let p = parse(OFF_SRC).unwrap();
+    let (mut game, _) = Session::start(&p);
+    assert!(can_press(&p, game.state(), "b"));
+    let cmds = game.input(Input::Advance);
+    assert_eq!(cmds.iter().filter(|c| matches!(c, Cmd::HudHidden { .. })).count(), 1, "off when off does nothing: {cmds:?}");
+    assert!(cmds.contains(&Cmd::HudHidden { hidden: true, fade: 0.0 }));
+    assert!(game.state().hud_off);
+    assert_eq!(hud_ids(game.state()), ["b", "c"], "created and removed ones still count");
+    assert!(!can_press(&p, game.state(), "b"), "no clicks while off");
+    assert!(game.input(Input::Hud("b".into())).is_empty());
+    // a save and a redraw keep it off; a rollback goes back to on
+    let (loaded, redraw) = Session::load(&p, &game.save()).unwrap();
+    assert!(loaded.state().hud_off && redraw.contains(&Cmd::HudHidden { hidden: true, fade: 0.0 }));
+    assert_eq!(loaded.state(), game.state());
+    let cmds = game.input(Input::Advance);
+    assert_eq!(cmds.iter().filter(|c| matches!(c, Cmd::HudHidden { .. })).count(), 1);
+    assert!(!game.state().hud_off && can_press(&p, game.state(), "b"));
+    game.rollback();
+    assert!(game.state().hud_off);
+    game.rollback();
+    assert!(!game.state().hud_off);
+}
+
+#[test]
+fn a_save_from_before_hud_off_loads_with_the_hud_on() {
+    let p = parse(OFF_SRC).unwrap();
+    let (mut game, _) = Session::start(&p);
+    game.input(Input::Advance);
+    let old: String = game.save().lines().filter(|l| *l != "hud_off").map(|l| format!("{l}\n")).collect();
+    assert!(!Session::load(&p, &old).unwrap().0.state().hud_off);
 }
 
 #[test]

@@ -1533,6 +1533,24 @@ Mika: *rrring* Hello? ... Oh, it's you.
 out; hiding an id that isn't there does nothing. `::hud{clear}` removes all of them (`fade=`
 works too). Neither waits.
 
+**Hiding all of them for a while.** `::hud{off}` hides every element but keeps them;
+`::hud{on}` shows them again exactly as they were (`fade=` works as above). Use it for a cutscene
+that shouldn't have the clock and buttons over it:
+
+```
+::hud{off fade=0.3}
+::bg{src=assets/ending.png}
+Mika: Nobody is going to see this.
+::hud{on fade=0.3}
+```
+
+- While the HUD is off, an element that is created or replaced is kept but not drawn until
+  `on`, and `hide=` and `clear` still remove elements.
+- Buttons can't be clicked or picked with the keyboard while it is off.
+- `off` when it is already off, and `on` when it isn't, do nothing.
+- The textbox, the quick menu and the line are not part of the HUD: `off` doesn't touch them.
+- Saves and rollback keep it, as they keep the elements.
+
 **Where they are drawn.** Elements are drawn in the order they were created; an element that is
 replaced keeps its place. They are above the background, sprites, inline images, video, hotspot
 pictures and the colour cover and flash. They are below the textbox, quick menu and every other
@@ -2050,6 +2068,76 @@ drawn right now. A lamp that bobs across the screen (`examples/minigame.quill.md
   clicked or reached with the arrow keys.
 - `quillstone test` counts the region as offered while the sprite is shown, since it can't
   tell where it is.
+
+## Free roam
+
+A sandbox where the player picks places and the day moves on is built from parts you already
+have. `examples/freeroam.quill.md` is a small one.
+
+**The clock.** Two variables and a HUD text that shows them:
+
+````markdown
+---
+vars: { day: 1, time: "morning", talked_ren: false }
+---
+# start
+::hud{id=clock text="Day {day}, {time}" x=0.98 y=0.04 size=36 back=#00000099 pad=12}
+````
+
+**The map.** A `::hotspots` block of `call` regions. Each place comes back to the map when its
+label returns, and the regions are worked out again every time, so a place can have an `if`:
+
+````markdown
+# map
+::bg{src=assets/town.png}
+::textbox{hide}
+::hotspots
+- [The cafe](#cafe){rect=14%,52%,8%,14% image=assets/pin.png, call}
+- [The park](#park){rect=70%,58%,8%,14% image=assets/pin.png, call, if park_open and time != "morning"}
+- [Wait a while](#pass-time){rect=40%,90%,20%,7% text="Wait a while", call}
+::
+````
+
+**Moving time on.** One label does it, and every place and the "wait" region end up there. It
+steps `time`, rolls the day over and resets what is daily:
+
+````markdown
+# pass-time
+::if{time == "morning"}
+::set{time="afternoon"}
+::elif{time == "afternoon"}
+::set{time="evening"}
+::else
+::set{time="morning", day += 1, talked_ren=false}
+::endif
+::if{day > 3}
+::jump{to=ending}
+::endif
+::return
+````
+
+**What happens at a place.** An `::if` / `::elif` chain tries the events in order and the first
+one that holds runs, so put the rarest first. `seen(label)` makes an event happen once without a
+flag of your own, and a plain variable does for something that comes back every day:
+
+````markdown
+# cafe
+::if{day == 2 and time == "evening" and not seen(mia-coffee)}
+::call{to=mia-coffee}
+::elif{not seen(mia-hello)}
+::call{to=mia-hello}
+::elif{not talked_ren}
+::call{to=ren-news}
+::else
+The cafe is quiet.
+::endif
+::call{to=pass-time}
+::return
+````
+
+The events are labels that end with `::return`. For a scene that shouldn't have the clock over
+it, wrap it in `::hud{off}` and `::hud{on}` (see [HUD](#hud-text-bars-and-pictures-over-the-story)).
+`quillstone test` plays every place and every event, whatever time it needs.
 
 ## Timing bar
 
@@ -3035,7 +3123,7 @@ Going back one step restores:
 - **The page:** the lines of a full-screen page.
 - **Effects that stay:** the colour cover of `::fade{out}`, the ambient particles' settings,
   the colour wash of `::tint`, the dark edges of `::vignette`, the colour filter of
-  `::filter`, and the HUD elements.
+  `::filter`, and the HUD elements (and whether `::hud{off}` is in effect).
 - **Sound:** music (an intro is not resumed part-way) and looping sound effects.
 
 One-shot sound effects, shakes and flashes are not replayed.

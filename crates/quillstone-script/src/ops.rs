@@ -1768,6 +1768,8 @@ pub enum Op {
     HudHide { id: String, fade: f32 },
     /// Remove every HUD element (`::hud{clear}`).
     HudClear { fade: f32 },
+    /// Hide every HUD element but keep them (`::hud{off}`), or show them again (`::hud{on}`).
+    HudHidden { hidden: bool, fade: f32 },
     /// Voice clip for the next line.
     Voice { src: String, volume: f32 },
     /// Pause for `seconds` (the player can skip it). Waits like a line does.

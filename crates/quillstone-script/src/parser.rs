@@ -111,7 +111,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "choice" => &["time", "default"],
         "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur", "mask"],
-        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "call", "open", "hover"],
+        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "off", "on", "call", "open", "hover"],
         "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "blend", "fade"],
         "hide" => &["all", "fade"],
         "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "time", "ease", "wait", "loop", "then"],
@@ -2489,25 +2489,29 @@ impl Parser {
         Ok(ShopEntry { item: key.to_string(), price, cond })
     }
 
-    /// `::hud{...}`: create or replace an element, or `hide=id` / `clear`.
+    /// `::hud{...}`: create or replace an element, or `hide=id` / `clear` / `off` / `on`.
     fn hud(&mut self, line: usize, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
         let has = |a: &Attrs, k: &str| a.0.iter().any(|(key, _)| key == k);
         let fade = Self::short_seconds(a, "fade", 0.0)?;
-        let (clear, hide) = (a.flag("clear"), has(a, "hide"));
-        if clear || hide {
-            if clear && hide {
-                return Err("`::hud` takes `clear` or `hide=id`, not both".into());
+        let mut modes: Vec<&str> = ["clear", "off", "on"].into_iter().filter(|k| a.flag(k)).collect();
+        if has(a, "hide") {
+            modes.push("hide");
+        }
+        if let Some(&mode) = modes.first() {
+            if modes.len() > 1 {
+                return Err(format!("`::hud` takes only one of `clear`, `hide=id`, `off` and `on` (not `{}` with `{}`)", modes[0], modes[1]));
             }
             if let Some(extra) = a.0.iter().map(|(k, _)| k.as_str()).find(|k| *k != "hide") {
                 let extra = extra.to_string();
-                return Err(format!("`{extra}` can't be combined with `{}` (only `fade=` can)", if clear { "clear" } else { "hide" }));
+                return Err(format!("`{extra}` can't be combined with `{mode}` (only `fade=` can)"));
             }
-            if clear {
-                return Ok((Op::HudClear { fade }, None));
-            }
-            return match a.value("hide") {
-                Some(id) if is_plain_ident(&id) => Ok((Op::HudHide { id, fade }, None)),
-                _ => Err("`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`".into()),
+            return match mode {
+                "clear" => Ok((Op::HudClear { fade }, None)),
+                "off" | "on" => Ok((Op::HudHidden { hidden: mode == "off", fade }, None)),
+                _ => match a.value("hide") {
+                    Some(id) if is_plain_ident(&id) => Ok((Op::HudHide { id, fade }, None)),
+                    _ => Err("`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`".into()),
+                },
             };
         }
         let id = match a.value("id") {
@@ -6048,8 +6052,12 @@ mod tests {
         assert_eq!(ok("::hud{hide=clock}\n").ops[0], Op::HudHide { id: "clock".into(), fade: 0.0 });
         assert_eq!(ok("::hud{clear}\n").ops[0], Op::HudClear { fade: 0.0 });
         assert_eq!(ok("::hud{clear fade=2}\n").ops[0], Op::HudClear { fade: 2.0 });
+        assert_eq!(ok("::hud{off}\n").ops[0], Op::HudHidden { hidden: true, fade: 0.0 });
+        assert_eq!(ok("::hud{on fade=0.5}\n").ops[0], Op::HudHidden { hidden: false, fade: 0.5 });
+        assert!(has_err("::hud{off on}\n", "only one of"));
+        assert!(has_err("::hud{off id=a}\n", "can't be combined"));
         assert!(has_err("::hud{hide}\n", "needs the id"));
-        assert!(has_err("::hud{clear hide=a}\n", "not both"));
+        assert!(has_err("::hud{clear hide=a}\n", "only one of"));
         assert!(has_err("::hud{clear id=a}\n", "can't be combined"));
     }
 

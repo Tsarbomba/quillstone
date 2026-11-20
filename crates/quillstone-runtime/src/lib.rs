@@ -173,6 +173,9 @@ pub enum Cmd {
     HudHide { id: String, fade: f32 },
     /// Remove every HUD element.
     HudClear { fade: f32 },
+    /// Hide every HUD element without removing it, or show them again, fading over `fade` seconds.
+    /// Part of the scene: see [`State::hud_off`].
+    HudHidden { hidden: bool, fade: f32 },
     /// Start or change (`Some`) the ambient particles, or stop them (`None`), easing over
     /// `fade` seconds. Part of the scene: see [`State::particles`].
     Particles { set: Option<Particles>, fade: f32 },
@@ -588,6 +591,8 @@ pub struct State {
     /// The HUD elements (`::hud`), in the order they were created: that is the drawing
     /// order, and an id that is created again keeps its place.
     pub hud: Vec<HudElem>,
+    /// `::hud{off}` is in effect: the elements are kept but not drawn, and their buttons can't be pressed.
+    pub hud_off: bool,
     /// The message threads, the one with the newest activity last.
     pub threads: Vec<Thread>,
     pub music: Option<MusicState>,
@@ -662,6 +667,7 @@ impl State {
             textbox_hidden: false,
             cover: None,
             hud: Vec::new(),
+            hud_off: false,
             threads: Vec::new(),
             music: None,
             sfx_loops: Vec::new(),
@@ -705,6 +711,9 @@ impl State {
         }
         for h in &self.hud {
             out.push(Cmd::HudShow { elem: Box::new(h.clone()), fade: 0.0 });
+        }
+        if self.hud_off {
+            out.push(Cmd::HudHidden { hidden: true, fade: 0.0 });
         }
         for s in &self.sprites {
             out.push(Cmd::ShowSprite {
@@ -946,7 +955,8 @@ fn hud_call(program: &Program, state: &State, id: &str) -> Option<String> {
 /// line (see [`waits_at_line`]), and a `call=` button also has room on the call stack.
 pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
     let Some(elem) = state.hud.iter().find(|h| h.id == id) else { return false };
-    waits_at_line(state)
+    !state.hud_off
+        && waits_at_line(state)
         && elem.cond.as_ref().is_none_or(|c| c.expr.test(&state.vars))
         && match &elem.action {
             Some(HudAction::Call(_)) => state.stack.len() < MAX_CALL_DEPTH && hud_call(program, state, id).is_some(),
@@ -1544,6 +1554,13 @@ pub(crate) fn step_traced(
                 if !state.hud.is_empty() {
                     state.hud.clear();
                     out.push(Cmd::HudClear { fade: *fade });
+                }
+                state.pc += 1;
+            }
+            Op::HudHidden { hidden, fade } => {
+                if state.hud_off != *hidden {
+                    state.hud_off = *hidden;
+                    out.push(Cmd::HudHidden { hidden: *hidden, fade: *fade });
                 }
                 state.pc += 1;
             }
