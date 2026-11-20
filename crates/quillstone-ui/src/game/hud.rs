@@ -1,4 +1,4 @@
-//! Clickable HUD elements (`::hud{call=#label}` / `open=screen`): which one is under the mouse or has the
+//! Clickable HUD elements (`::hud{call=#label}` / `jump=#label` / `open=screen`): which one is under the mouse or has the
 //! keyboard focus, and what a press does. At a plain waiting line Up/Down (the D-pad) pick a button out and
 //! Enter/Space (A) presses it; any other input, or the story moving, drops the focus.
 
@@ -74,7 +74,7 @@ impl Game<'_> {
             return self.notify_ui("Can't use that now", &[]);
         }
         match action {
-            HudAction::Call(_) => self.forward(Input::Hud(id.to_string())),
+            HudAction::Call(_) | HudAction::Jump(_) => self.forward(Input::Hud(id.to_string())),
             HudAction::Open(HudScreen::Inventory) => self.open_inventory_overlay(),
             HudAction::Open(HudScreen::Journal) => self.open_journal_overlay(),
             HudAction::Open(HudScreen::History) => self.open_backlog(),

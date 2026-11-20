@@ -206,7 +206,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
         .iter()
         .filter_map(|op| match op {
             Op::Hud { elem, .. } => match &elem.action {
-                Some(HudAction::Call(l)) => Some((elem.id.as_str(), l.as_str())),
+                Some(HudAction::Call(l) | HudAction::Jump(l)) => Some((elem.id.as_str(), l.as_str())),
                 _ => None,
             },
             _ => None,

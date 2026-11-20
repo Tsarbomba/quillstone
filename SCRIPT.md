@@ -1459,7 +1459,7 @@ check` tests it as a picture and `package` includes it.
 | `x=right` `y=4%` | where the element is (default `left` and `top`) |
 | `if="hero.hp <= 3"` | draw the element only while the condition is true |
 | `fade=0.3` | fade in over that many seconds (more than 0, up to 10) when the element is created |
-| `call=` `open=` `hover=` | make a text or picture element a button: see "Buttons" below |
+| `call=` `jump=` `open=` `hover=` | make a text or picture element a button: see "Buttons" below |
 
 - **`x` and `y`** place the element as a sprite is placed (see
   [Placing things](#placing-things-x-and-y)). `x` is `left` `center` `right`, or a number or
@@ -1475,21 +1475,27 @@ check` tests it as a picture and `package` includes it.
 | Attribute | |
 | --- | --- |
 | `call=#phone` | a press **calls** that label |
+| `jump=#map` | a press **jumps** to that label |
 | `open=journal` | a press opens a built-in screen |
 | `hover=assets/phone_hover.png` | for a picture button: shown instead of the picture while the mouse is over it |
 
 - **`call=`** calls the label and, when it ends with `::return`, shows the same line again
   (like an item's Use). The label must exist and take no parameters; `check` says which line
   is wrong.
+- **`jump=`** leaves the line the story waits at and goes on at the label, with nothing to
+  return to. Unlike `::jump`, it also leaves every `::call` and `call` region the story is
+  inside, so no `::return` ever comes back to the scene it left. Use it for a button that leaves
+  wherever you are, such as a map button. The label must exist and take no parameters, and a
+  press needs no room on the call stack.
 - **`open=`** opens a screen as the quick menu and keys do: `journal` (J), `inventory` (I),
   `history` (H), `save` (S), `load` (L), `settings` (the quick menu's Settings button) or
   `extras` (the Extras screen: gallery, music room and scene replays; closing it returns to the
   story). `journal` and `inventory` need a game that has one, and `extras` a `gallery:`,
   `bonus:`, `music_room:` or `replays:`. `messages` opens the [Messages](#messages) screen, and needs a game
   that uses `::message` or `::reply`.
-- **`hover=`** needs `call=` or `open=`, and is checked and packaged like the picture. A text
+- **`hover=`** needs `call=`, `jump=` or `open=`, and is checked and packaged like the picture. A text
   button simply lights up under the mouse.
-- `call=` and `open=` can't be combined.
+- `call=`, `jump=` and `open=` can't be combined.
 
 **When a button works.** Only while the story waits at a normal line (the same rule as an
 item's Use). Over a choice, a timed choice, `::input`, `::wait`, a shop, a `{nw}` line, a
@@ -1515,13 +1521,14 @@ replay or while skipping, buttons are drawn dimmed and a press only says "Can't 
 - You show, hide and change a button with `::hud` like any element. It follows the scene
   through rollback, saves and hot reload. A save can only name a label some `::hud` of the
   script offers.
-- `quillstone test` presses each `call=` button once, where it can be pressed, so its label is
+- `quillstone test` presses each `call=` and `jump=` button once, where it can be pressed, so its label is
   not reported as unreached.
 - `quillstone graph` draws a dotted edge from a "HUD" node to each such label.
 
 ```
 ::hud{id=phone image=assets/phone.png hover=assets/phone_hover.png call=#phone x=right y=0.12}
 ::hud{id=log text="Journal" open=journal x=0.02 y=0.12 back=#00000099 pad=10}
+::hud{id=map image=assets/gui/map.png jump=#map x=0.98 y=0.02}
 
 # phone
 ::set{calls += 1}

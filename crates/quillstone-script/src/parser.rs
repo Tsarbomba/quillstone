@@ -111,7 +111,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "choice" => &["time", "default"],
         "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur", "mask"],
-        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "off", "on", "call", "open", "hover"],
+        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "off", "on", "call", "jump", "open", "hover"],
         "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "blend", "fade"],
         "hide" => &["all", "fade"],
         "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "time", "ease", "wait", "loop", "then"],
@@ -212,7 +212,7 @@ struct Parser {
     /// `use=#label` of each item, to check once all labels are known: (label, line).
     item_uses: Vec<(String, usize)>,
     /// `call=#label` of each HUD button, checked the same way: (label, line).
-    hud_calls: Vec<(String, usize)>,
+    hud_calls: Vec<(String, usize, &'static str)>,
     /// Lines of `open=messages` buttons, checked once the script is read (the game must use messages).
     messages_open: Vec<usize>,
     /// `sprite=id` of each hotspot, checked against the sprites the script shows: (id, line).
@@ -426,11 +426,11 @@ impl Parser {
         for line in std::mem::take(&mut self.messages_open).into_iter().filter(|_| !uses_messages) {
             self.err(line, "`open=messages` needs a game that uses `::message` or `::reply`");
         }
-        for (label, line) in std::mem::take(&mut self.hud_calls) {
+        for (label, line, key) in std::mem::take(&mut self.hud_calls) {
             if !self.program.labels.contains_key(&label) {
-                self.err(line, format!("`call=#{label}`: unknown label `{label}`"));
+                self.err(line, format!("`{key}=#{label}`: unknown label `{label}`"));
             } else if self.program.params.contains_key(&label) {
-                self.err(line, format!("`call=#{label}`: `{label}` takes parameters, and a HUD button can't give them"));
+                self.err(line, format!("`{key}=#{label}`: `{label}` takes parameters, and a HUD button can't give them"));
             } else {
                 self.program.hud_calls.insert(label);
             }
@@ -2531,7 +2531,7 @@ impl Parser {
             "bar" => &["bar", "max", "size", "color", "back", "border", "border_size"],
             _ => &["image", "scale"],
         };
-        let common = ["id", "x", "y", "if", "call", "open", "hover"];
+        let common = ["id", "x", "y", "if", "call", "jump", "open", "hover"];
         let stray = a.0.iter().map(|(k, _)| k.as_str()).find(|k| !allowed.contains(k) && !common.contains(k)).map(str::to_string);
         if let Some(k) = stray {
             let known = known_attrs("hud");
@@ -2549,7 +2549,7 @@ impl Parser {
         let action = self.hud_action(line, a, kind_name)?;
         let hover = match a.value("hover") {
             None => None,
-            Some(_) if action.is_none() => return Err("`hover=` needs `call=#label` or `open=...` (it is the button's picture under the mouse)".into()),
+            Some(_) if action.is_none() => return Err("`hover=` needs `call=#label`, `jump=#label` or `open=...` (it is the button's picture under the mouse)".into()),
             Some(_) if kind_name != "image" => return Err("`hover=` is a picture for an `image=` button (a text button lights up by itself)".into()),
             Some(h) => Some(check_image_path(&h, "hover", "a HUD hover image")?),
         };
@@ -2612,21 +2612,30 @@ impl Parser {
         Ok((Op::Hud { elem: Box::new(HudElem { id, x, y, cond, kind, action, hover }), fade }, None))
     }
 
-    /// `call=#label` or `open=journal`: what a press on the element does (none when neither is given).
+    /// `call=#label`, `jump=#label` or `open=journal`: what a press on the element does (none when none is given).
     fn hud_action(&mut self, line: usize, a: &mut Attrs, kind_name: &str) -> Result<Option<HudAction>, String> {
-        let (call, open) = (a.value("call"), a.value("open"));
-        let action = match (call, open) {
-            (None, None) => return Ok(None),
-            (Some(_), Some(_)) => return Err("`::hud` takes `call=` or `open=`, not both".into()),
-            _ if kind_name == "bar" => return Err("a bar can't be a button (`call=` and `open=` work on `text=` and `image=` elements)".into()),
-            (Some(c), None) => match c.strip_prefix('#').filter(|l| !l.is_empty()) {
+        let (call, jump, open) = (a.value("call"), a.value("jump"), a.value("open"));
+        let action = match (call, jump, open) {
+            (None, None, None) => return Ok(None),
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+                return Err("`::hud` takes one of `call=`, `jump=` and `open=`, not several".into())
+            }
+            _ if kind_name == "bar" => return Err("a bar can't be a button (`call=`, `jump=` and `open=` work on `text=` and `image=` elements)".into()),
+            (Some(c), None, None) => match c.strip_prefix('#').filter(|l| !l.is_empty()) {
                 Some(l) => {
-                    self.hud_calls.push((l.to_string(), line));
+                    self.hud_calls.push((l.to_string(), line, "call"));
                     HudAction::Call(l.to_string())
                 }
                 None => return Err("`call=` names a label, like `call=#phone`".into()),
             },
-            (None, Some(o)) => {
+            (None, Some(j), None) => match j.strip_prefix('#').filter(|l| !l.is_empty()) {
+                Some(l) => {
+                    self.hud_calls.push((l.to_string(), line, "jump"));
+                    HudAction::Jump(l.to_string())
+                }
+                None => return Err("`jump=` names a label, like `jump=#map`".into()),
+            },
+            (None, None, Some(o)) => {
                 let Some(screen) = HudScreen::from_name(&o) else {
                     let names: Vec<&str> = HudScreen::NAMES.iter().map(|(n, _)| *n).collect();
                     return Err(format!("unknown `open={o}` (it can open: {})", names.join(", ")));
@@ -6128,13 +6137,22 @@ mod tests {
         // the hover picture is an asset like the element's own
         let assets: Vec<_> = p.ops[0].all_assets().into_iter().map(|(_, a)| a).collect();
         assert_eq!(assets, ["assets/phone.png", "assets/phone_hover.png"]);
+        let p = ok("::hud{id=map text=Map jump=#phone}\n# start\nHi.\n::end\n# phone\nRing.\n::return\n");
+        assert!(matches!(&p.ops[0], Op::Hud { elem, .. } if elem.action == Some(HudAction::Jump("phone".into()))));
+        assert_eq!(p.hud_calls.iter().collect::<Vec<_>>(), ["phone"]);
     }
 
     #[test]
     fn hud_button_errors_name_the_line_and_the_problem() {
         let story = "# start\nHi.\n::end\n# phone\n::return\n# ask(x)\n::return\n";
         for (head, src, needle) in [
-            ("", "::hud{id=a text=x call=#start open=settings}", "not both"),
+            ("", "::hud{id=a text=x call=#start open=settings}", "not several"),
+            ("", "::hud{id=a text=x call=#start jump=#start}", "not several"),
+            ("", "::hud{id=a text=x jump=#start open=settings}", "not several"),
+            ("", "::hud{id=a text=x jump=start}", "`jump=` names a label"),
+            ("", "::hud{id=a text=x jump=#nowhere}", "`jump=#nowhere`: unknown label"),
+            ("", "::hud{id=a text=x jump=#ask}", "takes parameters"),
+            ("", "::hud{id=a bar=1 max=2 size=10,10 jump=#phone}", "bar can't be a button"),
             ("", "::hud{id=a text=x call=start}", "names a label"),
             ("", "::hud{id=a text=x call=#}", "names a label"),
             ("", "::hud{id=a text=x call=#nowhere}", "unknown label `nowhere`"),
@@ -6143,7 +6161,7 @@ mod tests {
             ("", "::hud{id=a text=x open=map}", "unknown `open=map`"),
             ("", "::hud{id=a text=x open=journal}", "needs a journal"),
             ("", "::hud{id=a text=x open=inventory}", "needs an inventory"),
-            ("", "::hud{id=a text=x hover=a.png}", "needs `call=#label` or `open=...`"),
+            ("", "::hud{id=a text=x hover=a.png}", "needs `call=#label`, `jump=#label` or `open=...`"),
             ("", "::hud{id=a text=x open=settings hover=a.png}", "picture for an `image=` button"),
             ("", "::hud{id=a image=a.png open=settings hover=../a.png}", "inside the game folder"),
             ("", "::hud{id=a image=a.png open=settings hover=a.txt}", "must be a .png"),

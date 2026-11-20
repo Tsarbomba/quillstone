@@ -333,7 +333,7 @@ pub enum Input {
     /// line the story waits at (see [`can_use`]).
     Use(String),
     /// Press the HUD button with this element id: `::call` its `call=` label from the line the
-    /// story waits at (see [`can_press`]). The label is the shown element's, never the input's.
+    /// story waits at, or leave every call and `::jump` to its `jump=` label (see [`can_press`]). The label is the shown element's, never the input's.
     Hud(String),
     /// The player's answer to a [`Cmd::AskInput`], as typed: it is cleaned up (see
     /// [`finish_input`]) and stored in the variable. An answer that is empty
@@ -942,11 +942,12 @@ fn return_to(state: &mut State, program: &Program, frame: Frame) {
     state.pc = frame.ret;
 }
 
-/// The label of the shown HUD element `id`, when it is a `call=` button.
-fn hud_call(program: &Program, state: &State, id: &str) -> Option<String> {
+/// The label of the shown HUD element `id` when it is a `call=` or `jump=` button, and whether it jumps.
+fn hud_call(program: &Program, state: &State, id: &str) -> Option<(String, bool)> {
     let elem = state.hud.iter().find(|h| h.id == id)?;
     match &elem.action {
-        Some(HudAction::Call(l)) if program.labels.contains_key(l) => Some(l.clone()),
+        Some(HudAction::Call(l)) if program.labels.contains_key(l) => Some((l.clone(), false)),
+        Some(HudAction::Jump(l)) if program.labels.contains_key(l) => Some((l.clone(), true)),
         _ => None,
     }
 }
@@ -960,6 +961,7 @@ pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
         && elem.cond.as_ref().is_none_or(|c| c.expr.test(&state.vars))
         && match &elem.action {
             Some(HudAction::Call(_)) => state.stack.len() < MAX_CALL_DEPTH && hud_call(program, state, id).is_some(),
+            Some(HudAction::Jump(_)) => hud_call(program, state, id).is_some(),
             Some(HudAction::Open(_)) => true,
             None => false,
         }
@@ -1394,8 +1396,13 @@ pub(crate) fn step_traced(
                 call_from_line(state, program, program.items[&id].use_label.as_ref().expect("checked by can_use"));
             }
             (Cmd::Say { .. }, Some(Input::Hud(id))) => {
-                let Some(label) = hud_call(program, state, &id).filter(|_| can_press(program, state, &id)) else { return Vec::new() };
-                call_from_line(state, program, &label);
+                let Some((label, jump)) = hud_call(program, state, &id).filter(|_| can_press(program, state, &id)) else { return Vec::new() };
+                if jump {
+                    state.stack.clear();
+                    state.pc = program.labels[&label];
+                } else {
+                    call_from_line(state, program, &label);
+                }
             }
             (Cmd::Say { .. }, Some(Input::Reply(id, i))) => {
                 if !can_reply(program, state, &id, i) {

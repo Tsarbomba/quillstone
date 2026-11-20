@@ -53,6 +53,8 @@ Pick a place on the map. Every visit costs one part of the day.
 **Mika:** The story counts how often the story has passed a label, so I never needed a flag of my own to remember we met. Visit again and you'll get the plain chat instead.
 ::set{square=true}
 **Mika:** I put the square on your map: its region only shows once I've told you, and only after the morning.
+::hud{id=map text="Map" x=0.02 y=0.04 size=36 color=#ffd98c back=#00000099 pad=12 jump=#map}
+**Mika:** And the Map button in the corner is a HUD button that jumps: it goes straight to the map from whatever line you are on and doesn't come back, so it costs no part of the day.
 ::return
 
 # mika-secret
@@ -111,6 +113,7 @@ Pick a place on the map. Every visit costs one part of the day.
 # finale
 
 ::hud{hide=clock}
+::hud{hide=map}
 ::bg{src=assets/night.png}
 ::if{seen(mika-secret)}
 The two days are over. You heard Mika's secret, and the story's count of seen labels is how this ending knew.

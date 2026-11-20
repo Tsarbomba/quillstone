@@ -129,3 +129,57 @@ fn the_tester_presses_a_hud_button_once_and_does_not_call_it_unreached() {
     let without = parse(&SRC.replace("call=#phone hover=assets/phone_hover.png", "open=journal")).unwrap();
     assert!(explore(&without, 5000).warnings.iter().any(|w| w.message.contains("phone")), "the label is unreached without the button");
 }
+
+const JUMP: &str = "\
+::hud{id=map text=Map jump=#map}
+# start
+**A:** one
+**A:** two
+::end
+# map
+**A:** The map.
+::end
+";
+
+#[test]
+fn a_jump_press_leaves_the_line_and_every_call_and_rollback_restores_them() {
+    let p = parse(JUMP).unwrap();
+    let (mut s, _) = Session::start(&p);
+    assert!(can_press(&p, s.state(), "map"));
+    let cmds = s.input(Input::Hud("map".into()));
+    assert!(matches!(&cmds[..], [.., Cmd::Say { text, .. }] if text == "The map."), "{cmds:?}");
+    assert!(s.state().stack.is_empty());
+    // with the call stack full a jump still works (a `call=` press would be refused)
+    let mut full = s.state().clone();
+    full.stack = vec![crate::Frame { ret: 0, line: false }; crate::MAX_CALL_DEPTH];
+    assert!(can_press(&p, &full, "map"));
+    // a press from inside a call empties the stack, and rollback brings the frames back
+    let q = parse(&JUMP.replace("**A:** two", "**A:** two\n::call{to=inner}").replace("# map", "# inner\n**A:** Inner.\n::return\n# map")).unwrap();
+    let (mut s2, _) = Session::start(&q);
+    s2.input(Input::Advance);
+    s2.input(Input::Advance);
+    assert_eq!(s2.state().stack.len(), 1);
+    s2.input(Input::Hud("map".into()));
+    assert!(s2.state().stack.is_empty());
+    s2.rollback().expect("back");
+    assert_eq!(s2.state().stack.len(), 1);
+    // rolling back takes the press back
+    s.rollback().expect("back");
+    assert!(matches!(&s.state().pending, Some(Cmd::Say { text, .. }) if text == "one"));
+    // a save made after the press loads with the button
+    s.input(Input::Hud("map".into()));
+    let text = s.save();
+    assert!(text.contains("\"jump:map\""), "{text}");
+    let (loaded, _) = Session::load(&p, &text).unwrap();
+    assert_eq!(loaded.state(), s.state());
+}
+
+#[test]
+fn the_tester_follows_a_jump_button() {
+    let p = parse(JUMP).unwrap();
+    let report = explore(&p, 5000);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(report.warnings.iter().all(|w| !w.message.contains("map") && !w.message.contains("The map")), "{:?}", report.warnings);
+    let without = parse(&JUMP.replace("jump=#map", "open=settings")).unwrap();
+    assert!(explore(&without, 5000).warnings.iter().any(|w| w.message.contains("map")), "unreached without the button");
+}

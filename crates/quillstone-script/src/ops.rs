@@ -701,7 +701,7 @@ pub struct Program {
     /// Front matter `journal_done:`: a list whose entries the journal shows after the open ones, greyed
     /// and marked Done. Only with a `journal:`.
     pub journal_done: Option<String>,
-    /// The labels some `::hud{call=#label}` offers: a save's HUD button may name only these.
+    /// The labels some `::hud{call=#label}` or `::hud{jump=#label}` offers: a save's HUD button may name only these.
     pub hud_calls: std::collections::BTreeSet<String>,
     /// Front matter `sprite_size: pixels`: sprites are drawn at their picture's pixel size times this
     /// (`art_scale:`, default 1). `None`: every sprite is the same fixed height.
@@ -1338,11 +1338,12 @@ impl HudScreen {
     }
 }
 
-/// What pressing a HUD element does. `Call` is a label the script offered with `call=#label` (a save may
-/// only name such a label: see `Program::hud_calls`).
+/// What pressing a HUD element does. `Call` and `Jump` are labels the script offered with `call=#label` and
+/// `jump=#label` (a save may only name such a label: see `Program::hud_calls`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HudAction {
     Call(String),
+    Jump(String),
     Open(HudScreen),
 }
 

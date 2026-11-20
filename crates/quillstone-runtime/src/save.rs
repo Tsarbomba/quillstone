@@ -348,11 +348,12 @@ fn line_record(kind: &str, l: &Line) -> String {
 }
 
 /// `hud <kind> "id" x y "if" ...kind fields ["action" "hover"]`: an empty `if` is no condition, `-` is "not
-/// set". A button ends with its action (`call:label` or `open:screen`) and its hover picture ("" for none).
+/// set". A button ends with its action (`call:label`, `jump:label` or `open:screen`) and its hover picture ("" for none).
 fn hud_record(h: &HudElem) -> String {
     let mut record = hud_body(h);
     let action = match &h.action {
         Some(HudAction::Call(l)) => format!("call:{l}"),
+        Some(HudAction::Jump(l)) => format!("jump:{l}"),
         Some(HudAction::Open(s)) => format!("open:{}", s.name()),
         None => return record,
     };
@@ -395,7 +396,7 @@ fn hud_source_bytes(h: &HudElem) -> usize {
             HudKind::Image { src, .. } => src.len(),
         }
         + match &h.action {
-            Some(HudAction::Call(l)) => l.len(),
+            Some(HudAction::Call(l) | HudAction::Jump(l)) => l.len(),
             _ => 0,
         }
         + h.hover.as_ref().map_or(0, String::len)
@@ -478,6 +479,7 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
         let found = match a.split_once(':') {
             // A file may only call a label that a `::hud` in the script offers: nothing else is a button.
             Some(("call", l)) if program.hud_calls.contains(l) => Some(HudAction::Call(l.to_string())),
+            Some(("jump", l)) if program.hud_calls.contains(l) => Some(HudAction::Jump(l.to_string())),
             Some(("open", s)) => HudScreen::from_name(s).map(HudAction::Open).filter(|a| match a {
                 HudAction::Open(HudScreen::Inventory) => program.inventory.is_some(),
                 HudAction::Open(HudScreen::Journal) => program.journal.is_some(),

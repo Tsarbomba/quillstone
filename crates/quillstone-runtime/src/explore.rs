@@ -180,8 +180,8 @@ pub fn explore(program: &Program, limit: usize) -> Report {
                         }
                     }
                 }
-                // The same for each HUD button that calls a label (`open=` buttons need nothing).
-                for h in state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_)))) {
+                // The same for each HUD button that calls or jumps to a label (`open=` buttons need nothing).
+                for h in state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_) | HudAction::Jump(_)))) {
                     let key = format!("hud:{}", h.id);
                     if !x.used.contains(&key) && can_press(program, &state, &h.id) {
                         x.used.insert(key);
