@@ -353,6 +353,20 @@ impl Game<'_> {
         }
         self.screen = Screen::Story;
         self.msgs = MsgUi::default();
-        self.forward(if waiting { Input::Choose(index) } else { Input::Reply(id.to_string(), index) });
+        if waiting {
+            return self.forward(Input::Choose(index));
+        }
+        let at = |g: &Self| (g.session.state().pc, g.session.state().stack.len(), matches!(g.session.state().pending, Some(Cmd::Say { .. })));
+        let before = at(self);
+        self.reading = Some(self.contact_name(id));
+        self.forward(Input::Reply(id.to_string(), index));
+        self.reading = None;
+        // Back at the same line: the label only sent messages, so the chat goes on in the phone.
+        if before.2 && at(self) == before {
+            self.stop_skip();
+            self.cover_bag();
+            self.screen = Screen::Messages;
+            self.open_thread(id.to_string());
+        }
     }
 }

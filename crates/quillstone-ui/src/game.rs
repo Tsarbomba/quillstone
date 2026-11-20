@@ -170,6 +170,8 @@ pub struct Game<'p> {
     confirm: Option<Confirm>,
     /// A short message and how many seconds it has left.
     notice: Option<(String, f32)>,
+    /// The contact (shown name) whose thread the player is reading while a `later` reply's label runs: no notice for its messages.
+    reading: Option<String>,
     skip: Option<SkipMode>,
     /// Time since the last skipped line.
     skip_elapsed: f32,
@@ -285,6 +287,7 @@ impl<'p> Game<'p> {
             slots: Vec::new(),
             confirm: None,
             notice: None,
+            reading: None,
             skip: None,
             skip_elapsed: 0.0,
             read,
@@ -1295,8 +1298,9 @@ impl<'p> Game<'p> {
         if let Some(Cmd::Stopped { reason }) = cmds.iter().find(|c| matches!(c, Cmd::Stopped { .. })) {
             self.notify(format!("The story was stopped: {reason}"));
         }
+        let reading = self.reading.clone();
         for name in cmds.iter().filter_map(|c| match c {
-            Cmd::Message { name, mine: false, quiet: false, .. } => Some(name),
+            Cmd::Message { name, mine: false, quiet: false, .. } if reading.as_ref() != Some(name) => Some(name),
             _ => None,
         }) {
             self.notify_ui("New message from {name}", &[("name", name)]);

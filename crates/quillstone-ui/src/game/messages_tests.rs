@@ -69,6 +69,24 @@ fn a_later_reply_is_picked_in_the_thread_and_the_story_returns_to_its_line_then_
 }
 
 #[test]
+fn a_later_reply_whose_label_only_sends_messages_leaves_the_thread_open_without_a_notice() {
+    let src = PHONE.replace("# fine\n**B:** fine!\n", "# fine\n::message{from=mika text=\"Great\"}\n");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    open_thread(&mut g);
+    g.notice = None;
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Enter);
+    assert_eq!((g.screen(), g.msgs.thread.as_deref()), (Screen::Messages, Some("mika")));
+    assert_eq!(g.state().threads[0].msgs.last().and_then(|m| m.text.as_deref()), Some("Great"));
+    assert!(texts(&g).contains(&"Great".to_string()));
+    assert!(g.notice.is_none(), "the player is reading that thread");
+    key(&mut g, Key::Escape);
+    key(&mut g, Key::Escape);
+    assert_eq!((g.screen(), line(&g).as_str()), (Screen::Story, "two"));
+}
+
+#[test]
 fn a_picture_or_video_opens_in_a_panel_and_the_video_plays_once_with_sound() {
     let p = parse(PHONE).unwrap();
     let mut g = new_game(&p, instant());

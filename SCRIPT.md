@@ -2747,6 +2747,8 @@ options sit in Mika's thread (the list marks it "Waiting for your reply") until 
 
 - The pick adds the player's message and **calls** the option's label, then the story comes back to the line it
   was at, like a HUD `call=` button: the label ends with `::return`, and can't take parameters.
+  If the label only sends messages (and maybe a new reply), the Messages screen stays open on the thread, so a chat
+  can go back and forth; if it shows a line or a choice, the story screen comes back.
 - Like those buttons, it works only while the story waits at a normal line; otherwise a pick says "Can't use that now".
 - A new `::reply{to=mika later}` for the same character replaces a pending one. `::reply{to=mika none}` (one
   line, no options) takes it away. `later` options have no `{default}` or `{show}`.
