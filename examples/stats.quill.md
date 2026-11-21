@@ -39,6 +39,7 @@ A bat swoops out of the dark and bites you.
 ::set{dmg = random(2, 5)}
 ::set{hero.hp = max(hero.hp - dmg, 1)}
 It takes {dmg} hit points. You have {hero.hp} left.
+::notify{text="Hit points" delta="-dmg"}
 
 ::if{hero.hp <= hero.max_hp * 2 / 3}
 You are hurt and should rest.
@@ -58,6 +59,7 @@ You rolled {roll}, which is {gap} away from the sweet spot.
 ::if{roll >= 5}
 The lock clicks open. Inside lie ten coins.
 ::set{hero.gold += 10}
+::notify{text="Gold" delta=10}
 ::elif{roll >= 3}
 The pick slips and the lock stays shut.
 ::else

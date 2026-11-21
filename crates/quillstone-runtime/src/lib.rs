@@ -158,7 +158,9 @@ pub enum Cmd {
     Flash { time: f32, color: [f32; 3] },
     /// A passing message in a corner of the screen for `time` seconds. `text` has the `{var}` values
     /// filled in; `source` is the script's own text, which a translation is looked up by.
-    Notify { text: String, time: f32, source: String },
+    Notify { text: String, time: f32, source: String, delta: Option<i64> },
+    /// Rollback can't go back to before this (`::rollback{block}`). Bookkeeping for the [`Session`], which drops it.
+    RollbackBlock,
     /// A message joined the thread with the character `name` (`mine`: the player's). A moment, not part of the scene: the
     /// thread is in [`State::threads`]. The frontend shows a notice for one that is not `mine` or `quiet`;
     /// `media` is `picture` or `video` when it has one.
@@ -1718,12 +1720,17 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
-            Op::Notify { text, time } => {
-                out.push(Cmd::Notify { text: interpolate(text, &state.vars), time: *time, source: text.clone() });
+            Op::Notify { text, time, delta } => {
+                let delta = delta.as_ref().and_then(|d| d.eval(&state.vars).as_int());
+                out.push(Cmd::Notify { text: interpolate(text, &state.vars), time: *time, source: text.clone(), delta });
                 state.pc += 1;
             }
             Op::Unlock { src } => {
                 out.push(Cmd::Unlock { src: src.clone() });
+                state.pc += 1;
+            }
+            Op::RollbackBlock => {
+                out.push(Cmd::RollbackBlock);
                 state.pc += 1;
             }
             Op::Textbox { hidden, fade } => {
@@ -1895,6 +1902,8 @@ pub struct Session<'p> {
     /// What rollback popped, newest rollback on top: each entry is the state the player was
     /// rolled back from (the one after the input) and that input. Not saved.
     redo: Vec<(State, Input)>,
+    /// A `::rollback{block}` ran: `history` was cut there. Not saved (a loaded save shows the cut history).
+    blocked: bool,
     /// Data kept across playthroughs (see `persist.rs`), and whether it changed.
     persistent: Vars,
     persistent_changed: bool,
@@ -1913,6 +1922,7 @@ impl<'p> Session<'p> {
             state: State::with_seed(program, seed),
             history: VecDeque::new(),
             redo: Vec::new(),
+            blocked: false,
             persistent,
             persistent_changed: false,
         };
@@ -1935,6 +1945,11 @@ impl<'p> Session<'p> {
         !self.history.is_empty()
     }
 
+    /// Whether anything has happened since the start (a rollback block cuts the history, so look at it too).
+    pub fn started(&self) -> bool {
+        self.blocked || self.can_rollback()
+    }
+
     pub fn can_roll_forward(&self) -> bool {
         !self.redo.is_empty()
     }
@@ -1952,7 +1967,13 @@ impl<'p> Session<'p> {
                 cmds.insert(at, Cmd::ShowImage { src: src.clone(), alt: alt.clone() });
             }
         }
-        if !cmds.is_empty() {
+        if cmds.iter().any(|c| matches!(c, Cmd::RollbackBlock)) {
+            // Nothing before this point can be gone back to (nor the step that ran it).
+            cmds.retain(|c| !matches!(c, Cmd::RollbackBlock));
+            self.blocked = true;
+            self.history.clear();
+            self.redo.clear();
+        } else if !cmds.is_empty() {
             self.push_history(before, input);
             self.redo.clear(); // a new path: what was rolled back is gone
         }
@@ -2274,6 +2295,44 @@ vars: { trust: 0 }
         let (mut game, _) = Session::start(&p);
         assert!(!game.can_rollback());
         assert!(game.rollback().is_none());
+    }
+
+    const BLOCKED: &str = "**A:** One.\n**A:** Two.\n::rollback{block}\n**A:** Three.\n**A:** Four.\n";
+
+    #[test]
+    fn a_rollback_block_stops_going_back_but_not_going_forward() {
+        let p = parse(BLOCKED).unwrap();
+        let (mut game, _) = Session::start(&p);
+        game.input(Input::Advance); // Two
+        assert!(game.can_rollback());
+        let cmds = game.input(Input::Advance); // runs the block, Three
+        assert_eq!(cmds, vec![say("A", "Three.")], "the block itself is not shown");
+        assert!(!game.can_rollback() && game.rollback().is_none() && game.started());
+        game.input(Input::Advance); // Four
+        assert!(game.rollback().is_some());
+        assert!(game.rollback().is_none(), "not back to before the block");
+        assert_eq!(game.roll_forward().unwrap().last(), Some(&say("A", "Four.")));
+        assert!(game.rollback().is_some());
+    }
+
+    #[test]
+    fn notify_delta_is_worked_out_when_it_runs() {
+        let p = parse("---\nvars: { n: 3 }\n---\n::notify{text=Gold delta=\"n - 5\"}\n::notify{text=Plain}\n**A:** Hi\n").unwrap();
+        let (_, cmds) = Session::start(&p);
+        assert!(matches!(&cmds[0], Cmd::Notify { delta: Some(-2), .. }));
+        assert!(matches!(&cmds[1], Cmd::Notify { delta: None, .. }));
+    }
+
+    #[test]
+    fn a_rollback_block_survives_save_and_load() {
+        let p = parse(BLOCKED).unwrap();
+        let (mut game, _) = Session::start(&p);
+        for _ in 0..3 {
+            game.input(Input::Advance);
+        }
+        let (mut loaded, _) = Session::load(&p, &game.save()).unwrap();
+        assert!(loaded.rollback().is_some());
+        assert!(loaded.rollback().is_none());
     }
 
     // ---- conditions and blocks ---------------------------------------------
@@ -3292,7 +3351,7 @@ vars: { amount: 99 }
     fn a_notice_is_a_moment_with_its_values_filled_in() {
         let p = parse("---\nvars: { n: 2 }\n---\n::notify{text=\"Got {n}\" time=1}\n**A:** one\n**A:** two\n").unwrap();
         let (mut game, first) = Session::start(&p);
-        assert_eq!(first[0], Cmd::Notify { text: "Got 2".into(), time: 1.0, source: "Got {n}".into() });
+        assert_eq!(first[0], Cmd::Notify { text: "Got 2".into(), time: 1.0, source: "Got {n}".into(), delta: None });
         assert!(!game.state().redraw().iter().any(|c| matches!(c, Cmd::Notify { .. })));
         game.input(Input::Advance);
         let back = game.rollback().unwrap();

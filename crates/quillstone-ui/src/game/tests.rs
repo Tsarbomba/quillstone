@@ -739,6 +739,23 @@ fn notice(g: &Game) -> Option<String> {
 }
 
 #[test]
+fn a_blocked_rollback_says_so() {
+    let p = parse("**A:** One.\n::rollback{block}\n**A:** Two.\n**A:** Three.\n").unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "Two.", "back to the line after the block");
+    assert_eq!(notice(&g), None);
+    key(&mut g, Key::Backspace);
+    assert_eq!(line(&g), "Two.");
+    assert_eq!(notice(&g).as_deref(), Some("Can't go back further"));
+    g.tick(NOTICE_SECONDS + 0.1, false);
+    g.handle(Event::Wheel(1.0));
+    assert_eq!(notice(&g).as_deref(), Some("Can't go back further"), "the wheel too");
+}
+
+#[test]
 fn saving_to_a_slot_then_overwriting_it_asks_first() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());

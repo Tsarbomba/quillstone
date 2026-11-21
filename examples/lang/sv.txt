@@ -398,6 +398,10 @@
 = Kan inte användas nu
 
 #: message
+> Can't go back further
+= Kan inte gå längre tillbaka
+
+#: message
 > Already owned
 = Redan ägd
 

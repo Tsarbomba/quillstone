@@ -169,6 +169,9 @@ pub struct Theme {
     pub overlay_color: [f32; 4],
     /// Drawn over the whole screen under the text of a full-screen page (`::page`).
     pub page_color: [f32; 4],
+    /// The signed amount of a `::notify{delta=}` that is above zero, and the one below.
+    pub notify_up_color: [f32; 4],
+    pub notify_down_color: [f32; 4],
     /// `x, y, w, h` the text of a full-screen page is laid out in.
     pub page_rect: [f32; 4],
     /// Drawn stretched over the textbox area (1600x260 at 1920x1080).
@@ -332,6 +335,8 @@ impl Default for Theme {
             button_hover_color: [0.25, 0.20, 0.42, 0.88],
             overlay_color: [0.02, 0.02, 0.05, 0.88],
             page_color: [0.0, 0.0, 0.0, 0.8],
+            notify_up_color: [0.45, 0.85, 0.5, 1.0],
+            notify_down_color: [1.0, 0.45, 0.45, 1.0],
             page_rect: DEFAULT_PAGE_RECT,
             textbox_image: None,
             textbox_rect: DEFAULT_TEXTBOX,
@@ -448,6 +453,8 @@ impl Theme {
                 "button_hover_color" => Some(&mut t.button_hover_color),
                 "overlay_color" => Some(&mut t.overlay_color),
                 "page_color" => Some(&mut t.page_color),
+                "notify_up_color" => Some(&mut t.notify_up_color),
+                "notify_down_color" => Some(&mut t.notify_down_color),
                 "text_outline_color" => Some(&mut t.text_outline_color),
                 _ => None,
             };
@@ -1222,6 +1229,9 @@ mod tests {
     fn the_page_keys_are_read_and_bad_ones_are_reported_with_their_line() {
         let d = Theme::default();
         assert_eq!((d.page_rect, d.page_color), (DEFAULT_PAGE_RECT, [0.0, 0.0, 0.0, 0.8]));
+        let (t, problems) = Theme::parse("notify_up_color = #00ff00\nnotify_down_color = #ff0000\n");
+        assert!(problems.is_empty());
+        assert_eq!((t.notify_up_color, t.notify_down_color), ([0.0, 1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]));
         let (t, problems) = Theme::parse("page_rect = 100, 50, 1200, 700\npage_color = #10203040\n");
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!((t.page_rect, t.page_color), ([100.0, 50.0, 1200.0, 700.0], parse_color("#10203040").unwrap()));

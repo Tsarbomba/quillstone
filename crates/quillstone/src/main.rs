@@ -1352,7 +1352,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::CycleSprite { id } => println!("[{id}'s moves repeat]"),
             Cmd::Shake { .. } => println!("[the screen shakes]"),
             Cmd::Flash { .. } => println!("[the screen flashes]"),
-            Cmd::Notify { text, .. } => println!("[notice: {text}]"),
+            Cmd::Notify { text, delta, .. } => println!("[notice: {text}{}]", delta.map(|d| format!(" {d:+}")).unwrap_or_default()),
             Cmd::Message { name, mine, text, media, .. } => {
                 let who = if *mine { format!("you to {name}") } else { name.clone() };
                 let media = media.map(|m| format!(" [{m}]")).unwrap_or_default();
@@ -1434,7 +1434,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::Finished => println!("\n— the end —"),
             Cmd::Stopped { reason } => eprintln!("warning: the story was stopped: {reason}"),
             Cmd::Warning { message } => eprintln!("warning: {message}"),
-            Cmd::ReplayReached { .. } | Cmd::Unlock { .. } | Cmd::EndReplay => {} // scene replays are for the player
+            Cmd::ReplayReached { .. } | Cmd::Unlock { .. } | Cmd::EndReplay | Cmd::RollbackBlock => {} // scene replays are for the player
         }
     }
 }

@@ -95,6 +95,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("message", "Not unlocked yet"),
     ("message", "Not available during a replay"),
     ("message", "Can't use that now"),
+    ("message", "Can't go back further"),
     ("message", "Already owned"),
     ("message", "Not enough {label}"),
     ("message", "Bought {name}"),

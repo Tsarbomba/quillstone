@@ -1313,8 +1313,19 @@ impl View {
                     self.flash = Some(Flash { time: *time, color: *color, elapsed: 0.0 });
                 }
                 Cmd::Message { .. } => {} // the frontend words the notice (it has the translation of its own texts)
-                Cmd::Notify { text, time, .. } => {
-                    self.notice = Some(Notice { text: text.clone(), time: *time, elapsed: 0.0 });
+                Cmd::Notify { text, time, delta, .. } => {
+                    let mut text = text.clone();
+                    match delta {
+                        // zero has no direction: plain text in the notice's own colour
+                        Some(0) => text.push_str(" ±0"),
+                        Some(d) => {
+                            let c = if *d < 0 { self.theme.notify_down_color } else { self.theme.notify_up_color };
+                            let [r, g, b] = [c[0], c[1], c[2]].map(|v| (v * 255.0).round() as u8);
+                            text = format!("{text} {{color=#{r:02x}{g:02x}{b:02x}}}{d:+}{{/color}}");
+                        }
+                        None => {}
+                    }
+                    self.notice = Some(Notice { text, time: *time, elapsed: 0.0 });
                 }
                 Cmd::Camera { camera, time, ease } => self.set_camera(*camera, *time, *ease),
                 Cmd::ShowImage { src, alt } => {
@@ -1357,7 +1368,7 @@ impl View {
                 }
                 Cmd::Finished => self.finished = true,
                 Cmd::Stopped { .. } | Cmd::Warning { .. } => {} // for the author and player; the game shows it as a notice
-                Cmd::ReplayReached { .. } | Cmd::Unlock { .. } | Cmd::EndReplay => {} // bookkeeping for the session and the game
+                Cmd::ReplayReached { .. } | Cmd::Unlock { .. } | Cmd::EndReplay | Cmd::RollbackBlock => {} // bookkeeping for the session and the game
                 // The inventory, shop and text entry are screens of their own (see quillstone-ui).
                 Cmd::ShowInventory | Cmd::ShowJournal | Cmd::ShowShop { .. } | Cmd::AskInput { .. } | Cmd::ShowTiming { .. } | Cmd::ShowPress { .. } => {}
                 // Audio is not the view's business.
@@ -3115,9 +3126,33 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_delta_is_signed_and_coloured_by_direction() {
+        let shown = |delta| {
+            let mut v = View::new().with_speed(0.0);
+            v.apply(&[Cmd::Notify { text: "Trust".into(), time: 2.0, source: String::new(), delta }]);
+            v.tick(0.2);
+            v.draw_list(&all_1080p, None).into_iter().find_map(|d| match d {
+                Draw::Text { text, runs, .. } if text.starts_with("Trust") => Some((text, runs.iter().filter_map(|r| r.style.color).collect::<Vec<_>>())),
+                _ => None,
+            })
+        };
+        let t = Theme::default();
+        let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
+        let close = |a: Vec<[f32; 3]>, b: [f32; 3]| a.len() == 1 && a[0].iter().zip(b).all(|(x, y)| (x - y).abs() < 0.01);
+        let (text, colors) = shown(Some(2)).unwrap();
+        assert_eq!(text, "Trust +2");
+        assert!(close(colors, rgb(t.notify_up_color)));
+        let (text, colors) = shown(Some(-1)).unwrap();
+        assert_eq!(text, "Trust -1");
+        assert!(close(colors, rgb(t.notify_down_color)));
+        assert_eq!(shown(Some(0)).unwrap(), ("Trust ±0".to_string(), vec![]), "zero has no direction");
+        assert_eq!(shown(None).unwrap().0, "Trust");
+    }
+
+    #[test]
     fn a_notice_fades_in_stays_fades_out_and_is_gone_after_its_time() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 2.0, source: String::new() }]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 2.0, source: String::new(), delta: None }]);
         assert!(v.busy(), "a running notice needs ticks");
         assert_eq!(notice_draw(&v.draw_list(&all_1080p, None)).unwrap().1, 0.0, "starts faded out");
         v.tick(0.2);
@@ -3134,13 +3169,13 @@ mod tests {
     #[test]
     fn a_notice_does_not_block_ends_when_skipping_and_a_new_one_replaces_it() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new() }]);
-        v.apply(&[Cmd::Notify { text: "Other".into(), time: 5.0, source: String::new() }]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new(), delta: None }]);
+        v.apply(&[Cmd::Notify { text: "Other".into(), time: 5.0, source: String::new(), delta: None }]);
         v.tick(0.3);
         assert!(notice_draw(&v.draw_list(&all_1080p, None)).is_none(), "the first one was replaced");
         v.end_flash();
         assert!(!v.busy());
-        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new() }, Cmd::ClearScene]);
+        v.apply(&[Cmd::Notify { text: "Saved".into(), time: 5.0, source: String::new(), delta: None }, Cmd::ClearScene]);
         assert!(!v.busy(), "a new scene drops it");
     }
 

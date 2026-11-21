@@ -504,12 +504,14 @@ The commands at a glance. Each group is explained below the table.
 | `::flash{time=0.4 color=#ffffff}` | a flash over the whole screen |
 | `::fade{out}` / `::fade{in}` | dip the stage to a colour, and bring it back |
 | `::notify{text="Saved" time=3}` | a small passing message |
+| `::notify{text="Trust" delta=2}` | the same, with a signed amount after it: green up, red down |
 | `::unlock{src=assets/cg1.png}` | unlock an Extras entry |
 | `::particles{snow}` | weather: see [Ambient particles](#ambient-particles) |
 | `::tint{color=#203060 alpha=0.35}` | a colour wash: see [Colour wash](#colour-wash) |
 | `::vignette{strength=0.6}` | dark edges: see [Vignette](#vignette) |
 | `::filter{gray=1}` | a colour filter: see [Colour filter](#colour-filter) |
 | `::textbox{hide}` / `::textbox{show}` | hide or show the dialogue box |
+| `::rollback{block}` | the player can't go back to before this: see [What rollback restores](#what-rollback-restores) |
 | `::center <text>` | one line shown alone in the middle of the screen, without the textbox: see [Centred lines](#centred-lines) |
 | `::page` / `::page{off}` | lines stack up on a full-screen page, or back to the textbox: see [Full-screen pages](#full-screen-pages) |
 | `![alt](assets/x.png)` | an inline image |
@@ -782,6 +784,12 @@ theme's panel colour and text colour. It fades in, stays, and fades out.
 - `time` is 0.5 to 30 seconds (default 3).
 - `text` can hold `{variable}` values and the same markup as a `::hud` text (`**bold**`,
   `{color=...}`). The values are filled in when the command runs.
+- `delta=` adds a signed amount after the text, coloured by its direction: `::notify{text="Trust" delta=2}`
+  shows "Trust +2" and `delta=-1` shows "Trust -1". It is a whole number, a variable or an
+  expression (`delta="gain - cost"`), worked out when the command runs; a `0` shows as "±0" in
+  the text's own colour, and a value that isn't a whole number shows no amount. The colours are
+  the theme's `notify_up_color` (default green) and `notify_down_color` (default red), see
+  [Themes](#themes). The amount is not translated.
 - It doesn't wait and doesn't stop the story. A new `::notify` replaces one still showing.
 - It is a passing message: not saved, not shown again by rollback, and it ends at once when
   the player skips.
@@ -3273,6 +3281,26 @@ Going back further simply stops there, and the backlog lists what that history h
 rolled back to is one of those, because there is nothing to come back to. A `::wait{click}` is
 a step like a line: rollback stops there.
 
+**Blocking rollback.** `::rollback{block}` (a command of its own, on its own line) stops the
+player going back past it, for a decision that should stay made or a fight that can't be
+re-played:
+
+```
+**Mika:** That's the last of them.
+::rollback{block}
+**Mika:** Let's go.
+```
+
+- When the story runs it, the history before it is dropped: the Back button, the Backspace
+  and Left keys and the mouse wheel stop at the line after the block, and a notice says
+  "Can't go back further" (translatable like the engine's other texts). Going forward, and
+  going back to anything after the block, work as before.
+- The backlog (History) lists only what came after the block, since it is built from that same
+  history.
+- Saves and loads keep it: a save holds the shortened history, so a load can't go back past
+  the block either. A new playthrough starts with no block.
+- Replays and `quillstone test` are unaffected.
+
 **Persistent variables** are never rolled back. A rollback or a loaded save shows the screen
 (choices, hotspots, shop stock, a line's `{variables}`) rebuilt with their current values.
 
@@ -3350,6 +3378,9 @@ overlay_color = #050510e0
 textbox_image = assets/gui/textbox.png
 # over the whole screen under a full-screen page's text (default #000000cc)
 page_color = #000000cc
+# the signed amount of a ::notify{delta=}: up (default #73d980) and down (default #ff7373)
+notify_up_color = #73d980
+notify_down_color = #ff7373
 # x, y, width, height the page's text fills (default 260, 120, 1400, 840)
 page_rect = 260, 120, 1400, 840
 # visible (default), hover or hidden (see below)

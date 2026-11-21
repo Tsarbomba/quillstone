@@ -101,7 +101,7 @@ pub const SPRITE_BRIGHTNESS: RangeInclusive<f32> = -1.0..=1.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, page, center, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -120,7 +120,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "brightness", "crop", "time", "ease", "wait", "loop", "then"],
         "shake" => &["time", "strength", "axis"],
         "flash" => &["time", "color"],
-        "notify" => &["text", "time"],
+        "notify" => &["text", "time", "delta"],
         "message" => &["from", "to", "text", "image", "video", "thumb", "quiet"],
         "reply" => &["to", "later", "none"],
         "unlock" => &["src"],
@@ -132,6 +132,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "filter" => &["none", "off", "gray", "sepia", "brightness", "contrast", "saturation", "fade"],
         "textbox" => &["hide", "show", "fade"],
         "page" => &["off"],
+        "rollback" => &["block"],
         "music" => &["src", "intro", "fade", "loop", "volume", "stop"],
         "sfx" => &["src", "loop", "stop", "volume", "fade"],
         "voice" => &["src", "volume"],
@@ -1586,7 +1587,11 @@ impl Parser {
                         _ => return Err(format!("`time={v}` must be a number of seconds from 0.5 to 30")),
                     },
                 };
-                Ok((Op::Notify { text, time }, None))
+                let delta = match a.value("delta") {
+                    None => None,
+                    Some(d) => Some(parse_expr(&d).and_then(|e| self.check_expr(&e).map(|()| e)).map_err(|m| format!("`delta={d}`: {m}"))?),
+                };
+                Ok((Op::Notify { text, time, delta }, None))
             }
             "message" => {
                 let (from, to) = (a.value("from"), a.value("to"));
@@ -1876,6 +1881,8 @@ impl Parser {
                 Ok((Op::Press { var, prompt, press: KeyPress { key, count, time } }, None))
             }
             "end" => Ok((Op::End, None)),
+            "rollback" if a.flag("block") => Ok((Op::RollbackBlock, None)),
+            "rollback" => Err("`::rollback` needs `block`, like `::rollback{block}`".into()),
             "end_replay" => Ok((Op::EndReplay, None)),
             other => Err(format!("unknown command `::{other}` (known: {COMMANDS})")),
         }
@@ -5866,10 +5873,21 @@ mod tests {
     // ---- ::notify -------------------------------------------------------
 
     #[test]
+    fn notify_delta_is_an_expression_and_rollback_needs_block() {
+        let p = ok("---\nvars: { trust: 0 }\n---\n::notify{text=Trust delta=-2}\n::notify{text=Trust delta=\"trust * 2\"}\n::rollback{block}\n");
+        assert!(matches!(&p.ops[0], Op::Notify { delta: Some(Expr::Neg(_) | Expr::Lit(_)), .. }));
+        assert!(matches!(&p.ops[1], Op::Notify { delta: Some(Expr::Bin(..)), .. }));
+        assert_eq!(p.ops[2], Op::RollbackBlock);
+        assert!(has_err("::notify{text=x delta=}\n", "delta"));
+        assert!(has_err("::rollback\n", "needs `block`"));
+        assert!(has_err("::rollback{block now=1}\n", "unknown attribute `now`"));
+    }
+
+    #[test]
     fn notify_has_a_default_time_and_validates() {
         let p = ok("::notify{text=\"Saved {x}\"}\n::notify{text=Hi time=0.5}\n");
-        assert_eq!(p.ops[0], Op::Notify { text: "Saved {x}".into(), time: 3.0 });
-        assert_eq!(p.ops[1], Op::Notify { text: "Hi".into(), time: 0.5 });
+        assert_eq!(p.ops[0], Op::Notify { text: "Saved {x}".into(), time: 3.0, delta: None });
+        assert_eq!(p.ops[1], Op::Notify { text: "Hi".into(), time: 0.5, delta: None });
         for (src, needle) in [
             ("::notify\n", "needs `text="),
             ("::notify{text=\" \"}\n", "needs `text="),

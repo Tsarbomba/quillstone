@@ -193,7 +193,7 @@ impl<'p> Session<'p> {
             }
         }
         let cmds = cmds.unwrap_or_else(|| state.redraw());
-        let session = Session { program, state, history, redo: Vec::new(), persistent: Vars::new(), persistent_changed: false };
+        let session = Session { program, state, history, redo: Vec::new(), blocked: false, persistent: Vars::new(), persistent_changed: false };
         Ok((session, cmds))
     }
 }

@@ -1413,6 +1413,8 @@ impl<'p> Game<'p> {
             self.view.dialogue = None; // redraw sends a line only when the screen has one
             self.show(&cmds);
             self.auto = false; // the player went back to re-read: don't hurry them on
+        } else {
+            self.notify_ui("Can't go back further", &[]);
         }
     }
 

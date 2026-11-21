@@ -1783,8 +1783,10 @@ pub enum Op {
     /// A full-screen flash of `color` that fades out over `time` seconds. Doesn't wait.
     Flash { time: f32, color: [f32; 3] },
     /// A small message in a corner of the screen for `time` seconds (`::notify`). Doesn't wait;
-    /// `{var}` values are filled in when it runs.
-    Notify { text: String, time: f32 },
+    /// `{var}` values are filled in when it runs. `delta` is a signed amount shown after the text.
+    Notify { text: String, time: f32, delta: Option<Expr> },
+    /// Rollback can't go back to before this (`::rollback{block}`).
+    RollbackBlock,
     /// Unlock a gallery or music room entry without showing or playing it (`::unlock{src=...}`).
     Unlock { src: String },
     /// Fade the stage to `color` over `time` seconds and keep it covered. Waits
@@ -1868,6 +1870,7 @@ impl Op {
     pub fn exprs(&self) -> Vec<&Expr> {
         match self {
             Op::Jump { cond: Some(c), .. } => vec![c],
+            Op::Notify { delta: Some(d), .. } => vec![d],
             Op::Set(e) => vec![&e.value],
             Op::Hud { elem, .. } => elem.exprs(),
             Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),

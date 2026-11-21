@@ -34,7 +34,7 @@ impl Game<'_> {
         }
         self.save_read();
         self.save_persistent(); // a write that failed earlier gets its last chance
-        if self.in_story && self.session.can_rollback() && !self.session.state().finished {
+        if self.in_story && self.session.started() && !self.session.state().finished {
             let slot = next_rotating_slot(&*self.storage, Page::Auto);
             self.save_to(slot);
         }

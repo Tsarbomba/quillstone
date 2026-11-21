@@ -16,6 +16,7 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use quillstone_script::{is_ident, Cmp, Expr, HudAction, KeyPress, Op, Program, Value, Vars, ONCE, SEEN};
 
@@ -24,6 +25,11 @@ use crate::{is_timeout, can_press, can_reply, can_use, finish_input, finish_numb
 /// The widest `random(lo, hi)` the tester tries value by value; a wider one is
 /// tried at its lowest, middle and highest value only.
 pub const MAX_ROLL_VALUES: i64 = 12;
+
+/// The most memory (an estimate, in bytes) the states waiting to be explored may take together.
+/// A game with thousands of variables has big states, so the situation limit alone isn't a
+/// memory limit; hitting this one stops the search like the situation limit does.
+pub const FRONTIER_BUDGET: usize = 1 << 30;
 
 /// The most answers the tester tries for one `::input` (the default and the texts the script compares it to).
 const MAX_ANSWERS: usize = 16;
@@ -57,12 +63,18 @@ pub struct Report {
 
 /// Play every branch of `program`, exploring at most `limit` situations.
 pub fn explore(program: &Program, limit: usize) -> Report {
+    explore_within(program, limit, FRONTIER_BUDGET)
+}
+
+fn explore_within(program: &Program, limit: usize, budget: usize) -> Report {
     let mut x = Explorer {
         program,
         limit,
         nodes: Vec::new(),
         index: HashMap::new(),
         queue: VecDeque::new(),
+        queued_bytes: 0,
+        budget,
         ran: vec![false; program.ops.len()],
         offered: HashSet::new(),
         shop_offered: HashSet::new(),
@@ -90,6 +102,7 @@ pub fn explore(program: &Program, limit: usize) -> Report {
     }
     while let Some(id) = x.queue.pop_front() {
         let state = x.nodes[id].state.take().expect("queued once, with its state");
+        x.queued_bytes -= state_bytes(&state);
         let inputs: Vec<(Input, Option<String>)> = match &state.pending {
             Some(pending @ (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })) => {
                 if let Some(Op::Choice { options: all, .. }) = program.ops.get(state.pc) {
@@ -263,12 +276,50 @@ struct Node {
     origin: Option<String>,
 }
 
+/// The situation `state` is in, as a hash. Lists are sets: the same items in another order are the same situation.
+fn situation_key(state: &State) -> u128 {
+    let hash = |seed: u64| {
+        let mut h = DefaultHasher::new();
+        seed.hash(&mut h);
+        (state.pc, &state.stack, state.finished).hash(&mut h);
+        for (name, v) in &state.vars {
+            name.hash(&mut h);
+            match v {
+                Value::List(items) => {
+                    let mut items = items.clone();
+                    items.sort();
+                    items.hash(&mut h);
+                }
+                v => v.hash(&mut h),
+            }
+        }
+        h.finish()
+    };
+    (hash(1) as u128) << 64 | hash(2) as u128
+}
+
+/// A rough size of `state` in bytes: its variables, which are what grows (about 100 bytes of map and string overhead each).
+fn state_bytes(state: &State) -> usize {
+    let value = |v: &Value| match v {
+        Value::Str(s) => s.len(),
+        Value::List(items) => items.iter().map(|i| i.len() + 24).sum(),
+        _ => 0,
+    };
+    1024 + state.vars.iter().map(|(k, v)| 100 + k.len() + value(v)).sum::<usize>()
+}
+
 struct Explorer<'p> {
     program: &'p Program,
     limit: usize,
     nodes: Vec<Node>,
-    index: HashMap<(usize, Vec<crate::Frame>, Vars, bool), usize>,
+    /// Situations seen, by a 128-bit hash of (position, call stack, variables, finished): keeping the
+    /// variables themselves would store every state twice. A clash (about 2^-90 for a million
+    /// situations) would only make the tester skip one situation.
+    index: HashMap<u128, usize>,
     queue: VecDeque<usize>,
+    /// Estimated size of the states in `queue`, and the most it may reach.
+    queued_bytes: usize,
+    budget: usize,
     /// Ops that ever ran.
     ran: Vec<bool>,
     /// (choice op, option index) pairs that were ever on offer.
@@ -382,18 +433,12 @@ impl Explorer<'_> {
                 }
             }
         }
-        // Lists are sets: the same items in another order are the same situation.
-        let mut vars = state.vars.clone();
-        for v in vars.values_mut() {
-            if let Value::List(items) = v {
-                items.sort();
-            }
-        }
-        let key = (state.pc, state.stack.clone(), vars, state.finished);
+        let key = situation_key(&state);
         if let Some(&id) = self.index.get(&key) {
             return Some(id);
         }
-        if self.nodes.len() + self.reruns >= self.limit {
+        let bytes = state_bytes(&state);
+        if self.nodes.len() + self.reruns >= self.limit || (!state.finished && self.queued_bytes + bytes > self.budget) {
             self.report.partial = true;
             return None;
         }
@@ -417,6 +462,7 @@ impl Explorer<'_> {
         if finished {
             self.stopped_at(pc, id);
         } else {
+            self.queued_bytes += bytes;
             self.queue.push_back(id);
         }
         Some(id)
@@ -1154,6 +1200,24 @@ mod tests {
         // (without set-equality {a,b} and {b,a} would be two situations each time)
         assert_eq!(r.situations, 12, "{:?}", messages(&r.warnings));
         assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn a_huge_state_space_stops_at_the_limit_and_at_the_memory_budget() {
+        // 2^16 subsets of independent items, each state carrying 200 variables
+        let vars: String = (0..200).map(|i| format!("v{i}: 0, ")).collect();
+        let mut src = format!("---\nvars: {{ {vars}inv: [] }}\n---\n# hub\n::choice\n");
+        for i in 0..16 {
+            src.push_str(&format!("- [Item {i}](#hub){{inv += \"i{i}\", if not inv has \"i{i}\"}}\n"));
+        }
+        src.push_str("- [Leave](#bye)\n::\n# bye\nBye.\n");
+        let program = parse(&src).unwrap();
+        let r = explore(&program, 300);
+        assert!(r.partial && r.situations == 300);
+        // a small budget stops it earlier, though the situation limit is far off
+        let r = explore_within(&program, 100_000, 1 << 20);
+        assert!(r.partial && r.situations < 100_000, "{}", r.situations);
+        assert!(r.situations > 10, "the budget still leaves room to explore: {}", r.situations);
     }
 
     #[test]
