@@ -22,6 +22,13 @@ impl<'p> Game<'p> {
         self.language_changed();
     }
 
+    /// Text patches from mods (`mods/text/*.txt`): they replace texts of the script's own language,
+    /// and only while it is in use. Another language shows its own translation, unpatched.
+    pub fn set_patches(&mut self, patches: Option<Catalog>) {
+        self.patches = patches;
+        self.language_changed();
+    }
+
     /// The languages the game offers: the script's own first. Empty for a one-language game.
     pub fn languages(&self) -> &[Language] {
         &self.program.languages
@@ -50,9 +57,12 @@ impl<'p> Game<'p> {
         self.program.languages.len() > 1
     }
 
-    /// The translation of the language in use, if there is one.
+    /// The translation of the language in use, if there is one; for the script's own language, the mods' patches.
     pub(super) fn catalog(&self) -> Option<&Catalog> {
-        self.translations.get(self.language()?)
+        match self.language() {
+            Some(code) => self.translations.get(code),
+            None => self.patches.as_ref(),
+        }
     }
 
     /// `text` as the screens show it: translated when the language in use has it.

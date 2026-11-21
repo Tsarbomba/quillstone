@@ -298,3 +298,19 @@ fn the_engines_screens_are_drawn_in_the_language_in_use_and_switch_back_with_it(
     let back = texts(&g);
     assert!(back.contains(&"Settings".to_string()) && back.contains(&"40 chars/s".to_string()), "{back:?}");
 }
+
+#[test]
+fn a_patch_changes_the_scripts_own_language_with_speaker_variants_and_a_stale_entry_does_nothing() {
+    let p = parse(&story()).unwrap();
+    let mut g = game(&p, instant());
+    let patch = "> Hello, you have {gold} coins.\n= Greetings, {gold} coins!\n\n@ Mika\n> Second line.\n= Patched second.\n\n> Gone from the game.\n= Never shown.\n\n> Narration.\n=\n";
+    g.set_patches(Some(Catalog::parse(patch).unwrap()));
+    assert_eq!(g.language(), None);
+    assert_eq!(line(&g), "Greetings, 3 coins!");
+    assert_eq!(g.state().line.as_ref().unwrap().text, "Hello, you have 3 coins.", "the story keeps its own text");
+    key(&mut g, Key::Enter);
+    assert_eq!(line(&g), "Patched second.", "the `@ Mika` entry applies to Mika's line");
+    switch(&mut g, Key::Right);
+    assert_eq!(g.language(), Some("sv"));
+    assert_eq!(line(&g), "Andra raden.", "another language shows its own translation, not the patch");
+}

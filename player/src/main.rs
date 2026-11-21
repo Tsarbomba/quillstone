@@ -197,7 +197,12 @@ fn main() {
         eprintln!("warning: {p}");
     }
     game.set_translations(translations);
-    if let Some(first) = problems.first() {
+    let (patches, patch_problems) = quillstone_ui::source::load_patches_in(&assets);
+    for p in &patch_problems {
+        eprintln!("warning: {p}");
+    }
+    game.set_patches(patches);
+    if let Some(first) = problems.iter().chain(&patch_problems).next() {
         game.notify(format!("Translation not loaded: {first}"));
     }
     // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
@@ -406,6 +411,8 @@ impl App {
         let program: &'static Program = Box::leak(Box::new(program));
         let theme = load_theme(program, &self.assets);
         let (translations, problems) = quillstone_ui::source::load_translations_in(&self.assets, program);
+        let (patches, patch_problems) = quillstone_ui::source::load_patches_in(&self.assets);
+        let problems: Vec<String> = problems.into_iter().chain(patch_problems).collect();
         for p in &problems {
             eprintln!("warning: {p}");
         }
@@ -418,6 +425,7 @@ impl App {
                     move |t: &str, size, width| measurer.measure(t, size, width)
                 })));
                 self.game.set_translations(translations);
+                self.game.set_patches(patches);
                 self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());
                 match problems.first() {
                     Some(first) => self.game.notify(format!("Script reloaded; translation not loaded: {first}")),

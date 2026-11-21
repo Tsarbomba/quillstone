@@ -3256,6 +3256,36 @@ and short messages like "Loaded") are translated through the same file:
 `quillstone package` ships the `lang/*.txt` files of the languages the script lists.
 Translation files are limited to 8 MB, 100,000 entries and 16 KB per text.
 
+### Patching text with a mod
+
+A mod can change texts of the game without copying a whole script. Every `*.txt` in `mods/text/`
+(in the `mods/` folder beside the player or the `.qsa`, see the README) is a **text patch**, in
+exactly the translation file format above: `>` the game's text, `=` what to show instead, and
+`@ Speaker` for one character's lines only.
+
+```
+# mods/text/10-fixes.txt
+@ Mika
+> You came after all.
+= You came. I'm glad.
+```
+
+- A patch changes the texts of the game's first language (the one the script is written in), and
+  everything a translation can change, the game's own screens included.
+- Several patches apply in file name order and a later file wins for the same text; start the
+  names with numbers (`10-fixes.txt`, `20-more.txt`) to choose the order.
+- When the player picks another language, that language's own translation shows and patches do
+  not apply. To change a translation, replace `lang/<code>.txt` with a file of the same name in
+  `mods/`.
+- An entry whose text is not in the game any more (after a game update) is ignored. A patch that
+  is not valid is reported like a translation file, with `file:line`, and left out.
+- Saves never hold the text, so patches can be added and removed between sessions.
+
+`quillstone mod export my_story.quill.md > mods/text/10-mine.txt` writes every text with an empty
+`=` to start from. `quillstone mod check my_story.quill.md mods/text/*.txt` lists the entries that
+match nothing in the current script and the errors in the files, to see what a game update broke.
+While developing, a `mods/` folder inside the game folder works the same; `package` leaves it out.
+
 ## What rollback restores
 
 Going back one step restores:

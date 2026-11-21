@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use quillstone_script::{check_translation, language_file, Catalog, Program, Source};
+use quillstone_script::{check_translation, language_file, Catalog, Entry, Program, Source};
 use quillstone_ui::source::read_translation;
 
 use crate::Finding;
@@ -53,6 +53,61 @@ pub fn export(script: &Path, program: &Program, code: &str) -> Result<(), String
     Ok(())
 }
 
+/// `quillstone mod export`: a text patch with every text of the game, none changed yet.
+pub fn patch_template(program: &Program) -> String {
+    let strings = all_texts(program);
+    let places = strings.iter().map(|s| (s.text.clone(), s.place.clone())).collect();
+    let body = Catalog::default().merged(&strings).render("", &places);
+    // Skip the translation header `render` writes (three lines).
+    let body: String = body.split_inclusive('\n').skip(3).collect();
+    format!("# Quillstone text patch. Put it in `mods/text/`; files apply in name order, a later one wins.\n# `>` is the game's text, `=` what to show instead (leave `=` empty to keep the original).\n# Add `@ Speaker` above a `>` for a change to one character's lines only.\n{body}")
+}
+
+/// Why a catalog entry matches no text of the script, or `None` when it does.
+fn matches_nothing(e: &Entry, strings: &BTreeSet<String>, spoken: &BTreeSet<(String, String)>) -> Option<&'static str> {
+    if !strings.contains(&e.source) {
+        Some("the script has no such text (changed or removed?)")
+    } else if e.context.as_ref().is_some_and(|c| !spoken.contains(&(c.clone(), e.source.clone()))) {
+        Some("no line spoken by that character has this text")
+    } else {
+        None
+    }
+}
+
+/// `quillstone mod check`: the entries of the patch files that match nothing, and their errors.
+pub fn check_patches(program: &Program, files: &[&str]) -> Result<(), String> {
+    let strings: BTreeSet<String> = all_texts(program).into_iter().map(|s| s.text).collect();
+    let spoken = program.spoken();
+    let mut bad = 0;
+    for file in files {
+        let text = std::fs::read_to_string(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+        let cat = match Catalog::parse(&text) {
+            Ok(c) => c,
+            Err(list) => {
+                for e in list {
+                    eprintln!("{file}:{}: error: {}", e.line, e.message);
+                    bad += 1;
+                }
+                continue;
+            }
+        };
+        for e in cat.entries.iter().filter(|e| !e.target.is_empty()) {
+            if let Err(m) = check_translation(&e.source, &e.target) {
+                eprintln!("{file}:{}: error: {m}", e.line);
+                bad += 1;
+            } else if let Some(why) = matches_nothing(e, &strings, &spoken) {
+                eprintln!("{file}:{}: stale: {why}", e.line);
+                bad += 1;
+            }
+        }
+    }
+    if bad > 0 {
+        return Err(format!("{bad} entr(ies) to fix: they do nothing in this version of the game"));
+    }
+    println!("ok: every entry matches a text of the game");
+    Ok(())
+}
+
 /// What `check` finds in the translation files: errors count as problems, the
 /// rest are warnings.
 pub fn check(script: &Path, program: &Program) -> Vec<Finding> {
@@ -90,13 +145,10 @@ pub fn check(script: &Path, program: &Program) -> Vec<Finding> {
             if let Err(m) = check_translation(&e.source, &e.target) {
                 found.push((true, format!("{shown}:{line}: error: {m}")));
             }
-            let used = strings.contains(&e.source)
-                && e.context.as_ref().is_none_or(|c| spoken.contains(&(c.clone(), e.source.clone())));
-            match (used, e.obsolete) {
-                (true, _) => {}
-                (false, true) => obsolete += 1,
-                (false, false) => {
-                    let what = if strings.contains(&e.source) { "no line spoken by that character has this text" } else { "the script has no such text (changed or removed?)" };
+            match (matches_nothing(e, &strings, &spoken), e.obsolete) {
+                (None, _) => {}
+                (Some(_), true) => obsolete += 1,
+                (Some(what), false) => {
                     found.push((false, format!("{shown}:{line}: warning: {what}; run `quillstone lang export` to flag it as obsolete")));
                 }
             }
@@ -290,5 +342,25 @@ mod tests {
         assert!(!out.join("game/lang/fr.txt").exists(), "only languages the script lists");
         crate::check(&out.join("game/main.quill.md")).unwrap();
         std::fs::remove_dir_all(src).unwrap();
+    }
+
+    #[test]
+    fn mod_check_fails_on_stale_entries_and_passes_a_current_patch() {
+        let dir = game("patch", &[("ok.txt", "@ A\n> Hello {n}.\n= Hi {n}.\n\n> Bye.\n=\n"), ("stale.txt", "> Hello {n}.\n= Hi.\n\n> Old text.\n= New.\n\n@ B\n> Bye.\n= See you.\n")]);
+        let path = dir.join("main.quill.md");
+        std::fs::write(&path, SCRIPT).unwrap();
+        let program = crate::load(&path).unwrap();
+        let f = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        assert_eq!(check_patches(&program, &[&f("ok.txt")]), Ok(()));
+        // a dropped {n} (error), a text the script lacks and a speaker who never says it (stale)
+        let e = check_patches(&program, &[&f("stale.txt")]).unwrap_err();
+        assert!(e.starts_with("3 entr"), "{e}");
+        assert!(check_patches(&program, &[&f("missing.txt")]).is_err());
+        let template = patch_template(&program);
+        assert!(template.starts_with("# Quillstone text patch") && template.contains("> Hello {n}.\n=\n"), "{template}");
+        let t = dir.join("t.txt");
+        std::fs::write(&t, &template).unwrap();
+        assert_eq!(check_patches(&program, &[t.to_str().unwrap()]), Ok(()), "the template is a valid patch");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

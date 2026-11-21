@@ -1,5 +1,6 @@
 //! Reading a script from disk with its `::include`d files (the script crate itself does no I/O).
 
+use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -105,28 +106,69 @@ pub fn load_translations_in(assets: &Assets, program: &Program) -> (BTreeMap<Str
         let file = language_file(&lang.code);
         match read_translation_in(assets, &lang.code) {
             Ok(None) => {}
-            Ok(Some(text)) => match Catalog::parse(&text) {
-                Ok(mut cat) => {
-                    // A translation whose tags differ from the original would change how the line plays
-                    // (a `{nw}` added makes it advance by itself): that entry shows the script's text.
-                    // Obsolete entries are never shown, so they don't bother the player (`quillstone check` lists them).
-                    for e in cat.entries.iter_mut().filter(|e| !e.obsolete) {
-                        if let Err(m) = check_translation(&e.source, &e.target) {
-                            problems.push(format!("{file}:{}: {m}", e.line));
-                            e.target.clear();
-                        }
-                    }
+            Ok(Some(text)) => {
+                if let Some(cat) = parse_catalog(&file, &text, &mut problems) {
                     found.insert(lang.code.clone(), cat);
                 }
-                Err(errors) => problems.extend(errors.iter().map(|e| match e.line {
-                    0 => format!("{file}: {}", e.message),
-                    n => format!("{file}:{n}: {}", e.message),
-                })),
-            },
+            }
             Err(e) => problems.push(format!("cannot read {file}: {e}")),
         }
     }
     (found, problems)
+}
+
+/// Parse a translation file, pushing one `file:line: message` per problem. A file that doesn't parse
+/// gives `None`, and an entry whose tags differ from its original would change how the line plays
+/// (a `{nw}` added makes it advance by itself): that entry shows the script's text. Obsolete entries are
+/// never shown, so they don't bother the player (`quillstone check` lists them).
+fn parse_catalog(file: &str, text: &str, problems: &mut Vec<String>) -> Option<Catalog> {
+    match Catalog::parse(text) {
+        Ok(mut cat) => {
+            for e in cat.entries.iter_mut().filter(|e| !e.obsolete) {
+                if let Err(m) = check_translation(&e.source, &e.target) {
+                    problems.push(format!("{file}:{}: {m}", e.line));
+                    e.target.clear();
+                }
+            }
+            Some(cat)
+        }
+        Err(errors) => {
+            problems.extend(errors.iter().map(|e| match e.line {
+                0 => format!("{file}: {}", e.message),
+                n => format!("{file}:{n}: {}", e.message),
+            }));
+            None
+        }
+    }
+}
+
+/// The text patches of a game: every `*.txt` in `mods/text/` beside the game (see [`Assets::mods_dir`]),
+/// in file name order, laid over each other so a later file wins. `None` when there are no patches;
+/// problems are listed like [`load_translations`]'s, and a file that doesn't parse is left out.
+pub fn load_patches_in(assets: &Assets) -> (Option<Catalog>, Vec<String>) {
+    let Some(dir) = assets.mods_dir().map(|d| d.join("text")) else { return (None, Vec::new()) };
+    let mut files: Vec<_> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    files.retain(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txt")));
+    files.sort();
+    let (mut all, mut problems, mut any) = (Catalog::default(), Vec::new(), false);
+    for path in files {
+        let name = format!("mods/text/{}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+        let read = File::open(&path).and_then(|f| {
+            let mut bytes = Vec::new();
+            f.take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+            String::from_utf8(bytes).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "the file is not UTF-8 text"))
+        });
+        match read {
+            Ok(text) => {
+                if let Some(cat) = parse_catalog(&name, &text, &mut problems) {
+                    all.overlay(cat);
+                    any = true;
+                }
+            }
+            Err(e) => problems.push(format!("cannot read {name}: {e}")),
+        }
+    }
+    (any.then_some(all), problems)
 }
 
 /// The translation files a running game depends on (they may not exist yet).
@@ -246,5 +288,23 @@ mod tests {
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert!(problems[0].starts_with("lang/sv.txt:1: ") && problems[1].starts_with("lang/sv.txt:4: "), "{problems:?}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn patches_apply_in_file_name_order_and_a_malformed_one_is_reported_and_left_out() {
+        let dir = game(&[
+            ("mods/text/20-b.txt", "> Hi.\n= Second.\n"),
+            ("mods/text/10-a.txt", "> Hi.\n= First.\n\n> Bye.\n= Bye!\n"),
+            ("mods/text/30-bad.txt", "> Hi.\noops\n"),
+            ("mods/text/notes.md", "> not a patch"),
+        ]);
+        let (cat, problems) = load_patches_in(&Assets::folder(&dir));
+        let cat = cat.unwrap();
+        assert_eq!((cat.get(None, "Hi."), cat.get(None, "Bye.")), (Some("Second."), Some("Bye!")), "the later file wins");
+        assert!(problems.iter().all(|p| p.starts_with("mods/text/30-bad.txt:")), "{problems:?}");
+        assert!(problems[0].starts_with("mods/text/30-bad.txt:2: "), "{problems:?}");
+        let none = game(&[("main.quill.md", "Hi.\n")]);
+        assert_eq!(load_patches_in(&Assets::folder(&none)), (None, vec![]));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

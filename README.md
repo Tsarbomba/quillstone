@@ -243,6 +243,7 @@ All commands (`<script>` is a `.quill.md` file; the script's folder is the game 
 | `quillstone dump <script>` | print the compiled ops and labels |
 | `quillstone voices <script>` | list every line's voice file name, speaker and text (tab-separated, for the actors) |
 | `quillstone lang export <script> <code>` | create or update `lang/<code>.txt` for a language the script lists |
+| `quillstone mod export <script>` / `mod check <script> <patch.txt>...` | print an empty text patch / list patch entries that match nothing |
 | `quillstone package <script> --out <folder> [--player <exe>] [--name <name>] [--libs <folder>] [--folder] [--zip]` | build a game folder to ship (see "Ship a game"); `--player` defaults to the `quillstone-player` beside `quillstone` |
 | `quillstone unpack <game.qsa> --out <folder>` | write the files of an archive into a new folder |
 
@@ -314,6 +315,19 @@ replaces the shipped one: a new `assets/room.png`, a fixed `chapters/ch2.quill.m
 `lang/fr.txt` translation. A file with a path the game doesn't have yet is simply added (a voice
 recording in the voice folder, say). `quillstone-player path/to/game.qsa` does the same with the
 `mods/` folder beside that archive.
+
+To change a few lines of text, a mod does not need to copy a whole script. Any `*.txt` in
+`mods/text/` is a text patch, in the same format as a translation file (see
+[SCRIPT.md](SCRIPT.md#patching-text-with-a-mod)):
+
+```
+# mods/text/10-fixes.txt
+> You came after all.
+= You came. I'm glad.
+```
+
+Patches apply to the game's own language, in file name order (a later file wins), and not when
+another language is chosen. `quillstone mod check` lists the entries a game update broke.
 
 The folder is `mods`, not `game`, on purpose. A `game/` folder is what `--folder` releases ship,
 and one left over from an older release must not win over a newer archive.

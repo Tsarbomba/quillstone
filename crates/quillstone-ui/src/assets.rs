@@ -84,6 +84,15 @@ impl Assets {
         Assets(Arc::new(Backend::Archive { archive, overlay }))
     }
 
+    /// The folder of loose mod files: beside the archive, or `mods/` in the game folder (to try a mod
+    /// while developing; `package` leaves it out). `None` when there is no such folder.
+    pub fn mods_dir(&self) -> Option<PathBuf> {
+        match &*self.0 {
+            Backend::Folder(root) => Some(root.join("mods")),
+            Backend::Archive { overlay, .. } => overlay.clone(),
+        }
+    }
+
     /// The archive's main script path, in archive mode.
     pub fn main_script(&self) -> Option<&str> {
         match &*self.0 {

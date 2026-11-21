@@ -142,6 +142,8 @@ pub struct Game<'p> {
     settings: Settings,
     /// Translations by language code (see [`Game::set_translations`]).
     translations: std::collections::BTreeMap<String, quillstone_script::Catalog>,
+    /// Text patches by mods, applied to the script's own language (see [`Game::set_patches`]).
+    patches: Option<quillstone_script::Catalog>,
     screen: Screen,
     auto: bool,
     /// Time the current line has been ready for auto-forward.
@@ -269,6 +271,7 @@ impl<'p> Game<'p> {
             settings_before: settings.clone(),
             settings,
             translations: std::collections::BTreeMap::new(),
+            patches: None,
             screen: Screen::Story,
             under: None,
             auto: false,

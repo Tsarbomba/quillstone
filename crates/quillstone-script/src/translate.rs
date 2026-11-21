@@ -271,6 +271,17 @@ impl Catalog {
         out
     }
 
+    /// Add `other`'s entries over this catalog's: the same text and context is replaced, so the
+    /// later catalog wins. An entry with no translation yet (empty `=`) changes nothing.
+    pub fn overlay(&mut self, other: Catalog) {
+        for e in other.entries.into_iter().filter(|e| !e.target.is_empty()) {
+            match self.index.get(&(e.context.clone(), e.source.clone())) {
+                Some(&i) => self.entries[i] = e,
+                None => self.push_unique(e),
+            }
+        }
+    }
+
     fn push_unique(&mut self, e: Entry) {
         let key = (e.context.clone(), e.source.clone());
         if !self.index.contains_key(&key) {
@@ -694,5 +705,15 @@ mod tests {
         // a context version nobody speaks any more is flagged
         let again = old.merged(&[src("A", &[])]);
         assert!(again.entries.iter().find(|e| e.context.is_some()).unwrap().obsolete);
+    }
+
+    #[test]
+    fn overlay_lets_the_later_catalog_win_per_context_and_skips_untranslated_entries() {
+        let mut a = Catalog::parse("> Hi.\n= One.\n\n@ Mika\n> Hi.\n= One for Mika.\n\n> Bye.\n= Keep.\n").unwrap();
+        a.overlay(Catalog::parse("> Hi.\n= Two.\n\n> Bye.\n=\n\n> New.\n= Added.\n").unwrap());
+        assert_eq!(a.get(None, "Hi."), Some("Two."));
+        assert_eq!(a.get(Some("Mika"), "Hi."), Some("One for Mika."));
+        assert_eq!(a.get(None, "Bye."), Some("Keep."), "an empty `=` does not undo an earlier patch");
+        assert_eq!(a.get(None, "New."), Some("Added."));
     }
 }

@@ -34,6 +34,13 @@ USAGE:
                                 create or update lang/<code>.txt for a language listed in the
                                 script's `languages:`: new texts are added, texts no longer in
                                 the script are flagged obsolete (translations are never deleted)
+    quillstone mod export <script>
+                                print every text of the game as an empty text patch (the same format
+                                as a translation file): fill in the `=` of the ones to change and
+                                save it in `mods/text/`
+    quillstone mod check <script> <patch.txt>...
+                                list the entries of text patches that match nothing in the script
+                                (after a game update), and any error in them
     quillstone graph <script> [--format mermaid|dot] [-o <file>]
                                 draw the story's labels and the ways between them as a flowchart
                                 (Mermaid by default, to the screen unless -o names a file)
@@ -71,6 +78,8 @@ fn main() -> ExitCode {
         ["dump", file] => dump(Path::new(file)),
         ["graph", file, flags @ ..] => graph_cmd(Path::new(file), flags),
         ["voices", file] => voices(Path::new(file)),
+        ["mod", "export", file] => load(Path::new(file)).map(|p| print!("{}", lang::patch_template(&p))),
+        ["mod", "check", file, patches @ ..] if !patches.is_empty() => load(Path::new(file)).and_then(|p| lang::check_patches(&p, patches)),
         ["lang", "export", file, code] => load(Path::new(file)).and_then(|p| lang::export(Path::new(file), &p, code)),
         ["run", file, flags @ ..] => run_flags(flags).and_then(|at| run(Path::new(file), &at)),
         ["package", file, rest @ ..] => package_cmd(Path::new(file), rest),
