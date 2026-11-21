@@ -152,3 +152,16 @@ fn a_bad_talk_is_an_error_with_its_line() {
     assert!(errors("::anim{id=flap frames=\"m/a.png 0.1\"}\n::character{id=a talk=body:anim:flap}\n").join("; ").contains("has no layers"));
     assert!(line("mouth:anim:flap").starts_with("2: "), "{}", line("mouth:anim:flap"));
 }
+
+#[test]
+fn talk_may_hold_a_value_pattern_that_needs_no_declared_animation() {
+    let line = |talk: &str| errors(&format!("::character{{id=a layers=body,mouth layer_sprites=a/{{layer}}_{{value}}.png talk={talk}}}\n")).join("; ");
+    assert!(line("mouth:anim:flap_{value}").is_empty());
+    assert!(line("mouth:anim:{value}_talk").is_empty());
+    assert!(line("mouth:anim:fl-ap_{value}").contains("one `{value}`"));
+    assert!(line("mouth:anim:{value}_{value}").contains("one `{value}`"));
+    let p = parse("::character{id=a layers=mouth layer_sprites=a/{layer}_{value}.png talk=mouth:anim:flap_{value}}\n").unwrap();
+    assert_eq!(p.characters["a"].talk, Some(pair("mouth", "anim:flap_{value}")));
+    assert_eq!(crate::layer_value("a/{layer}_{value}.png", "mouth", "a/mouth_smile.png"), Some("smile"));
+    assert!(crate::talk_matches("anim:flap_{value}", "flap_smile") && !crate::talk_matches("anim:flap_{value}", "flap_"));
+}

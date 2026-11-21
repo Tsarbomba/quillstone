@@ -526,6 +526,7 @@ pub struct Character {
     /// Layer picture template: `{layer}` is a layer id, `{value}` the value shown on it.
     pub layer_sprites: Option<String>,
     /// `(layer, picture)`: what that layer shows (`anim:<id>`) while a line of this character is typing.
+    /// The id may hold `{value}`, replaced by the value the layer shows (no such animation: it keeps its value).
     pub talk: Option<(String, String)>,
     /// `(source line, path)` of the picture shown by the textbox while this character speaks.
     pub portrait: Option<(usize, String)>,
@@ -543,6 +544,19 @@ impl Character {
         let template = self.layer_sprites.as_deref()?;
         Some(template.replace("{layer}", layer).replace("{value}", value))
     }
+}
+
+/// The value a layer shows, read back from its picture: the `{value}` part of `template` (a `layer_sprites=`).
+/// `None` for a picture that does not fit the template, such as an animation.
+pub fn layer_value<'a>(template: &str, layer: &str, picture: &'a str) -> Option<&'a str> {
+    let (head, tail) = template.replace("{layer}", layer).split_once("{value}").map(|(h, t)| (h.to_string(), t.to_string()))?;
+    picture.strip_prefix(head.as_str())?.strip_suffix(tail.as_str()).filter(|v| !v.is_empty())
+}
+
+/// Whether the animation `id` is one that the `talk=` pattern `anim:<prefix>{value}<suffix>` can pick for some value.
+pub fn talk_matches(pattern: &str, id: &str) -> bool {
+    let split = pattern.strip_prefix(ANIM_PREFIX).and_then(|p| p.split_once("{value}"));
+    split.is_some_and(|(a, b)| id.len() > a.len() + b.len() && id.starts_with(a) && id.ends_with(b))
 }
 
 /// One picture of a frame animation and how long it stays up.

@@ -7,13 +7,14 @@
 //! What is actually in the scene lives in the runtime's `State`, and a rollback
 //! sends `Cmd::ClearScene` + the scene again, so the two never drift apart.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, Anim, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
+use quillstone_script::{anim_id, layer_value, talk_matches, Anim, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
 
 use crate::fade::Fade;
 use crate::pixels::vignette_zoom;
@@ -916,6 +917,8 @@ pub struct View {
     speaker_id: Option<String>,
     /// `(layer, picture)` the speaker's sprite shows on that layer while its line types (`Character::talk`).
     talk: Option<(String, String)>,
+    /// The speaker's `layer_sprites=` template, to read the value a talk layer shows (for a `{value}` talk animation).
+    talk_template: Option<String>,
     /// The portrait picture of that character, drawn by the textbox while their line is up.
     speaker_portrait: Option<String>,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
@@ -974,6 +977,7 @@ impl View {
             theme: Theme::default(),
             speaker_id: None,
             talk: None,
+            talk_template: None,
             speaker_portrait: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
@@ -1025,6 +1029,9 @@ impl View {
                 out.push(id);
             }
         }
+        if let Some((_, pattern)) = &self.talk {
+            out.extend(self.anims.keys().map(String::as_str).filter(|id| talk_matches(pattern, id) && !out.contains(id)).collect::<Vec<_>>());
+        }
         out
     }
 
@@ -1039,7 +1046,7 @@ impl View {
                 || self.playing(&s.src, s.anim_time)
                 || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
                 || s.layers.iter().any(|l| {
-                    self.playing(self.layer_src(s, l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
+                    self.playing(&self.layer_src(s, l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
                 })
                 || s.previous_layers.iter().any(|(p, t)| self.playing(p, *t))
         };
@@ -1076,15 +1083,27 @@ impl View {
     }
 
     /// What the speaker's sprite shows on one layer while the line types (see [`Character::talk`](quillstone_script::Character)).
-    pub fn set_talk(&mut self, talk: Option<(String, String)>) {
+    /// `layer_sprites` is the speaker's picture template: a `{value}` in the talk animation is the value read back from it.
+    pub fn set_talk(&mut self, talk: Option<(String, String)>, layer_sprites: Option<String>) {
         self.talk = talk;
+        self.talk_template = layer_sprites;
     }
 
     /// What layer `l` of sprite `s` is drawn with: the talk picture while its character's line types, else its own (a hidden layer stays hidden).
-    fn layer_src<'a>(&'a self, s: &SpriteView, l: &'a LayerView) -> &'a str {
+    /// A talk animation with `{value}` that is not declared for the layer's value leaves the layer as it is.
+    fn layer_src<'a>(&'a self, s: &SpriteView, l: &'a LayerView) -> Cow<'a, str> {
         match &self.talk {
-            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(s.id.as_str()) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => src,
-            _ => &l.src,
+            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(s.id.as_str()) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => {
+                if !src.contains("{value}") {
+                    return Cow::Borrowed(src);
+                }
+                let value = self.talk_template.as_deref().and_then(|t| layer_value(t, layer, &l.src));
+                match value.map(|v| src.replace("{value}", v)) {
+                    Some(own) if anim_id(&own).is_some_and(|id| self.anims.contains_key(id)) => Cow::Owned(own),
+                    _ => Cow::Borrowed(&l.src),
+                }
+            }
+            _ => Cow::Borrowed(&l.src),
         }
     }
 
@@ -1712,7 +1731,7 @@ impl View {
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
                 push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
             }
-            push_sprite(stage, self.picture(self.layer_src(s, l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+            push_sprite(stage, self.picture(&self.layer_src(s, l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
         }
     }
 

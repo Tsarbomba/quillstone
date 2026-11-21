@@ -211,6 +211,7 @@ fn check(path: &Path) -> Result<(), String> {
     found.extend(picture_findings(&program, path, root, &hot));
     found.extend(icon_findings(&program, path, root));
     found.extend(layer_size_findings(&program, path, root));
+    found.extend(talk_pattern_findings(&program, path));
     for (pc, text) in program.unknown_items() {
         found.push(warning(
             program.lines[pc],
@@ -598,6 +599,42 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
                 )),
                 Some(_) => {}
             }
+        }
+    }
+    out
+}
+
+/// A `talk=layer:anim:flap_{value}` that no declared animation can answer, for any value the script shows on that layer
+/// (all of them when a value is not known, such as one built from a variable): a warning, as some values may well stay still.
+fn talk_pattern_findings(program: &Program, script: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for c in program.characters.values() {
+        let (Some((layer, pattern)), Some(template)) = (&c.talk, &c.layer_sprites) else { continue };
+        if !pattern.contains("{value}") {
+            continue;
+        }
+        let (mut values, mut first, mut known) = (Vec::new(), None, true);
+        for (pc, op) in program.ops.iter().enumerate() {
+            let Op::Show { id, layers, .. } = op else { continue };
+            for (_, picture) in layers.iter().filter(|(l, p)| *id == c.id && l == layer && !p.is_empty()) {
+                first.get_or_insert(pc);
+                match quillstone_script::layer_value(template, layer, picture) {
+                    Some(v) if !quillstone_script::is_pattern(picture) => values.push(v),
+                    _ => known = false,
+                }
+            }
+        }
+        let fits = if known && !values.is_empty() {
+            values.iter().any(|v| program.anims.contains_key(&pattern.replace("{value}", v)[quillstone_script::ANIM_PREFIX.len()..]))
+        } else {
+            program.anims.keys().any(|id| quillstone_script::talk_matches(pattern, id))
+        };
+        if !fits {
+            let line = first.map_or(1, |pc| program.lines[pc]);
+            out.push((
+                false,
+                format!("{}: warning: no declared `::anim` fits `talk={layer}:{pattern}` for any value `{}` shows on `{layer}`: it never flaps", at(program, script, line), c.id),
+            ));
         }
     }
     out
@@ -2167,6 +2204,19 @@ mod tests {
     const LAYERS: &str = "---\nvars: { mood: \"smile\" }\n---\n::anim{id=blink frames=\"a/open.png 3, a/closed.png 0.1\" loop}\n\
         ::character{id=mika layers=body,eyes,mouth layer_sprites=a/{layer}_{value}.png}\n\
         ::show{mika body=casual eyes=anim:blink mouth={mood}}\nHi.\n::show{mika eyes=none}\nBye.\n";
+
+    #[test]
+    fn a_talk_value_pattern_with_no_animation_for_any_shown_value_is_a_warning() {
+        let src = |show: &str, anim: &str| {
+            parse(&format!("::anim{{id={anim} frames=\"a/x.png 0.1\" loop}}\n::character{{id=m layers=mouth layer_sprites=a/{{layer}}_{{value}}.png talk=mouth:anim:flap_{{value}}}}\n::show{{m mouth={show}}}\nHi.\n")).unwrap()
+        };
+        let found = |p: &Program| talk_pattern_findings(p, Path::new("s.quill.md"));
+        assert!(found(&src("smile", "flap_smile")).is_empty());
+        let warned = found(&src("open", "flap_smile"));
+        assert!(!warned[0].0 && warned[0].1.contains("warning") && warned[0].1.contains("flap_{value}"), "{warned:?}");
+        assert!(found(&src("{mood}", "flap_smile")).is_empty(), "an unknown value: any matching animation will do");
+        assert_eq!(found(&src("{mood}", "other")).len(), 1);
+    }
 
     #[test]
     fn check_looks_at_every_layer_file_and_the_files_a_layer_pattern_can_build() {

@@ -1302,10 +1302,17 @@ every combination. Declare the layers on the character, back to front:
   A `{w=}` pause in the middle of a line counts as typing. Only the speaking character's sprite
   flaps, not narration or the other characters, and a layer that is `none` stays hidden.
   `quillstone check` reports a layer the character does not have and an animation not declared.
+  The animation id may hold `{value}`, one animation for each value the layer shows: while `mouth` is
+  `smile`, `flap_smile` plays; a value with no such animation keeps its picture, and `check` warns
+  when no declared animation fits any value the script shows.
 
   ```
   ::anim{id=flap frames="assets/mika/mouth_smile.png 0.15, assets/mika/mouth_open.png 0.15" loop}
   ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png talk=mouth:anim:flap}
+  ```
+
+  ```
+  ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png talk=mouth:anim:flap_{value}}
   ```
 
 - All the layers of a character should be the **same size** (the same canvas): they are drawn

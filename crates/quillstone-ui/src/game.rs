@@ -1276,7 +1276,7 @@ impl<'p> Game<'p> {
         let who = name.and_then(|_| self.program.characters.values().find(is));
         let portrait = who.and_then(|c| c.portrait.as_ref()).map(|(_, p)| p.clone());
         let id = who.map(|c| c.id.clone());
-        self.view.set_talk(who.and_then(|c| c.talk.clone()));
+        self.view.set_talk(who.and_then(|c| c.talk.clone()), who.and_then(|c| c.layer_sprites.clone()));
         self.view.set_speaker(id, snap);
         self.view.set_portrait(portrait);
     }

@@ -2186,7 +2186,7 @@ impl Parser {
         Ok(())
     }
 
-    /// `talk=mouth:anim:flap`: a layer of this character and a declared animation.
+    /// `talk=mouth:anim:flap`: a layer of this character and a declared animation (or `flap_{value}`, one per value).
     fn character_talk(&self, talk: Option<&str>, layers: &[String]) -> Result<Option<(String, String)>, String> {
         let Some(talk) = talk else { return Ok(None) };
         let Some((layer, id)) = talk.split_once(':').and_then(|(l, v)| Some((l, v.strip_prefix(ANIM_PREFIX)?))) else {
@@ -2195,6 +2195,12 @@ impl Parser {
         if !layers.iter().any(|l| l == layer) {
             let have = if layers.is_empty() { "this character has no layers".to_string() } else { format!("its layers: {}", layers.join(", ")) };
             return Err(format!("`talk={talk}`: `{layer}` is not a layer of this character ({have})"));
+        }
+        if id.contains("{value}") {
+            if id.matches("{value}").count() > 1 || !is_plain_ident(&id.replace("{value}", "x")) {
+                return Err(format!("`talk={talk}`: the animation id must be letters, digits and `_` with one `{{value}}`, such as `flap_{{value}}`"));
+            }
+            return Ok(Some((layer.to_string(), anim_src(id)))); // `check` warns when no declared animation fits
         }
         Ok(Some((layer.to_string(), self.anim_ref(id)?)))
     }
