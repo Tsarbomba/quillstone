@@ -78,7 +78,7 @@ mod real {
     use std::collections::HashMap;
 
     use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, UnderlineStyle, Weight};
-    use quillstone_render::{Align, Anim, Letter, Letters, Pic, GLITCH_SYMBOLS};
+    use quillstone_render::{Align, Anim, Letter, Letters, Pic};
         use std::rc::Rc;
 
     /// Byte offset in `text` where each buffer line begins. Built from the buffer's own lines,
@@ -144,12 +144,6 @@ mod real {
                 rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
             }
         }
-    }
-
-    /// Symbols a glitch swaps its letters for: `GLITCH_SYMBOLS` characters picked by `seed`.
-    fn glitch_chars(seed: usize) -> Vec<char> {
-        let all: Vec<char> = quillstone_render::letters::GLITCH_CHARS.chars().collect();
-        (0..GLITCH_SYMBOLS).map(|k| all[(seed.wrapping_mul(31).wrapping_add(k * 7 + k * k)) % all.len()]).collect()
     }
 
     /// A ruby reading is this fraction of the size of the text it sits on.
@@ -505,7 +499,7 @@ mod real {
         }
 
         /// The symbols a glitching letter of `style` swaps to, as pictures in the text's colour.
-        fn glitch_pictures(&mut self, glyph: &cosmic_text::LayoutGlyph, color: Color, opacity: f32, job: &TextJob, seed: usize) -> Vec<(Pic, Bitmap)> {
+        fn glitch_pictures(&mut self, glyph: &cosmic_text::LayoutGlyph, color: Color, opacity: f32, job: &TextJob) -> Vec<(Pic, Bitmap)> {
             let run = job.runs.get(glyph.metadata);
             let family = self.family.clone();
             let mut attrs = match &family {
@@ -519,7 +513,7 @@ mod real {
                 attrs = attrs.style(Style::Italic);
             }
             let mut out = Vec::new();
-            for symbol in glitch_chars(seed) {
+            for symbol in quillstone_render::letters::GLITCH_CHARS.chars() {
                 let px = glyph.font_size.max(1.0);
                 let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(px, quillstone_render::line_height(px)));
                 {
@@ -532,6 +526,8 @@ mod real {
                 // a symbol the fonts can't draw is a blank one: the letter just doesn't change
                 out.extend(key.and_then(|key| self.picture(key, color, opacity, job)));
             }
+            // narrowest first: a letter can pick among the first few that fit it
+            out.sort_by_key(|(pic, _)| pic.w);
             out
         }
 
@@ -568,7 +564,7 @@ mod real {
                         letter_symbols = match symbols.get(&glyph.metadata) {
                             Some(r) => r.clone(),
                             None => {
-                                let drawn = self.glitch_pictures(glyph, color, opacity, job, glyph.metadata);
+                                let drawn = self.glitch_pictures(glyph, color, opacity, job);
                                 let r = letters.pics.len()..letters.pics.len() + drawn.len();
                                 for (pic, bitmap) in drawn {
                                     letters.pics.push(pic);
@@ -582,9 +578,12 @@ mod real {
                     letters.letters.push(Letter {
                         index: job.text[..byte].chars().count(),
                         anim,
+                        amount: job.runs[glyph.metadata].style.anim_value,
+                        width: glyph.w.round() as i32,
                         x: physical.x,
                         y: line_y + physical.y,
                         pic: pic_at,
+                        fit: letters.pics[letter_symbols.clone()].iter().filter(|p| p.w as i32 <= glyph.w.round() as i32).count().max(1),
                         symbols: letter_symbols,
                     });
                 }
@@ -1020,6 +1019,11 @@ mod tests {
             assert_eq!(letters.iter().map(|l| l.index).collect::<Vec<_>>(), [4, 5, 6], "{tag}");
             assert_eq!(set.bitmaps.len(), set.letters.pics.len());
             assert!(letters.iter().all(|l| (tag == "glitch") == !l.symbols.is_empty()));
+            for l in letters.iter().filter(|l| !l.symbols.is_empty()) {
+                let fitting = &set.letters.pics[l.symbols.start..l.symbols.start + l.fit];
+                assert!(l.fit == 1 || fitting.iter().all(|p| p.w as i32 <= l.width), "only symbols that fit the letter");
+                assert!(set.letters.pics[l.symbols.clone()].windows(2).all(|w| w[0].w <= w[1].w), "narrowest first");
+            }
             assert_eq!(set.letters.pics.len(), if tag == "glitch" { 3 + quillstone_render::GLITCH_SYMBOLS } else { 3 });
             // each letter at rest, drawn at its pen position and picture offset, completes the line
             let mut put = Bitmap { width: line.width, height: line.height, rgba: line.rgba.clone() };

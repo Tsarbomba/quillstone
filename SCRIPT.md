@@ -233,9 +233,9 @@ Inside lines and choice texts:
 | `{s}struck out{/s}` | struck-through text: a line through the middle of the words, in the text's colour (it nests and mixes like `{u}`) |
 | `{speed=0.5}slowly{/speed}` | the typing speed for part of a line, as a factor of the player's text speed: `0.5` is half as fast, `3` three times. From 0.1 to 10, anything else is an error. They nest by multiplying (`{speed=2}` inside `{speed=2}` is four times, kept within 0.1 to 10). Skip and instant text ignore it |
 | `{whisper}quietly{/whisper}` | a whisper: about 75% of the size of the text around it and 55% of its opacity. It nests with colour and size tags (a colour's alpha multiplies with the 55%) |
-| `{shake}words{/shake}` | each letter jitters at random around its place, a few pixels (scaled to the text size) |
-| `{wave}words{/wave}` | the letters bob up and down in a wave that travels along the words |
-| `{glitch}words{/glitch}` | letters now and then turn into a random symbol for a moment and jump a little sideways |
+| `{shake}words{/shake}` | each letter trembles at random around its place, gently (scaled to the text size). `{shake=3}` is the strength factor, from 0.1 to 5 (`{shake}` is 1; 3 is a hard shake) |
+| `{wave}words{/wave}` | the letters bob up and down in a wave that travels along the words. `{wave=2}` is the height factor, from 0.1 to 5 (`{wave}` is 1) |
+| `{glitch}words{/glitch}` | letters now and then turn into a random symbol for a moment and jump a little sideways. `{glitch=0.5}` is the share of letters that are symbols at any moment, from 0 to 1 (`{glitch}` is 0.07, about one letter in fourteen; `{glitch=1}` turns every letter into a symbol all the time). A symbol is centred in the width of the letter it replaces |
 | `{ruby=かんじ}漢字{/ruby}` | a small **reading** above the words (furigana, a gloss: see below) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
@@ -259,7 +259,7 @@ For bold and italic in a theme font, give the theme its bold and italic files to
 - The history shows the words alone (`漢字`). The text-mode `quillstone run` writes the reading
   in brackets after them: `漢字(かんじ)`.
 
-**Animated text.** `{shake}`, `{wave}` and `{glitch}` take no parameters. Letters appear with
+**Animated text.** `{shake}`, `{wave}` and `{glitch}` each take one optional value (above); the speed of the movement and the length of the wave are fixed. Letters appear with
 the typing as usual and start moving once they are shown:
 
 ```
@@ -272,7 +272,7 @@ the typing as usual and start moving once they are shown:
   `quillstone test` are not affected.
 - An underline or strike-through on moving words stays still.
 - Moving tags nest, the innermost one wins, and each must be closed by its own closing tag
-  (`{shake}a{wave}b{/shake}c{/wave}` is an error).
+  (`{shake}a{wave}b{/shake}c{/wave}` is an error). The closing tag has no value: `{/shake}`.
 - Players can turn the moving off with **Animated text** in Settings (on by default; saved as
   `animated_text = false`). Then the words are drawn still: shake and wave as plain text, glitch
   with its real letters. It is for players who find moving text hard to read or uncomfortable.
@@ -286,7 +286,7 @@ the typing as usual and start moving once they are shown:
 
 **Mistakes** are errors with the line number: an unclosed `**`, `{size=..}`, `{u}`, `{s}`,
 `{speed=..}`, `{whisper}`, `{shake}`, `{wave}`, `{glitch}` or `{ruby=..}`, an empty reading, a size
-outside 8 to 200, a speed outside 0.1 to 10, a moving tag closed by the wrong closing tag, `{nw}`
+outside 8 to 200, a speed outside 0.1 to 10, a `{shake=..}`, `{wave=..}` or `{glitch=..}` value that is not a number or is outside its range, a moving tag closed by the wrong closing tag, `{nw}`
 in the middle of a line, `{p}` in a choice, an unknown tag like `{huge=40}`.
 
 **Where the styling shows.** The history and save previews show the words without styling or
@@ -3132,7 +3132,7 @@ and short messages like "Loaded") are translated through the same file:
   `{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{s}`, `{speed=..}`, `{whisper}`,
   `{shake}`, `{wave}`, `{glitch}`, `{ruby=..}` and their closing tags. `{name}` values are put in after the translation is chosen, and `{nw}` must still end
   the line.
-- A tag's own value (a colour, a pause, a ruby reading) may differ, so a translation can give
+- A tag's own value (a colour, a pause, a shake strength, a ruby reading) may differ, so a translation can give
   its own reading.
 - The theme's `font` has to cover the characters the translations use.
 

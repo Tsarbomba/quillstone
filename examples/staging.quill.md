@@ -130,6 +130,8 @@ The screen is black, and this narration is still readable: the dialogue box is n
 
 **Mika:** Some words move: I am {shake}shaking with nerves{/shake}, the sea goes {wave}up and down like this{/wave}, and the old radio says {glitch}signal lost, signal lost{/glitch}. You can switch the moving off with "Animated text" in Settings.
 
+**Mika:** Each can take a number: a {shake}gentle tremble{/shake} next to a {shake=3}strong shake{/shake}, a {wave=3}tall wave{/wave}, and a glitch where {glitch=0.5}half of the letters are symbols{/glitch} at any moment.
+
 **Mika:** This line moves on by itself once it is typed, with no click...{nw}
 
 ::choice

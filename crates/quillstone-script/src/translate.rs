@@ -609,6 +609,7 @@ mod tests {
         assert!(ok("{ruby=a}x{/ruby}", "{ruby=a}y").unwrap_err().contains("{/ruby}"));
         // the strike, speed, whisper and animation tags too; a speed may change
         assert!(ok("{s}x{/s} {speed=0.5}y{/speed} {shake}z{/shake}", "{shake}c{/shake} {s}a{/s} {speed=2}b{/speed}").is_ok());
+        assert!(ok("{shake=3}x{/shake}", "{shake=1}y{/shake}").is_ok(), "the value may differ");
         for tag in ["s", "whisper", "wave", "glitch", "shake"] {
             let source = format!("{{{tag}}}x{{/{tag}}}");
             assert!(check_translation(&source, "y").unwrap_err().contains("missing {"), "{tag}");

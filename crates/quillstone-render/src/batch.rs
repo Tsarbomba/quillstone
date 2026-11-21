@@ -119,7 +119,7 @@ pub struct Frame {
 fn still(runs: &[TextRun]) -> Vec<TextRun> {
     let mut runs = runs.to_vec();
     if runs.iter().any(|r| r.style.anim.is_some()) {
-        runs.iter_mut().for_each(|r| r.style.anim = None);
+        runs.iter_mut().for_each(|r| (r.style.anim, r.style.anim_value) = (None, 0.0));
         if runs.iter().all(|r| r.style == Default::default() && r.ruby.is_none()) {
             runs.clear();
         }

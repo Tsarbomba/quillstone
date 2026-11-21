@@ -82,7 +82,29 @@ impl Anim {
             Anim::Glitch => "glitch",
         }
     }
+
+    /// What `{shake}` without a value means.
+    fn default_value(self) -> f32 {
+        match self {
+            Anim::Shake | Anim::Wave => 1.0,
+            Anim::Glitch => GLITCH_SHARE,
+        }
+    }
+
+    /// The values `{shake=..}` and the others take.
+    fn range(self) -> (f32, f32) {
+        match self {
+            Anim::Shake | Anim::Wave => (MIN_ANIM, MAX_ANIM),
+            Anim::Glitch => (0.0, 1.0),
+        }
+    }
 }
+
+/// Smallest and largest `{shake=..}` and `{wave=..}` factor.
+pub const MIN_ANIM: f32 = 0.1;
+pub const MAX_ANIM: f32 = 5.0;
+/// The share of letters a `{glitch}` has turned into symbols at any moment.
+pub const GLITCH_SHARE: f32 = 0.07;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Style {
@@ -100,6 +122,8 @@ pub struct Style {
     /// Typing speed factor, `None` is the player's own speed.
     pub speed: Option<f32>,
     pub anim: Option<Anim>,
+    /// The animation's value (strength, height or share of letters), meaningful with `anim`.
+    pub anim_value: f32,
 }
 
 impl Style {
@@ -159,7 +183,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let mut style = Style::default();
     let mut colors: Vec<(Option<[f32; 3]>, Option<f32>)> = Vec::new();
     let mut speeds: Vec<Option<f32>> = Vec::new();
-    let mut anims: Vec<Option<Anim>> = Vec::new();
+    let mut anims: Vec<(Option<Anim>, f32)> = Vec::new();
     let (mut strikes, mut whispers) = (0, 0); // open `{s}` and `{whisper}` tags
     let mut sizes: Vec<Option<TextSize>> = Vec::new();
     let mut underlines = 0; // open `{u}` tags
@@ -258,13 +282,28 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     close_run(out.text.len(), style, &ruby);
                     whispers += 1;
                     style.whisper = true;
-                } else if let Some(anim) = [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find(|a| tag == a.tag()) {
+                } else if let Some((anim, value)) = [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find_map(|a| match tag.strip_prefix(a.tag()) {
+                    Some("") => Some((a, None)),
+                    Some(rest) => rest.strip_prefix('=').map(|v| (a, Some(v))),
+                    None => None,
+                }) {
+                    let amount = match value {
+                        None => anim.default_value(),
+                        Some(v) => {
+                            let (low, high) = anim.range();
+                            let n: f32 = v.trim().parse().ok().filter(|f: &f32| f.is_finite()).ok_or_else(|| format!("`{{{tag}}}` needs a number such as `{}`", anim.default_value()))?;
+                            if !(low..=high).contains(&n) {
+                                return Err(format!("`{{{tag}}}`: the value is from {low} to {high}"));
+                            }
+                            n
+                        }
+                    };
                     if anims.len() >= MAX_TAG_NESTING {
-                        return Err(format!("`{{{tag}}}` tags are nested too deeply"));
+                        return Err(format!("`{{{}}}` tags are nested too deeply", anim.tag()));
                     }
-                    anims.push(style.anim);
+                    anims.push((style.anim, style.anim_value));
                     close_run(out.text.len(), style, &ruby);
-                    style.anim = Some(anim);
+                    (style.anim, style.anim_value) = (Some(anim), amount);
                 } else if let Some(anim) = tag.strip_prefix('/').and_then(|t| [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find(|a| t == a.tag())) {
                     // the innermost animated tag open must be this one
                     if style.anim != Some(anim) {
@@ -273,9 +312,9 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                             None => format!("`{{/{0}}}` without a `{{{0}}}` before it", anim.tag()),
                         });
                     }
-                    let previous = anims.pop().flatten();
+                    let previous = anims.pop().unwrap_or_default();
                     close_run(out.text.len(), style, &ruby);
-                    style.anim = previous;
+                    (style.anim, style.anim_value) = previous;
                 } else if tag == "/speed" {
                     let previous = speeds.pop().ok_or("`{/speed}` without a `{speed=...}` before it")?;
                     close_run(out.text.len(), style, &ruby);
@@ -731,6 +770,38 @@ mod tests {
         let r = parse_markup("{shake}a{wave}b{/wave}c{/shake}").unwrap();
         assert_eq!(r.runs.iter().map(|x| x.style.anim).collect::<Vec<_>>(), [Some(Anim::Shake), Some(Anim::Wave), Some(Anim::Shake)]);
         assert_eq!(plain("{s}a{/s}{whisper}b{/whisper}{wave}c{/wave}"), "abc");
+    }
+
+    #[test]
+    fn animations_take_one_optional_value_within_their_range() {
+        let value = |src: &str| {
+            let r = parse_markup(src).unwrap();
+            r.runs.iter().find_map(|x| x.style.anim.map(|a| (a, x.style.anim_value))).unwrap()
+        };
+        assert_eq!(value("{shake}a{/shake}"), (Anim::Shake, 1.0));
+        assert_eq!(value("{shake=3}a{/shake}"), (Anim::Shake, 3.0));
+        assert_eq!(value("{wave=0.1}a{/wave}"), (Anim::Wave, 0.1));
+        assert_eq!(value("{wave=5}a{/wave}"), (Anim::Wave, 5.0));
+        assert_eq!(value("{glitch}a{/glitch}"), (Anim::Glitch, GLITCH_SHARE));
+        assert_eq!(value("{glitch=0}a{/glitch}"), (Anim::Glitch, 0.0));
+        assert_eq!(value("{glitch=1}a{/glitch}"), (Anim::Glitch, 1.0));
+        // a closing tag brings back the outer value
+        let r = parse_markup("{shake=2}a{shake=4}b{/shake}c{/shake}").unwrap();
+        assert_eq!(r.runs.iter().map(|x| x.style.anim_value).collect::<Vec<_>>(), [2.0, 4.0, 2.0]);
+        for (src, needle) in [
+            ("{shake=0.05}a{/shake}", "from 0.1 to 5"),
+            ("{shake=6}a{/shake}", "from 0.1 to 5"),
+            ("{wave=0}a{/wave}", "from 0.1 to 5"),
+            ("{glitch=1.5}a{/glitch}", "from 0 to 1"),
+            ("{glitch=-0.1}a{/glitch}", "from 0 to 1"),
+            ("{shake=x}a{/shake}", "needs a number"),
+            ("{wave=}a{/wave}", "needs a number"),
+            ("{glitch=NaN}a{/glitch}", "needs a number"),
+            ("{shake=2}a", "never closed"),
+        ] {
+            let e = parse_markup(src).unwrap_err();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
     }
 
     #[test]
