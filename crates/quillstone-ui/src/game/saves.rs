@@ -29,8 +29,8 @@ impl Game<'_> {
     /// Called at every choice and when quitting; the frontend should call it
     /// when the window is closed, too.
     pub fn autosave(&mut self) {
-        if self.replay.is_some() {
-            return self.save_persistent(); // a replay is never saved (this only retries an earlier failed write)
+        if self.replay.is_some() || self.splash {
+            return self.save_persistent(); // a replay or the splash is never saved (this only retries an earlier failed write)
         }
         self.save_read();
         self.save_persistent(); // a write that failed earlier gets its last chance

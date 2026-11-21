@@ -230,6 +230,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
     let mut todo: Vec<usize> = vec![owner(0)];
     todo.extend(nodes.iter().position(|n| is_hub(n, "Inventory")));
     todo.extend(nodes.iter().position(|n| is_hub(n, "HUD")));
+    todo.extend(by_label("splash"));
     todo.extend(program.replays.iter().filter_map(|r| by_label(&r.label)));
     // (a chapter is a way in once it is open; `check` asks without them which ones the story itself reaches)
     todo.extend(program.chapters.iter().filter(|_| chapter_roots).filter_map(|c| by_label(&c.label)));

@@ -84,6 +84,7 @@ fn explore_within(program: &Program, limit: usize, budget: usize) -> Report {
         report: Report::default(),
         caps: seen_caps(program),
         reruns: 0,
+        in_splash: false,
     };
     let compared = compared_texts(program);
     for (origin, kept) in playthroughs(program) {
@@ -92,7 +93,13 @@ fn explore_within(program: &Program, limit: usize, budget: usize) -> Report {
         // a new game from the start, and one from each chapter (the Chapters screen starts a game at its label)
         let mut starts = vec![state.clone()];
         starts.extend(program.chapters.iter().filter_map(|c| program.labels.get(&c.label)).map(|&pc| State { pc, ..state.clone() }));
-        for state in starts {
+        // and the splash, which runs on its own before the menu
+        let splash = program.labels.get("splash").map(|&pc| State { pc, ..state.clone() });
+        let has_splash = splash.is_some();
+        starts.extend(splash);
+        let last = starts.len();
+        for (k, state) in starts.into_iter().enumerate() {
+            x.in_splash = k + 1 == last && has_splash;
             for (after, trace) in x.outcomes(&state, None) {
                 if let Some(root) = x.visit(after, trace, None) {
                     x.nodes[root].origin = origin.clone();
@@ -274,6 +281,8 @@ struct Node {
     stopped: bool,
     /// For a starting point other than a first playthrough: what is different.
     origin: Option<String>,
+    /// Reached from the `# splash` label.
+    splash: bool,
 }
 
 /// The situation `state` is in, as a hash. Lists are sets: the same items in another order are the same situation.
@@ -337,6 +346,8 @@ struct Explorer<'p> {
     /// Steps re-run to follow a `random` fork, each charged against `limit` together
     /// with the situations found (so rolls can't cost more than the limit allows).
     reruns: usize,
+    /// The starting point being filed is the splash's.
+    in_splash: bool,
 }
 
 impl Explorer<'_> {
@@ -437,6 +448,7 @@ impl Explorer<'_> {
         if let Some(&id) = self.index.get(&key) {
             return Some(id);
         }
+        let splash = parent.as_ref().map_or(self.in_splash, |(p, _)| self.nodes[*p].splash);
         let bytes = state_bytes(&state);
         if self.nodes.len() + self.reruns >= self.limit || (!state.finished && self.queued_bytes + bytes > self.budget) {
             self.report.partial = true;
@@ -446,7 +458,7 @@ impl Explorer<'_> {
         self.index.insert(key, id);
         let finished = state.finished;
         let (pc, waiting_at_choice) = (state.pc, matches!(state.pending, Some(Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. })));
-        self.nodes.push(Node { pc, state: Some(state), parent, next: Vec::new(), stopped: finished, origin: None });
+        self.nodes.push(Node { pc, state: Some(state), parent, next: Vec::new(), stopped: finished, origin: None, splash });
 
         // A choice that ran but didn't wait had nothing on offer. (A menu of only
         // `{once}` options is meant to run dry, so that one is left alone.)
@@ -470,6 +482,9 @@ impl Explorer<'_> {
 
     /// Why the story stopped at op `pc`.
     fn stopped_at(&mut self, pc: usize, id: usize) {
+        if self.nodes[id].splash {
+            return; // the splash ends, not the game
+        }
         match self.program.ops.get(pc) {
             Some(Op::End) | None => {
                 self.endings.insert(self.line(pc));
@@ -1509,5 +1524,14 @@ mod tests {
         let click = test("Hi.\n::wait{click}\nBye.\n::end\n");
         assert!(click.errors.is_empty() && !click.partial);
         assert_eq!((click.situations, click.endings.len()), (timed.situations, 1));
+    }
+
+    #[test]
+    fn the_splash_is_played_on_its_own_and_is_no_ending() {
+        let r = test("# start\nHi.\n::end\n# splash\n::choice\n- [A](#a)\n- [B](#b)\n::\n# a\nA.\n::return\n# b\nB.\n::return\n");
+        assert!(r.errors.is_empty() && r.warnings.is_empty() && !r.partial, "{:?}", (messages(&r.errors), messages(&r.warnings)));
+        assert_eq!(r.endings.len(), 1, "only the story's `::end`");
+        let plain = test("# splash\nW.\n# start\nHi.\n::end\n");
+        assert!(plain.warnings.is_empty() && plain.endings.len() == 1, "{:?}", messages(&plain.warnings));
     }
 }

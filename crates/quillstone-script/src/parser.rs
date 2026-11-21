@@ -211,6 +211,10 @@ struct Parser {
     errors: Vec<ParseError>,
     fixups: Vec<Fixup>,
     blocks: Vec<IfBlock>,
+    /// The op of the `Jump` over the `# splash` label while that label is open (see `close_splash`).
+    splash_jump: Option<usize>,
+    /// The op of that `Jump`, kept for the fall-through check of the label after the splash.
+    splash_skip: Option<usize>,
     /// Labels with parameters and the line of their heading (for the fall-through check).
     param_labels: Vec<(String, usize)>,
     /// `use=#label` of each item, to check once all labels are known: (label, line).
@@ -355,6 +359,7 @@ impl Parser {
         }
 
         let last_line = self.program.lines.last().copied().unwrap_or(1);
+        self.close_splash(last_line);
         self.push(Op::End, last_line);
 
         let fixups = std::mem::take(&mut self.fixups);
@@ -451,7 +456,10 @@ impl Parser {
                 Some(_) => true,
             };
             let skipped_into = self.program.ops.iter().enumerate().any(|(i, op)| {
-                matches!(op, Op::Jump { target, .. } if *target == at) && !user_jumps.contains(&i)
+                // (the jump over the splash only runs when the label above falls into it)
+                let over_splash = self.splash_skip == Some(i)
+                    && i.checked_sub(1).is_some_and(|p| matches!(self.program.ops[p], Op::Jump { cond: None, .. } | Op::Return | Op::End));
+                matches!(op, Op::Jump { target, .. } if *target == at) && !user_jumps.contains(&i) && !over_splash
             });
             if falls_in || skipped_into {
                 self.err(
@@ -1091,6 +1099,13 @@ impl Parser {
             }
             None => None,
         };
+        self.close_splash(line);
+        if name == "splash" {
+            // The story never runs into the splash: it starts at the first op after it.
+            self.splash_jump = Some(self.here());
+            self.splash_skip = self.splash_jump;
+            self.push(Op::Jump { cond: None, target: 0 }, line);
+        }
         let at = self.here();
         self.program.headings.push(Heading { label: name.clone(), text: text.to_string(), line });
         if self.program.labels.insert(name.clone(), at).is_some() {
@@ -1106,6 +1121,14 @@ impl Parser {
             }
             self.program.params.insert(name.clone(), params.into_iter().map(|(n, _)| n).collect());
             self.param_labels.push((name, line));
+        }
+    }
+
+    /// The `# splash` label ends where the next label starts (or the script does): a `::return` there ends it.
+    fn close_splash(&mut self, line: usize) {
+        if let Some(jump) = self.splash_jump.take() {
+            self.push(Op::Return, line);
+            self.patch(jump, self.here());
         }
     }
 
@@ -6830,5 +6853,22 @@ mod tests {
         assert_eq!((says[1].0.as_str(), says[1].1), ("{hero.name}", p.characters["h"].color), "case-insensitive");
         assert_eq!((says[2].0.as_str(), says[2].1), ("{hero.name}", p.characters["h"].color));
         assert_eq!((says[3].0.as_str(), says[3].1), ("{other}", None), "unknown speaker: as written, no colour");
+    }
+
+    #[test]
+    fn a_splash_label_is_skipped_by_the_story_and_ends_where_the_next_label_starts() {
+        let p = ok("# splash\nW.\n# start\nHi.\n");
+        assert_eq!(p.labels["splash"], 1);
+        assert_eq!(p.ops[0], Op::Jump { cond: None, target: 3 }, "the story starts past it");
+        assert_eq!(p.ops[2], Op::Return, "the compiler ends the label with a `::return`");
+        let q = ok("# start\nHi.\n# splash\nW.\n");
+        assert_eq!((q.labels["splash"], q.ops.len()), (2, 5), "also at the end of the script");
+    }
+
+    #[test]
+    fn the_jump_over_a_splash_is_no_way_into_the_label_after_it_unless_the_label_above_falls_in() {
+        let src = |above: &str| format!("# start\n{above}# splash\nW.\n# heal(n)\nHi.\n::return\n");
+        assert!(parse(&src("Hi.\n::end\n")).is_ok());
+        assert!(parse(&src("Hi.\n")).is_err(), "the story runs into the splash, over it, into `heal`");
     }
 }

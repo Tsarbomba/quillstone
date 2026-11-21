@@ -3138,6 +3138,48 @@ chapters: { part-1: "Part 1" | assets/ch1.jpg, part-2: "Part 2" | assets/ch2.jpg
 
 The demo `examples/chapter_select.quill.md` shows it.
 
+## Splash screen
+
+A label called `splash` runs at every launch, before the main menu: for logos, a content
+warning, a first-run question. When it ends the main menu appears.
+
+````markdown
+# splash
+
+::bg{color=#000000}
+::show{id=studio src=assets/studio.png x=center y=center fade=1}
+::wait{time=2.5}
+::hide{studio fade=0.5}
+::wait{time=0.7}
+::show{id=engine src=assets/engine.png x=center y=center fade=1}
+::wait{time=2.5}
+::hide{engine fade=0.5}
+::wait{time=0.7}
+This game has a scene with flashing lights.
+::return
+````
+
+- **Where it ends.** At `::return` or `::end`, or where the next label starts: labels run on
+  into the one below, and the splash is only the label itself. Put what a `::choice` in the
+  splash leads to in labels after it, each finishing with `::return` (or `::end`), and write the
+  splash at the end of the script then, so that the story doesn't begin at one of those labels.
+- **The story never starts in it.** A new game, Load, Chapters and a replay don't run it, and the
+  story doesn't run into it from the label above. Nothing of it is in a save.
+- **Inside it** the usual commands work: `::bg`, `::show`, `::hide`, `::fade`, `::wait`, music
+  and sound, `::if`, `::choice`, `::hotspots`, and lines. `::set` on a `persistent:` variable is
+  kept, so the splash can ask something once ("Show the content options?") and the story can read
+  the answer.
+- **What the player can do.** A click, Enter or Space moves on, as in the story: it ends a
+  `::wait{time}` early (a wait can't be made unskippable). **Esc** (or a right click) skips the
+  rest of the splash and shows the main menu. There is no quick menu, no saving, no rollback,
+  history or skip mode, and no game menu.
+- **Without a `# splash`** nothing changes.
+- `quillstone check` treats it like any label, and a `::jump` or `::call` to `splash` is
+  allowed (a `::call` comes back after its `::return`). `quillstone test` plays it once from its
+  own start, and its end does not count as an ending of the game.
+
+The demo `examples/splash.quill.md` shows it.
+
 ## Translating a game
 
 ````markdown

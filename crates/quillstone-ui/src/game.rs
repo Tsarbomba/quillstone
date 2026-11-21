@@ -187,6 +187,8 @@ pub struct Game<'p> {
     persistent_locked: bool,
     /// Whether a story is running (false at the main menu; overlays return here).
     in_story: bool,
+    /// The `# splash` label is running (a story that is saved nowhere, and ends at the main menu).
+    splash: bool,
     /// The main-menu button the keyboard is on.
     menu_focus: Option<usize>,
     /// The newest save and its `seq`, for the main menu's Continue and to order new saves.
@@ -299,6 +301,7 @@ impl<'p> Game<'p> {
             read_locked,
             persistent_locked,
             in_story: false,
+            splash: false,
             menu_focus: None,
             newest_save: None,
             video_generation: 0,
@@ -351,6 +354,33 @@ impl<'p> Game<'p> {
         let seed = quillstone_runtime::next_seed(&mut self.seed);
         let (session, first) = Session::start_seeded(self.program, self.session.persistent().clone(), seed);
         self.enter_story(session, &first);
+    }
+
+    /// Run the script's `# splash` label (if it has one) before the main menu: a story of its own that
+    /// nothing saves or rolls back, which Esc skips and whose end brings up the menu. Frontends call this
+    /// once they have set the game up.
+    pub fn start_splash(&mut self) {
+        if !self.program.labels.contains_key("splash") || self.in_story {
+            return;
+        }
+        let seed = quillstone_runtime::next_seed(&mut self.seed);
+        if let Some((session, first)) = Session::start_replay(self.program, self.session.persistent().clone(), seed, "splash") {
+            self.splash = true;
+            self.enter_story(session, &first);
+            self.splash_check(&first);
+        }
+    }
+
+    fn splash_check(&mut self, cmds: &[Cmd]) {
+        if self.splash && cmds.contains(&Cmd::Finished) {
+            self.end_splash();
+        }
+    }
+
+    fn end_splash(&mut self) {
+        self.splash = false;
+        self.session = idle_session(self.program, self.session.persistent().clone());
+        self.go_to_menu();
     }
 
     /// Make `session` the story on screen: a fresh view, the menu's music stopped, `first` (what its
@@ -1030,6 +1060,14 @@ impl<'p> Game<'p> {
     // ---- the story ----------------------------------------------------------------
 
     fn story_event(&mut self, event: Event) {
+        if self.splash {
+            // Only what moves it on; Esc (or a right click) skips the rest.
+            match event {
+                Event::Key(Key::Escape) | Event::Press(Button::Right) => return self.end_splash(),
+                Event::Press(Button::Left) | Event::Key(Key::Space | Key::Enter | Key::Right | Key::Up | Key::Down | Key::Char('1'..='9')) => {}
+                _ => return,
+            }
+        }
         // With the interface hidden, the next key press or click only brings it back.
         if self.view.hide_ui() && matches!(event, Event::Key(_) | Event::Press(_)) {
             return self.view.set_hide_ui(false);
@@ -1196,7 +1234,7 @@ impl<'p> Game<'p> {
 
     /// There is a dialogue box for the quick menu to belong to.
     fn quick_menu_possible(&self) -> bool {
-        self.view.dialogue.as_ref().is_some_and(|d| !d.centred) && self.view.video.is_none() && !self.view.finished
+        !self.splash && self.view.dialogue.as_ref().is_some_and(|d| !d.centred) && self.view.video.is_none() && !self.view.finished
     }
 
     /// Whether the cursor is where the `hover` mode shows the menu.
@@ -1392,6 +1430,7 @@ impl<'p> Game<'p> {
         let purchase = matches!(input, Input::Buy(_));
         let cmds = self.session.input(input);
         self.show(&cmds);
+        self.splash_check(&cmds);
         if self.replay.is_some() {
             self.replay_check(&cmds);
             if self.replay.is_none() {
@@ -1715,3 +1754,5 @@ mod quickicon_tests;
 mod console_tests;
 #[cfg(test)]
 mod menu_tabs_tests;
+#[cfg(test)]
+mod splash_tests;

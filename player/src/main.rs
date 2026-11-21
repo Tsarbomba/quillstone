@@ -209,6 +209,8 @@ fn main() {
     game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
     if start != quillstone_ui::StartAt::default() {
         game.start_dev(&start).unwrap_or_else(|e| fatal(e));
+    } else {
+        game.start_splash();
     }
     let mut app = App {
         title: game.title(),
