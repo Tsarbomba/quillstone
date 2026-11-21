@@ -13,12 +13,12 @@ fn show(id: &str, layers: &[(&str, &str)], tint: [f32; 3]) -> Cmd {
     Cmd::ShowSprite {
         id: id.into(), src: if layers.is_empty() { format!("{id}.png") } else { String::new() },
         layers: layers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(), x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false,
-        xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint, additive: false, fade: 0.0,
+        xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint, brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], additive: false, fade: 0.0,
     }
 }
 
 fn leg(tint: [f32; 3], time: f32, queued: bool) -> Cmd {
-    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint, time, ease: Ease::Linear, wait: 0.0 };
+    let to = SpriteStep { x: 0.5, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint, brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], time, ease: Ease::Linear, wait: 0.0 };
     Cmd::MoveSprite { id: "m".into(), flip: false, to, queued }
 }
 
@@ -73,7 +73,7 @@ fn a_move_eases_each_channel_and_a_sequence_goes_on() {
 #[test]
 fn a_loop_runs_between_the_resting_tint_and_the_far_one() {
     let mut v = View::new().with_speed(0.0);
-    let far = SpriteStep { tint: [0.0; 3], time: 1.0, ..match leg([0.0; 3], 1.0, false) { Cmd::MoveSprite { to, .. } => to, _ => unreachable!() } };
+    let far = SpriteStep { tint: [0.0; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], time: 1.0, ..match leg([0.0; 3], 1.0, false) { Cmd::MoveSprite { to, .. } => to, _ => unreachable!() } };
     v.apply(&[show("m", &[], [1.0; 3]), Cmd::LoopSprite { id: "m".into(), flip: false, to: far }]);
     v.tick(1.0);
     assert!(v.sprites[0].current_tint()[1].abs() < 1e-3, "at the far end");

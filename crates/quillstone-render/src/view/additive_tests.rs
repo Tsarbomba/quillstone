@@ -12,7 +12,7 @@ fn img(_: &str) -> Option<Size> {
 fn show(id: &str, additive: bool) -> Cmd {
     Cmd::ShowSprite {
         id: id.into(), src: format!("{id}.png"), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false,
-        xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [0.5; 3], additive, fade: 0.0,
+        xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [0.5; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], additive, fade: 0.0,
     }
 }
 
@@ -40,7 +40,7 @@ fn only_the_additive_sprites_pictures_are_flagged() {
 fn a_move_keeps_the_blend_and_the_quads_carry_it_with_the_tint_inside() {
     let mut v = View::new().with_speed(0.0);
     v.apply(&[show("glow", true), show("b", false)]);
-    v.apply(&[Cmd::MoveSprite { id: "glow".into(), flip: false, to: SpriteStep { x: 0.2, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [0.5; 3], time: 0.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
+    v.apply(&[Cmd::MoveSprite { id: "glow".into(), flip: false, to: SpriteStep { x: 0.2, y: 1.0, scale: 1.0, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [0.5; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], time: 0.0, ease: Ease::Linear, wait: 0.0 }, queued: false }]);
     let f = build_frame(&v.draw_list(&img, None), Size::new(1920.0, 1080.0));
     let flags: Vec<(bool, f32)> = f.quads.iter().map(|q| (q.additive, q.color[0])).collect();
     assert_eq!(flags, [(true, 0.5), (false, 0.5)]);

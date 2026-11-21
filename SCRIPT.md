@@ -654,6 +654,8 @@ What a sprite can be given:
 | `xoffset`, `yoffset` | -3840 to 3840 pixels | shift it after `x` and `y` placed it |
 | `blur` | 0 to 64 (default 0, sharp) | put it out of focus |
 | `tint` | `#rrggbb`, `#rgb` or `none` | multiply its colours |
+| `brightness` | -1 to 1 (default 0) | add that much to each colour after the tint |
+| `crop` | `x,y,w,h` (each 0 to 1 or `N%`), or `none` | show only that part of the picture |
 | `blend` | `normal` (default) or `add` | make it a light |
 | `fade` | seconds | fade it in, or crossfade to the new pose |
 
@@ -679,12 +681,24 @@ What a sprite can be given:
     stage.
   - It works for every kind of sprite; for a layered sprite it covers the whole stack.
   - It combines with the dimming of `speaker_highlight` and with `::filter`.
+- **`brightness`** adds its number to each colour channel after `tint` has multiplied them
+  (clamped at black and white), so `tint=#ffd8b0 brightness=0.1` is warm and brighter, and
+  `brightness=-0.3` darkens. It works for every kind of sprite, whole stack included.
+- **`crop`** shows only a rectangle of the picture, given as fractions of it (`0.25,0,0.5,0.4`)
+  or percentages (`25%,0,50%,40%`); `crop=none` shows all of it again. The sprite is drawn at
+  the cropped part's size times `scale`, so a crop with a bigger `scale` is a close-up:
+
+  ```
+  ::show{mika crop=25%,5%,50%,40% scale=1.6 y=0.6}
+  ```
+
+  For a layered sprite the one rectangle crops every layer.
 - **`blend=add`** adds the sprite's picture to what is under it instead of covering it, so it
   only ever brightens. Use it for lamps, fire, god rays and neon: see
   [Light overlays](#light-overlays). It works with everything else a sprite has (`alpha`, `z`,
   `fade`, `::move`, `tint=`, `blur=`, `::hide`).
 
-`::move` can animate `x`, `y`, the scales, `alpha`, the offsets, `blur` and `tint`. It cannot
+`::move` can animate `x`, `y`, the scales, `alpha`, the offsets, `blur`, `tint`, `brightness` and `crop`. It cannot
 animate `z` or `blend`, which are switches: change them with `::show`.
 
 ### Moving sprites
@@ -701,6 +715,8 @@ values are the ones `::show` sets, and they can be combined in one move.
 | `::move{mika alpha=0 xoffset=-60 time=0.5}` | fade it to an opacity, slide it by pixels |
 | `::move{mika blur=16 time=0.8}` | go out of focus (`blur=0`: back to sharp) |
 | `::move{mika tint=#000000 time=1}` | fade its tint to the colour (`tint=none`: back to natural) |
+| `::move{mika brightness=-0.4 time=1}` | dim it, or brighten it (`brightness=0`: as drawn) |
+| `::move{mika crop=25%,5%,50%,40% scale=1.6 time=1}` | zoom in on a part of the picture (`crop=none`: all of it again) |
 | `::move{eve x=30% time=1 then x=70% time=1}` | a **sequence** of steps (see [Move sequences](#move-sequences)) |
 | `::move{mika y=0.85 time=1.2 loop}` | a **looping move** (see [Looping moves](#looping-moves)) |
 
@@ -1228,11 +1244,20 @@ used, then use it wherever a picture goes:
   the spaces. At least one frame; each picture is a `.png`, `.jpg`, `.jpeg` or `.webp`
   inside the game folder (so file names have no spaces), and each time is from 0.02 to
   60 seconds. A frame is shown from its start up to, but not including, the next frame's start.
+- A frame may be `none` instead of a picture: nothing shows for that hold. It makes an overlay
+  that is hidden most of the time, such as a blink or a twinkle. An animation made only of
+  `none` frames is an error.
 - `loop` (on its own) starts over from the first frame after the last one. Without it
   the animation plays once and **stays on its last frame**.
 - A one-frame animation is allowed: it is just a picture.
 - `anim=` goes on `::show` (a sprite) and `::bg`. Anywhere else it is an error, and so
   is an animation that is not declared above the line that uses it.
+
+An overlay that is hidden most of the time:
+
+```
+::anim{id=twinkle frames="none 6, assets/star.png 0.15, none 2, assets/star.png 0.15" loop}
+```
 
 An animation sprite is an ordinary sprite: it can be moved, scaled, flipped, faded, put
 behind another, given a `y`, hidden, rolled back and saved.
@@ -1354,7 +1379,7 @@ Put `then` between the steps of one `::move` and they run one after another, in 
 **Steps**
 
 - Each step is a small `::move` of its own. It names what it animates (`x`, `y`, `scale`,
-  `xscale`, `yscale`, `alpha`, `xoffset`, `yoffset`, `blur`, `tint`), a `time` (default 0.5)
+  `xscale`, `yscale`, `alpha`, `xoffset`, `yoffset`, `blur`, `tint`, `brightness`, `crop`), a `time` (default 0.5)
   and an `ease`.
 - A step starts from where the step before it ended. A property a step leaves out stays as it
   is.
@@ -1373,12 +1398,14 @@ Put `then` between the steps of one `::move` and they run one after another, in 
   time=1}` goes out of focus and back.
 - `tint` is a colour, as in `::show`: `::move{eve tint=#000000 time=1}` darkens her to a
   silhouette.
+- `brightness` and `crop` are as in `::show`; a crop eases its four numbers, so
+  `::move{eve crop=none scale=1 time=1}` pulls back from a close-up.
 
 **While it runs**
 
 - It never waits: the next line shows at once.
 - A new `::move` cuts a running sequence short, and the sprite glides on from where it is. So
-  does `::hide`, or a `::show` that sets position, size, `alpha`, an offset, `blur` or `tint`.
+  does `::hide`, or a `::show` that sets position, size, `alpha`, an offset, `blur`, `tint`, `brightness` or `crop`.
 - Without `then`, a move is the one-step sequence it always was.
 - The values are part of the scene. A rollback, a redraw (changing the language, loading a
   save) and skip mode put the sprite at the **end** of the sequence with no animation, the

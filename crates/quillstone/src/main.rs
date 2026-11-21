@@ -572,7 +572,7 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
             }
             for (_, picture) in layers {
                 let named: Vec<String> = match quillstone_script::anim_id(picture).and_then(|a| program.anims.get(a)) {
-                    Some(anim) => anim.frames.iter().map(|f| f.file.clone()).collect(),
+                    Some(anim) => anim.frames.iter().filter(|f| !f.file.is_empty()).map(|f| f.file.clone()).collect(),
                     None if picture.is_empty() || quillstone_script::anim_id(picture).is_some() => Vec::new(),
                     None if quillstone_script::is_pattern(picture) => pattern::expand(root, picture),
                     None => vec![picture.clone()],

@@ -918,7 +918,7 @@ impl<'p> Game<'p> {
         // Every frame of an animation on stage now: later frames are not in the draw list yet.
         for id in self.view.shown_animations() {
             if let Some(anim) = self.program.anims.get(id) {
-                out.extend(anim.frames.iter().map(|f| f.file.as_str()));
+                out.extend(anim.frames.iter().filter(|f| !f.file.is_empty()).map(|f| f.file.as_str()));
             }
         }
         // Item pictures: only those of a shop or inventory the story is about to open

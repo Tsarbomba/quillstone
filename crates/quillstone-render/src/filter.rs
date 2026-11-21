@@ -23,6 +23,11 @@ fn then(a: &ColorMatrix, b: &ColorMatrix) -> ColorMatrix {
     out
 }
 
+/// `m` applied to a colour that has had `b` added to each channel (a sprite's `brightness=`).
+pub fn brighten(m: &ColorMatrix, b: f32) -> ColorMatrix {
+    then(m, &[[1.0, 0.0, 0.0, b], [0.0, 1.0, 0.0, b], [0.0, 0.0, 1.0, b]])
+}
+
 fn scale(k: f32) -> ColorMatrix {
     [[k, 0.0, 0.0, 0.0], [0.0, k, 0.0, 0.0], [0.0, 0.0, k, 0.0]]
 }
@@ -86,6 +91,12 @@ mod tests {
         // Half gray is halfway; saturation 0 is the same as gray 1.
         near(apply(&matrix(&Filter { gray: 0.5, ..Filter::default() }), [0.8, 0.4, 0.2]), [(0.8 + y) / 2.0, (0.4 + y) / 2.0, (0.2 + y) / 2.0]);
         near(apply(&matrix(&Filter { saturation: 0.0, ..Filter::default() }), [0.8, 0.4, 0.2]), [y; 3]);
+    }
+
+    #[test]
+    fn brighten_adds_before_the_matrix() {
+        near(apply(&brighten(&IDENTITY, 0.25), [0.5, 0.25, 0.0]), [0.75, 0.5, 0.25]);
+        near(apply(&brighten(&matrix(&Filter { brightness: 0.5, ..Filter::default() }), 0.2), [0.4; 3]), [0.3; 3]);
     }
 
     #[test]

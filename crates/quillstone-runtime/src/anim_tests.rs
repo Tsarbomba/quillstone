@@ -167,13 +167,13 @@ fn a_looping_move_is_sprite_state_and_a_command() {
     let cmds = next(&mut game); // Three: ::show anim, ::move loop
     assert_eq!(
         cmds.iter().find(|c| matches!(c, Cmd::LoopSprite { .. })).unwrap(),
-        &Cmd::LoopSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], time: 1.2, ease: Ease::Out, wait: 0.0 } }
+        &Cmd::LoopSprite { id: "mika".into(), flip: false, to: SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], time: 1.2, ease: Ease::Out, wait: 0.0 } }
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::MoveSprite { .. })), "the view glides to the far values by itself");
     // The sprite's own values are where it starts (what each leg back ends at).
     let s = sprite(&game);
     assert_eq!((s.x, s.y, s.scale), (0.0, 1.0, 0.8));
-    assert_eq!(loop_of(&game), Some(SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], time: 1.2, ease: Ease::Out, wait: 0.0 }));
+    assert_eq!(loop_of(&game), Some(SpriteStep { x: 0.0, y: 0.9, scale: 0.8, xscale: 1.0, yscale: 1.0, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], time: 1.2, ease: Ease::Out, wait: 0.0 }));
 }
 
 #[test]

@@ -61,14 +61,14 @@ fn tint_survives_a_save_and_old_or_hostile_records_load() {
     assert_eq!(loaded.state().sprites[0], game.state().sprites[0]);
     let sprite = text.lines().find(|l| l.starts_with("sprite ")).unwrap().to_string();
     let hostile = |tail: &str| {
-        let cut = sprite.rsplitn(4, ' ').last().unwrap();
+        let cut = sprite.rsplitn(9, ' ').last().unwrap();
         text.replace(&sprite, &format!("{cut} {tail}"))
     };
     let tint_of = |s: &str| Session::load(&p, s).unwrap().0.state().sprites[0].tint;
     assert_eq!(tint_of(&hostile("9 -4 NaN")), [1.0, 0.0, 1.0], "clamped; not a number is white");
     assert_eq!(tint_of(&hostile("inf 0.5 0.25")), [1.0, 0.5, 0.25]);
     // a save from before tint has no such numbers
-    assert_eq!(tint_of(&text.replace(&sprite, sprite.rsplitn(4, ' ').last().unwrap())), [1.0; 3]);
+    assert_eq!(tint_of(&text.replace(&sprite, sprite.rsplitn(9, ' ').last().unwrap())), [1.0; 3]);
     // a looping move and a looping sequence keep their tint too
     for _ in 0..3 {
         next(&mut game);

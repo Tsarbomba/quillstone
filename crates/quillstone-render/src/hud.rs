@@ -218,7 +218,7 @@ impl HudLayer {
                     // no hover picture to swap in: the keyboard focus shows as the panel a text button gets
                     out.push(Draw::Rect { rect: dest, color: theme.button_hover_color });
                 }
-                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
+                out.push(Draw::Image { src: shown.clone(), dest, uv: FULL_UV, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
                 Some(dest)
             }
         }

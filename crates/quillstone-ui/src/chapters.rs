@@ -92,7 +92,7 @@ pub fn draw_chapters(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ChaptersScr
         match tile.thumb.and_then(|pic| image_size(pic).map(|size| (pic, size))) {
             Some((pic, size)) => {
                 let p = place(size, inner, Fit::Cover);
-                out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+                out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
             }
             // No picture: a dark tile with the title on it.
             None => {

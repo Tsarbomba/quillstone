@@ -99,6 +99,6 @@ fn it_is_over_the_tint_and_the_filter_and_under_the_cover_flash_and_text() {
 fn show_a() -> Cmd {
     Cmd::ShowSprite {
         id: "a".into(), src: "a.png".into(), layers: vec![], x: 0.5, y: 1.0, z: 0, scale: 1.0, flip: false, xscale: 1.0, yscale: 1.0,
-        alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], additive: false, fade: 0.0,
+        alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], additive: false, fade: 0.0,
     }
 }

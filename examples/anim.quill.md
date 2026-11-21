@@ -2,13 +2,14 @@
 title: Animation
 ---
 
-<!-- Frame animations (`::anim`, shown with `anim=`) and looping moves (`::move{... loop}`).
+<!-- Frame animations (`::anim`, shown with `anim=`, with `none` frames) and looping moves (`::move{... loop}`).
      See SCRIPT.md. The pictures are the ordinary demo art: Mika's two poses make the
      "talking" mouth, rooftop and night make a flickering background. -->
 
 ::anim{id=talk frames="assets/mika_neutral.png 0.2, assets/mika_happy.png 0.2" loop}
 ::anim{id=arrive frames="assets/ren_neutral.png 0.6, assets/ren_happy.png 0.1"}
 ::anim{id=flicker frames="assets/rooftop.png 1.5, assets/night.png 1.5" loop}
+::anim{id=lamp frames="none 1.5, assets/lamp_glow.png 0.4" loop}
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
 ::character{id=ren name=Ren color=#9ad1ff sprites=assets/ren_{pose}.png}
@@ -33,6 +34,10 @@ title: Animation
 
 ::hide{ren fade=0.3}
 ::bg{src=assets/rooftop.png fade=0.8}
+::show{anim=lamp id=glow x=75% y=45% scale=1.2 blend=add z=5}
+**Mika:** A frame can be `none`: nothing shows for that hold. This lamp glow is hidden for a second and a half, then lit for a moment, over and over.
+
+::hide{glow}
 ::move{mika y=0.85 time=0.8 ease=inout loop}
 **Mika:** A looping move: I go to the target, back to where I started, and forth again, until something else moves me. That is a bob.
 

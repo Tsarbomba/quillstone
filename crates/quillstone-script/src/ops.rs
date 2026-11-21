@@ -562,6 +562,7 @@ pub fn talk_matches(pattern: &str, id: &str) -> bool {
 /// One picture of a frame animation and how long it stays up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimFrame {
+    /// Empty for a `none` frame: nothing shows for its hold.
     pub file: String,
     pub seconds: f32,
 }
@@ -863,7 +864,7 @@ impl Program {
                     .collect(),
                 _ => Vec::new(),
             };
-            let frames = anims.into_iter().flat_map(|a| a.frames.iter().map(|f| (AssetKind::Image, f.file.as_str())));
+            let frames = anims.into_iter().flat_map(|a| a.frames.iter().filter(|f| !f.file.is_empty()).map(|f| (AssetKind::Image, f.file.as_str())));
             for (kind, src) in op.all_assets().into_iter().chain(frames) {
                 // A name with `{variable}` parts is built when it is shown: nothing to load ahead.
                 if kind == AssetKind::Image && !crate::is_pattern(src) && !out.contains(&src) {
@@ -1062,7 +1063,7 @@ impl Program {
 
     /// The picture files of every `::anim` frame, as `(declaration line, animation id, file)`.
     pub fn anim_frames(&self) -> impl Iterator<Item = (usize, &str, &str)> {
-        self.anims.values().flat_map(|a| a.frames.iter().map(move |f| (a.line, a.id.as_str(), f.file.as_str())))
+        self.anims.values().flat_map(|a| a.frames.iter().filter(|f| !f.file.is_empty()).map(move |f| (a.line, a.id.as_str(), f.file.as_str())))
     }
 }
 
@@ -1653,16 +1654,21 @@ pub struct MoveStep {
     pub blur: Option<f32>,
     /// The colour the sprite's picture is multiplied by (white is none).
     pub tint: Option<[f32; 3]>,
+    /// Added to each colour channel after the tint, -1 to 1.
+    pub brightness: Option<f32>,
+    /// The part of the picture shown: x, y, width, height as fractions of it (the whole picture is 0, 0, 1, 1).
+    pub crop: Option<[f32; 4]>,
     pub time: f32,
     pub ease: Ease,
     pub wait: f32,
 }
 
 impl MoveStep {
-    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue: the values the step sets.
-    pub fn props(&self) -> [Option<f32>; 12] {
+    /// x, y, scale, xscale, yscale, alpha, dx, dy, blur, tint red, green, blue, brightness, crop x, y, width, height: the values the step sets.
+    pub fn props(&self) -> [Option<f32>; 17] {
         let t = |k: usize| self.tint.map(|c| c[k]);
-        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur, t(0), t(1), t(2)]
+        let c = |k: usize| self.crop.map(|c| c[k]);
+        [self.x, self.y, self.scale, self.xscale, self.yscale, self.alpha, self.dx, self.dy, self.blur, t(0), t(1), t(2), self.brightness, c(0), c(1), c(2), c(3)]
     }
 
     /// Sets nothing and waits for nothing.
@@ -1719,6 +1725,10 @@ pub enum Op {
         blur: Option<f32>,
         /// Colour the picture is multiplied by (`tint=none` is white); keeps the current one when `None` (white for a new sprite).
         tint: Option<[f32; 3]>,
+        /// Added to each channel after the tint, -1 to 1; keeps the current one when `None` (0 for a new sprite).
+        brightness: Option<f32>,
+        /// The part of the picture shown (x, y, width, height as fractions; `crop=none` is the whole picture); keeps the current one when `None`.
+        crop: Option<[f32; 4]>,
         /// Additive blending (`blend=add`, light overlays) or normal; keeps the current one when `None` (normal for a new sprite).
         additive: Option<bool>,
         fade: f32,
@@ -2105,7 +2115,7 @@ mod tests {
     fn asset_kinds_follow_the_extension() {
         let bg_video = Op::Bg { src: "loop.webm".into(), fade: 0.0, wipe: None, sound: false, blur: 0.0, mask: None };
         assert_eq!(bg_video.asset(), Some((AssetKind::Video, "loop.webm")));
-        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, additive: None, fade: 0.0 };
+        let show = Op::Show { id: "a".into(), src: "a.png".into(), layers: vec![], x: None, y: None, z: None, scale: None, flip: None, xscale: None, yscale: None, alpha: None, dx: None, dy: None, blur: None, tint: None, brightness: None, crop: None, additive: None, fade: 0.0 };
         assert_eq!(show.asset(), Some((AssetKind::Image, "a.png")));
         assert_eq!(Op::Voice { src: "v.ogg".into(), volume: 1.0 }.asset(), Some((AssetKind::Audio, "v.ogg")));
         assert_eq!(Op::Return.asset(), None);

@@ -13,7 +13,7 @@ use std::collections::{HashSet, VecDeque};
 use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, Vignette, VIGNETTE_RANGE, Filter, FILTER_AMOUNT, FILTER_GAIN, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
-use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_OFFSET};
+use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_BRIGHTNESS, SPRITE_OFFSET};
 use crate::{filter_typed, rebuild_pending, screen_matches, step, unshow_page_line, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
@@ -534,9 +534,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
     }
     for sp in &s.sprites {
         // New fields are appended: `y` and `z` came after the first four, then `flip`,
-        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`, then `blur`, then the three `tint` numbers; an older save has fewer and loads with the defaults.
+        // `xscale` and `yscale`, then `alpha`, `xoffset` and `yoffset`, then `blur`, then the three `tint` numbers, then `brightness` and the four `crop` numbers; an older save has fewer and loads with the defaults.
         w(format!(
-            "sprite {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "sprite {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             q(&sp.id),
             q(&sp.src),
             sp.x,
@@ -552,7 +552,12 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             sp.blur,
             sp.tint[0],
             sp.tint[1],
-            sp.tint[2]
+            sp.tint[2],
+            sp.brightness,
+            sp.crop[0],
+            sp.crop[1],
+            sp.crop[2],
+            sp.crop[3]
         ));
         // The layers of a layered sprite (its `src` is empty) are records of their own; a save
         // without them (every save from before layers) loads as plain sprites.
@@ -565,11 +570,11 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         }
         // A looping move is a record of its own, so older saves and readers are unaffected.
         if let Some(l) = &sp.looped {
-            w(format!("loop {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy, l.blur, l.tint[0], l.tint[1], l.tint[2]));
+            w(format!("loop {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.time, l.ease.name(), l.alpha, l.dx, l.dy, l.blur, l.tint[0], l.tint[1], l.tint[2], l.brightness, l.crop[0], l.crop[1], l.crop[2], l.crop[3]));
         }
         // So is each leg of a looping sequence.
         for l in &sp.cycle {
-            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur, l.tint[0], l.tint[1], l.tint[2]));
+            w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur, l.tint[0], l.tint[1], l.tint[2], l.brightness, l.crop[0], l.crop[1], l.crop[2], l.crop[3]));
         }
     }
     if s.camera != Camera::default() {
@@ -770,6 +775,17 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             }
             Ok([sane(f(i)?, 0.0, 1.0, 1.0), sane(f(i + 1)?, 0.0, 1.0, 1.0), sane(f(i + 2)?, 0.0, 1.0, 1.0)])
         };
+        // Brightness is one number and a crop four, from `i`; an older save has none (as drawn, the whole picture).
+        let brightness = |i: usize| -> Result<f32, String> { if t.len() > i { Ok(sane(f(i)?, *SPRITE_BRIGHTNESS.start(), *SPRITE_BRIGHTNESS.end(), 0.0)) } else { Ok(0.0) } };
+        let crop = |i: usize| -> Result<[f32; 4], String> {
+            const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+            if t.len() < i + 4 {
+                return Ok(WHOLE);
+            }
+            let r = [f(i)?, f(i + 1)?, f(i + 2)?, f(i + 3)?];
+            // Saves are shared: a rectangle that reaches outside the picture is the whole picture.
+            Ok(if r.iter().all(|v| v.is_finite()) && r[0] >= 0.0 && r[1] >= 0.0 && r[2] > 0.0 && r[3] > 0.0 && r[0] + r[2] <= 1.0001 && r[1] + r[3] <= 1.0001 { r } else { WHOLE })
+        };
         // Saves are shared between players, so a path in one must not reach outside the game folder.
         let path = |i: usize| -> Result<String, String> {
             let p = arg(i)?;
@@ -875,6 +891,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 dy: if t.len() > 12 { sane(f(12)?, *SPRITE_OFFSET.start(), *SPRITE_OFFSET.end(), 0.0) } else { 0.0 },
                 blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                 tint: tint(14)?,
+                brightness: brightness(17)?,
+                crop: crop(18)?,
                 additive: false,
                 looped: None,
                 cycle: Vec::new(),
@@ -934,6 +952,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     dy: if t.len() > 11 { sane(f(11)?, lo, hi, 0.0) } else { 0.0 },
                     blur: if t.len() > 12 { sane(f(12)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                     tint: tint(13)?,
+                    brightness: brightness(16)?,
+                    crop: crop(17)?,
                     time: sane(f(7)?, 0.02, MAX_LOOP_LEG, 1.0),
                     ease: Ease::parse(arg(8)?).unwrap_or_default(),
                     wait: 0.0,
@@ -963,6 +983,8 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     dy: sane(f(9)?, lo, hi, 0.0),
                     blur: if t.len() > 13 { sane(f(13)?, *SPRITE_BLUR.start(), *SPRITE_BLUR.end(), 0.0) } else { 0.0 },
                     tint: tint(14)?,
+                    brightness: brightness(17)?,
+                    crop: crop(18)?,
                     time: sane(f(10)?, 0.0, MAX_LOOP_LEG, 0.0),
                     ease: Ease::parse(arg(11)?).unwrap_or_default(),
                     wait: sane(f(12)?, 0.0, MAX_LOOP_LEG, 0.0),

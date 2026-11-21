@@ -225,7 +225,7 @@ fn fill(out: &mut Vec<Draw>, style: Option<&CellStyle>, fallback: [f32; 4], rect
         Some(CellStyle::Image(src)) => match image_size(src) {
             Some(size) => {
                 let p = place(size, rect, Fit::Stretch);
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
             }
             None => out.push(Draw::Rect { rect, color: fallback }),
         },
@@ -243,13 +243,13 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     match s.background.and_then(|src| Some((src, image_size(src)?))) {
         Some((src, size)) => {
             let p = place(size, screen(), Fit::Stretch);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
         }
         None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
     }
     if let Some((src, size)) = theme.inventory_panel.as_deref().and_then(|src| Some((src, image_size(src)?))) {
         let p = place(size, panel_rect(theme), Fit::Stretch);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
     }
     text(out, s.title, title_rect(theme), 48.0, theme.text_color, Align::Center);
     if let Some(money) = s.money {
@@ -293,7 +293,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
             if let Some(size) = image_size(src) {
                 let p = place(size, icon_rect, Fit::Contain);
                 let alpha = if cell.state == CellState::Disabled { 0.45 } else { 1.0 };
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
+                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
             }
         }
         let name_rect = Rect::new(r.x + 8.0, icon_rect.y + icon + 8.0, r.w - 16.0, 36.0);
@@ -421,7 +421,7 @@ pub fn draw_journal_list(
     match background.and_then(|src| Some((src, image_size(src)?))) {
         Some((src, size)) => {
             let p = place(size, screen(), Fit::Stretch);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], blur: 0.0, additive: false });
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
         }
         None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
     }
@@ -441,7 +441,7 @@ pub fn draw_journal_list(
         let alpha = if row.done.is_some() { 0.45 } else { 1.0 };
         if let Some((src, size)) = row.icon.as_deref().and_then(|s| image_size(s).map(|z| (s, z))) {
             let p = place(size, g.icon, Fit::Contain);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false });
+            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
         }
         let dim = |c: [f32; 4]| if row.done.is_some() { theme.dim_color } else { c };
         text(out, row.name.clone(), g.name, ROW_NAME, dim(name_color), Align::Left);

@@ -3,7 +3,7 @@ title: Staging
 ---
 
 <!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{u}`, `{s}`, `{ruby}`, `{whisper}`, `{speed}`, `{shake}`, `{wave}`, `{glitch}`, `{p}` and `{nw}`
-     text tags and `#rrggbbaa` colours, `blur=` on the background and on a sprite, `tint=` on a sprite, a light overlay (`blend=add`), `::flash`, a looping `::sfx` that is started and later stopped, a shake along
+     text tags and `#rrggbbaa` colours, `blur=` on the background and on a sprite, `tint=`, `brightness=` and `crop=` on a sprite, a light overlay (`blend=add`), `::flash`, a looping `::sfx` that is started and later stopped, a shake along
      one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash, a `::vignette`, a `::filter` and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
@@ -96,6 +96,17 @@ The screen is black, and this narration is still readable: the dialogue box is n
 
 ::move{mika tint=none time=0.6}
 **Mika:** And `tint=none` brings my colours back.
+
+<!-- `brightness=` adds light after the tint (-1 to 1), so a tint and a little brightness make warm light; `crop=x,y,w,h` shows part of the picture, and with a bigger `scale` it is a close-up. -->
+::move{mika tint=#ffd8b0 brightness=0.1 time=0.6}
+**Mika:** Warmer now: `tint=#ffd8b0 brightness=0.1`. The tint multiplies my colours and `brightness` adds a little light on top, after it.
+
+::move{mika tint=none brightness=0 time=0.6}
+::move{mika crop=25%,0,50%,40% scale=1.6 y=0.55 time=0.8}
+**Mika:** And this is a close-up. `crop=25%,0,50%,40%` shows only that part of my picture, and the bigger `scale` fills the screen with it.
+
+::move{mika crop=none scale=0.8 y=1 time=0.8}
+**Mika:** `crop=none` shows all of me again.
 
 <!-- `blend=add` adds a picture to what is under it: a lamp glow drawn on transparent, bright in the middle. -->
 ::show{src=assets/lamp_glow.png id=glow x=75% y=45% scale=1.2 blend=add alpha=0.9 z=5 fade=0.5}

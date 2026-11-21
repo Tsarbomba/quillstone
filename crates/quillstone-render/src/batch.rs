@@ -5,7 +5,7 @@
 //! rasterizes into a texture (text quads point at their job). A video frame will
 //! just be another quad whose texture is updated every frame.
 
-use crate::filter::{ColorMatrix, IDENTITY};
+use crate::filter::{brighten, ColorMatrix, IDENTITY};
 use crate::layout::{letterbox, to_ndc, to_window, Rect, Size, VIRTUAL};
 use crate::view::{Align, Draw, Outline, TextRun};
 
@@ -36,7 +36,7 @@ pub struct Quad {
     pub color: [f32; 4],
     /// Blur radius in window pixels (0 is sharp): the backend averages the picture over a disc this wide.
     pub blur: f32,
-    /// The stage's colour filter (`rgb' = M * rgb + offset`, the GPU clamps the result); the identity elsewhere.
+    /// The stage's colour filter (`rgb' = M * rgb + offset`, the GPU clamps the result); the identity elsewhere. A sprite's brightness is in it.
     pub filter: ColorMatrix,
     /// Drawn additively (`dst + src * alpha`, a light) instead of source-over.
     pub additive: bool,
@@ -155,13 +155,14 @@ pub fn build_frame_with(draws: &[Draw], window: Size, animate: bool) -> Frame {
         match draw {
             Draw::Filter(m) => filter = m.unwrap_or(IDENTITY),
             Draw::Mask(m) => mask = m.as_ref(),
-            Draw::Image { src, dest, uv, alpha, shade, blur, additive } => frame.quads.push(Quad {
+            Draw::Image { src, dest, uv, alpha, shade, brightness, blur, additive } => frame.quads.push(Quad {
                 texture: Tex::Image(src.clone()),
                 rect: to_ndc(to_window(*dest, lb), window),
                 uv: [uv.x, uv.y, uv.x + uv.w, uv.y + uv.h],
                 color: [shade[0], shade[1], shade[2], *alpha],
                 blur: blur.max(0.0) * scale,
-                filter,
+                // A sprite's brightness comes before the stage filter.
+                filter: if *brightness == 0.0 { filter } else { brighten(&filter, *brightness) },
                 additive: *additive,
                 mask: quad_mask(mask, *dest),
             }),
@@ -234,7 +235,7 @@ mod tests {
     }
 
     fn image(src: &str, uv: Rect, alpha: f32) -> Draw {
-        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: [1.0; 3], blur: 0.0, additive: false }
+        Draw::Image { src: src.into(), dest: screen(), uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false }
     }
 
     fn text(s: &str, visible: usize, rect: Rect) -> Draw {
@@ -264,7 +265,7 @@ mod tests {
 
     #[test]
     fn blur_is_scaled_to_window_pixels() {
-        let blurred = Draw::Image { src: "a.png".into(), dest: screen(), uv: UNIT, alpha: 1.0, shade: [1.0; 3], blur: 10.0, additive: false };
+        let blurred = Draw::Image { src: "a.png".into(), dest: screen(), uv: UNIT, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 10.0, additive: false };
         assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(1920.0, 1080.0)).quads[0].blur, 10.0);
         assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(960.0, 540.0)).quads[0].blur, 5.0);
         let f = build_frame(&[image("a.png", UNIT, 1.0), Draw::Rect { rect: screen(), color: [0.0; 4] }], Size::new(960.0, 540.0));
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn additive_images_set_the_quad_flag_in_order() {
         let glow = |src| match image(src, UNIT, 0.5) {
-            Draw::Image { src, dest, uv, alpha, shade, blur, .. } => Draw::Image { src, dest, uv, alpha, shade, blur, additive: true },
+            Draw::Image { src, dest, uv, alpha, shade, brightness, blur, .. } => Draw::Image { src, dest, uv, alpha, shade, brightness, blur, additive: true },
             d => d,
         };
         let draws = [
