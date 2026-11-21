@@ -114,7 +114,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
         "choice" => &["time", "default"],
         "hotspots" => &["time", "default", "ground", "hover"],
         "bg" => &["src", "color", "anim", "fade", "wipe", "through", "blur", "mask"],
-        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "border", "border_size", "scale", "if", "fade", "hide", "clear", "off", "on", "call", "jump", "open", "hover"],
+        "hud" => &["id", "text", "bar", "max", "image", "x", "y", "size", "color", "back", "pad", "width", "border", "border_size", "scale", "if", "fade", "hide", "clear", "off", "on", "call", "jump", "open", "hover"],
         "show" => &["src", "anim", "id", "x", "y", "z", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "brightness", "crop", "blend", "fade"],
         "hide" => &["all", "fade"],
         "move" => &["x", "y", "scale", "flip", "xscale", "yscale", "alpha", "xoffset", "yoffset", "blur", "tint", "brightness", "crop", "time", "ease", "wait", "loop", "then"],
@@ -2578,7 +2578,7 @@ impl Parser {
         let kind_name = kinds[0];
         // Attributes that belong to other kinds are mistakes, not silently ignored.
         let allowed: &[&str] = match kind_name {
-            "text" => &["text", "size", "color", "back", "pad"],
+            "text" => &["text", "size", "color", "back", "pad", "width"],
             "bar" => &["bar", "max", "size", "color", "back", "border", "border_size"],
             "box" => &["box", "size"],
             _ => &["image", "scale"],
@@ -2619,7 +2619,8 @@ impl Parser {
                 let color = colour(a, "color")?;
                 let back = colour(a, "back")?;
                 let pad = Self::number(a, "pad", 0.0..=200.0)?.unwrap_or(0.0);
-                HudKind::Text { text, size, color, back, pad }
+                let width = Self::number(a, "width", 8.0..=1920.0)?;
+                HudKind::Text { text, size, color, back, pad, width }
             }
             "bar" => {
                 let bar_src = a.value("bar").unwrap_or_default();
@@ -6102,11 +6103,12 @@ mod tests {
 
     #[test]
     fn a_hud_text_takes_every_attribute() {
-        let (e, fade) = hud_of("::hud{id=clock text=\"Day {day}, {hero.gold} gold\" x=0.92 y=0.04 size=32 color=#ffffff back=#00000099 pad=12 fade=0.3 if=\"day > 1\"}\n");
+        let (e, fade) = hud_of("::hud{id=clock text=\"Day {day}, {hero.gold} gold\" x=0.92 y=0.04 size=32 color=#ffffff back=#00000099 pad=12 width=400 fade=0.3 if=\"day > 1\"}\n");
         assert_eq!(fade, 0.3);
         assert_eq!((e.id.as_str(), e.x, e.y), ("clock", 0.92, 0.04));
         assert_eq!(e.cond.as_ref().unwrap().src, "day > 1");
-        let HudKind::Text { text, size, color, back, pad } = e.kind else { panic!() };
+        let HudKind::Text { text, size, color, back, pad, width } = e.kind else { panic!() };
+        assert_eq!(width, Some(400.0));
         assert_eq!(text, "Day {day}, {hero.gold} gold");
         assert_eq!((size, pad), (Some(32.0), 12.0));
         assert_eq!(color, Some([1.0, 1.0, 1.0, 1.0]));
@@ -6117,7 +6119,7 @@ mod tests {
     fn hud_defaults_and_percentages() {
         let (e, fade) = hud_of("::hud{id=a text=Hi x=50% y=10%}\n");
         assert_eq!((fade, e.x, e.y, e.cond.is_none()), (0.0, 0.5, 0.1, true));
-        assert_eq!(e.kind, HudKind::Text { text: "Hi".into(), size: None, color: None, back: None, pad: 0.0 });
+        assert_eq!(e.kind, HudKind::Text { text: "Hi".into(), size: None, color: None, back: None, pad: 0.0, width: None });
         let (d, _) = hud_of("::hud{id=a text=Hi}\n");
         assert_eq!((d.x, d.y), (0.0, 0.0));
         let (k, _) = hud_of("::hud{id=a text=Hi x=right y=bottom}\n");
@@ -6213,6 +6215,11 @@ mod tests {
             ("::hud{id=a text=x color=red}", "bad colour"),
             ("::hud{id=a text=x back=#12}", "bad colour"),
             ("::hud{id=a text=x pad=-1}", "pad=-1"),
+            ("::hud{id=a text=x width=7}", "width=7"),
+            ("::hud{id=a text=x width=1921}", "width=1921"),
+            ("::hud{id=a bar=1 max=2 size=1,1 width=100}", "isn't used by a `bar` element"),
+            ("::hud{id=a image=a.png width=100}", "isn't used by a `image` element"),
+            ("::hud{id=a box=#000 size=1,1 width=100}", "isn't used by a `box` element"),
             ("::hud{id=a text=\"x{nw}\"}", "only work in dialogue"),
             ("::hud{id=a text=\"x{p}y\"}", "only work in dialogue"),
             ("::hud{id=a text=\"{color=#zzz}x\"}", "colour"),

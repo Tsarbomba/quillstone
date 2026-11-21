@@ -1972,7 +1972,7 @@ impl View {
                 let alpha = n.alpha();
                 let (size, pad) = ((self.text_size() * 0.75).round(), 16.0);
                 let (color, back) = (faded(theme.text_color, alpha), Some(faded(theme.panel_color, alpha)));
-                crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad, self.measure());
+                crate::hud::draw_text(&mut out, &n.text, (1.0, 0.0), 40.0, size, color, back, pad, None, self.measure());
             }
         }
 

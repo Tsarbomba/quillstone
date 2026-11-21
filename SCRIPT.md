@@ -1504,6 +1504,7 @@ pressed; the text you write must still have something in it.
 | `color` | a colour | the theme's text colour |
 | `back` | a panel behind the text, e.g. `back=#00000099` | none |
 | `pad` | the padding around the text in pixels, 0 to 200 | 0 |
+| `width` | wrap the text at this many pixels of the 1920x1080 screen, 8 to 1920 | none: one line |
 
 - Colours here may have an alpha part: `#rrggbbaa` or `#rgba`.
 - A text element's width is estimated. Without `back`, the text is aligned to the side its `x`
@@ -1511,6 +1512,10 @@ pressed; the text you write must still have something in it.
   `right` it is placed exactly.
 - With `back`, the panel is as wide as the text is *expected* to be, a little generously, so
   it may be a few pixels wider than the text.
+- With `width=`, a longer text wraps on word boundaries like the textbox, and the element is
+  as tall as its lines; `back` and `pad` wrap around the whole block, and `x` and `y` place the
+  block. A text button's hit area is the block. A text that fits keeps its own size. A bar,
+  picture or box can't take `width=`.
 
 **A bar** needs `size`: width,height in pixels of the 1920x1080 screen. `bar` and `max` are
 whole-number expressions: a variable, a number, or arithmetic like `hero.max_hp + 2`. The bar
@@ -1677,7 +1682,7 @@ elements and returns.
 
 ```
 ---
-vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", l1.mika: "Likes tea.", l1.ren: "" }
+vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", l1.mika: "Likes tea.", l1.ren: "Runs the news stand and knows every rumour in town before it is printed." }
 ---
 # start
 ::hud{id=status_btn text="Status" x=0.98 y=0.03 back=#00000099 pad=10 call=#status}
@@ -1687,7 +1692,7 @@ Press Status.
 # status
 ::hud{id=st_back box=#000000cc size=900,700 x=center y=center}
 ::hud{id=st_name text="{name.{who}}" size=56 x=center y=28%}
-::hud{id=st_1 text="{l1.{who}}" x=center y=40%}
+::hud{id=st_1 text="{l1.{who}}" width=700 x=center y=40%}
 ::textbox{hide}
 ::hotspots
 - [Mika](#status){rect=30%,66%,10%,7% text="Mika", who="mika"}
@@ -1704,6 +1709,7 @@ Press Status.
   keep their ids, so they are replaced in place.
 - `{name.{who}}` reads the variable named by the current `who`. A line whose variable is empty
   draws nothing, so a character with fewer lines simply shows fewer.
+- `width=700` wraps a long line inside the box instead of letting it run on.
 - Naming every element of the panel `st_...` lets `::hud{hide=st_*}` close it in one line.
 - The story's line is still pending while the panel is up, so `::textbox{hide}` keeps it from covering the panel.
 - `::return` goes back to the story, which shows the line it was on again (the box comes back with it).

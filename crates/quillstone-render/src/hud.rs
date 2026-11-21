@@ -174,7 +174,7 @@ impl HudLayer {
         let focused = look.focused == Some(e.id.as_str());
         let lit = |r: Rect| button && look.active && (focused || look.pointer.is_some_and(|(x, y)| r.contains(x, y)));
         match &e.kind {
-            HudKind::Text { text, size, color, back, pad } => {
+            HudKind::Text { text, size, color, back, pad, width } => {
                 let shown = interpolate(text, &self.vars);
                 if text_blank(&shown) {
                     return None;
@@ -182,10 +182,10 @@ impl HudLayer {
                 let size = size.unwrap_or(theme.text_size); // the writer's layout: HUD text does not follow the player's text size
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));
-                let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad, measure);
+                let r = draw_text(&mut Vec::new(), &shown, (e.x, e.y), 0.0, size, color, back, *pad, *width, measure);
                 // A text button under the mouse (or focused) gets the theme's hover colour as its panel.
                 let back = if lit(r) { Some(theme.button_hover_color) } else { back };
-                Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad, measure))
+                Some(draw_text(out, &shown, (e.x, e.y), 0.0, size, color, back, *pad, *width, measure))
             }
             HudKind::Bar { value, max, size: [w, h], color, back, border } => {
                 let int = |x: &quillstone_script::HudExpr| x.expr.eval(&self.vars).as_int().unwrap_or(0);
@@ -289,6 +289,7 @@ pub(crate) fn draw_text(
     color: [f32; 4],
     back: Option<[f32; 4]>,
     pad: f32,
+    wrap: Option<f32>,
     measure: Option<Measure>,
 ) -> Rect {
     let r = rich(shown);
@@ -302,8 +303,10 @@ pub(crate) fn draw_text(
     // The text is aligned to the side the point leans to, so at the left, centre and right it is placed
     // exactly, whatever the font.
     let (wanted, room) = (widest_line(&r.text, size, &scales) + 2.0 * pad, VIRTUAL.w - 2.0 * inset);
-    let width = wanted.min(room);
-    let lines = if wanted > room {
+    // `wrap` (a HUD text's `width=`) caps the text, not its padding.
+    let cap = wrap.map_or(room, |w| (w + 2.0 * pad).min(room));
+    let width = wanted.min(cap);
+    let lines = if wanted > cap {
         lines_styled(measure, &r.text, &r.runs, size, (width - 2.0 * pad).max(1.0)).max(newlines)
     } else {
         newlines
@@ -518,10 +521,40 @@ mod tests {
     }
 
     #[test]
+    fn a_width_wraps_a_long_text_into_a_taller_block_and_leaves_a_short_one_alone() {
+        let block = |src: &str| {
+            let list = view(src).draw_list(&no_images, None);
+            rects(&list)[0].0
+        };
+        let long = "a long line of words that would run far past the width given to it";
+        let one = block(&format!("::hud{{id=t text=\"{long}\" size=30 back=#000 pad=10}}\n"));
+        let wrapped = block(&format!("::hud{{id=t text=\"{long}\" size=30 back=#000 pad=10 width=300}}\n"));
+        assert!(wrapped.h > one.h * 1.5 && (wrapped.w - 320.0).abs() < 0.01, "{one:?} {wrapped:?}");
+        let short = block("::hud{id=t text=Hi size=30 back=#000 pad=10}\n");
+        assert_eq!(short, block("::hud{id=t text=Hi size=30 back=#000 pad=10 width=300}\n"));
+        let right = block(&format!("::hud{{id=t text=\"{long}\" size=30 back=#000 x=right width=300}}\n"));
+        assert!((right.x + right.w - 1920.0).abs() < 0.01, "placed by the block's size: {right:?}");
+    }
+
+    #[test]
+    fn a_wrapped_text_buttons_hit_area_is_the_block() {
+        let long = "a long line of words that would run far past the width given to it";
+        let v = view(&format!("::hud{{id=t text=\"{long}\" size=30 x=0 y=0 width=300 call=#go}}\n# go\n::return\n"));
+        let r = rects_of_text(&v);
+        assert!(r.h > 30.0 * LINE * 1.5);
+        assert!(v.hud_button_at(&no_images, 5.0, r.h - 2.0).is_some(), "the last wrapped line is part of the button");
+        assert!(v.hud_button_at(&no_images, 5.0, r.h + 20.0).is_none());
+    }
+
+    fn rects_of_text(v: &View) -> Rect {
+        v.draw_list(&no_images, None).iter().find_map(|d| if let Draw::Text { rect, .. } = d { Some(*rect) } else { None }).unwrap()
+    }
+
+    #[test]
     fn a_long_notice_at_the_right_wraps_inside_the_screen_instead_of_running_off_the_left_edge() {
         let text = "A very long notice that goes on and on about nothing in particular. ".repeat(2);
         let mut out = Vec::new();
-        draw_text(&mut out, &text, (1.0, 0.0), 40.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 16.0, None);
+        draw_text(&mut out, &text, (1.0, 0.0), 40.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 16.0, None, None);
         let Draw::Rect { rect, .. } = &out[0] else { panic!("a panel first") };
         assert!(rect.x >= 40.0 && rect.x + rect.w <= VIRTUAL.w - 40.0 + 0.01, "{rect:?}");
         assert!(rect.h > 30.0 * LINE + 32.0 + 1.0, "taller for the wrapped lines: {rect:?}");
@@ -544,7 +577,7 @@ mod tests {
         let mut out = Vec::new();
         for _ in 0..256 {
             out.clear();
-            draw_text(&mut out, &text, (0.0, 0.0), 0.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0, None);
+            draw_text(&mut out, &text, (0.0, 0.0), 0.0, 30.0, [1.0; 4], Some([0.0, 0.0, 0.0, 1.0]), 4.0, None, None);
         }
         assert!(started.elapsed().as_millis() < 500, "{:?}", started.elapsed());
         assert_eq!(out.len(), 2, "a panel and the text");

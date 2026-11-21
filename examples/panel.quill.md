@@ -1,12 +1,12 @@
 ---
 title: Status panel
 theme: theme.txt
-vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", name.jo: "Jo", l1.mika: "Met on the roof.", l2.mika: "Likes tea.", l3.mika: "", l1.ren: "Runs the news stand.", l2.ren: "", l3.ren: "", l1.jo: "Nothing known yet.", l2.jo: "", l3.jo: "" }
+vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", name.jo: "Jo", l1.mika: "Met on the roof.", l2.mika: "Likes tea.", l3.mika: "", l1.ren: "Runs the news stand and knows every rumour in town before it is printed.", l2.ren: "", l3.ren: "", l1.jo: "Nothing known yet.", l2.jo: "", l3.jo: "" }
 ---
 
 <!-- A panel of your own from existing pieces: a HUD button calls the label `status`, which draws a
      backdrop `box=`, texts that read `{name.{who}}`, and a `::hotspots` row of tabs and Close. A
-     line whose text is empty draws nothing. Closing hides every `st_` element and `::return`s.
+     line whose text is empty draws nothing, and `width=` wraps a long one. Closing hides every `st_` element and `::return`s.
      See "Custom panels" in SCRIPT.md. -->
 
 ::character{id=mika name=Mika color=#ffd98c sprites=assets/mika_{pose}.png}
@@ -28,7 +28,7 @@ vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", name.jo: "Jo", l1.mika:
 
 ::hud{id=st_back box=#000000cc size=900,700 x=center y=center}
 ::hud{id=st_name text="{name.{who}}" size=56 x=center y=28%}
-::hud{id=st_1 text="{l1.{who}}" x=center y=40%}
+::hud{id=st_1 text="{l1.{who}}" width=700 x=center y=40%}
 ::hud{id=st_2 text="{l2.{who}}" x=center y=46%}
 ::hud{id=st_3 text="{l3.{who}}" x=center y=52%}
 ::textbox{hide}

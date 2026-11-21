@@ -1313,8 +1313,9 @@ impl HudExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HudKind {
     /// Tagged text with `{name}` values filled in when it is drawn. `size` and `color`
-    /// default to the theme's; `back` is a panel behind the text, `pad` its padding.
-    Text { text: String, size: Option<f32>, color: Option<[f32; 4]>, back: Option<[f32; 4]>, pad: f32 },
+    /// default to the theme's; `back` is a panel behind the text, `pad` its padding,
+    /// `width` the pixels the text wraps at (none: one line).
+    Text { text: String, size: Option<f32>, color: Option<[f32; 4]>, back: Option<[f32; 4]>, pad: f32, width: Option<f32> },
     /// A bar filled `value / max` of the way, left to right. `border` is a colour and a width.
     Bar { value: HudExpr, max: HudExpr, size: [f32; 2], color: Option<[f32; 4]>, back: [f32; 4], border: Option<([f32; 4], f32)> },
     /// A picture inside the game folder, drawn at its own size times `scale`.

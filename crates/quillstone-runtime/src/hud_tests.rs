@@ -161,7 +161,7 @@ fn quotes_and_backslashes_in_a_text_survive_a_save() {
     let p = program();
     let (mut game, _) = Session::start(&p);
     let mut elem = game.state().hud[1].clone();
-    elem.kind = HudKind::Text { text: "say \"hi\" \\ {gold}\nnext".into(), size: None, color: None, back: None, pad: 1.5 };
+    elem.kind = HudKind::Text { text: "say \"hi\" \\ {gold}\nnext".into(), size: None, color: None, back: None, pad: 1.5, width: None };
     let mut state = game.state().clone();
     state.set_hud(elem);
     game.state = state;
@@ -312,4 +312,16 @@ fn an_empty_text_button_cannot_be_pressed() {
     assert!(!can_press(&p, game.state(), "b"));
     game.input(Input::Hud("b".into()));
     assert!(game.state().stack.is_empty());
+}
+
+#[test]
+fn a_text_width_survives_a_save_with_and_without_a_button() {
+    let p = parse("::hud{id=w1 text=a width=300.5}\n::hud{id=w2 text=b call=#x width=300.5}\n::hud{id=w3 text=c call=#x}\nHi.\n# x\n::return\n").unwrap();
+    let (game, _) = Session::start(&p);
+    let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+    assert_eq!(loaded.state().hud, game.state().hud);
+    let w = |id: &str| loaded.state().hud.iter().find(|h| h.id == id).map(|h| (h.kind.clone(), h.action.is_some()));
+    assert!(matches!(w("w1"), Some((HudKind::Text { width: Some(300.5), .. }, false))));
+    assert!(matches!(w("w2"), Some((HudKind::Text { width: Some(300.5), .. }, true))));
+    assert!(matches!(w("w3"), Some((HudKind::Text { width: None, .. }, true))));
 }

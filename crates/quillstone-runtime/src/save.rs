@@ -348,16 +348,25 @@ fn line_record(kind: &str, l: &Line) -> String {
 }
 
 /// `hud <kind> "id" x y "if" ...kind fields ["action" "hover"]`: an empty `if` is no condition, `-` is "not
-/// set". A button ends with its action (`call:label`, `jump:label` or `open:screen`) and its hover picture ("" for none).
+/// set". A button ends with its action (`call:label`, `jump:label` or `open:screen`) and its hover picture ("" for none),
+/// then a text's `width` (when it has one).
 fn hud_record(h: &HudElem) -> String {
     let mut record = hud_body(h);
     let action = match &h.action {
         Some(HudAction::Call(l)) => format!("call:{l}"),
         Some(HudAction::Jump(l)) => format!("jump:{l}"),
         Some(HudAction::Open(s)) => format!("open:{}", s.name()),
-        None => return record,
+        None => String::new(),
     };
-    record += &format!(" {} {}", q(&action), q(h.hover.as_deref().unwrap_or("")));
+    // A text's `width` ends the record, after the (possibly empty) action and hover.
+    let width = match &h.kind {
+        HudKind::Text { width: Some(w), .. } => format!(" {w}"),
+        _ => String::new(),
+    };
+    if action.is_empty() && width.is_empty() {
+        return record;
+    }
+    record += &format!(" {} {}{width}", q(&action), q(h.hover.as_deref().unwrap_or("")));
     record
 }
 
@@ -376,7 +385,7 @@ fn hud_body(h: &HudElem) -> String {
         q(h.cond.as_ref().map_or("", |c| c.src.as_str()))
     );
     match &h.kind {
-        HudKind::Text { text, size, color, back, pad } => {
+        HudKind::Text { text, size, color, back, pad, .. } => {
             format!("{head} {} {} {} {} {pad}", q(text), size.map_or("-".into(), |s| s.to_string()), rgba(*color), rgba(*back))
         }
         HudKind::Bar { value, max, size, color, back, border } => {
@@ -452,7 +461,7 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
                 "-" => None,
                 _ => Some(sane(f(7)?, 8.0, 300.0, 32.0)),
             };
-            HudKind::Text { text, size, color: opt_rgba(8)?, back: opt_rgba(9)?, pad: sane(f(10)?, 0.0, 200.0, 0.0) }
+            HudKind::Text { text, size, color: opt_rgba(8)?, back: opt_rgba(9)?, pad: sane(f(10)?, 0.0, 200.0, 0.0), width: t.get(13).map(|_| f(13).map(|w| sane(w, 8.0, 1920.0, 8.0))).transpose()? }
         }
         "bar" => HudKind::Bar {
             value: expr(6)?,
