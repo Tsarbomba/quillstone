@@ -1250,9 +1250,9 @@ pub fn interpolate(text: &str, vars: &Vars) -> String {
             match brace_end(rest) {
                 Some(end) => {
                     let name = rest[1..end].trim();
-                    match quillstone_script::get_var(vars, name).filter(|_| !matches!(name, "nw" | "p" | "u")) {
+                    match quillstone_script::get_var(vars, name).filter(|_| !quillstone_script::markup::is_flag_tag(name)) {
                         Some(v) => out.push_str(&quillstone_script::markup::escape(&v.to_string())),
-                        None => out.push_str(&rest[..=end]), // unknown, or the `{nw}` / `{p}` text tags
+                        None => out.push_str(&rest[..=end]), // unknown, or a text tag such as `{nw}` or `{p}`
                     }
                     rest = &rest[end + 1..];
                 }
@@ -2621,7 +2621,7 @@ vars: { trust: 0 }
 
     #[test]
     fn text_variables_can_be_built_up() {
-        let src = "::set{s=\"ab\"}\n::set{s+=\"cd\", n+=2}\n**A:** {s} {n}\n";
+        let src = "::set{t=\"ab\"}\n::set{t+=\"cd\", n+=2}\n**A:** {t} {n}\n";
         assert_eq!(lines(&run_to_end(src, &[])), vec!["abcd 2"]);
     }
 

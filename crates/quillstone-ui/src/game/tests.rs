@@ -422,6 +422,30 @@ fn the_settings_screen_pauses_the_story_and_saves_only_changes() {
 }
 
 #[test]
+fn animated_text_is_a_settings_row_that_is_on_until_switched_off() {
+    let p = parse(THREE).unwrap();
+    let mut g = new_game(&p, instant());
+    assert!(g.settings().animated_text);
+    g.open_settings();
+    assert!(crate::screens::rows(false).contains(&Row::AnimatedText));
+    let i = crate::screens::rows(false).iter().position(|r| *r == Row::AnimatedText).unwrap();
+    let drawn = g.draw_list(&|_: &str| Some(Size::new(64.0, 64.0)));
+    assert!(drawn.iter().any(|d| matches!(d, Draw::Text { text, .. } if text == "Animated text")));
+    for _ in 0..i {
+        key(&mut g, Key::Down);
+    }
+    key(&mut g, Key::Right);
+    assert!(!g.settings().animated_text);
+    assert_eq!(g.take_requests().len(), 0, "saved when the screen closes");
+    key(&mut g, Key::Right);
+    assert!(g.settings().animated_text);
+    key(&mut g, Key::Right);
+    key(&mut g, Key::Escape);
+    assert_eq!(g.take_requests(), vec![Request::SaveSettings]);
+    assert!(!g.settings().animated_text);
+}
+
+#[test]
 fn clicking_and_dragging_a_volume_slider() {
     let p = parse(THREE).unwrap();
     let mut g = new_game(&p, instant());

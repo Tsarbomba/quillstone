@@ -12,6 +12,13 @@ pub struct Bitmap {
     pub rgba: Vec<u8>,
 }
 
+/// The moving letters of a line (`{shake}`, `{wave}`, `{glitch}`): where they are, and a picture for each of
+/// `letters.pics` (same order).
+pub struct LetterSet {
+    pub letters: std::rc::Rc<quillstone_render::Letters>,
+    pub bitmaps: Vec<Bitmap>,
+}
+
 /// How the player draws a text that has to fit its box: at `scale` of its size (1.0: whole; text too tall for its
 /// box is shrunk in 10% steps down to 0.6), `cut` when even that is too tall and the end is cut off.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,6 +48,10 @@ mod stub {
         }
 
         pub fn recycle(&mut self, _bitmap: Bitmap) {}
+
+        pub fn letters(&mut self, _job: &TextJob) -> Option<std::rc::Rc<LetterSet>> {
+            None
+        }
     }
 
     /// Without text there is nothing to measure: layouts fall back to their estimate.
@@ -66,8 +77,9 @@ mod real {
     use super::*;
     use std::collections::HashMap;
 
-    use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, UnderlineStyle, Weight};
-    use quillstone_render::Align;
+    use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, UnderlineStyle, Weight};
+    use quillstone_render::{Align, Anim, Letter, Letters, Pic, GLITCH_SYMBOLS};
+        use std::rc::Rc;
 
     /// Byte offset in `text` where each buffer line begins. Built from the buffer's own lines,
     /// because cosmic-text splits paragraphs at more than `\n` (`\r`, U+0085, U+2029, ...) and
@@ -103,6 +115,41 @@ mod real {
             slot[k] = src[k] + slot[k] * (1.0 - cover); // source-over
         }
         slot[3] = cover + slot[3] * (1.0 - cover);
+    }
+
+    /// `color` with its alpha scaled by `k`.
+    fn faded(color: Color, k: f32) -> Color {
+        Color::rgba(color.r(), color.g(), color.b(), (color.a() as f32 * k.clamp(0.0, 1.0)).round() as u8)
+    }
+
+    /// Where a line `line_w` wide starts across a text `width` wide.
+    fn line_x(align: Align, width: f32, line_w: f32) -> f32 {
+        match align {
+            Align::Center | Align::CenterX => ((width - line_w) / 2.0).max(0.0),
+            Align::Left => 0.0,
+            Align::Right => (width - line_w).max(0.0),
+        }
+    }
+
+    /// Premultiplied coverage back to straight alpha RGBA8 (`rgba` is reused), scaled by `opacity`.
+    fn to_rgba(acc: &[[f32; 4]], opacity: f32, rgba: &mut Vec<u8>) {
+        rgba.clear();
+        rgba.resize(acc.len() * 4, 0);
+        for (i, [pr, pg, pb, cover]) in acc.iter().enumerate() {
+            if *cover > 0.0 {
+                let straight = |c: f32| ((c / cover).clamp(0.0, 1.0) * 255.0).round() as u8;
+                rgba[i * 4] = straight(*pr);
+                rgba[i * 4 + 1] = straight(*pg);
+                rgba[i * 4 + 2] = straight(*pb);
+                rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
+            }
+        }
+    }
+
+    /// Symbols a glitch swaps its letters for: `GLITCH_SYMBOLS` characters picked by `seed`.
+    fn glitch_chars(seed: usize) -> Vec<char> {
+        let all: Vec<char> = quillstone_render::letters::GLITCH_CHARS.chars().collect();
+        (0..GLITCH_SYMBOLS).map(|k| all[(seed.wrapping_mul(31).wrapping_add(k * 7 + k * k)) % all.len()]).collect()
     }
 
     /// A ruby reading is this fraction of the size of the text it sits on.
@@ -169,6 +216,8 @@ mod real {
         acc: Vec<[f32; 4]>,
         /// A pixel buffer handed back by [`TextRenderer::recycle`], for the next bitmap.
         spare: Vec<u8>,
+        /// The moving letters of lines, by [`TextJob::letters_key`].
+        sets: HashMap<String, Rc<LetterSet>>,
     }
 
     /// Measures text for layouts that fit themselves to it (see `quillstone_ui::measure`). It has a text engine of its
@@ -251,25 +300,55 @@ mod real {
                     None => eprintln!("warning: one of the theme's font files isn't a font cosmic-text can read"),
                 }
             }
-            TextRenderer { fonts, swash: SwashCache::new(), family, layouts: HashMap::new(), acc: Vec::new(), spare: Vec::new() }
+            TextRenderer { fonts, swash: SwashCache::new(), family, layouts: HashMap::new(), acc: Vec::new(), spare: Vec::new(), sets: HashMap::new() }
         }
 
         pub fn rasterize(&mut self, job: &TextJob) -> Option<Bitmap> {
-            let width = job.rect.w.max(1.0) as u32;
-            let height = job.rect.h.max(1.0) as u32;
-            // cosmic-text panics on a zero line height, so never go below 1px.
-            let size_px = job.size_px.max(1.0);
+            let (width, height) = (job.rect.w.max(1.0) as u32, job.rect.h.max(1.0) as u32);
+            let (layout_key, buffer) = self.take_layout(job);
+            let bitmap = self.draw(job, &buffer, width, height);
+            self.keep_layout(layout_key, buffer);
+            Some(bitmap)
+        }
+
+        /// The shaped text of `job` (from the cache, or shaped now) and its key; give it back with
+        /// [`TextRenderer::keep_layout`].
+        fn take_layout(&mut self, job: &TextJob) -> (String, Buffer) {
+            let (width, height) = (job.rect.w.max(1.0) as u32, job.rect.h.max(1.0) as u32);
             let layout_key = job.layout_key();
             let buffer = match self.layouts.remove(&layout_key) {
                 Some(buffer) => buffer,
-                None => self.shape_to_fit(job, width, height, size_px),
+                // cosmic-text panics on a zero line height, so never go below 1px.
+                None => self.shape_to_fit(job, width, height, job.size_px.max(1.0)),
             };
-            let bitmap = self.draw(job, &buffer, width, height);
+            (layout_key, buffer)
+        }
+
+        fn keep_layout(&mut self, key: String, buffer: Buffer) {
             if self.layouts.len() >= MAX_LAYOUTS {
                 self.layouts.clear();
             }
-            self.layouts.insert(layout_key, buffer);
-            Some(bitmap)
+            self.layouts.insert(key, buffer);
+        }
+
+        /// The letters of `job` that move, each as a picture of its own (see `quillstone_render::letters`), or
+        /// `None` when nothing in it moves. Kept until a few other lines have been asked for.
+        pub fn letters(&mut self, job: &TextJob) -> Option<Rc<LetterSet>> {
+            if !job.animated() {
+                return None;
+            }
+            let key = job.letters_key();
+            if let Some(set) = self.sets.get(&key) {
+                return Some(set.clone());
+            }
+            let (layout_key, buffer) = self.take_layout(job);
+            let set = Rc::new(self.make_letters(job, &buffer));
+            self.keep_layout(layout_key, buffer);
+            if self.sets.len() >= MAX_LAYOUTS {
+                self.sets.clear();
+            }
+            self.sets.insert(key, set.clone());
+            Some(set)
         }
 
         /// How `text` wraps at `size` px in `width` px: the lines it makes and the widest one's width, as
@@ -340,10 +419,10 @@ mod real {
                     // `{size=..}`: when any run has one, every run gets its own metrics, so a line is
                     // as tall as its largest run (a line of smaller text alone is shorter).
                     // A run with ruby also gets its own, taller line (room for the reading above).
-                    let sized = job.runs.iter().any(|run| run.style.size.is_some() || run.ruby.is_some());
+                    let sized = job.runs.iter().any(|run| run.style.size.is_some() || run.style.whisper || run.ruby.is_some());
                     let shrink = metrics.font_size / job.size_px.max(1.0); // when the text was made to fit its box
-                    let spans = job.runs.iter().map(|run| {
-                        let mut a = attrs.clone();
+                    let spans = job.runs.iter().enumerate().map(|(i, run)| {
+                        let mut a = attrs.clone().metadata(i); // `draw` finds the run's opacity by it
                         if run.style.bold {
                             a = a.weight(Weight::BOLD);
                         }
@@ -355,6 +434,9 @@ mod real {
                         }
                         if run.style.underline {
                             a = a.underline(UnderlineStyle::Single);
+                        }
+                        if run.style.strike {
+                            a = a.strikethrough();
                         }
                         if sized {
                             let px = (job.run_size_px(run) * shrink).max(1.0);
@@ -399,6 +481,117 @@ mod real {
             }
         }
 
+        /// One glyph as a picture of its own, with the job's outline round it: where its top left is from the glyph's pen
+        /// position, and the pixels. `None` when it draws nothing (a space).
+        fn picture(&mut self, key: CacheKey, color: Color, opacity: f32, job: &TextJob) -> Option<(Pic, Bitmap)> {
+            let mut pixels: Vec<(i32, i32, Color)> = Vec::new();
+            self.swash.with_pixels(&mut self.fonts, key, color, |x, y, c| pixels.push((x, y, faded(c, opacity))));
+            let lit = pixels.iter().filter(|p| p.2.a() > 0);
+            let (x0, x1) = (lit.clone().map(|p| p.0).min()?, lit.clone().map(|p| p.0).max()?);
+            let (y0, y1) = (lit.clone().map(|p| p.1).min()?, lit.map(|p| p.1).max()?);
+            // room for the outline, which draws outside the letter
+            let pad = job.outline.as_ref().map_or(0, |o| o.size.round().clamp(1.0, 8.0) as i32);
+            let (w, h) = ((x1 - x0 + 1 + 2 * pad) as usize, (y1 - y0 + 1 + 2 * pad) as usize);
+            let mut acc = vec![[0.0f32; 4]; w * h];
+            for (x, y, c) in pixels {
+                plot(&mut acc, (w as i32, h as i32), (x - x0 + pad, y - y0 + pad), c);
+            }
+            if let Some(outline) = &job.outline {
+                add_outline(&mut acc, w, h, outline);
+            }
+            let mut rgba = Vec::new();
+            to_rgba(&acc, job.color[3].clamp(0.0, 1.0), &mut rgba);
+            Some((Pic { dx: x0 - pad, dy: y0 - pad, w: w as u32, h: h as u32 }, Bitmap { width: w as u32, height: h as u32, rgba }))
+        }
+
+        /// The symbols a glitching letter of `style` swaps to, as pictures in the text's colour.
+        fn glitch_pictures(&mut self, glyph: &cosmic_text::LayoutGlyph, color: Color, opacity: f32, job: &TextJob, seed: usize) -> Vec<(Pic, Bitmap)> {
+            let run = job.runs.get(glyph.metadata);
+            let family = self.family.clone();
+            let mut attrs = match &family {
+                Some(name) => Attrs::new().family(Family::Name(name)),
+                None => Attrs::new(),
+            };
+            if run.is_some_and(|r| r.style.bold) {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if run.is_some_and(|r| r.style.italic) {
+                attrs = attrs.style(Style::Italic);
+            }
+            let mut out = Vec::new();
+            for symbol in glitch_chars(seed) {
+                let px = glyph.font_size.max(1.0);
+                let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(px, quillstone_render::line_height(px)));
+                {
+                    let mut b = buffer.borrow_with(&mut self.fonts);
+                    b.set_size(None, None);
+                    b.set_text(&symbol.to_string(), &attrs, Shaping::Advanced, None);
+                }
+                buffer.shape_until_scroll(&mut self.fonts, false);
+                let key = buffer.layout_runs().next().and_then(|run| run.glyphs.first().map(|g| g.physical((0.0, 0.0), 1.0).cache_key));
+                // a symbol the fonts can't draw is a blank one: the letter just doesn't change
+                out.extend(key.and_then(|key| self.picture(key, color, opacity, job)));
+            }
+            out
+        }
+
+        /// Every moving letter of a shaped text as a picture of its own, at its place in the line.
+        fn make_letters(&mut self, job: &TextJob, buffer: &Buffer) -> LetterSet {
+            let (width, height) = (job.rect.w.max(1.0) as u32, job.rect.h.max(1.0) as u32);
+            let line_starts = line_starts(buffer, &job.text, !job.runs.is_empty());
+            let base = Color::rgba((job.color[0].clamp(0.0, 1.0) * 255.0).round() as u8, (job.color[1].clamp(0.0, 1.0) * 255.0).round() as u8, (job.color[2].clamp(0.0, 1.0) * 255.0).round() as u8, 255);
+            let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
+            let y_off = match job.align {
+                Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
+                Align::Left | Align::CenterX | Align::Right => 0.0,
+            };
+            let mut letters = Letters::default();
+            let mut bitmaps = Vec::new();
+            let mut symbols: HashMap<usize, std::ops::Range<usize>> = HashMap::new(); // by run
+            for run in buffer.layout_runs() {
+                let x_off = line_x(job.align, width as f32, run.line_w);
+                let line_y = (run.line_y + y_off).round() as i32;
+                let start = line_starts.get(run.line_i).copied().unwrap_or(0);
+                for glyph in run.glyphs.iter() {
+                    let byte = start + glyph.start;
+                    let Some(anim) = job.runs.get(glyph.metadata).and_then(|r| r.style.anim) else { continue };
+                    let physical = glyph.physical((x_off, 0.0), 1.0);
+                    let color = glyph.color_opt.unwrap_or(base);
+                    let opacity = job.runs[glyph.metadata].style.opacity();
+                    let Some((pic, bitmap)) = self.picture(physical.cache_key, color, opacity, job) else { continue };
+                    let pic_at = letters.pics.len();
+                    letters.pics.push(pic);
+                    bitmaps.push(bitmap);
+                    let mut letter_symbols = 0..0;
+                    if anim == Anim::Glitch {
+                        // a run's symbols are drawn once, in the first of its letters' style
+                        letter_symbols = match symbols.get(&glyph.metadata) {
+                            Some(r) => r.clone(),
+                            None => {
+                                let drawn = self.glitch_pictures(glyph, color, opacity, job, glyph.metadata);
+                                let r = letters.pics.len()..letters.pics.len() + drawn.len();
+                                for (pic, bitmap) in drawn {
+                                    letters.pics.push(pic);
+                                    bitmaps.push(bitmap);
+                                }
+                                symbols.insert(glyph.metadata, r.clone());
+                                r
+                            }
+                        };
+                    }
+                    letters.letters.push(Letter {
+                        index: job.text[..byte].chars().count(),
+                        anim,
+                        x: physical.x,
+                        y: line_y + physical.y,
+                        pic: pic_at,
+                        symbols: letter_symbols,
+                    });
+                }
+            }
+            LetterSet { letters: Rc::new(letters), bitmaps }
+        }
+
         /// The typed part of a shaped text, in its colours.
         fn draw(&mut self, job: &TextJob, buffer: &Buffer, width: u32, height: u32) -> Bitmap {
             // Glyphs that start at or after this byte offset are not typed yet.
@@ -415,6 +608,10 @@ mod real {
 
             let [r, g, b, a] = job.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
             let base = Color::rgba(r, g, b, 255);
+            // Letters that move are not in the line: they are pictures of their own (see `letters`).
+            let moving = |glyph: &cosmic_text::LayoutGlyph| job.runs.get(glyph.metadata).is_some_and(|run| run.style.anim.is_some());
+            // How opaque the run a glyph is in is (`{whisper}`, a colour's alpha); `shape` put the run's number in it.
+            let opacity_of = |glyph: &cosmic_text::LayoutGlyph| job.runs.get(glyph.metadata).map_or(1.0, |run| run.style.opacity());
 
             let line_count = buffer.layout_runs().count();
             let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
@@ -437,37 +634,38 @@ mod real {
             acc.clear();
             acc.resize((width * height) as usize, [0.0; 4]);
             for run in buffer.layout_runs() {
-                let x_off = match job.align {
-                    Align::Center | Align::CenterX => ((width as f32 - run.line_w) / 2.0).max(0.0),
-                    Align::Left => 0.0,
-                    Align::Right => (width as f32 - run.line_w).max(0.0),
-                };
+                let x_off = line_x(job.align, width as f32, run.line_w);
                 let line_y = (run.line_y + y_off).round() as i32;
+                let start = line_starts.get(run.line_i).copied().unwrap_or(0);
                 for glyph in run.glyphs.iter() {
-                    if line_starts.get(run.line_i).copied().unwrap_or(0) + glyph.start >= byte_limit {
+                    if start + glyph.start >= byte_limit || moving(glyph) {
                         continue;
                     }
                     let physical = glyph.physical((x_off, 0.0), 1.0);
                     let glyph_color = glyph.color_opt.unwrap_or(base);
+                    let opacity = opacity_of(glyph);
                     self.swash.with_pixels(&mut self.fonts, physical.cache_key, glyph_color, |x, y, color| {
-                        plot(&mut acc, size, (physical.x + x, line_y + physical.y + y), color);
+                        plot(&mut acc, size, (physical.x + x, line_y + physical.y + y), faded(color, opacity));
                     });
                 }
-                // Underlines run under the typed part of each underlined stretch, in the stretch's colour.
-                let start = line_starts.get(run.line_i).copied().unwrap_or(0);
-                for span in run.decorations.iter().filter(|s| s.data.text_decoration.underline != UnderlineStyle::None) {
+                // Underlines and strikethroughs run along the typed part of each stretch, in the stretch's colour.
+                for span in run.decorations.iter() {
+                    let td = &span.data.text_decoration;
                     let typed = run.glyphs[span.glyph_range.clone()].iter().filter(|g| start + g.start < byte_limit);
                     let (left, right) = typed.fold((f32::MAX, f32::MIN), |(l, r), g| (l.min(g.x), r.max(g.x + g.w)));
                     if left >= right {
                         continue;
                     }
-                    let m = span.data.underline_metrics;
-                    let thickness = (m.thickness * span.font_size).max(1.0).ceil() as i32;
-                    let (x0, y0) = ((left + x_off) as i32, (line_y as f32 - m.offset * span.font_size) as i32);
-                    let color = span.color_opt.unwrap_or(base);
-                    for y in y0..y0 + thickness {
-                        for x in x0..(right + x_off) as i32 {
-                            plot(&mut acc, size, (x, y), color);
+                    let opacity = run.glyphs.get(span.glyph_range.start).map_or(1.0, opacity_of);
+                    let lines = [(td.underline != UnderlineStyle::None, span.data.underline_metrics), (td.strikethrough, span.data.strikethrough_metrics)];
+                    for m in lines.iter().filter(|(on, _)| *on).map(|(_, m)| m) {
+                        let thickness = (m.thickness * span.font_size).max(1.0).ceil() as i32;
+                        let (x0, y0) = ((left + x_off) as i32, (line_y as f32 - m.offset * span.font_size) as i32);
+                        let color = faded(span.color_opt.unwrap_or(base), opacity);
+                        for y in y0..y0 + thickness {
+                            for x in x0..(right + x_off) as i32 {
+                                plot(&mut acc, size, (x, y), color);
+                            }
                         }
                     }
                 }
@@ -481,11 +679,7 @@ mod real {
                     let base: Vec<_> = run.glyphs.iter().filter(|g| (tr.start..tr.end).contains(&(start + g.start))).collect();
                     let first = base.iter().map(|g| start + g.start).min()?;
                     let (left, right) = base.iter().fold((f32::MAX, f32::MIN), |(l, r), g| (l.min(g.x), r.max(g.x + g.w)));
-                    let x_off = match job.align {
-                        Align::Center | Align::CenterX => ((width as f32 - run.line_w) / 2.0).max(0.0),
-                        Align::Left => 0.0,
-                        Align::Right => (width as f32 - run.line_w).max(0.0),
-                    };
+                    let x_off = line_x(job.align, width as f32, run.line_w);
                     let px = base[0].font_size;
                     Some((first, x_off + (left + right) / 2.0, (run.line_y + y_off - RUBY_LIFT * px).round() as i32, px * RUBY_SCALE))
                 });
@@ -502,19 +696,8 @@ mod real {
             }
 
             // Back to straight alpha; `a` scales the whole text's opacity.
-            let opacity = a as f32 / 255.0;
             let mut rgba = std::mem::take(&mut self.spare);
-            rgba.clear();
-            rgba.resize((width * height * 4) as usize, 0);
-            for (i, [pr, pg, pb, cover]) in acc.iter().enumerate() {
-                if *cover > 0.0 {
-                    let straight = |c: f32| ((c / cover).clamp(0.0, 1.0) * 255.0).round() as u8;
-                    rgba[i * 4] = straight(*pr);
-                    rgba[i * 4 + 1] = straight(*pg);
-                    rgba[i * 4 + 2] = straight(*pb);
-                    rgba[i * 4 + 3] = (cover * opacity * 255.0).round() as u8;
-                }
-            }
+            to_rgba(&acc, a as f32 / 255.0, &mut rgba);
             self.acc = acc;
             Bitmap { width, height, rgba }
         }
@@ -527,6 +710,7 @@ mod tests {
     use super::*;
     use quillstone_render::{build_frame, Align, Draw, Rect, Size};
     use quillstone_script::markup::rich;
+    use std::rc::Rc;
 
     #[test]
     fn a_box_sized_to_its_measured_lines_keeps_its_text_whole_at_every_window_size() {
@@ -701,6 +885,218 @@ mod tests {
         // the underline takes the stretch's colour
         let red = renderer.rasterize(&job("{color=#ff0000}{u}____{/u}{/color}")).unwrap();
         assert!(red.rgba.chunks(4).filter(|p| p[3] > 0).all(|p| p[..3] == [255, 0, 0]));
+    }
+
+    /// The longest unbroken stretch of lit pixels in one row: letters leave gaps, a line does not.
+    fn longest_run(b: &Bitmap) -> usize {
+        let row_runs = b.rgba.chunks(b.width as usize * 4).map(|row| {
+            row.chunks(4).fold((0, 0), |(best, now), p| if p[3] > 0 { (best.max(now + 1), now + 1) } else { (best, 0) }).0
+        });
+        row_runs.max().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_strikethrough_is_a_line_through_the_typed_part_in_the_text_colour() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): strikethrough test did not run");
+            return;
+        }
+        let plain = renderer.rasterize(&job("Hello there")).unwrap();
+        let struck = renderer.rasterize(&job("Hello {s}there{/s}")).unwrap();
+        let under = renderer.rasterize(&job("Hello {u}there{/u}")).unwrap();
+        assert!(lit(&struck) > lit(&plain) + 100 && longest_run(&struck) > 80 && longest_run(&plain) < 40, "{} {}", longest_run(&struck), longest_run(&plain));
+        // through the middle of the letters: between the top and the bottom of the text, unlike an underline
+        let line_row = |b: &Bitmap| {
+            let rows = b.rgba.chunks(b.width as usize * 4);
+            rows.enumerate().find(|(_, row)| row.chunks(4).fold((0, 0), |(best, now), p| if p[3] > 0 { (best.max(now + 1), now + 1) } else { (best, 0) }).0 > 80).map(|(y, _)| y)
+        };
+        let (middle, below) = (line_row(&struck).unwrap(), line_row(&under).unwrap());
+        assert!(middle + 5 < below && middle > top(&plain) && middle < bottom(&plain), "{middle} {below}");
+        // only the typed part, like the underline
+        let before = renderer.rasterize(&typed("Hello {s}there{/s}", 6)).unwrap();
+        assert_eq!(before.rgba, renderer.rasterize(&typed("Hello there", 6)).unwrap().rgba);
+        let half = renderer.rasterize(&typed("Hello {s}there{/s}", 8)).unwrap();
+        assert!(longest_run(&half) > longest_run(&before) && longest_run(&half) < longest_run(&struck));
+        // in the stretch's colour, and it mixes with the underline
+        let red = renderer.rasterize(&job("{color=#ff0000}{s}____{/s}{/color}")).unwrap();
+        assert!(red.rgba.chunks(4).filter(|p| p[3] > 0).all(|p| p[..3] == [255, 0, 0]));
+        let both = renderer.rasterize(&job("Hello {u}{s}there{/s}{/u}")).unwrap();
+        assert!(lit(&both) > lit(&struck) && lit(&both) > lit(&under));
+    }
+
+    #[test]
+    fn a_colour_with_alpha_is_see_through_and_a_whisper_is_smaller_and_half_so() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): alpha test did not run");
+            return;
+        }
+        // the most opaque pixel of the picture, and the colour there
+        let solid = |b: &Bitmap| b.rgba.chunks(4).max_by_key(|p| p[3]).map(|p| [p[0], p[1], p[2], p[3]]).unwrap();
+        assert_eq!(solid(&renderer.rasterize(&job("{color=#ff0000}HHHH{/color}")).unwrap()), [255, 0, 0, 255]);
+        for (tag, want) in [("{color=#ff000080}", 128), ("{color=#f008}", 136)] {
+            let a = renderer.rasterize(&job(&format!("{tag}HHHH{{/color}}"))).unwrap();
+            let [r, g, b, alpha] = solid(&a);
+            assert!(r == 255 && g == 0 && b == 0 && alpha.abs_diff(want) <= 1, "{tag}: {alpha}");
+        }
+        // an alpha colour inside the text's own colour (white): white at that opacity
+        let part = renderer.rasterize(&job("{color=#ffffff80}HHHH{/color}")).unwrap();
+        assert_eq!(solid(&part)[..3], [255, 255, 255]);
+        // the line under a see-through strike is see-through too
+        let struck = renderer.rasterize(&job("{color=#00ff0080}{s}    {/s}{/color}")).unwrap();
+        assert!(struck.rgba.chunks(4).filter(|p| p[3] > 0).all(|p| p[3] <= 129 && p[..3] == [0, 255, 0]));
+        // the text colour's own alpha still scales it all
+        let mut dim = job("{color=#ff000080}HHHH{/color}");
+        dim.color[3] = 0.5;
+        assert!(solid(&renderer.rasterize(&dim).unwrap())[3].abs_diff(64) <= 1);
+
+        let normal = renderer.rasterize(&job("HHHH")).unwrap();
+        let whisper = renderer.rasterize(&job("{whisper}HHHH{/whisper}")).unwrap();
+        let [_, _, _, alpha] = solid(&whisper);
+        assert!(alpha.abs_diff((0.55f32 * 255.0).round() as u8) <= 1, "{alpha}");
+        assert_eq!(solid(&whisper)[..3], [255, 255, 255], "the text's own colour");
+        // about 75% as tall and wide
+        let (h0, h1) = (bottom(&normal) - top(&normal), bottom(&whisper) - top(&whisper));
+        assert!((h1 as f32 / h0 as f32 - 0.75).abs() < 0.08, "{h1} / {h0}");
+        // it nests with colour and size
+        let red = renderer.rasterize(&job("{color=#ff0000}{whisper}HHHH{/whisper}{/color}")).unwrap();
+        assert_eq!(solid(&red)[..3], [255, 0, 0]);
+        let big = renderer.rasterize(&job("{size=+40}{whisper}HHHH{/whisper}{/size}")).unwrap();
+        let sized = renderer.rasterize(&job("{size=+40}HHHH{/size}")).unwrap();
+        let ratio = (bottom(&big) - top(&big)) as f32 / (bottom(&sized) - top(&sized)) as f32;
+        assert!((ratio - 0.75).abs() < 0.08, "{ratio}");
+        let both = renderer.rasterize(&job("{color=#ff000080}{whisper}HHHH{/whisper}{/color}")).unwrap();
+        assert!(solid(&both)[3].abs_diff((0.55f32 * 128.0).round() as u8) <= 1, "alpha and whisper multiply");
+    }
+
+    /// Lay a letter picture over `line` at `x`, `y` (source-over, straight alpha).
+    fn lay(line: &mut Bitmap, pic: &Bitmap, (x, y): (i32, i32)) {
+        for py in 0..pic.height as i32 {
+            for px in 0..pic.width as i32 {
+                let (tx, ty) = (x + px, y + py);
+                if tx < 0 || ty < 0 || tx >= line.width as i32 || ty >= line.height as i32 {
+                    continue;
+                }
+                let s = &pic.rgba[((py as u32 * pic.width + px as u32) * 4) as usize..][..4];
+                let d = ((ty as u32 * line.width + tx as u32) * 4) as usize;
+                let (sa, da) = (s[3] as f32 / 255.0, line.rgba[d + 3] as f32 / 255.0);
+                let out = sa + da * (1.0 - sa);
+                if out == 0.0 {
+                    continue;
+                }
+                for (k, c) in s[..3].iter().enumerate() {
+                    line.rgba[d + k] = ((*c as f32 * sa + line.rgba[d + k] as f32 * da * (1.0 - sa)) / out).round() as u8;
+                }
+                line.rgba[d + 3] = (out * 255.0).round() as u8;
+            }
+        }
+    }
+
+    fn animated_job(tagged: &str, n: usize, outline: bool) -> TextJob {
+        let mut j = typed(tagged, n);
+        if outline {
+            j.outline = Some(quillstone_render::Outline { size: 2.0, color: [0.0, 0.0, 1.0, 1.0] });
+        }
+        j
+    }
+
+    #[test]
+    fn moving_letters_leave_gaps_in_the_line_and_are_pictures_that_put_it_back() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): moving letters test did not run");
+            return;
+        }
+        for (tag, outline) in [("shake", false), ("wave", false), ("glitch", false), ("shake", true)] {
+            let tagged = format!("Say {{{tag}}}boo{{/{tag}}} now");
+            let moving = animated_job(&tagged, usize::MAX, outline);
+            let plain = animated_job("Say boo now", usize::MAX, outline);
+            let line = renderer.rasterize(&moving).unwrap();
+            let whole = renderer.rasterize(&plain).unwrap();
+            assert!(lit(&line) < lit(&whole) - 100, "{tag}: the three letters are left out ({} vs {})", lit(&line), lit(&whole));
+            let set = renderer.letters(&moving).expect("it has moving letters");
+            let letters = &set.letters.letters;
+            assert_eq!(letters.iter().map(|l| l.index).collect::<Vec<_>>(), [4, 5, 6], "{tag}");
+            assert_eq!(set.bitmaps.len(), set.letters.pics.len());
+            assert!(letters.iter().all(|l| (tag == "glitch") == !l.symbols.is_empty()));
+            assert_eq!(set.letters.pics.len(), if tag == "glitch" { 3 + quillstone_render::GLITCH_SYMBOLS } else { 3 });
+            // each letter at rest, drawn at its pen position and picture offset, completes the line
+            let mut put = Bitmap { width: line.width, height: line.height, rgba: line.rgba.clone() };
+            for l in letters {
+                let p = &set.letters.pics[l.pic];
+                assert_eq!((set.bitmaps[l.pic].width, set.bitmaps[l.pic].height), (p.w, p.h));
+                lay(&mut put, &set.bitmaps[l.pic], (l.x + p.dx, l.y + p.dy));
+            }
+            // an outline's ring is drawn under the letters of the whole line; as pictures a letter's ring may sit over
+            // its neighbour's edge, so a few edge pixels differ a little there
+            let off = put.rgba.chunks(4).zip(whole.rgba.chunks(4)).filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 3)).count();
+            let worst = put.rgba.iter().zip(&whole.rgba).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(if outline { off * 200 < lit(&whole) && worst <= 16 } else { worst <= 3 }, "{tag} outline {outline}: the letters sit where they were ({off} pixels off, by up to {worst})");
+        }
+        // the outline is part of the letter pictures: they are bigger
+        let (flat, ringed) = (renderer.letters(&animated_job("a{shake}b{/shake}", 9, false)).unwrap(), renderer.letters(&animated_job("a{shake}b{/shake}", 9, true)).unwrap());
+        assert!(ringed.letters.pics[0].w >= flat.letters.pics[0].w + 4);
+        assert_ne!(animated_job("a{shake}b{/shake}", 9, false).letters_key(), animated_job("a{shake}b{/shake}", 9, true).letters_key());
+    }
+
+    #[test]
+    fn moving_letters_appear_with_the_typing_and_a_line_without_any_asks_for_none() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): moving letters typing test did not run");
+            return;
+        }
+        let tagged = "Say {wave}boo{/wave}";
+        // the line only holds what is typed; the pictures are the same however much is
+        let a = renderer.letters(&animated_job(tagged, 5, false)).unwrap();
+        let b = renderer.letters(&animated_job(tagged, usize::MAX, false)).unwrap();
+        assert!(Rc::ptr_eq(&a, &b), "one set for the whole line");
+        assert_eq!(animated_job(tagged, 5, false).letters_key(), animated_job(tagged, 9, false).letters_key());
+        assert_eq!(lit(&renderer.rasterize(&animated_job(tagged, 5, false)).unwrap()), lit(&renderer.rasterize(&animated_job("Say b", 5, false)).unwrap()) - lit_of_letter(&mut renderer, "Say b", 4));
+        assert!(renderer.letters(&animated_job("Say boo", 9, false)).is_none());
+        assert!(renderer.letters(&animated_job("Say {u}boo{/u}", 9, false)).is_none());
+    }
+
+    /// The pixels the letter at `index` of `tagged` lights in the line.
+    fn lit_of_letter(renderer: &mut TextRenderer, tagged: &str, index: usize) -> usize {
+        let with = lit(&renderer.rasterize(&typed(tagged, index + 1)).unwrap());
+        let without = lit(&renderer.rasterize(&typed(tagged, index)).unwrap());
+        with - without
+    }
+
+    #[test]
+    fn with_animation_off_the_text_is_drawn_whole_and_still() {
+        let mut renderer = TextRenderer::new(Vec::new());
+        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
+            eprintln!("SKIPPED (no fonts on this machine): still text test did not run");
+            return;
+        }
+        let r = rich("Say {shake}boo{/shake} {glitch}now{/glitch}");
+        let draw = Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect: Rect::new(0.0, 0.0, 1200.0, 400.0), size: 40.0, color: [1.0; 4], align: Align::Left, outline: None };
+        let size = Size::new(1920.0, 1080.0);
+        let on = quillstone_render::build_frame_with(std::slice::from_ref(&draw), size, true);
+        let off = quillstone_render::build_frame_with(std::slice::from_ref(&draw), size, false);
+        assert!(!off.animated() && renderer.letters(&off.texts[0]).is_none());
+        let whole = renderer.rasterize(&typed("Say boo now", usize::MAX)).unwrap();
+        assert_eq!(renderer.rasterize(&off.texts[0]).unwrap().rgba, whole.rgba, "just plain text");
+        assert!(lit(&renderer.rasterize(&on.texts[0]).unwrap()) < lit(&whole) - 100, "the same text with animation has gaps");
+        // and no quads for letters
+        let mut f = off;
+        f.add_letters(size, 1.0, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+        assert!(!f.quads.iter().any(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))));
+        let mut f = on;
+        f.add_letters(size, 1.0, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+        assert_eq!(f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).count(), 6);
+        // the letters of a shake are in other places at other times
+        let mut at = |t: f32| {
+            let mut f = quillstone_render::build_frame(std::slice::from_ref(&draw), size);
+            f.add_letters(size, t, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+            f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).map(|q| q.rect).collect::<Vec<_>>()
+        };
+        let (first, again) = (at(0.5), at(0.5));
+        assert_eq!(first, again);
+        assert_ne!(at(0.0), at(0.3));
     }
 
     #[test]

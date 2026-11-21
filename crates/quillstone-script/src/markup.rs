@@ -4,7 +4,11 @@
 //! - `{color=#ff8080}...{/color}` (they nest)
 //! - `{w=0.5}`: the typewriter pauses there for half a second
 //! - `{size=+10}`, `{size=-8}`, `{size=24}`...`{/size}`: relative or absolute text size (they nest)
-//! - `{u}...{/u}`: underlined text
+//! - `{u}...{/u}`: underlined text; `{s}...{/s}`: struck through
+//! - `{color=#rrggbbaa}` (or `#rgba`): partly see-through text
+//! - `{speed=0.5}...{/speed}`: typing speed for part of a line, as a factor of the player's (0.1 to 10; they multiply)
+//! - `{whisper}...{/whisper}`: smaller and half see-through
+//! - `{shake}`, `{wave}`, `{glitch}` (each closed with its `{/..}`): animated letters
 //! - `{ruby=かんじ}漢字{/ruby}`: a small reading above the words (plain text only inside; no nesting)
 //! - `{p}`: a line break inside the line (a paragraph break); it doesn't wait
 //! - `{nw}` at the very end: the story goes on by itself once the line is typed
@@ -49,6 +53,37 @@ impl TextSize {
     }
 }
 
+/// Smallest and largest `{speed=..}` factor.
+pub const MIN_SPEED: f32 = 0.1;
+pub const MAX_SPEED: f32 = 10.0;
+
+/// A `{whisper}` is this fraction of the surrounding size, and this opaque.
+pub const WHISPER_SIZE: f32 = 0.75;
+pub const WHISPER_ALPHA: f32 = 0.55;
+
+/// Tags written without arguments that are not variables (`{u}` is never the variable `u`).
+pub fn is_flag_tag(name: &str) -> bool {
+    matches!(name, "p" | "nw" | "u" | "s" | "whisper" | "shake" | "wave" | "glitch")
+}
+
+/// How the letters of a run move once they are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anim {
+    Shake,
+    Wave,
+    Glitch,
+}
+
+impl Anim {
+    fn tag(self) -> &'static str {
+        match self {
+            Anim::Shake => "shake",
+            Anim::Wave => "wave",
+            Anim::Glitch => "glitch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Style {
     pub bold: bool,
@@ -58,6 +93,30 @@ pub struct Style {
     /// `None` is the text's normal size.
     pub size: Option<TextSize>,
     pub underline: bool,
+    pub strike: bool,
+    /// From `{color=#rrggbbaa}`: `None` is opaque.
+    pub alpha: Option<f32>,
+    pub whisper: bool,
+    /// Typing speed factor, `None` is the player's own speed.
+    pub speed: Option<f32>,
+    pub anim: Option<Anim>,
+}
+
+impl Style {
+    /// The size in pixels of text in this style when the surrounding text is `base` pixels.
+    pub fn size_in(&self, base: f32) -> f32 {
+        let px = self.size.map_or(base, |s| s.resolve(base));
+        if self.whisper {
+            px * WHISPER_SIZE
+        } else {
+            px
+        }
+    }
+
+    /// How opaque the text is (1 is fully).
+    pub fn opacity(&self) -> f32 {
+        self.alpha.unwrap_or(1.0) * if self.whisper { WHISPER_ALPHA } else { 1.0 }
+    }
 }
 
 /// A stretch of [`Rich::text`] (byte range) in one style.
@@ -98,7 +157,10 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut out = Rich::default();
     let mut style = Style::default();
-    let mut colors: Vec<Option<[f32; 3]>> = Vec::new();
+    let mut colors: Vec<(Option<[f32; 3]>, Option<f32>)> = Vec::new();
+    let mut speeds: Vec<Option<f32>> = Vec::new();
+    let mut anims: Vec<Option<Anim>> = Vec::new();
+    let (mut strikes, mut whispers) = (0, 0); // open `{s}` and `{whisper}` tags
     let mut sizes: Vec<Option<TextSize>> = Vec::new();
     let mut underlines = 0; // open `{u}` tags
     let mut ruby: Option<(String, usize)> = None; // the reading and where in the text its words start
@@ -148,7 +210,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                 let close = paired.filter(|&k| chars[k] == '}').unwrap_or(first);
                 let inner: String = chars[i + 1..close].iter().collect();
                 let tag = inner.trim();
-                let plain_name = !matches!(tag, "p" | "nw" | "u") && (is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok());
+                let plain_name = !is_flag_tag(tag) && (is_ident(tag) || tag.contains('{') && crate::name_pieces(tag).is_ok());
                 if ruby.is_some() && tag != "/ruby" && !plain_name {
                     return Err(IN_RUBY.into());
                 }
@@ -180,18 +242,69 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     close_run(out.text.len(), style, &ruby);
                     underlines += 1;
                     style.underline = true;
+                } else if tag == "/s" {
+                    strikes = usize::checked_sub(strikes, 1).ok_or("`{/s}` without a `{s}` before it")?;
+                    close_run(out.text.len(), style, &ruby);
+                    style.strike = strikes > 0;
+                } else if tag == "s" {
+                    close_run(out.text.len(), style, &ruby);
+                    strikes += 1;
+                    style.strike = true;
+                } else if tag == "/whisper" {
+                    whispers = usize::checked_sub(whispers, 1).ok_or("`{/whisper}` without a `{whisper}` before it")?;
+                    close_run(out.text.len(), style, &ruby);
+                    style.whisper = whispers > 0;
+                } else if tag == "whisper" {
+                    close_run(out.text.len(), style, &ruby);
+                    whispers += 1;
+                    style.whisper = true;
+                } else if let Some(anim) = [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find(|a| tag == a.tag()) {
+                    if anims.len() >= MAX_TAG_NESTING {
+                        return Err(format!("`{{{tag}}}` tags are nested too deeply"));
+                    }
+                    anims.push(style.anim);
+                    close_run(out.text.len(), style, &ruby);
+                    style.anim = Some(anim);
+                } else if let Some(anim) = tag.strip_prefix('/').and_then(|t| [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find(|a| t == a.tag())) {
+                    // the innermost animated tag open must be this one
+                    if style.anim != Some(anim) {
+                        return Err(match style.anim {
+                            Some(open) => format!("`{{/{}}}` closes a tag that is not the innermost open one (`{{{}}}` is)", anim.tag(), open.tag()),
+                            None => format!("`{{/{0}}}` without a `{{{0}}}` before it", anim.tag()),
+                        });
+                    }
+                    let previous = anims.pop().flatten();
+                    close_run(out.text.len(), style, &ruby);
+                    style.anim = previous;
+                } else if tag == "/speed" {
+                    let previous = speeds.pop().ok_or("`{/speed}` without a `{speed=...}` before it")?;
+                    close_run(out.text.len(), style, &ruby);
+                    style.speed = previous;
+                } else if let Some(value) = tag.strip_prefix("speed=") {
+                    let factor: f32 = value.trim().parse().ok().filter(|f: &f32| f.is_finite()).ok_or_else(|| format!("`{{speed={value}}}` needs a number such as `0.5`"))?;
+                    if !(MIN_SPEED..=MAX_SPEED).contains(&factor) {
+                        return Err(format!("`{{speed={value}}}`: a typing speed is from {MIN_SPEED} to {MAX_SPEED} times the player's"));
+                    }
+                    if speeds.len() >= MAX_TAG_NESTING {
+                        return Err("`{speed=...}` tags are nested too deeply".into());
+                    }
+                    speeds.push(style.speed);
+                    close_run(out.text.len(), style, &ruby);
+                    // nested ones multiply, but never leave the range
+                    style.speed = Some((style.speed.unwrap_or(1.0) * factor).clamp(MIN_SPEED, MAX_SPEED));
                 } else if tag == "/color" {
                     let previous = colors.pop().ok_or("`{/color}` without a `{color=...}` before it")?;
                     close_run(out.text.len(), style, &ruby);
-                    style.color = previous;
+                    (style.color, style.alpha) = previous;
                 } else if let Some(value) = tag.strip_prefix("color=") {
-                    let color = crate::parser::parse_color(value.trim())?;
+                    let [r, g, b, a] = crate::parser::parse_color_alpha(value.trim())?;
                     if colors.len() >= MAX_TAG_NESTING {
                         return Err("`{color=...}` tags are nested too deeply".into());
                     }
-                    colors.push(style.color);
+                    colors.push((style.color, style.alpha));
                     close_run(out.text.len(), style, &ruby);
-                    style.color = Some(color);
+                    style.color = Some([r, g, b]);
+                    style.alpha = (a < 1.0).then_some(a);
                 } else if tag == "/size" {
                     let previous = sizes.pop().ok_or("`{/size}` without a `{size=...}` before it")?;
                     close_run(out.text.len(), style, &ruby);
@@ -226,7 +339,7 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     out.text.push_str(&format!("{{{inner}}}"));
                     shown += inner.chars().count() + 2;
                 } else {
-                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{/color}}`, `{{size=+10}}`, `{{/size}}`, `{{u}}`, `{{/u}}`, `{{ruby=..}}`, `{{/ruby}}`, `{{w=0.5}}`, `{{p}}`, `{{nw}}`)"));
+                    return Err(format!("unknown text tag `{{{inner}}}` (tags: `{{color=#rrggbb}}`, `{{size=+10}}`, `{{u}}`, `{{s}}`, `{{whisper}}`, `{{speed=0.5}}`, `{{shake}}`, `{{wave}}`, `{{glitch}}` (each closed with `{{/..}}`), `{{ruby=..}}`, `{{/ruby}}`, `{{w=0.5}}`, `{{p}}`, `{{nw}}`)"));
                 }
                 i = close + 1;
             }
@@ -251,6 +364,18 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     }
     if underlines > 0 {
         return Err("`{u}` is never closed with `{/u}`".into());
+    }
+    if strikes > 0 {
+        return Err("`{s}` is never closed with `{/s}`".into());
+    }
+    if whispers > 0 {
+        return Err("`{whisper}` is never closed with `{/whisper}`".into());
+    }
+    if !speeds.is_empty() {
+        return Err("`{speed=...}` is never closed with `{/speed}`".into());
+    }
+    if let Some(open) = style.anim {
+        return Err(format!("`{{{0}}}` is never closed with `{{/{0}}}`", open.tag()));
     }
     if ruby.is_some() {
         return Err("`{ruby=...}` is never closed with `{/ruby}`".into());
@@ -583,6 +708,79 @@ mod tests {
             assert!(e.contains(needle), "{src}: {e}");
         }
         assert_eq!(rich("{ruby=a}x").text, "{ruby=a}x", "shown as written, not lost");
+    }
+
+    #[test]
+    fn strike_whisper_alpha_speed_and_animations_are_styles_that_nest() {
+        let r = parse_markup("a {s}b {whisper}c{/whisper}{/s} {color=#ff000080}d{/color}{speed=0.5}e{/speed}").unwrap();
+        assert_eq!(r.text, "a b c de");
+        let at = |w: &str| r.runs.iter().find(|x| &r.text[x.start..x.end] == w).unwrap().style;
+        assert!(!at("a ").strike && at("b ").strike);
+        assert!(at("c").strike && at("c").whisper, "they mix");
+        assert_eq!(at("d").alpha, Some(128.0 / 255.0));
+        assert_eq!(at("d").color, Some([1.0, 0.0, 0.0]));
+        assert_eq!(at("e").speed, Some(0.5));
+        assert_eq!(parse_markup("{color=#f008}x{/color}").unwrap().runs[0].style.alpha, Some(136.0 / 255.0));
+        assert_eq!(parse_markup("{color=#ff000080}x{color=#00f}y{/color}z{/color}").unwrap().runs[1].style.alpha, None, "an opaque colour inside is opaque");
+        let r = parse_markup("{s}a{s}b{/s}c{/s}d").unwrap();
+        assert_eq!(r.runs.iter().map(|x| x.style.strike).collect::<Vec<_>>(), [true, true, true, false]);
+        for (tag, anim) in [("shake", Anim::Shake), ("wave", Anim::Wave), ("glitch", Anim::Glitch)] {
+            let r = parse_markup(&format!("a{{{tag}}}b{{/{tag}}}c")).unwrap();
+            assert_eq!(r.runs.iter().map(|x| x.style.anim).collect::<Vec<_>>(), [None, Some(anim), None], "{tag}");
+        }
+        let r = parse_markup("{shake}a{wave}b{/wave}c{/shake}").unwrap();
+        assert_eq!(r.runs.iter().map(|x| x.style.anim).collect::<Vec<_>>(), [Some(Anim::Shake), Some(Anim::Wave), Some(Anim::Shake)]);
+        assert_eq!(plain("{s}a{/s}{whisper}b{/whisper}{wave}c{/wave}"), "abc");
+    }
+
+    #[test]
+    fn nested_speeds_multiply_within_the_range() {
+        let r = parse_markup("{speed=2}a{speed=3}b{/speed}c{/speed}d{speed=10}{speed=10}e{/speed}{/speed}{speed=0.1}{speed=0.1}f{/speed}{/speed}").unwrap();
+        let speeds: Vec<_> = r.runs.iter().map(|x| x.style.speed).collect();
+        assert_eq!(speeds, [Some(2.0), Some(6.0), Some(2.0), None, Some(MAX_SPEED), Some(MIN_SPEED)]);
+    }
+
+    #[test]
+    fn the_new_tags_are_checked_with_clear_errors() {
+        for (src, needle) in [
+            ("{s}open", "`{s}` is never closed"),
+            ("{/s}", "without a `{s}`"),
+            ("{whisper}open", "`{whisper}` is never closed"),
+            ("{/whisper}", "without a `{whisper}`"),
+            ("{shake}open", "`{shake}` is never closed"),
+            ("{wave}open", "`{wave}` is never closed"),
+            ("{glitch}open", "`{glitch}` is never closed"),
+            ("{/wave}", "without a `{wave}`"),
+            ("{shake}a{wave}b{/shake}c{/wave}", "not the innermost"),
+            ("{shake}a{/wave}", "not the innermost"),
+            ("{speed=0.5}open", "never closed"),
+            ("{/speed}", "without a `{speed"),
+            ("{speed=0.05}x{/speed}", "from 0.1 to 10"),
+            ("{speed=11}x{/speed}", "from 0.1 to 10"),
+            ("{speed=0}x{/speed}", "from 0.1 to 10"),
+            ("{speed=NaN}x{/speed}", "needs a number"),
+            ("{speed=fast}x{/speed}", "needs a number"),
+            ("{speed=}x{/speed}", "needs a number"),
+            ("{color=#ff0000zz}x{/color}", "bad colour"),
+            ("{color=#ff000}x{/color}", "bad colour"),
+        ] {
+            let e = parse_markup(src).unwrap_err();
+            assert!(e.contains(needle), "{src}: {e}");
+        }
+        // they are tags, not variables
+        assert!(is_flag_tag("s") && is_flag_tag("wave") && !is_flag_tag("speed"));
+        assert_eq!(parse_markup("{s}x{/s}").unwrap().text, "x");
+    }
+
+    #[test]
+    fn whisper_is_smaller_and_fainter_than_what_surrounds_it() {
+        let style = Style { whisper: true, ..Style::default() };
+        assert_eq!(style.size_in(40.0), 30.0);
+        assert_eq!(Style { size: Some(TextSize::Relative(20)), ..style }.size_in(40.0), 45.0, "the size tag applies first");
+        assert_eq!(Style::default().size_in(40.0), 40.0);
+        assert_eq!(style.opacity(), WHISPER_ALPHA);
+        assert_eq!(Style { alpha: Some(0.5), ..style }.opacity(), 0.5 * WHISPER_ALPHA);
+        assert_eq!(Style::default().opacity(), 1.0);
     }
 
     #[test]

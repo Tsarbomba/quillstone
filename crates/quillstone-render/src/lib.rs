@@ -23,13 +23,15 @@ pub mod filter;
 pub mod hud;
 pub mod image_probe;
 pub mod layout;
+pub mod letters;
 pub mod page;
 pub mod particles;
 pub mod pixels;
 pub mod theme;
 pub mod view;
 
-pub use batch::{build_frame, Frame, Quad, Tex, TextJob};
+pub use batch::{build_frame, build_frame_with, Frame, Quad, Tex, TextJob};
+pub use letters::{Anim, Letter, Letters, Pic, GLITCH_SYMBOLS};
 pub use filter::ColorMatrix;
 pub use layout::{
     clip, estimate_lines, estimate_lines_styled, fit_row, letterbox, line_height, lines_of, lines_styled, one_row, place, Measure, MeasureFn, SharedMeasure, to_ndc, to_virtual, to_window, Placement, Rect, Size, FULL_UV, VIRTUAL,

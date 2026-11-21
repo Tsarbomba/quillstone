@@ -1593,6 +1593,7 @@ impl<'p> Game<'p> {
         match row {
             Row::Fullscreen => self.toggle_fullscreen(),
             Row::SkipUnread => self.settings.skip_unread = !self.settings.skip_unread,
+            Row::AnimatedText => self.settings.animated_text = !self.settings.animated_text,
             Row::QuickMenu => self.cycle_quick_menu(false),
             Row::Language => self.cycle_language(false),
             _ => {}
@@ -1613,7 +1614,7 @@ impl<'p> Game<'p> {
             Row::Music => Channel::Music,
             Row::Sfx => Channel::Sfx,
             Row::Voice => Channel::Voice,
-            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => return,
+            Row::AutoDelay | Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::AnimatedText | Row::Language => return,
         };
         self.audio.push(Action::SetChannelVolume { channel, volume: self.channel_volume(channel) });
     }

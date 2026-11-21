@@ -557,6 +557,8 @@ pub struct Dialogue {
     pub runs: Vec<TextRun>,
     /// `{w=...}` pauses still ahead: (characters shown when it pauses, seconds).
     pauses: Vec<(usize, f32)>,
+    /// `{speed=..}` stretches of the text: (first character, one past the last, typing speed factor).
+    speeds: Vec<(usize, usize, f32)>,
     /// Seconds left of the pause the typewriter is in.
     hold: f32,
     total: usize,
@@ -571,7 +573,9 @@ impl Dialogue {
     fn new(speaker: Option<String>, color: Option<[f32; 3]>, tagged: &str, instant: bool) -> Dialogue {
         let Rich { text, runs, pauses, no_wait } = rich(tagged);
         let total = text.chars().count();
-        let mut d = Dialogue { speaker, color, text, runs, pauses, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, centred: false };
+        let chars = |byte: usize| text[..byte].chars().count();
+        let speeds = runs.iter().filter_map(|r| Some((chars(r.start), chars(r.end), r.style.speed?))).collect();
+        let mut d = Dialogue { speaker, color, text, runs, pauses, speeds, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, centred: false };
         if instant {
             d.show_text();
         }
@@ -586,7 +590,8 @@ impl Dialogue {
         self.pauses.retain(|&(at, _)| at >= total);
     }
 
-    /// Type on for `dt` seconds at `speed` characters a second, stopping at pauses.
+    /// Type on for `dt` seconds at `speed` characters a second (times the `{speed=..}` of the text being
+    /// typed), stopping at pauses.
     fn type_on(&mut self, mut dt: f32, speed: f32) {
         while dt > 0.0 && !self.is_complete() {
             if self.hold > 0.0 {
@@ -595,18 +600,24 @@ impl Dialogue {
                 dt -= held;
                 continue;
             }
-            let target = self.revealed + dt * speed;
-            match self.pauses.first().copied() {
-                Some((at, seconds)) if at as f32 <= target => {
-                    dt -= (at as f32 - self.revealed).max(0.0) / speed;
-                    self.revealed = self.revealed.max(at as f32);
+            // The speed here holds up to `edge`, where a stretch starts or ends.
+            let here = self.revealed.floor() as usize;
+            let factor = self.speeds.iter().rev().find(|s| (s.0..s.1).contains(&here)).map_or(1.0, |s| s.2);
+            let edge = self.speeds.iter().flat_map(|s| [s.0, s.1]).map(|e| e as f32).filter(|e| *e > self.revealed).fold(f32::INFINITY, f32::min);
+            let rate = speed * factor;
+            let target = self.revealed + dt * rate;
+            let pause = self.pauses.first().copied();
+            let stop = edge.min(pause.map_or(f32::INFINITY, |(at, _)| at as f32));
+            if target >= stop {
+                dt -= (stop - self.revealed).max(0.0) / rate;
+                self.revealed = self.revealed.max(stop);
+                if let Some((_, seconds)) = pause.filter(|(at, _)| *at as f32 <= stop) {
                     self.hold = seconds;
                     self.pauses.remove(0);
                 }
-                _ => {
-                    self.revealed = target.min(self.total as f32);
-                    dt = 0.0;
-                }
+            } else {
+                self.revealed = target.min(self.total as f32);
+                dt = 0.0;
             }
         }
     }
@@ -2485,6 +2496,48 @@ mod tests {
         v.apply(&[say(None, "Ab{w=1}cd")]);
         v.tick(0.3);
         assert!(!v.press_advance(), "the first press finishes the line");
+        assert!(v.dialogue.as_ref().unwrap().is_complete());
+    }
+
+    #[test]
+    fn a_speed_tag_scales_the_typing_of_its_words_only_and_nests_by_multiplying() {
+        let shown = |v: &View| v.dialogue.as_ref().unwrap().visible_chars();
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "ab{speed=0.5}cd{/speed}ef")]);
+        v.tick(0.2);
+        assert_eq!(shown(&v), 2, "normal speed before");
+        v.tick(0.2);
+        assert_eq!(shown(&v), 3, "5 a second, not 10");
+        v.tick(0.2);
+        assert_eq!(shown(&v), 4, "the stretch took 0.4 s");
+        v.tick(0.1);
+        assert_eq!(shown(&v), 5, "back to normal after the stretch, with the time left over");
+        // one big step crosses every stretch with the right sum: 0.2 + 0.4 + 0.2 s
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "ab{speed=0.5}cd{/speed}ef")]);
+        v.tick(0.79);
+        assert_eq!(shown(&v), 5);
+        v.tick(0.02);
+        assert_eq!(shown(&v), 6);
+        // nested: 2 * 2 = 4 times the speed
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "{speed=2}a{speed=2}bcdefgh{/speed}{/speed}")]);
+        v.tick(0.1);
+        assert_eq!(shown(&v), 3, "one at 20 a second takes 0.05 s, then 40 a second");
+        // faster than the player's, and a pause inside a stretch still holds
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "{speed=0.1}ab{w=1}cd{/speed}")]);
+        v.tick(2.0);
+        assert_eq!(shown(&v), 2, "typing 1 a second, stopped at the pause");
+        assert!(!v.dialogue.as_ref().unwrap().is_complete());
+        // instant text and a click ignore it
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&[say(None, "{speed=0.1}slowly{/speed}")]);
+        assert!(v.dialogue.as_ref().unwrap().is_complete());
+        let mut v = View::new().with_speed(10.0);
+        v.apply(&[say(None, "{speed=0.1}slowly{/speed}")]);
+        v.tick(0.1);
+        assert!(!v.press_advance(), "the click finishes the line");
         assert!(v.dialogue.as_ref().unwrap().is_complete());
     }
 

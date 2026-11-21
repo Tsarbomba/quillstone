@@ -67,6 +67,8 @@ pub struct Gfx {
     /// Size of each video texture (in `images`), to reuse it for the next frame.
     frame_sizes: HashMap<String, (u32, u32)>,
     texts: HashMap<String, GpuTexture>,
+    /// The pictures of the moving letters of lines on screen, by `TextJob::letters_key`.
+    letters: HashMap<String, Vec<GpuTexture>>,
     text_renderer: TextRenderer,
 }
 
@@ -240,6 +242,7 @@ impl Gfx {
             images: HashMap::new(),
             frame_sizes: HashMap::new(),
             texts: HashMap::new(),
+            letters: HashMap::new(),
             text_renderer: TextRenderer::new(fonts),
         }
     }
@@ -314,11 +317,33 @@ impl Gfx {
         upload_texture(&self.device, &self.queue, &self.bind_layout, &self.sampler, width, height, &[rgba])
     }
 
+    /// Add the moving letters of `{shake}`, `{wave}` and `{glitch}` text to `frame`, `time` seconds into the
+    /// animation: each letter is drawn once as a picture and then only placed.
+    pub fn add_letters(&mut self, frame: &mut Frame, time: f32) {
+        let mut sets = HashMap::new();
+        for job in frame.texts.iter().filter(|j| j.animated()) {
+            let key = job.letters_key();
+            if let (false, Some(set)) = (sets.contains_key(&key), self.text_renderer.letters(job)) {
+                sets.insert(key, set);
+            }
+        }
+        self.letters.retain(|k, _| sets.contains_key(k));
+        for (key, set) in &sets {
+            if !self.letters.contains_key(key) {
+                let textures = set.bitmaps.iter().map(|b| self.make_texture(b.width, b.height, &b.rgba)).collect();
+                self.letters.insert(key.clone(), textures);
+            }
+        }
+        let (w, h) = self.size();
+        frame.add_letters(quillstone_render::Size::new(w as f32, h as f32), time, &mut |job| sets.get(&job.letters_key()).map(|s| s.letters.clone()));
+    }
+
     pub fn render(&mut self, frame: &Frame) {
         // 1. Rasterize any text we haven't seen, and forget text no longer shown.
         // A forgotten texture of the right size is rewritten instead of making a
         // new one: a typing line changes every character, at the same size.
         let text_keys: Vec<String> = frame.texts.iter().map(|t| t.key()).collect();
+        let letter_keys: Vec<String> = frame.texts.iter().map(|t| if t.animated() { t.letters_key() } else { String::new() }).collect();
         let live: HashSet<&String> = text_keys.iter().collect();
         let mut spare: Vec<GpuTexture> = Vec::new();
         self.texts.retain(|k, tex| {
@@ -360,6 +385,7 @@ impl Gfx {
                 Tex::Vignette => Some(&self.vignette),
                 Tex::Image(src) => self.images.get(src),
                 Tex::Text(i) => text_keys.get(*i).and_then(|k| self.texts.get(k)),
+                Tex::Letter(i, pic) => letter_keys.get(*i).and_then(|k| self.letters.get(k)).and_then(|v| v.get(*pic)),
             };
             let Some(texture) = texture else { continue };
 

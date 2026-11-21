@@ -211,10 +211,10 @@ pub fn fit_row(measure: Option<Measure>, s: &str, size: f32, width: f32) -> Stri
     chars[..lo].iter().collect::<String>().trim_end().to_string() + "…"
 }
 
-/// [`estimate_lines_styled`], by the real measure when there is one and the text has no `{size}` or ruby runs (which
+/// [`estimate_lines_styled`], by the real measure when there is one and the text has no `{size}`, `{whisper}` or ruby runs (which
 /// the measure can't see; those keep the estimate).
 pub fn lines_styled(measure: Option<Measure>, text: &str, runs: &[quillstone_script::markup::TextRun], size: f32, width: f32) -> usize {
-    let plain = runs.iter().all(|r| r.style.size.is_none() && r.ruby.is_none());
+    let plain = runs.iter().all(|r| r.style.size.is_none() && !r.style.whisper && r.ruby.is_none());
     match measure.filter(|_| plain).and_then(|m| m(text, size, width)) {
         Some((lines, _)) => lines,
         None => estimate_lines_styled(text, runs, size, width),
@@ -229,8 +229,7 @@ pub fn estimate_lines_styled(text: &str, runs: &[quillstone_script::markup::Text
     let scale_at = |byte: usize| {
         runs.iter()
             .find(|r| r.start <= byte && byte < r.end)
-            .and_then(|r| r.style.size)
-            .map_or(1.0, |s| s.resolve(size) / size.max(1.0))
+            .map_or(1.0, |r| r.style.size_in(size) / size.max(1.0))
     };
     let mut lines = 0;
     let (mut line, mut count, mut word) = (0.0f32, 1, 0.0f32);
@@ -404,5 +403,18 @@ mod tests {
         let part = rich(&format!("{word}{{size=+32}}x{{/size}}"));
         assert_eq!(estimate_lines_styled(&part.text, &part.runs, 32.0, 1260.0), plain);
         assert_eq!(estimate_lines(&word, 32.0, 1260.0), plain);
+    }
+
+    #[test]
+    fn a_whisper_is_estimated_smaller_and_a_measured_line_defers_to_the_estimate() {
+        use quillstone_script::markup::rich;
+        let word = "wordy ".repeat(60);
+        let plain = estimate_lines_styled(&word, &[], 32.0, 1260.0);
+        let soft = rich(&format!("{{whisper}}{word}{{/whisper}}"));
+        let whisper = estimate_lines_styled(&soft.text, &soft.runs, 32.0, 1260.0);
+        assert!(whisper < plain, "{whisper} < {plain}");
+        let measure: Measure = &|_, _, _| Some((99, 0.0));
+        assert_eq!(lines_styled(Some(measure), &soft.text, &soft.runs, 32.0, 1260.0), whisper, "the measure can't see it");
+        assert_eq!(lines_styled(Some(measure), &word, &[], 32.0, 1260.0), 99);
     }
 }

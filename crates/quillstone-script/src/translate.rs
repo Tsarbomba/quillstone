@@ -462,11 +462,11 @@ pub fn placeholders(text: &str) -> Vec<String> {
 /// The name of a tag (`color` for `color=#fff`), or `None` for a `{variable}`.
 fn tag_name(inner: &str) -> Option<&str> {
     let name = inner.split('=').next().unwrap_or(inner).trim();
-    matches!(name, "nw" | "p" | "w" | "size" | "/size" | "color" | "/color" | "u" | "/u" | "ruby" | "/ruby").then_some(name)
+    matches!(name, "nw" | "p" | "w" | "size" | "/size" | "color" | "/color" | "u" | "/u" | "ruby" | "/ruby" | "s" | "/s" | "speed" | "/speed" | "whisper" | "/whisper" | "shake" | "/shake" | "wave" | "/wave" | "glitch" | "/glitch").then_some(name)
 }
 
 /// What is wrong with `target` as a translation of `source`: a `{variable}` dropped, added or
-/// misspelt, a text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{ruby=..}`) missing or extra, or
+/// misspelt, a text tag (`{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{s}`, `{speed=..}`, `{whisper}`, `{shake}`..., `{ruby=..}`) missing or extra, or
 /// markup that does not parse. Tag arguments (a colour, a pause length, a ruby reading) may differ.
 pub fn check_translation(source: &str, target: &str) -> Result<(), String> {
     if target.is_empty() {
@@ -607,6 +607,13 @@ mod tests {
         assert!(ok("{u}x{/u}", "y").unwrap_err().contains("missing {"));
         assert!(ok("x", "{ruby=a}y{/ruby}").unwrap_err().contains("more often"));
         assert!(ok("{ruby=a}x{/ruby}", "{ruby=a}y").unwrap_err().contains("{/ruby}"));
+        // the strike, speed, whisper and animation tags too; a speed may change
+        assert!(ok("{s}x{/s} {speed=0.5}y{/speed} {shake}z{/shake}", "{shake}c{/shake} {s}a{/s} {speed=2}b{/speed}").is_ok());
+        for tag in ["s", "whisper", "wave", "glitch", "shake"] {
+            let source = format!("{{{tag}}}x{{/{tag}}}");
+            assert!(check_translation(&source, "y").unwrap_err().contains("missing {"), "{tag}");
+        }
+        assert!(ok("{wave}x{/wave}", "{wave}y").unwrap_err().contains("{/wave}"));
     }
 
     #[test]

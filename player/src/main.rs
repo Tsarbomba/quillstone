@@ -29,7 +29,7 @@ use std::process::exit;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use quillstone_render::{build_frame, letterbox, to_virtual, Size};
+use quillstone_render::{build_frame_with, letterbox, to_virtual, Draw, Frame, Size};
 use quillstone_script::{AssetKind, Program};
 use quillstone_ui::settings::{window_placement, Area, FRAME_ROOM};
 use quillstone_ui::{Assets, Button, Event, Game, Key, Request, Settings, Storage, Timestamp, MAX_SAVE_BYTES};
@@ -78,6 +78,8 @@ struct App {
     window: Option<Arc<Window>>,
     gfx: Option<Gfx>,
     last_frame: Instant,
+    /// When the game started, for the clock of animated text.
+    started: Instant,
     /// The window is minimised or hidden (see `set_minimized`).
     minimized: bool,
     /// The last frame's draw list, and whether it settled: the same as the one
@@ -102,6 +104,14 @@ struct App {
 
 /// The longest a frame is held back for images still loading.
 const HOLD_MAX: Duration = Duration::from_secs(1);
+
+/// What to draw for `draws`; `animate` false (the "Animated text" setting) keeps moving text still.
+fn frame_of(gfx: &mut Gfx, draws: &[Draw], animate: bool, time: f32) -> Frame {
+    let (w, h) = gfx.size();
+    let mut frame = build_frame_with(draws, Size::new(w as f32, h as f32), animate);
+    gfx.add_letters(&mut frame, time);
+    frame
+}
 
 /// How often a settled screen is drawn anyway, and how often gamepads are polled meanwhile.
 const SETTLED_REDRAW: Duration = Duration::from_millis(250);
@@ -218,6 +228,7 @@ fn main() {
         window: None,
         gfx: None,
         last_frame: Instant::now(),
+        started: Instant::now(),
         minimized: false,
         last_draws: Vec::new(),
         settled: false,
@@ -546,8 +557,8 @@ impl App {
         let voice = self.audio.as_ref().is_some_and(|a| a.voice_playing());
         self.game.tick(dt, voice);
 
+        let (animate, time) = (self.game.settings().animated_text, self.started.elapsed().as_secs_f32());
         let Some(gfx) = self.gfx.as_mut() else { return };
-        let (w, h) = gfx.size();
         // Every image the screen asks the size of is one it wants drawn: load what isn't yet.
         let sizes = &self.image_sizes;
         let asked = std::cell::RefCell::new(Vec::new());
@@ -576,14 +587,17 @@ impl App {
             for src in self.last_asked.iter().map(String::as_str).filter(is_image) {
                 self.images.want(src, true); // still on screen: keep them loaded
             }
-            gfx.render(&build_frame(&self.last_draws, Size::new(w as f32, h as f32)));
+            let frame = frame_of(gfx, &self.last_draws, animate, time);
+            gfx.render(&frame);
             self.images.update(gfx, &mut self.image_sizes);
             self.settled = false;
             return;
         }
-        gfx.render(&build_frame(&draws, Size::new(w as f32, h as f32)));
+        let frame = frame_of(gfx, &draws, animate, time);
+        gfx.render(&frame);
         self.images.update(gfx, &mut self.image_sizes);
-        self.settled = draws == self.last_draws && !self.game.needs_ticks() && !self.images.busy();
+        // moving letters are different at every frame
+        self.settled = draws == self.last_draws && !self.game.needs_ticks() && !self.images.busy() && !frame.animated();
         self.last_draws = draws;
         self.last_asked = asked;
     }

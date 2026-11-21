@@ -880,7 +880,7 @@ fn braces(text: &str) -> Vec<&str> {
         } else if rest.starts_with('{') {
             let Some(end) = crate::brace_end(rest) else { break };
             let name = rest[1..end].trim();
-            if is_ident(name) && !matches!(name, "nw" | "p" | "u") {
+            if is_ident(name) && !quillstone_script::markup::is_flag_tag(name) {
                 out.push(name);
             } else if name.contains('{') {
                 out.extend(quillstone_script::name_vars(name)); // `{love.{who}}` reads `who`

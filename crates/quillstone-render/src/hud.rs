@@ -284,7 +284,7 @@ pub(crate) fn draw_text(
 ) -> Rect {
     let r = rich(shown);
     // `{size=..}` runs make characters (and so lines) bigger than the base size.
-    let run_size = |run: &quillstone_script::markup::TextRun| run.style.size.map_or(size, |s| s.resolve(size));
+    let run_size = |run: &quillstone_script::markup::TextRun| run.style.size_in(size);
     let tallest = r.runs.iter().map(run_size).fold(size, f32::max);
     let scales: Vec<(usize, usize, f32)> = r.runs.iter().map(|run| (run.start, run.end, run_size(run) / size.max(1.0))).collect();
     let newlines = r.text.split('\n').count().max(1);

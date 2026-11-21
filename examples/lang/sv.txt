@@ -172,6 +172,10 @@
 = Snabbmeny
 
 #: settings screen
+> Animated text
+= Animerad text
+
+#: settings screen
 > Language
 = Språk
 

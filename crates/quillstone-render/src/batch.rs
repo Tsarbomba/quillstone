@@ -20,6 +20,8 @@ pub enum Tex {
     Image(String),
     /// The rasterized text of `Frame::texts[i]`.
     Text(usize),
+    /// Picture `.1` of the moving letters of `Frame::texts[.0]` (see [`crate::letters`]).
+    Letter(usize, usize),
 }
 
 /// One textured rectangle, ready to upload.
@@ -82,11 +84,13 @@ impl TextJob {
     }
 
     /// The size in window pixels of one of this job's runs: the text size, or the
-    /// run's `{size=...}` applied to it (within 8 to 200 virtual pixels).
+    /// run's `{size=...}` applied to it (within 8 to 200 virtual pixels), smaller in a `{whisper}`.
     pub fn run_size_px(&self, run: &TextRun) -> f32 {
-        match run.style.size {
-            Some(size) if self.scale > 0.0 => size.resolve(self.size_px / self.scale) * self.scale,
-            _ => self.size_px,
+        let style = &run.style;
+        if (style.size.is_some() || style.whisper) && self.scale > 0.0 {
+            style.size_in(self.size_px / self.scale) * self.scale
+        } else {
+            self.size_px
         }
     }
 
@@ -111,6 +115,18 @@ pub struct Frame {
     pub texts: Vec<TextJob>,
 }
 
+/// `runs` without their animation.
+fn still(runs: &[TextRun]) -> Vec<TextRun> {
+    let mut runs = runs.to_vec();
+    if runs.iter().any(|r| r.style.anim.is_some()) {
+        runs.iter_mut().for_each(|r| r.style.anim = None);
+        if runs.iter().all(|r| r.style == Default::default() && r.ruby.is_none()) {
+            runs.clear();
+        }
+    }
+    runs
+}
+
 /// The mask of a quad at `r` (virtual pixels) during a mask transition.
 fn quad_mask(mask: Option<&(String, f32)>, r: Rect) -> Option<QuadMask> {
     mask.map(|(src, reveal)| QuadMask {
@@ -123,6 +139,12 @@ fn quad_mask(mask: Option<&(String, f32)>, r: Rect) -> Option<QuadMask> {
 /// Convert draws (virtual 1920x1080 space) into quads and text jobs for a window
 /// of `window` pixels. Order is preserved (back to front).
 pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
+    build_frame_with(draws, window, true)
+}
+
+/// [`build_frame`], where `animate` false keeps `{shake}`, `{wave}` and `{glitch}` text still (the player's
+/// "Animated text" setting): it is then drawn as plain text, in one piece.
+pub fn build_frame_with(draws: &[Draw], window: Size, animate: bool) -> Frame {
     let lb = letterbox(window);
     let scale = lb.w / VIRTUAL.w;
     let mut frame = Frame { quads: Vec::with_capacity(draws.len()), texts: Vec::new() };
@@ -188,7 +210,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
                 });
                 frame.texts.push(TextJob {
                     text: text.clone(),
-                    runs: runs.clone(),
+                    runs: if animate { runs.clone() } else { still(runs) },
                     visible_chars: visible,
                     rect,
                     size_px: size * scale,
@@ -247,6 +269,31 @@ mod tests {
         assert_eq!(build_frame(std::slice::from_ref(&blurred), Size::new(960.0, 540.0)).quads[0].blur, 5.0);
         let f = build_frame(&[image("a.png", UNIT, 1.0), Draw::Rect { rect: screen(), color: [0.0; 4] }], Size::new(960.0, 540.0));
         assert!(f.quads.iter().all(|q| q.blur == 0.0), "sharp unless asked");
+    }
+
+    #[test]
+    fn animation_off_draws_the_animated_text_as_plain_text_and_whisper_is_smaller() {
+        let draw = |tagged: &str| {
+            let r = quillstone_script::markup::rich(tagged);
+            Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect: screen(), size: 40.0, color: [1.0; 4], align: Align::Left, outline: None }
+        };
+        let size = Size::new(1920.0, 1080.0);
+        let on = build_frame_with(&[draw("a{shake}b{/shake}")], size, true);
+        let off = build_frame_with(&[draw("a{shake}b{/shake}")], size, false);
+        assert!(on.texts[0].animated() && on.animated() && !off.texts[0].animated() && !off.animated());
+        assert!(off.texts[0].runs.is_empty(), "nothing left to style");
+        assert_eq!(off.texts[0].layout_key(), build_frame(&[draw("ab")], size).texts[0].layout_key(), "the same as plain text");
+        // other styles stay
+        let mixed = build_frame_with(&[draw("a{wave}{u}b{/u}{/wave}")], size, false);
+        assert!(mixed.texts[0].runs.iter().any(|r| r.style.underline) && !mixed.texts[0].animated());
+        assert_ne!(on.texts[0].layout_key(), build_frame(&[draw("a{wave}b{/wave}")], size).texts[0].layout_key(), "the effect is part of the key");
+        // a whisper is 75% of its surroundings, at any window size
+        for w in [1920.0, 960.0] {
+            let job = build_frame(&[draw("a {whisper}b{/whisper} {size=+10}{whisper}c{/whisper}{/size}")], Size::new(w, w * 9.0 / 16.0)).texts.remove(0);
+            let k = w / 1920.0;
+            let sizes: Vec<f32> = job.runs.iter().map(|r| job.run_size_px(r)).collect();
+            assert!((sizes[0] - 40.0 * k).abs() < 1e-3 && (sizes[1] - 30.0 * k).abs() < 1e-3 && (sizes[3] - 37.5 * k).abs() < 1e-3, "{sizes:?}");
+        }
     }
 
     #[test]

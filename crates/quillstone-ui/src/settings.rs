@@ -68,6 +68,8 @@ pub struct Settings {
     pub fullscreen: bool,
     /// Whether skip mode also skips lines the player hasn't read yet.
     pub skip_unread: bool,
+    /// Whether `{shake}`, `{wave}` and `{glitch}` text moves; off draws it still.
+    pub animated_text: bool,
     /// When the quick menu under the textbox shows.
     pub quick_menu: QuickMenuSetting,
     /// The language chosen in Settings (a code from the script's `languages:`); `None` is the
@@ -92,6 +94,7 @@ impl Default for Settings {
             voice_volume: 1.0,
             fullscreen: false,
             skip_unread: false,
+            animated_text: true,
             quick_menu: QuickMenuSetting::Default,
             language: None,
             window_size: None,
@@ -137,6 +140,7 @@ impl Settings {
                 "voice_volume" => s.voice_volume = num().map_or(s.voice_volume, |v| v.clamp(0.0, 1.0)),
                 "fullscreen" => s.fullscreen = value.parse().unwrap_or(s.fullscreen),
                 "skip_unread" => s.skip_unread = value.parse().unwrap_or(s.skip_unread),
+                "animated_text" => s.animated_text = value.parse().unwrap_or(s.animated_text),
                 "quick_menu" => s.quick_menu = QuickMenuSetting::from_name(value).unwrap_or_default(),
                 "language" => {
                     let ok = !value.is_empty() && value.len() <= 16 && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
@@ -173,6 +177,7 @@ impl Settings {
              voice_volume = {}\n\
              fullscreen = {}\n\
              skip_unread = {}\n\
+             animated_text = {}\n\
              quick_menu = {}\n{}{}{}{}",
             self.text_speed,
             self.text_scale,
@@ -182,6 +187,7 @@ impl Settings {
             self.voice_volume,
             self.fullscreen,
             self.skip_unread,
+            self.animated_text,
             self.quick_menu.name(),
             language,
             size,
@@ -300,6 +306,7 @@ mod tests {
             voice_volume: 0.75,
             fullscreen: true,
             skip_unread: true,
+            animated_text: false,
             quick_menu: QuickMenuSetting::Hover,
             language: Some("sv".into()),
             window_size: Some((1280, 720)),
@@ -329,6 +336,7 @@ mod tests {
             assert_eq!(Settings::parse(bad).quick_menu, QuickMenuSetting::Default, "{bad:?}");
         }
         // a file from before the setting existed
+        assert!(Settings::parse("animated_text = nope\n").animated_text && !Settings::parse("animated_text = false\n").animated_text);
         let old = "text_speed = 40\nauto_delay = 2\nmusic_volume = 0.5\nsfx_volume = 1\nvoice_volume = 1\nfullscreen = true\nskip_unread = false\n";
         let s = Settings::parse(old);
         assert_eq!((s.quick_menu, s.text_speed, s.fullscreen), (QuickMenuSetting::Default, 40.0, true));

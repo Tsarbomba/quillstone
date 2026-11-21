@@ -51,7 +51,7 @@ fn a_translated_speaker_name_still_finds_the_portrait() {
     g.set_translations([("sv".to_string(), Catalog::parse("> Mika\n= Mikaela\n\n> Hi.\n= Hej.\n").unwrap())].into());
     g.start_story();
     g.open_settings();
-    for _ in 0..9 {
+    for _ in 0..10 {
         key(&mut g, Key::Down);
     }
     key(&mut g, Key::Right);

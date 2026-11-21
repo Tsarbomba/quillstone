@@ -223,13 +223,19 @@ Inside lines and choice texts:
 | Write | Shows |
 | --- | --- |
 | `**bold**`, `*italic*`, `***both***` | bold, italic, bold italic |
-| `{color=#ff8080}words{/color}` | words in that colour (`#rrggbb` or `#rgb`; they nest) |
+| `{color=#ff8080}words{/color}` | words in that colour (`#rrggbb` or `#rgb`; they nest). With a fourth part, `#rrggbbaa` or `#rgba`, the words are partly see-through: `{color=#ffffff80}` is white at half strength |
 | `{size=+10}big{/size}` | text 10 pixels bigger than the text around it (`{size=-8}` smaller); they nest, so `{size=+10}a{size=+4}b{/size}{/size}` makes `b` 14 bigger |
 | `{size=24}small{/size}` | text exactly 24 pixels tall (on the 1920x1080 screen; 8 to 200, as is the result of a relative size) |
 | `First.{p}Second.` | a line break inside the line (a paragraph break); it doesn't wait. A `{p}` at the very start or end of a line is ignored. Not allowed in a choice text |
 | `Well...{w=0.5} no.` | the typing pauses for half a second there (a click skips it; over 10 seconds `check` warns of a typo, and 3600 is the most) |
 | `Hold on.{nw}` | "no wait": once the line has finished typing the story goes on by itself, without a click or the auto-forward delay. It must be the very last thing in a dialogue line (not a choice text) |
 | `{u}underlined{/u}` | underlined text, in the text's colour (they nest, and mix with the other tags) |
+| `{s}struck out{/s}` | struck-through text: a line through the middle of the words, in the text's colour (it nests and mixes like `{u}`) |
+| `{speed=0.5}slowly{/speed}` | the typing speed for part of a line, as a factor of the player's text speed: `0.5` is half as fast, `3` three times. From 0.1 to 10, anything else is an error. They nest by multiplying (`{speed=2}` inside `{speed=2}` is four times, kept within 0.1 to 10). Skip and instant text ignore it |
+| `{whisper}quietly{/whisper}` | a whisper: about 75% of the size of the text around it and 55% of its opacity. It nests with colour and size tags (a colour's alpha multiplies with the 55%) |
+| `{shake}words{/shake}` | each letter jitters at random around its place, a few pixels (scaled to the text size) |
+| `{wave}words{/wave}` | the letters bob up and down in a wave that travels along the words |
+| `{glitch}words{/glitch}` | letters now and then turn into a random symbol for a moment and jump a little sideways |
 | `{ruby=かんじ}漢字{/ruby}` | a small **reading** above the words (furigana, a gloss: see below) |
 | `\*`, `\{`, `\\` | a literal `*`, `{` or `\` (any other `\` is shown as written, so `C:\temp` is fine) |
 
@@ -253,20 +259,40 @@ For bold and italic in a theme font, give the theme its bold and italic files to
 - The history shows the words alone (`漢字`). The text-mode `quillstone run` writes the reading
   in brackets after them: `漢字(かんじ)`.
 
+**Animated text.** `{shake}`, `{wave}` and `{glitch}` take no parameters. Letters appear with
+the typing as usual and start moving once they are shown:
+
+```
+**Mika:** The old radio says {glitch}signal lost{/glitch}, and I am {shake}shaking{/shake}.
+```
+
+- They work wherever text tags do (dialogue, choices, `::center`, HUD texts, messages), and a
+  line only pays for the moving if it has one of them.
+- The movement is only for the eyes: it uses no story randomness, so saves, rollback and
+  `quillstone test` are not affected.
+- An underline or strike-through on moving words stays still.
+- Moving tags nest, the innermost one wins, and each must be closed by its own closing tag
+  (`{shake}a{wave}b{/shake}c{/wave}` is an error).
+- Players can turn the moving off with **Animated text** in Settings (on by default; saved as
+  `animated_text = false`). Then the words are drawn still: shake and wave as plain text, glitch
+  with its real letters. It is for players who find moving text hard to read or uncomfortable.
+
 **Braces and tag names.**
 
 - A `{` with no `}` after it is just a brace, and an unknown `{name}` is left as written.
-- `{p}`, `{nw}` and `{u}` are tags, so a variable with one of those names can't be shown with
-  `{p}`, `{nw}` or `{u}`.
+- `{p}`, `{nw}`, `{u}`, `{s}`, `{whisper}`, `{shake}`, `{wave}` and `{glitch}` are tags, so a variable
+  with one of those names can't be shown with `{name}`.
 - A variable's value always shows as it is, even if it contains `*` or braces.
 
-**Mistakes** are errors with the line number: an unclosed `**`, `{size=..}`, `{u}` or
-`{ruby=..}`, an empty reading, a size outside 8 to 200, `{nw}` in the middle of a line, `{p}`
-in a choice, an unknown tag like `{huge=40}`.
+**Mistakes** are errors with the line number: an unclosed `**`, `{size=..}`, `{u}`, `{s}`,
+`{speed=..}`, `{whisper}`, `{shake}`, `{wave}`, `{glitch}` or `{ruby=..}`, an empty reading, a size
+outside 8 to 200, a speed outside 0.1 to 10, a moving tag closed by the wrong closing tag, `{nw}`
+in the middle of a line, `{p}` in a choice, an unknown tag like `{huge=40}`.
 
 **Where the styling shows.** The history and save previews show the words without styling or
 tags. The history keeps a `{p}` break; a save preview shows it as a space. A line with
-`{size=..}` is as tall as its biggest text, so a bigger word makes its line taller.
+`{size=..}` is as tall as its biggest text, so a bigger word makes its line taller; a `{whisper}` is
+smaller, and `check` judges whether a line fits with that size.
 
 **More on `{nw}`.** Use it for a line that leads straight into a choice or a scene change.
 
@@ -3103,8 +3129,8 @@ and short messages like "Loaded") are translated through the same file:
 **Rules for a translation**
 
 - Keep every `{name}` and every text tag in the translation, as often as in the original:
-  `{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{ruby=..}` and their closing
-  tags. `{name}` values are put in after the translation is chosen, and `{nw}` must still end
+  `{nw}`, `{p}`, `{w=..}`, `{size=..}`, `{color=..}`, `{u}`, `{s}`, `{speed=..}`, `{whisper}`,
+  `{shake}`, `{wave}`, `{glitch}`, `{ruby=..}` and their closing tags. `{name}` values are put in after the translation is chosen, and `{nw}` must still end
   the line.
 - A tag's own value (a colour, a pause, a ruby reading) may differ, so a translation can give
   its own reading.
@@ -3351,7 +3377,8 @@ options_panel_border = 40
   1920x1080 screen) and stretches the edges and the middle, so rounded corners come from the picture.
   The border is cut back if it is more than half of the picture or of the panel.
 - `check` reports a missing or unreadable picture; `package` includes the pictures.
-- Besides text speed, volumes and the rest, the screen has a **Text size** slider: 100% to 150%
+- Besides text speed, volumes and the rest, the screen has an **Animated text** on/off button (on by
+  default, saved as `animated_text`; see [Text tags](#text-tags)) and a **Text size** slider: 100% to 150%
   in steps of 10%, 100% by default. It is saved in `settings.txt` as `text_scale = 1.2`.
   It scales the story's text that the theme sizes with `text_size`: dialogue, choices and the
   like, not the menus, Settings or History. If a line is too long for the textbox at the bigger

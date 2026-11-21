@@ -2,8 +2,8 @@
 title: Staging
 ---
 
-<!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{u}`, `{ruby}`, `{p}` and `{nw}`
-     text tags, `blur=` on the background and on a sprite, `tint=` on a sprite, a light overlay (`blend=add`), `::flash`, a looping `::sfx` that is started and later stopped, a shake along
+<!-- Vertical placement (`y=`), drawing order (`z=`), the `{size}`, `{u}`, `{s}`, `{ruby}`, `{whisper}`, `{speed}`, `{shake}`, `{wave}`, `{glitch}`, `{p}` and `{nw}`
+     text tags and `#rrggbbaa` colours, `blur=` on the background and on a sprite, `tint=` on a sprite, a light overlay (`blend=add`), `::flash`, a looping `::sfx` that is started and later stopped, a shake along
      one axis, a flipped and a stretched sprite, a move sequence with `alpha` and `xoffset`, a dip to black (`::fade` and `through=`), a `::tint` wash, a `::vignette`, a `::filter` and a timed choice.
      See SCRIPT.md. Ren is Mika's picture with red and blue swapped, so overlaps are easy to tell apart. -->
 
@@ -123,6 +123,12 @@ The screen is black, and this narration is still readable: the dialogue box is n
 **Mika:** Words can be {u}underlined{/u}, and a word can carry a small reading above it, like {ruby=かんじ}漢字{/ruby}.
 
 **Mika:** Text can change size too: {size=+14}bigger{/size}, {size=24}smaller{/size}, and {size=+14}big {color=#ff8080}and red{/color}{/size} together.
+
+**Mika:** A word can be {s}struck out{/s} too, or only {color=#ffd98cb0}half there{/color} when its colour ends in two more digits for how see-through it is.
+
+**Mika:** {whisper}A whisper is smaller and fainter than the words around it,{/whisper} so I can say a secret, {speed=0.4}and say it very, very slowly{/speed}, or {speed=3}rattle it off like this, much faster than you can follow{/speed}.
+
+**Mika:** Some words move: I am {shake}shaking with nerves{/shake}, the sea goes {wave}up and down like this{/wave}, and the old radio says {glitch}signal lost, signal lost{/glitch}. You can switch the moving off with "Animated text" in Settings.
 
 **Mika:** This line moves on by itself once it is typed, with no click...{nw}
 

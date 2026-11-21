@@ -1126,10 +1126,10 @@ impl Parser {
             if !is_plain_ident(part) {
                 return Err(format!("bad parameter `{part}` in the heading (names are letters, digits and `_`, separated by commas)"));
             }
-            if is_keyword(part) || matches!(part, "to" | "p" | "nw" | "u") {
+            if is_keyword(part) || part == "to" || crate::markup::is_flag_tag(part) {
                 let why = match part {
                     "to" => "`::call` uses `to=` for the label",
-                    "p" | "nw" | "u" => "`{p}`, `{nw}` and `{u}` are text tags",
+                    _ if crate::markup::is_flag_tag(part) => "`{p}`, `{nw}`, `{u}`, `{s}`, `{whisper}`, `{shake}`, `{wave}` and `{glitch}` are text tags",
                     _ => "it is a keyword",
                 };
                 return Err(format!("`{part}` can't be a parameter name: {why}"));
@@ -5320,6 +5320,13 @@ mod tests {
         let e = errs("Fine.\n\nA {ruby=x}word\n");
         assert_eq!((e[0].line, e[0].message.contains("never closed")), (3, true));
         assert!(has_err("A {u}word\n", "`{u}` is never closed"));
+        for (tag, line) in [("s", "{s}"), ("whisper", "{whisper}"), ("shake", "{shake}"), ("wave", "{wave}"), ("glitch", "{glitch}"), ("speed", "{speed=2}")] {
+            let src = format!("Fine.\n\nA {line}word\n");
+            let e = errs(&src);
+            assert!(e[0].line == 3 && e[0].message.contains(tag) && e[0].message.contains("never closed"), "{tag}: {e:?}");
+        }
+        assert!(has_err("A {shake}x{wave}y{/shake}z{/wave}\n", "innermost"));
+        assert!(has_err("# f(wave)\n", "text tags"));
         assert!(has_err("::choice\n- [{ruby=}x{/ruby}](#a)\n::\n# a\nX.\n", "needs the reading"));
         assert!(has_err("# f(u)\n", "text tags"));
         // the brackets of a ruby are braces, so a link next to one keeps working

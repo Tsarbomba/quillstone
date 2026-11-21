@@ -145,7 +145,7 @@ The details:
   right-click on any of those screens closes it again. From the main menu the tabs are Load,
   Settings and Quit.
 - **Settings** holds text speed, text size (100% to 150%), auto-forward delay, skip unread, music / sound / voice volume,
-  fullscreen, the quick menu, and the language in a game that has several. The quick menu's
+  fullscreen, the quick menu, animated text on or off, and the language in a game that has several. The quick menu's
   Settings button opens the same screen.
 - **Save and load.** There are 9 pages of 6 slots; the load screen also has the Auto and Quick
   pages. Left/Right turn the page.

@@ -40,6 +40,7 @@ pub const STRINGS: &[(&str, &str)] = &[
     ("settings screen", "Voice volume"),
     ("settings screen", "Fullscreen"),
     ("settings screen", "Quick menu"),
+    ("settings screen", "Animated text"),
     ("settings screen", "Language"),
     ("settings screen", "Instant"),
     ("settings screen", "{n} chars/s"),

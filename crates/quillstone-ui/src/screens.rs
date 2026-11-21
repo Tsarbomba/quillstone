@@ -475,11 +475,13 @@ pub enum Row {
     Voice,
     Fullscreen,
     QuickMenu,
+    /// Whether `{shake}`, `{wave}` and `{glitch}` text moves.
+    AnimatedText,
     /// Only for a game with several languages (`languages:` in the front matter).
     Language,
 }
 
-pub const ROWS: [Row; 9] = [
+pub const ROWS: [Row; 10] = [
     Row::TextSpeed,
     Row::TextSize,
     Row::AutoDelay,
@@ -489,9 +491,10 @@ pub const ROWS: [Row; 9] = [
     Row::Voice,
     Row::Fullscreen,
     Row::QuickMenu,
+    Row::AnimatedText,
 ];
 
-const ROWS_WITH_LANGUAGE: [Row; 10] = [
+const ROWS_WITH_LANGUAGE: [Row; 11] = [
     Row::TextSpeed,
     Row::TextSize,
     Row::AutoDelay,
@@ -501,6 +504,7 @@ const ROWS_WITH_LANGUAGE: [Row; 10] = [
     Row::Voice,
     Row::Fullscreen,
     Row::QuickMenu,
+    Row::AnimatedText,
     Row::Language,
 ];
 
@@ -516,7 +520,7 @@ pub fn rows(language: bool) -> &'static [Row] {
 impl Row {
     /// Rows that are a button (on/off, or a list the button cycles through) rather than sliders.
     pub fn is_toggle(self) -> bool {
-        matches!(self, Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language)
+        matches!(self, Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::AnimatedText | Row::Language)
     }
 }
 
@@ -638,7 +642,7 @@ pub fn row_slider(s: &Settings, row: Row) -> Option<f32> {
         Row::Music => Some(s.music_volume),
         Row::Sfx => Some(s.sfx_volume),
         Row::Voice => Some(s.voice_volume),
-        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => None,
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::AnimatedText | Row::Language => None,
     }
 }
 
@@ -651,7 +655,7 @@ pub fn set_row_slider(s: &mut Settings, row: Row, pos: f32) {
         Row::Music => s.music_volume = volume_from_slider(pos),
         Row::Sfx => s.sfx_volume = volume_from_slider(pos),
         Row::Voice => s.voice_volume = volume_from_slider(pos),
-        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::Language => {}
+        Row::SkipUnread | Row::Fullscreen | Row::QuickMenu | Row::AnimatedText | Row::Language => {}
     }
 }
 
@@ -666,6 +670,7 @@ fn row_label<'a>(tr: Tr<'a>, row: Row) -> &'a str {
         Row::Voice => "Voice volume",
         Row::Fullscreen => "Fullscreen",
         Row::QuickMenu => "Quick menu",
+        Row::AnimatedText => "Animated text",
         Row::Language => "Language",
     })
 }
@@ -682,6 +687,7 @@ pub fn row_value(tr: Tr, s: &Settings, row: Row, language: &str) -> String {
         Row::Voice => format!("{}%", (s.voice_volume * 100.0).round()),
         Row::SkipUnread => tr.t(if s.skip_unread { "On" } else { "Off" }).into(),
         Row::Fullscreen => tr.t(if s.fullscreen { "On" } else { "Off" }).into(),
+        Row::AnimatedText => tr.t(if s.animated_text { "On" } else { "Off" }).into(),
         Row::Language => language.to_string(),
         Row::QuickMenu => tr
             .t(match s.quick_menu {
@@ -1866,7 +1872,7 @@ mod tests {
         assert_eq!(row_rect(0, 8, &t), Rect::new(400.0, 190.0, 1120.0, 60.0));
         assert_eq!(track_rect(0, 8, &t), Rect::new(880.0, 214.0, 440.0, 12.0));
         assert_eq!(value_rect(0, 8, &t), Rect::new(1340.0, 196.0, 160.0, 48.0));
-        assert_eq!(control_rect(6, &ROWS[1..], &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
+        assert_eq!(control_rect(6, &ROWS[1..9], &t), Rect::new(880.0, 190.0 + 6.0 * 72.0 + 4.0, 160.0, 52.0));
         assert_eq!(button_rect(SettingsButton::Back, true, 8, &t), Rect::new(560.0, 826.0, 240.0, 80.0));
         assert_eq!(row_rect(0, 9, &t).y, 170.0, "nine rows are tighter");
     }
