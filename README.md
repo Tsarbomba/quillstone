@@ -357,6 +357,7 @@ The `examples/` folder has a script for each area:
 | `shop.quill.md` | a list variable used as an inventory in a shop |
 | `market.quill.md` + `market_theme.txt` | items, the inventory and shop screens, a quest journal, a HUD button, and a theme that restyles them |
 | `hud.quill.md` | on-screen text, bars and pictures |
+| `panel.quill.md` | a status panel of your own: a HUD button, a backdrop box, tabs and a close |
 | `stats.quill.md` | grouped stats, arithmetic, `min`/`max`/`abs`/`count` and dice rolls |
 | `greeting.quill.md` | a typed-in name |
 | `staging.quill.md` | sprite height and layering, text sizes, `{nw}` and a colour wash |

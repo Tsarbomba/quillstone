@@ -368,6 +368,7 @@ fn hud_body(h: &HudElem) -> String {
             HudKind::Text { .. } => "text",
             HudKind::Bar { .. } => "bar",
             HudKind::Image { .. } => "image",
+            HudKind::Box { .. } => "box",
         },
         q(&h.id),
         h.x,
@@ -383,6 +384,7 @@ fn hud_body(h: &HudElem) -> String {
             format!("{head} {} {} {} {} {} {} {bc} {bw}", q(&value.src), q(&max.src), size[0], size[1], rgba(*color), rgba(Some(*back)))
         }
         HudKind::Image { src, scale } => format!("{head} {} {scale}", q(src)),
+        HudKind::Box { size, color } => format!("{head} {} {} {}", size[0], size[1], rgba(Some(*color))),
     }
 }
 
@@ -394,6 +396,7 @@ fn hud_source_bytes(h: &HudElem) -> usize {
             HudKind::Text { text, .. } => text.len(),
             HudKind::Bar { value, max, .. } => value.src.len() + max.src.len(),
             HudKind::Image { src, .. } => src.len(),
+            HudKind::Box { .. } => 0,
         }
         + match &h.action {
             Some(HudAction::Call(l) | HudAction::Jump(l)) => l.len(),
@@ -466,13 +469,17 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             }
             HudKind::Image { src: normal_path(src), scale: sane(f(7)?, 0.05, 10.0, 1.0) }
         }
+        "box" => HudKind::Box {
+            size: [sane(f(6)?, 1.0, 1920.0, 100.0), sane(f(7)?, 1.0, 1080.0, 20.0)],
+            color: opt_rgba(8)?.ok_or(format!("line {n}: a `hud` box needs a colour"))?,
+        },
         other => return Err(format!("line {n}: unknown `hud` kind `{other}`")),
     };
     // Only text and images can be buttons; records from before buttons end here.
     let tail = match kind {
         HudKind::Text { .. } => 11,
         HudKind::Image { .. } => 8,
-        HudKind::Bar { .. } => usize::MAX,
+        HudKind::Bar { .. } | HudKind::Box { .. } => usize::MAX,
     };
     let (mut action, mut hover) = (None, None);
     if let Some(a) = t.get(tail).filter(|a| !a.is_empty()) {

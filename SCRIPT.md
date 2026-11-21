@@ -1490,10 +1490,13 @@ there, and exactly one of these is required:
 | `text="Day {day}, {hero.gold} gold"` | **Text** |
 | `bar=hero.hp max=hero.max_hp size=320,26` | **Bar** |
 | `image=assets/heart.png scale=0.5` | **Picture** |
+| `box=#000000aa size=800,500` | **Box** |
 
 **Text** takes the same tags and `{variable}` values as dialogue (`**bold**`, `*italic*`,
 `{color=..}`, `{size=..}`), but not `{nw}` or `{p}`. The values are read **every time the
-screen is drawn**, so the text follows the variables by itself.
+screen is drawn**, so the text follows the variables by itself. A text that comes out empty
+(or only spaces) draws nothing, not even its `back=` panel, and a button of it can't be
+pressed; the text you write must still have something in it.
 
 | Attribute | Values | Default |
 | --- | --- | --- |
@@ -1521,6 +1524,11 @@ less it is empty.
 | `border` | an outline colour, drawn outside the bar's size | none |
 | `border_size` | 1 to 3 pixels | 2 |
 
+**A box** is a plain rectangle of a colour (alpha allowed, like `#000000aa`), a backdrop for
+other elements. `size=width,height` is required, in pixels of the 1920x1080 screen like a
+bar's, and `x` and `y` place it as usual. It can't be a button, and it takes none of the
+attributes of text, bars or pictures.
+
 **A picture** is a `.png`, `.jpg`, `.jpeg` or `.webp` inside the game folder, like a hotspot
 image. It is drawn at its own pixel size times `scale` (0.05 to 10, default 1). `quillstone
 check` tests it as a picture and `package` includes it.
@@ -1543,7 +1551,7 @@ check` tests it as a picture and `package` includes it.
 - **`if`** is checked every time the screen is drawn. `random` isn't allowed, as in any
   condition.
 
-**Buttons.** A text or picture element (not a bar) becomes a button with one of these:
+**Buttons.** A text or picture element (not a bar or a box) becomes a button with one of these:
 
 | Attribute | |
 | --- | --- |
@@ -1610,8 +1618,9 @@ Mika: *rrring* Hello? ... Oh, it's you.
 ```
 
 **Removing elements.** `::hud{hide=clock fade=0.3}` removes one element, with an optional fade
-out; hiding an id that isn't there does nothing. `::hud{clear}` removes all of them (`fade=`
-works too). Neither waits.
+out; hiding an id that isn't there does nothing. `::hud{hide=st_*}` removes every element whose
+id starts with `st_` (`fade=` works too; the `*` goes only at the end, after a prefix, and
+nothing matching does nothing). `::hud{clear}` removes all of them. None of them waits.
 
 **Hiding all of them for a while.** `::hud{off}` hides every element but keeps them;
 `::hud{on}` shows them again exactly as they were (`fade=` works as above). Use it for a cutscene
@@ -1659,6 +1668,47 @@ fades are not saved. `quillstone test` ignores `::hud` itself but counts the var
 text, `bar`, `max` and `if` read, so a typo is reported as a variable that is never set.
 
 `examples/hud.quill.md` shows text, bars and pictures.
+
+### Custom panels
+
+A panel of your own, such as a status screen, needs nothing new: a HUD button calls a label, the
+label draws the panel with `::hud` and waits on a `::hotspots` row, and closing removes the
+elements and returns.
+
+```
+---
+vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", l1.mika: "Likes tea.", l1.ren: "" }
+---
+# start
+::hud{id=status_btn text="Status" x=0.98 y=0.03 back=#00000099 pad=10 call=#status}
+Press Status.
+::end
+
+# status
+::hud{id=st_back box=#000000cc size=900,700 x=center y=center}
+::hud{id=st_name text="{name.{who}}" size=56 x=center y=28%}
+::hud{id=st_1 text="{l1.{who}}" x=center y=40%}
+::textbox{hide}
+::hotspots
+- [Mika](#status){rect=30%,66%,10%,7% text="Mika", who="mika"}
+- [Ren](#status){rect=45%,66%,10%,7% text="Ren", who="ren"}
+- [Close](#close){rect=45%,74%,10%,7% text="Close"}
+::
+
+# close
+::hud{hide=st_*}
+::return
+```
+
+- A tab sets a variable and goes to the panel's own label, which draws it again: the elements
+  keep their ids, so they are replaced in place.
+- `{name.{who}}` reads the variable named by the current `who`. A line whose variable is empty
+  draws nothing, so a character with fewer lines simply shows fewer.
+- Naming every element of the panel `st_...` lets `::hud{hide=st_*}` close it in one line.
+- The story's line is still pending while the panel is up, so `::textbox{hide}` keeps it from covering the panel.
+- `::return` goes back to the story, which shows the line it was on again (the box comes back with it).
+
+`examples/panel.quill.md` is a working one.
 
 ## Sound and video
 
@@ -2170,7 +2220,6 @@ label returns, and the regions are worked out again every time, so a place can h
 ````markdown
 # map
 ::bg{src=assets/town.png}
-::textbox{hide}
 ::hotspots
 - [The cafe](#cafe){rect=14%,52%,8%,14% image=assets/pin.png, call}
 - [The park](#park){rect=70%,58%,8%,14% image=assets/pin.png, call, if park_open and time != "morning"}

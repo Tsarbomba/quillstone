@@ -1319,6 +1319,8 @@ pub enum HudKind {
     Bar { value: HudExpr, max: HudExpr, size: [f32; 2], color: Option<[f32; 4]>, back: [f32; 4], border: Option<([f32; 4], f32)> },
     /// A picture inside the game folder, drawn at its own size times `scale`.
     Image { src: String, scale: f32 },
+    /// A plain rectangle of `color` (alpha allowed), `size` pixels of the 1920x1080 screen.
+    Box { size: [f32; 2], color: [f32; 4] },
 }
 
 /// A built-in screen a HUD button can open (`open=`): the same ones the quick menu and keys reach.
@@ -1791,8 +1793,9 @@ pub enum Op {
     FadeIn { time: f32 },
     /// Create or replace a HUD element (`::hud`), fading in over `fade` seconds.
     Hud { elem: Box<HudElem>, fade: f32 },
-    /// Remove one HUD element (`::hud{hide=id}`); an unknown id does nothing.
-    HudHide { id: String, fade: f32 },
+    /// Remove one HUD element (`::hud{hide=id}`), or every one whose id starts with `id` when `prefix` is set
+    /// (`::hud{hide=st_*}`); nothing matching does nothing.
+    HudHide { id: String, prefix: bool, fade: f32 },
     /// Remove every HUD element (`::hud{clear}`).
     HudClear { fade: f32 },
     /// Hide every HUD element but keep them (`::hud{off}`), or show them again (`::hud{on}`).

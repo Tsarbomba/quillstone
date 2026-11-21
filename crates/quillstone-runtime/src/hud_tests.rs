@@ -44,7 +44,7 @@ fn elements_are_created_replaced_in_place_hidden_and_cleared() {
     assert_eq!(text, "Gold now {gold}", "and is replaced, not added");
     let cmds = game.input(Input::Advance);
     assert_eq!(hud_ids(game.state()), ["hp", "gold"]);
-    assert!(cmds.contains(&Cmd::HudHide { id: "icon".into(), fade: 0.0 }));
+    assert!(cmds.contains(&Cmd::HudHide { id: "icon".into(), prefix: false, fade: 0.0 }));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::HudHide { id, .. } if id == "nothing")), "an unknown id is a no-op");
     let cmds = game.input(Input::Advance);
     assert!(game.state().hud.is_empty());
@@ -267,4 +267,49 @@ fn the_hud_demo_is_clean_and_every_branch_plays() {
     let r = crate::explore(&parse(include_str!("../../../examples/hud.quill.md")).unwrap(), 100_000);
     assert!(r.warnings.is_empty() && r.errors.is_empty(), "{:?} {:?}", r.warnings, r.errors);
     assert!(!r.partial);
+}
+
+const PREFIX_SRC: &str = "\
+---
+vars: { who: \"a\" }
+---
+::hud{id=st_1 text=One}
+::hud{id=st_2 text=Two}
+::hud{id=other text=Three}
+::hud{id=box box=#000000aa size=80,50}
+Line.
+::hud{hide=st_*}
+Next.
+::hud{hide=zz_*}
+Last.
+";
+
+#[test]
+fn a_prefix_hide_removes_only_the_matching_elements() {
+    let p = parse(PREFIX_SRC).unwrap();
+    let (mut game, _) = Session::start(&p);
+    let cmds = game.input(Input::Advance);
+    assert_eq!(hud_ids(game.state()), ["other", "box"]);
+    assert!(cmds.contains(&Cmd::HudHide { id: "st_".into(), prefix: true, fade: 0.0 }));
+    let cmds = game.input(Input::Advance);
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::HudHide { .. })), "matching nothing does nothing");
+    assert_eq!(hud_ids(game.state()), ["other", "box"]);
+}
+
+#[test]
+fn a_box_survives_a_save() {
+    let p = parse(PREFIX_SRC).unwrap();
+    let (game, _) = Session::start(&p);
+    let (loaded, _) = Session::load(&p, &game.save()).unwrap();
+    assert_eq!(loaded.state().hud, game.state().hud);
+    assert!(matches!(loaded.state().hud[3].kind, HudKind::Box { size, color } if size == [80.0, 50.0] && color[3] > 0.6));
+}
+
+#[test]
+fn an_empty_text_button_cannot_be_pressed() {
+    let p = parse("---\nvars: { t: \"\" }\n---\n::hud{id=b text=\"{t}\" call=#x}\nHi.\n# x\nYo.\n::return\n").unwrap();
+    let (mut game, _) = Session::start(&p);
+    assert!(!can_press(&p, game.state(), "b"));
+    game.input(Input::Hud("b".into()));
+    assert!(game.state().stack.is_empty());
 }

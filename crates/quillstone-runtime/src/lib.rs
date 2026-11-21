@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, MoveStep, Op, Particles, Program, RegionText, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, HudKind, MoveStep, Op, Particles, Program, RegionText, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -176,7 +176,8 @@ pub enum Cmd {
     /// seconds. Part of the scene: see [`State::hud`].
     HudShow { elem: Box<HudElem>, fade: f32 },
     /// Remove one HUD element, fading out over `fade` seconds (0: at once).
-    HudHide { id: String, fade: f32 },
+    /// `prefix`: every element whose id starts with `id`.
+    HudHide { id: String, prefix: bool, fade: f32 },
     /// Remove every HUD element.
     HudClear { fade: f32 },
     /// Hide every HUD element without removing it, or show them again, fading over `fade` seconds.
@@ -971,11 +972,17 @@ fn hud_call(program: &Program, state: &State, id: &str) -> Option<(String, bool)
 
 /// Whether the HUD button `id` may be pressed now: it is shown (its `if=` holds), the story waits at a
 /// line (see [`waits_at_line`]), and a `call=` button also has room on the call stack.
+/// Whether a HUD text, with its values filled in (`shown`), has nothing to show once its tags are removed.
+pub fn text_blank(shown: &str) -> bool {
+    quillstone_script::markup::rich(shown).text.trim().is_empty()
+}
+
 pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
     let Some(elem) = state.hud.iter().find(|h| h.id == id) else { return false };
     !state.hud_off
         && waits_at_line(state)
         && elem.cond.as_ref().is_none_or(|c| c.expr.test(&state.vars))
+        && !matches!(&elem.kind, HudKind::Text { text, .. } if text_blank(&interpolate(text, &state.vars)))
         && match &elem.action {
             Some(HudAction::Call(_)) => state.stack.len() < MAX_CALL_DEPTH && hud_call(program, state, id).is_some(),
             Some(HudAction::Jump(_)) => hud_call(program, state, id).is_some(),
@@ -1567,10 +1574,11 @@ pub(crate) fn step_traced(
                 out.push(Cmd::HudShow { elem: elem.clone(), fade: *fade });
                 state.pc += 1;
             }
-            Op::HudHide { id, fade } => {
-                if state.hud.iter().any(|h| h.id == *id) {
-                    state.hud.retain(|h| h.id != *id);
-                    out.push(Cmd::HudHide { id: id.clone(), fade: *fade });
+            Op::HudHide { id, prefix, fade } => {
+                let hit = |h: &HudElem| if *prefix { h.id.starts_with(id.as_str()) } else { h.id == *id };
+                if state.hud.iter().any(hit) {
+                    state.hud.retain(|h| !hit(h));
+                    out.push(Cmd::HudHide { id: id.clone(), prefix: *prefix, fade: *fade });
                 }
                 state.pc += 1;
             }

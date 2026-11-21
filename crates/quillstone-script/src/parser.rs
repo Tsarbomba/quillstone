@@ -2558,8 +2558,10 @@ impl Parser {
                 "clear" => Ok((Op::HudClear { fade }, None)),
                 "off" | "on" => Ok((Op::HudHidden { hidden: mode == "off", fade }, None)),
                 _ => match a.value("hide") {
-                    Some(id) if is_plain_ident(&id) => Ok((Op::HudHide { id, fade }, None)),
-                    _ => Err("`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}`".into()),
+                    Some(id) if id == "*" => Err("`::hud{hide=*}` needs a prefix before the `*` (use `::hud{clear}` to remove everything)".into()),
+                    Some(id) if id.ends_with('*') && is_plain_ident(&id[..id.len() - 1]) => Ok((Op::HudHide { id: id[..id.len() - 1].into(), prefix: true, fade }, None)),
+                    Some(id) if is_plain_ident(&id) => Ok((Op::HudHide { id, prefix: false, fade }, None)),
+                    _ => Err("`::hud{hide=...}` needs the id of an element, like `::hud{hide=clock}` (or a prefix and `*` at the end, like `hide=st_*`)".into()),
                 },
             };
         }
@@ -2568,9 +2570,9 @@ impl Parser {
             Some(id) => return Err(format!("bad `id={id}` (an id is letters, digits and underscores, not starting with a digit)")),
             None => return Err("`::hud` needs `id=name` (the key that lets a later `::hud` replace or hide it)".into()),
         };
-        let kinds: Vec<&str> = ["text", "bar", "image"].into_iter().filter(|k| has(a, k)).collect();
+        let kinds: Vec<&str> = ["text", "bar", "image", "box"].into_iter().filter(|k| has(a, k)).collect();
         if kinds.len() != 1 {
-            let m = if kinds.is_empty() { "`::hud` needs one of `text=`, `bar=` or `image=`" } else { "`::hud` takes only one of `text=`, `bar=` and `image=`" };
+            let m = if kinds.is_empty() { "`::hud` needs one of `text=`, `bar=`, `image=` or `box=`" } else { "`::hud` takes only one of `text=`, `bar=`, `image=` and `box=`" };
             return Err(m.into());
         }
         let kind_name = kinds[0];
@@ -2578,6 +2580,7 @@ impl Parser {
         let allowed: &[&str] = match kind_name {
             "text" => &["text", "size", "color", "back", "pad"],
             "bar" => &["bar", "max", "size", "color", "back", "border", "border_size"],
+            "box" => &["box", "size"],
             _ => &["image", "scale"],
         };
         let common = ["id", "x", "y", "if", "call", "jump", "open", "hover"];
@@ -2628,16 +2631,7 @@ impl Parser {
                 };
                 let value = expr("bar", &bar_src)?;
                 let max = expr("max", &max_src)?;
-                let size = match a.value("size") {
-                    None => return Err("`::hud{bar=...}` needs `size=width,height` (in pixels of the 1920x1080 screen, like `size=320,26`)".into()),
-                    Some(v) => {
-                        let parts: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse::<f32>().ok().filter(|f| f.is_finite())).collect();
-                        match parts.as_slice() {
-                            [w, h] if (1.0..=1920.0).contains(w) && (1.0..=1080.0).contains(h) && v.split(',').count() == 2 => [*w, *h],
-                            _ => return Err(format!("bad `size={v}` for a bar (width,height in pixels: `size=320,26`, at most 1920,1080)")),
-                        }
-                    }
-                };
+                let size = Self::hud_size(a, "bar")?;
                 let color = colour(a, "color")?;
                 let back = colour(a, "back")?.unwrap_or([0.2, 0.2, 0.2, 1.0]);
                 let border_color = colour(a, "border")?;
@@ -2647,6 +2641,10 @@ impl Parser {
                 }
                 let border = border_color.map(|c| (c, width.unwrap_or(2.0)));
                 HudKind::Bar { value, max, size, color, back, border }
+            }
+            "box" => {
+                let color = parse_color_alpha(&a.value("box").unwrap_or_default()).map_err(|m| format!("`box`: {m}"))?;
+                HudKind::Box { size: Self::hud_size(a, "box")?, color }
             }
             _ => {
                 let src = a.value("image").unwrap_or_default();
@@ -2661,6 +2659,19 @@ impl Parser {
         Ok((Op::Hud { elem: Box::new(HudElem { id, x, y, cond, kind, action, hover }), fade }, None))
     }
 
+    /// `size=width,height` of a bar or a box, in pixels of the 1920x1080 screen.
+    fn hud_size(a: &mut Attrs, what: &str) -> Result<[f32; 2], String> {
+        let Some(v) = a.value("size") else {
+            let eg = if what == "bar" { "bar=..." } else { "box=..." };
+            return Err(format!("`::hud{{{eg}}}` needs `size=width,height` (in pixels of the 1920x1080 screen, like `size=320,26`)"));
+        };
+        let parts: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse::<f32>().ok().filter(|f| f.is_finite())).collect();
+        match parts.as_slice() {
+            [w, h] if (1.0..=1920.0).contains(w) && (1.0..=1080.0).contains(h) && v.split(',').count() == 2 => Ok([*w, *h]),
+            _ => Err(format!("bad `size={v}` for a {what} (width,height in pixels: `size=320,26`, at most 1920,1080)")),
+        }
+    }
+
     /// `call=#label`, `jump=#label` or `open=journal`: what a press on the element does (none when none is given).
     fn hud_action(&mut self, line: usize, a: &mut Attrs, kind_name: &str) -> Result<Option<HudAction>, String> {
         let (call, jump, open) = (a.value("call"), a.value("jump"), a.value("open"));
@@ -2669,7 +2680,9 @@ impl Parser {
             (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
                 return Err("`::hud` takes one of `call=`, `jump=` and `open=`, not several".into())
             }
-            _ if kind_name == "bar" => return Err("a bar can't be a button (`call=`, `jump=` and `open=` work on `text=` and `image=` elements)".into()),
+            _ if kind_name == "bar" || kind_name == "box" => {
+                return Err(format!("a {kind_name} can't be a button (`call=`, `jump=` and `open=` work on `text=` and `image=` elements)"))
+            }
             (Some(c), None, None) => match c.strip_prefix('#').filter(|l| !l.is_empty()) {
                 Some(l) => {
                     self.hud_calls.push((l.to_string(), line, "call"));
@@ -6137,8 +6150,8 @@ mod tests {
 
     #[test]
     fn hud_hide_and_clear() {
-        assert_eq!(ok("::hud{hide=clock fade=0.3}\n").ops[0], Op::HudHide { id: "clock".into(), fade: 0.3 });
-        assert_eq!(ok("::hud{hide=clock}\n").ops[0], Op::HudHide { id: "clock".into(), fade: 0.0 });
+        assert_eq!(ok("::hud{hide=clock fade=0.3}\n").ops[0], Op::HudHide { id: "clock".into(), prefix: false, fade: 0.3 });
+        assert_eq!(ok("::hud{hide=clock}\n").ops[0], Op::HudHide { id: "clock".into(), prefix: false, fade: 0.0 });
         assert_eq!(ok("::hud{clear}\n").ops[0], Op::HudClear { fade: 0.0 });
         assert_eq!(ok("::hud{clear fade=2}\n").ops[0], Op::HudClear { fade: 2.0 });
         assert_eq!(ok("::hud{off}\n").ops[0], Op::HudHidden { hidden: true, fade: 0.0 });
@@ -6151,8 +6164,34 @@ mod tests {
     }
 
     #[test]
+    fn hud_hide_takes_a_prefix_with_a_trailing_star() {
+        assert_eq!(ok("::hud{hide=st_*}\n").ops[0], Op::HudHide { id: "st_".into(), prefix: true, fade: 0.0 });
+        assert_eq!(ok("::hud{hide=st_* fade=0.5}\n").ops[0], Op::HudHide { id: "st_".into(), prefix: true, fade: 0.5 });
+        assert!(has_err("::hud{hide=*}\n", "use `::hud{clear}`"));
+        assert!(has_err("::hud{hide=a*b}\n", "needs the id"));
+        assert!(has_err("::hud{hide=*a}\n", "needs the id"));
+        assert!(has_err("::hud{hide=a**}\n", "needs the id"));
+    }
+
+    #[test]
+    fn a_hud_box_is_a_coloured_rectangle() {
+        let (e, _) = hud_of("::hud{id=dim box=#000000aa size=800,500 x=center y=center if=\"1 == 1\"}\n");
+        assert_eq!(e.kind, HudKind::Box { size: [800.0, 500.0], color: [0.0, 0.0, 0.0, 170.0 / 255.0] });
+        assert_eq!((e.x, e.y, e.action), (0.5, 0.5, None));
+        assert!(e.cond.is_some());
+        assert!(has_err("::hud{id=a box=#000}\n", "needs `size=width,height`"));
+        assert!(has_err("::hud{id=a box=#000 size=0,10}\n", "bad `size=0,10` for a box"));
+        assert!(has_err("::hud{id=a box=red size=10,10}\n", "bad colour"));
+        assert!(has_err("::hud{id=a box=#000 size=10,10 call=#x}\n# x\nHi.\n", "a box can't be a button"));
+        assert!(has_err("::hud{id=a box=#000 size=10,10 open=journal}\n", "a box can't be a button"));
+        assert!(has_err("::hud{id=a box=#000 size=10,10 text=x}\n", "only one of"));
+        assert!(has_err("::hud{id=a box=#000 size=10,10 image=a.png}\n", "only one of"));
+        assert!(has_err("::hud{id=a box=#000 size=10,10 pad=2}\n", "isn't used by a `box`"));
+    }
+
+    #[test]
     fn a_hud_needs_exactly_one_kind_and_an_id() {
-        assert!(has_err("::hud{id=a}\n", "needs one of `text=`, `bar=` or `image=`"));
+        assert!(has_err("::hud{id=a}\n", "needs one of `text=`, `bar=`, `image=` or `box=`"));
         assert!(has_err("::hud{id=a text=x bar=1 max=2 size=1,1}\n", "only one of"));
         assert!(has_err("::hud{id=a text=x image=a.png}\n", "only one of"));
         assert!(has_err("::hud{text=x}\n", "needs `id=name`"));

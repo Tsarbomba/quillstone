@@ -3,7 +3,7 @@
 //! bar fractions, conditions) is worked out each time the draw list is built, from the
 //! variables the game last handed over with [`HudLayer::set_vars`].
 
-use quillstone_runtime::{interpolate, Cmd};
+use quillstone_runtime::{interpolate, text_blank, Cmd};
 use quillstone_script::markup::rich;
 use quillstone_script::{HudElem, HudKind, Vars};
 
@@ -102,13 +102,14 @@ impl HudLayer {
                     None => self.items.push(Item { elem: (**elem).clone(), fade: Fade { alpha: if rate > 0.0 { 0.0 } else { 1.0 }, target: 1.0, rate } }),
                 }
             }
-            Cmd::HudHide { id, fade } => {
+            Cmd::HudHide { id, prefix, fade } => {
+                let hit = |i: &Item| if *prefix { i.elem.id.starts_with(id.as_str()) } else { i.elem.id == *id };
                 if *fade > 0.0 {
-                    if let Some(item) = self.items.iter_mut().find(|i| i.elem.id == *id) {
+                    for item in self.items.iter_mut().filter(|i| hit(i)) {
                         item.fade = Fade { target: 0.0, rate: Fade::rate_over(*fade), ..item.fade };
                     }
                 } else {
-                    self.items.retain(|i| i.elem.id != *id);
+                    self.items.retain(|i| !hit(i));
                 }
             }
             Cmd::HudClear { fade } => {
@@ -175,6 +176,9 @@ impl HudLayer {
         match &e.kind {
             HudKind::Text { text, size, color, back, pad } => {
                 let shown = interpolate(text, &self.vars);
+                if text_blank(&shown) {
+                    return None;
+                }
                 let size = size.unwrap_or(theme.text_size); // the writer's layout: HUD text does not follow the player's text size
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));
@@ -204,6 +208,11 @@ impl HudLayer {
                     let fill = faded(color.unwrap_or(theme.accent_color), fade);
                     out.push(Draw::Rect { rect: Rect::new(r.x, r.y, r.w * frac, r.h), color: fill });
                 }
+                Some(r)
+            }
+            HudKind::Box { size: [w, h], color } => {
+                let r = Rect::new(placed(e.x, *w, VIRTUAL.w), placed(e.y, *h, VIRTUAL.h), *w, *h);
+                out.push(Draw::Rect { rect: r, color: faded(*color, fade) });
                 Some(r)
             }
             HudKind::Image { src, scale } => {
@@ -377,6 +386,46 @@ mod tests {
         v.set_vars(&hostile);
         let list = v.draw_list(&no_images, None);
         assert!(texts(&list).contains(&"Hi {color=#f00}red{/color} **b**"));
+    }
+
+    #[test]
+    fn a_text_that_comes_out_empty_draws_nothing_not_even_its_panel() {
+        let mut v = view("---\nvars: { t: \"\" }\n---\n::hud{id=c text=\"{t}\" back=#000000 pad=9 call=#x x=0 y=0}\n# x\nHi.\n");
+        let list = v.draw_list(&no_images, None);
+        assert!(list.is_empty(), "{list:?}");
+        assert!(v.hud_button_at(&no_images, 2.0, 2.0).is_none(), "no hit area");
+        let mut set = Vars::new();
+        set.insert("t".into(), Value::Str(" ".into()));
+        v.set_vars(&set);
+        assert!(v.draw_list(&no_images, None).is_empty(), "only spaces");
+        set.insert("t".into(), Value::Str("Hi".into()));
+        v.set_vars(&set);
+        let list = v.draw_list(&no_images, None);
+        assert_eq!((rects(&list).len(), texts(&list)), (1, vec!["Hi"]));
+        assert!(v.hud_button_at(&no_images, 2.0, 2.0).is_some());
+    }
+
+    #[test]
+    fn a_box_is_a_rect_of_its_colour_and_size() {
+        let v = view("::hud{id=d box=#ff000080 size=800,500 x=center y=center}\nHi.\n");
+        let r = rects(&v.draw_list(&no_images, None));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, Rect::new(560.0, 290.0, 800.0, 500.0));
+        assert_eq!((r[0].1[0], r[0].1[3]), (1.0, 128.0 / 255.0));
+    }
+
+    #[test]
+    fn a_prefix_hide_fades_or_drops_only_the_matching_ones() {
+        let mut v = view("::hud{id=st_a text=A}\n::hud{id=st_b text=B}\n::hud{id=keep text=K}\nHi.\n");
+        v.apply(&[Cmd::HudHide { id: "st_".into(), prefix: true, fade: 1.0 }]);
+        v.tick(0.5);
+        assert!(v.busy());
+        assert_eq!(texts(&v.draw_list(&no_images, None)).len(), 3, "still fading");
+        v.tick(0.6);
+        assert_eq!(texts(&v.draw_list(&no_images, None)), ["K"]);
+        let mut v = view("::hud{id=st_a text=A}\n::hud{id=keep text=K}\nHi.\n");
+        v.apply(&[Cmd::HudHide { id: "st_".into(), prefix: true, fade: 0.0 }]);
+        assert_eq!(texts(&v.draw_list(&no_images, None)), ["K"]);
     }
 
     #[test]
@@ -583,7 +632,7 @@ mod tests {
         v.tick(0.6);
         assert_eq!(alpha_of(&v, "A"), Some(1.0));
         assert!(!v.busy());
-        v.apply(&[Cmd::HudHide { id: "a".into(), fade: 1.0 }]);
+        v.apply(&[Cmd::HudHide { id: "a".into(), prefix: false, fade: 1.0 }]);
         assert!(v.busy());
         v.tick(0.5);
         assert!((alpha_of(&v, "A").unwrap() - 0.5).abs() < 1e-4);
