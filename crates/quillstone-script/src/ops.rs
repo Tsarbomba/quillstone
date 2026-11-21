@@ -525,6 +525,8 @@ pub struct Character {
     pub layers: Vec<String>,
     /// Layer picture template: `{layer}` is a layer id, `{value}` the value shown on it.
     pub layer_sprites: Option<String>,
+    /// `(layer, picture)`: what that layer shows (`anim:<id>`) while a line of this character is typing.
+    pub talk: Option<(String, String)>,
     /// `(source line, path)` of the picture shown by the textbox while this character speaks.
     pub portrait: Option<(usize, String)>,
 }

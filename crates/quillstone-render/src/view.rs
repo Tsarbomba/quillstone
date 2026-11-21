@@ -641,6 +641,11 @@ impl Dialogue {
         self.visible_chars() >= self.total && self.pauses.is_empty() && self.hold <= 0.0
     }
 
+    /// Some of the text is still to come (a `{w=}` pause in the middle counts; one after the last word does not).
+    fn typing(&self) -> bool {
+        self.visible_chars() < self.total
+    }
+
     pub fn reveal_all(&mut self) {
         self.revealed = self.total as f32;
         self.pauses.clear();
@@ -909,6 +914,8 @@ pub struct View {
     theme: Theme,
     /// The id of the character whose line is on screen, if it is one (see [`View::set_speaker`]).
     speaker_id: Option<String>,
+    /// `(layer, picture)` the speaker's sprite shows on that layer while its line types (`Character::talk`).
+    talk: Option<(String, String)>,
     /// The portrait picture of that character, drawn by the textbox while their line is up.
     speaker_portrait: Option<String>,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
@@ -966,6 +973,7 @@ impl View {
             text_scale: 1.0,
             theme: Theme::default(),
             speaker_id: None,
+            talk: None,
             speaker_portrait: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
@@ -1009,7 +1017,8 @@ impl View {
             .iter()
             .map(|b| b.src.as_str())
             .chain(self.previous_background.as_deref())
-            .chain(self.sprites.iter().flat_map(SpriteView::pictures));
+            .chain(self.sprites.iter().flat_map(SpriteView::pictures))
+            .chain(self.talk.iter().map(|(_, src)| src.as_str())); // loaded before the line starts typing
         let mut out: Vec<&str> = Vec::new();
         for id in srcs.filter_map(anim_id) {
             if !out.contains(&id) {
@@ -1030,7 +1039,7 @@ impl View {
                 || self.playing(&s.src, s.anim_time)
                 || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
                 || s.layers.iter().any(|l| {
-                    self.playing(&l.src, l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
+                    self.playing(self.layer_src(s, l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
                 })
                 || s.previous_layers.iter().any(|(p, t)| self.playing(p, *t))
         };
@@ -1063,6 +1072,19 @@ impl View {
             if snap || self.sprites[i].elapsed == 0.0 {
                 self.sprites[i].shade = self.shade_target(&self.sprites[i].id);
             }
+        }
+    }
+
+    /// What the speaker's sprite shows on one layer while the line types (see [`Character::talk`](quillstone_script::Character)).
+    pub fn set_talk(&mut self, talk: Option<(String, String)>) {
+        self.talk = talk;
+    }
+
+    /// What layer `l` of sprite `s` is drawn with: the talk picture while its character's line types, else its own (a hidden layer stays hidden).
+    fn layer_src<'a>(&'a self, s: &SpriteView, l: &'a LayerView) -> &'a str {
+        match &self.talk {
+            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(s.id.as_str()) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => src,
+            _ => &l.src,
         }
     }
 
@@ -1690,7 +1712,7 @@ impl View {
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
                 push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
             }
-            push_sprite(stage, self.picture(&l.src, l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+            push_sprite(stage, self.picture(self.layer_src(s, l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
         }
     }
 

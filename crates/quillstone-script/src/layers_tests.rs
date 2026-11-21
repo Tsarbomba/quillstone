@@ -132,3 +132,23 @@ fn the_layers_demo_parses() {
     assert_eq!(p.characters["mika"].layers.len(), 3);
     assert!(shows(&p).iter().any(|(_, l)| l.iter().any(|(_, p)| p == "anim:blink")));
 }
+
+#[test]
+fn talk_names_a_layer_and_a_declared_animation() {
+    let p = parse("::anim{id=flap frames=\"m/a.png 0.1, m/b.png 0.1\" loop}\n::character{id=mika layers=body,mouth layer_sprites=art/{layer}_{value}.png talk=mouth:anim:flap}\n::character{id=jo}\n").unwrap();
+    assert_eq!(p.characters["mika"].talk, Some(pair("mouth", "anim:flap")));
+    assert_eq!(p.characters["jo"].talk, None);
+}
+
+#[test]
+fn a_bad_talk_is_an_error_with_its_line() {
+    let line = |talk: &str| {
+        errors(&format!("::anim{{id=flap frames=\"m/a.png 0.1\"}}\n::character{{id=a layers=body layer_sprites=a/{{layer}}_{{value}}.png talk={talk}}}\n")).join("; ")
+    };
+    assert!(line("mouth:anim:flap").contains("`mouth` is not a layer"), "{}", line("mouth:anim:flap"));
+    assert!(line("body:anim:nope").contains("unknown animation `nope`"));
+    assert!(line("body:open").contains("must be `layer:anim:id`"));
+    assert!(line("body:anim:flap").is_empty());
+    assert!(errors("::anim{id=flap frames=\"m/a.png 0.1\"}\n::character{id=a talk=body:anim:flap}\n").join("; ").contains("has no layers"));
+    assert!(line("mouth:anim:flap").starts_with("2: "), "{}", line("mouth:anim:flap"));
+}

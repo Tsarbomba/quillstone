@@ -228,3 +228,72 @@ fn a_whole_game_with_layers_replays_through_the_view() {
     v.apply(&back);
     assert_eq!(names(&v), ["a/body_x.png", "a/eyes_y.png"]);
 }
+
+/// A view with a typewriter and the `flap` animation, two layered sprites `m` and `j` (each with a mouth) and a line by `speaker`.
+fn talking(speed: f32, text: &str, speaker: Option<&str>) -> View {
+    let anims = parse("::anim{id=flap frames=\"f1.png 0.1, f2.png 0.1\" loop}\n").unwrap().anims;
+    let mut v = View::new().with_speed(speed).with_anims(&anims);
+    v.apply(&[layered("m", &FACE, 0.3, 0.0), layered("j", &FACE, 0.7, 0.0)]);
+    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }]);
+    v.set_speaker(speaker.map(str::to_string), true);
+    v.set_talk(Some(("mouth".into(), "anim:flap".into())));
+    v
+}
+
+fn mouths(v: &View) -> Vec<String> {
+    names(v).into_iter().filter(|n| n.contains("mouth") || n.starts_with('f')).collect()
+}
+
+#[test]
+fn the_talk_layer_flaps_while_the_speaker_types_and_rests_after() {
+    let mut v = talking(10.0, "abcdefghij", Some("m"));
+    v.tick(0.05);
+    assert_eq!(mouths(&v), ["f1.png", "mouth.png"], "m flaps, j keeps its mouth");
+    assert!(v.animating());
+    v.tick(0.1);
+    assert_eq!(mouths(&v)[0], "f2.png", "the animation plays");
+    v.tick(2.0);
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"], "typed: back to the resting value");
+    assert!(!v.animating());
+    v.apply(&[layered("m", &[("mouth", "smile.png")], 0.3, 0.0)]);
+    assert!(names(&v).contains(&"smile.png".to_string()), "a ::show changes the resting value");
+}
+
+#[test]
+fn a_pause_in_the_line_is_still_typing() {
+    let mut v = talking(10.0, "a{w=5}bcdefghij", Some("m"));
+    v.tick(1.0);
+    assert_eq!(mouths(&v)[0].len(), 6, "{:?}", mouths(&v));
+    assert!(mouths(&v)[0].starts_with('f'));
+}
+
+#[test]
+fn narration_and_other_speakers_flap_nobody() {
+    let mut v = talking(10.0, "abcdefghij", None);
+    v.tick(0.05);
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"]);
+    v.set_speaker(Some("ann".into()), true);
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"]);
+    v.set_speaker(Some("j".into()), true);
+    assert_eq!(mouths(&v), ["mouth.png", "f1.png"], "j speaks: only j flaps");
+    v.set_talk(None);
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"], "a character without `talk=`");
+}
+
+#[test]
+fn skipping_and_instant_text_end_the_flap() {
+    let mut v = talking(10.0, "abcdefghij", Some("m"));
+    v.tick(0.05);
+    assert!(!v.press_advance(), "the press finishes typing");
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"]);
+    let v = talking(0.0, "abcdefghij", Some("m"));
+    assert_eq!(mouths(&v), ["mouth.png", "mouth.png"]);
+}
+
+#[test]
+fn a_hidden_talk_layer_stays_hidden() {
+    let mut v = talking(10.0, "abcdefghij", Some("m"));
+    v.apply(&[layered("m", &[("mouth", "")], 0.3, 0.0)]);
+    v.tick(0.05);
+    assert_eq!(mouths(&v), ["mouth.png"], "only j's");
+}

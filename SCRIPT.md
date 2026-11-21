@@ -600,7 +600,7 @@ may hold `{variable}`s of declared variables (an unknown one is an error).
 ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}
 ```
 
-`layers` lists the layer ids back to front (at most 8). `layer_sprites` is where each layer's
+`layers` lists the layer ids back to front (at most 32). `layer_sprites` is where each layer's
 pictures are: `{layer}` is the layer id, `{value}` what is shown on it. A character may have
 `sprites=` poses, layers, or both.
 
@@ -1295,6 +1295,19 @@ every combination. Declare the layers on the character, back to front:
 - A value may hold `{variable}` parts like a pose does (`mouth={feeling}`, `body=outfit_{day}`);
   the same rules apply as in "Picture names from variables": the variable must be a text or whole-number variable, and
   a value that is not a safe file-name fragment shows nothing and gives a notice.
+- **Lip flap.** `talk=mouth:anim:flap` on the `::character` names a layer and an animation
+  (declared above the character). While a line by that character is typing, that layer shows
+  the animation instead of its value; when the line is fully typed, skipped, or instant text, it
+  shows its value again, so `::show{mika mouth=smile}` still changes the resting mouth.
+  A `{w=}` pause in the middle of a line counts as typing. Only the speaking character's sprite
+  flaps, not narration or the other characters, and a layer that is `none` stays hidden.
+  `quillstone check` reports a layer the character does not have and an animation not declared.
+
+  ```
+  ::anim{id=flap frames="assets/mika/mouth_smile.png 0.15, assets/mika/mouth_open.png 0.15" loop}
+  ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png talk=mouth:anim:flap}
+  ```
+
 - All the layers of a character should be the **same size** (the same canvas): they are drawn
   stacked, each at the same place, size and mirroring, so one layer is not placed on its own.
   `quillstone check` warns about a layer picture whose size differs from the first.

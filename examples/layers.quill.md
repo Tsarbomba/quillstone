@@ -5,12 +5,15 @@ vars: { look: "casual", feeling: "smile" }
 
 <!-- Layered sprites: one character, several stacked pictures (body, eyes, mouth) that change
      one at a time. The pictures of every layer live in assets/layers/ and are all the same
-     size. Blinking is an ordinary frame animation (`::anim`) used as the eyes layer.
+     size. Blinking is an ordinary frame animation (`::anim`) used as the eyes layer, and
+     `talk=` makes the mouth flap while Mika's lines type.
      See "Layered sprites" in SCRIPT.md. -->
 
 ::anim{id=blink frames="assets/layers/eyes_open.png 3, assets/layers/eyes_closed.png 0.12" loop}
 
-::character{id=mika name=Mika color=#ffd98c layers=body,eyes,mouth layer_sprites=assets/layers/{layer}_{value}.png}
+::anim{id=flap frames="assets/layers/mouth_smile.png 0.15, assets/layers/mouth_open.png 0.15" loop}
+
+::character{id=mika name=Mika color=#ffd98c layers=body,eyes,mouth layer_sprites=assets/layers/{layer}_{value}.png talk=mouth:anim:flap}
 
 # start
 
@@ -26,6 +29,8 @@ vars: { look: "casual", feeling: "smile" }
 
 ::show{mika eyes=anim:blink mouth=smile}
 **Mika:** Now my eyes are an animation: they stay open for three seconds, close for a blink, and go round again.
+
+**Mika:** Watch my mouth while this line types: it flaps, then rests. My character names a talking mouth, so every line of mine does it.
 
 ::show{mika body=formal}
 **Mika:** A new outfit does not touch my eyes, so I keep blinking.

@@ -1,7 +1,7 @@
 //! Layered sprites in the game shell: what is drawn, what is loaded ahead, saving and loading, a
 //! hot reload and the demo.
 
-use super::test_util::{instant_game, key};
+use super::test_util::{instant_game, key, new_game};
 use super::*;
 use quillstone_render::Size;
 use quillstone_script::parse;
@@ -108,4 +108,24 @@ fn the_layers_demo_plays_and_never_asks_for_a_pattern_or_an_empty_name() {
         key(&mut g, Key::Space);
         run(&mut g, 0.5);
     }
+}
+
+#[test]
+fn the_mouth_of_the_character_who_speaks_flaps_while_its_line_types() {
+    let story = "::anim{id=flap frames=\"e/f1.png 0.1, e/f2.png 0.1\" loop}\n\
+        ::character{id=mika name=Mika layers=body,mouth layer_sprites=a/{layer}_{value}.png talk=mouth:anim:flap}\n\
+        ::character{id=jo name=Jo layers=body,mouth layer_sprites=b/{layer}_{value}.png}\n\
+        ::show{mika body=x mouth=smile x=20%}\n::show{jo body=x mouth=smile x=80%}\n\
+        **Mika:** Hello there, how are you today?\n\n**Jo:** Fine.\n";
+    let p = parse(story).unwrap();
+    let mut g = new_game(&p, Settings { text_speed: 20.0, ..Settings::default() });
+    g.tick(0.05, false);
+    assert_eq!(pics(&g), ["a/body_x.png", "e/f1.png", "b/body_x.png", "b/mouth_smile.png"], "Mika types: her mouth flaps");
+    assert!(g.upcoming_images().contains(&"e/f2.png"));
+    g.handle(Event::Key(Key::Space)); // finishes typing
+    assert_eq!(pics(&g), ["a/body_x.png", "a/mouth_smile.png", "b/body_x.png", "b/mouth_smile.png"]);
+    g.handle(Event::Key(Key::Space));
+    g.tick(0.05, false);
+    assert_eq!(pics(&g)[1], "a/mouth_smile.png", "Jo speaks and has no `talk=`: nobody flaps");
+    assert_eq!(pics(&g)[3], "b/mouth_smile.png");
 }

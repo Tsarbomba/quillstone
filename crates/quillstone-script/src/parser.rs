@@ -105,7 +105,7 @@ const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, not
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
-        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "portrait"],
+        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "talk", "portrait"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
         "choice" => &["time", "default"],
@@ -2098,7 +2098,7 @@ impl Parser {
         let color = a.value("color");
         let sprites = a.value("sprites");
         let (layers, layer_sprites) = (a.value("layers"), a.value("layer_sprites"));
-        let portrait = a.value("portrait");
+        let (portrait, talk) = (a.value("portrait"), a.value("talk"));
         if let Some(extra) = a.leftover(&[]) {
             self.err(line, unknown_attr("character", extra));
         }
@@ -2145,12 +2145,19 @@ impl Parser {
                 return;
             }
         };
+        let talk = match self.character_talk(talk.as_deref(), &layers) {
+            Ok(t) => t,
+            Err(m) => {
+                self.err(line, m);
+                return;
+            }
+        };
         let name = name.unwrap_or_else(|| id.clone());
         if let Err(m) = self.check_name_template(&name) {
             self.err(line, m);
             return;
         }
-        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, portrait });
+        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, talk, portrait });
     }
 
     /// A display name may hold `{variable}` of declared variables (shown with their value at the line);
@@ -2177,6 +2184,19 @@ impl Parser {
             }
         }
         Ok(())
+    }
+
+    /// `talk=mouth:anim:flap`: a layer of this character and a declared animation.
+    fn character_talk(&self, talk: Option<&str>, layers: &[String]) -> Result<Option<(String, String)>, String> {
+        let Some(talk) = talk else { return Ok(None) };
+        let Some((layer, id)) = talk.split_once(':').and_then(|(l, v)| Some((l, v.strip_prefix(ANIM_PREFIX)?))) else {
+            return Err(format!("`talk={talk}` must be `layer:anim:id`, such as `talk=mouth:anim:flap`"));
+        };
+        if !layers.iter().any(|l| l == layer) {
+            let have = if layers.is_empty() { "this character has no layers".to_string() } else { format!("its layers: {}", layers.join(", ")) };
+            return Err(format!("`talk={talk}`: `{layer}` is not a layer of this character ({have})"));
+        }
+        Ok(Some((layer.to_string(), self.anim_ref(id)?)))
     }
 
     /// The layer ids of `layers=body,eyes,mouth`, checked together with the `layer_sprites=` template.
