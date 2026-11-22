@@ -584,6 +584,10 @@ This declares a character: the name-plate text and colour, and a sprite path whe
 filled in. Declare a character before using it. `**Mika:**` lines pick up the name and colour
 automatically.
 
+**No name.** `::character{id=thoughts name="" portrait=assets/me_face.png}`: its `**thoughts:**`
+lines show no name plate, but they are still that character's lines, so its portrait (below)
+shows. Use it for a narrator's inner voice with a face.
+
 **A name from a variable.** `::character{id=hero name="{hero.name}" color=#9cc8ff}`: the name
 may hold `{variable}`s of declared variables (an unknown one is an error).
 
