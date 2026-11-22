@@ -2268,6 +2268,9 @@ const DEFAULT_PORTRAIT: f32 = 320.0;
 
 /// The picture fitted inside `rect` whole, standing on its bottom edge, in the middle of it.
 fn push_portrait(out: &mut Vec<Draw>, src: &str, rect: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
+    if src.is_empty() {
+        return; // a layer set to `none`
+    }
     let Some(size) = image_size(src).filter(|s| s.w > 0.0 && s.h > 0.0) else { return };
     let mut dest = place(size, rect, Fit::Contain).dest;
     dest.y = rect.y + rect.h - dest.h;

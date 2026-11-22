@@ -120,3 +120,11 @@ fn the_talk_layer_flaps_the_speakers_portrait_while_typing() {
     other.tick(0.05);
     assert_eq!(srcs(&list(&other)), ["jo.png"], "a layer the portrait does not have");
 }
+
+#[test]
+fn a_portrait_layer_set_to_none_draws_nothing() {
+    let mut v = layered_faces(Some("mika"), "abc");
+    v.tick(2.0); // typed: the mouth rests
+    v.apply(&[Cmd::Portrait { id: "mika".into(), layers: vec![("eyes".into(), String::new()), ("mouth".into(), "mouth.png".into())] }]);
+    assert_eq!(srcs(&list(&v)), ["mouth.png"]);
+}
