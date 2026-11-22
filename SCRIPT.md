@@ -3173,6 +3173,8 @@ This game has a scene with flashing lights.
   `::wait{time}` early (a wait can't be made unskippable). **Esc** (or a right click) skips the
   rest of the splash and shows the main menu. There is no quick menu, no saving, no rollback,
   history or skip mode, and no game menu.
+- **Not a part of the story.** Lines it shows are not remembered as read for skip mode.
+- **No parameters.** `# splash(x)` is an error: nothing could give it arguments.
 - **Without a `# splash`** nothing changes.
 - `quillstone check` treats it like any label, and a `::jump` or `::call` to `splash` is
   allowed (a `::call` comes back after its `::return`). `quillstone test` plays it once from its

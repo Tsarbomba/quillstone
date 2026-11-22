@@ -1101,6 +1101,9 @@ impl Parser {
         };
         self.close_splash(line);
         if name == "splash" {
+            if params.is_some() {
+                self.err(line, "`splash` has parameters, so it can't run before the main menu (nothing can give it arguments)");
+            }
             // The story never runs into the splash: it starts at the first op after it.
             self.splash_jump = Some(self.here());
             self.splash_skip = self.splash_jump;
@@ -6870,5 +6873,11 @@ mod tests {
         let src = |above: &str| format!("# start\n{above}# splash\nW.\n# heal(n)\nHi.\n::return\n");
         assert!(parse(&src("Hi.\n::end\n")).is_ok());
         assert!(parse(&src("Hi.\n")).is_err(), "the story runs into the splash, over it, into `heal`");
+    }
+
+    #[test]
+    fn a_splash_label_takes_no_parameters() {
+        let e = parse("# splash(x)\nW.\n# start\nHi.\n").unwrap_err();
+        assert!(e.iter().any(|e| e.message.contains("`splash` has parameters")), "{e:?}");
     }
 }

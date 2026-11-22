@@ -117,3 +117,17 @@ fn the_story_never_runs_into_a_splash_that_comes_first() {
     g.start_story();
     assert_eq!(line(&g), "story");
 }
+
+#[test]
+fn lines_read_in_the_splash_are_not_marked_read() {
+    let p = parse(SRC).unwrap();
+    let storage = Shared::default();
+    let mut g = launch(&p, storage.clone());
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    g.start_story();
+    key(&mut g, Key::Space);
+    g.autosave();
+    let read = storage.0.borrow().files.get("read.txt").cloned().unwrap_or_default();
+    assert_eq!(read.lines().count(), 1 + 1, "the magic line and the story's line only: {read:?}");
+}
