@@ -895,7 +895,7 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> Vec<Finding> {
         })
     };
     let played = |src: &str| {
-        program.ops.iter().any(|op| matches!(op, Op::Music { src: s, .. } | Op::Unlock { src: s } if s == src))
+        program.ops.iter().any(|op| matches!(op, Op::Unlock { src: s } if s == src) || matches!(op, Op::Music { src: s, .. } if quillstone_script::music_tracks(s).any(|t| t == src)))
     };
     let mut found = Vec::new();
     for op in &program.ops {
@@ -1689,6 +1689,20 @@ mod tests {
         let m4a = script.replace("intro.ogg", "intro.m4a");
         let err = checked(&m4a, &[("assets/loop.ogg", CALM), ("assets/intro.m4a", CALM)]).unwrap_err();
         assert!(err.contains("1 problem"), "AAC isn't shipped: {err}");
+    }
+
+    #[test]
+    fn check_validates_every_file_of_a_music_list() {
+        const CALM: &[u8] = include_bytes!("../../../examples/assets/calm.ogg");
+        let script = "::music{src=assets/a.ogg,assets/b.ogg,assets/a.ogg}\nHi.\n";
+        let both = [("assets/a.ogg", CALM), ("assets/b.ogg", CALM)];
+        assert!(checked(script, &both).is_ok(), "a repeated file is fine");
+        let err = checked(script, &[("assets/a.ogg", CALM)]).unwrap_err();
+        assert!(err.contains("1 problem"), "a missing file in the list: {err}");
+        let err = checked(script, &[("assets/a.ogg", CALM), ("assets/b.ogg", b"not a sound")]).unwrap_err();
+        assert!(err.contains("1 problem"), "an unplayable file in the list: {err}");
+        let music = "---\nmusic_room: [assets/b.ogg]\n---\n::music{src=assets/a.ogg,assets/b.ogg}\nHi.\n";
+        assert!(checked(music, &both).is_ok(), "a music room file played from a list can unlock");
     }
 
     #[test]

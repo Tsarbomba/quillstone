@@ -149,12 +149,20 @@ impl<'p> Session<'p> {
                     continue;
                 }
             }
+            // each file of a music playlist is its own entry
+            if let Cmd::PlayMusic { src, .. } = cmd {
+                for t in quillstone_script::music_tracks(src) {
+                    if program.music_room.iter().any(|m| m == t) && !program.bonus.iter().any(|m| m == t) {
+                        self.keep(format!("{UNLOCKED}{t}"));
+                    }
+                }
+                continue;
+            }
             let (src, list) = match cmd {
                 // a video entry unlocks as a looped background (or as a `::video`)
                 Cmd::SetBackground { src, .. } | Cmd::ShowImage { src, .. } | Cmd::PlayVideo { src, .. } => {
                     (src, &program.gallery)
                 }
-                Cmd::PlayMusic { src, .. } => (src, &program.music_room),
                 // listed in either (the parser only lets `::unlock` name an entry)
                 Cmd::Unlock { src } if program.gallery.contains(src) => (src, &program.gallery),
                 Cmd::Unlock { src } => (src, &program.music_room),

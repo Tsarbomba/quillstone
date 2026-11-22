@@ -8,14 +8,18 @@
 //! handle of each is kept per file so the mixer can stop or retune it. A loop that
 //! cannot start, or ends without being stopped, is reported (see
 //! `Audio::take_failed_loops`) so the mixer forgets it. Opus files are decoded by
-//! FFmpeg (see `ffaudio`), the rest by kira. A music track with an intro is two streams:
-//! the intro starts at a time on a kira clock and the loop at that time plus the
-//! intro's length, so the join is sample-accurate to within one kira buffer (about 3 ms). Without the `audio` feature, or without a sound device, the game
+//! FFmpeg (see `ffaudio`), the rest by kira. Music with an intro or a playlist is a chain of
+//! streams: each starts at a time on a kira clock, the next at that time plus the previous one's
+//! length, so the joins are sample-accurate to within one kira buffer (about 3 ms). At most the
+//! playing stream and the next are alive; `update` queues the following one as each ends. Without the `audio` feature, or without a sound device, the game
 //! simply runs silent.
 
 use quillstone_audio::Action;
 use quillstone_ui::Assets;
 use quillstone_video::Wanted;
+
+#[cfg(any(feature = "audio", test))]
+mod playlist;
 
 #[cfg(feature = "audio")]
 pub use real::Audio;
@@ -71,16 +75,15 @@ mod real {
     use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
     use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
     use kira::sound::{FromFileError, PlaybackState};
-    use kira::clock::{ClockHandle, ClockSpeed};
+    use kira::clock::{ClockHandle, ClockSpeed, ClockTime};
     use kira::track::{TrackBuilder, TrackHandle};
     use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Tween};
     use quillstone_audio::{amplitude_to_db, channel_gain_db, Channel};
+    use super::playlist::{next_start, Playlist, CLOCK_HZ};
 
     /// A short fade instead of a hard cut, which would click.
     const DECLICK: f32 = 0.05;
 
-    /// The music clock ticks this many times a second (the intro's length is counted in them).
-    const CLOCK_HZ: f64 = 1000.0;
     /// How far ahead of the clock an intro is scheduled, in ticks: both streams must
     /// be queued before their start time passes, whatever the main thread's lag.
     const LEAD_TICKS: f64 = 60.0;
@@ -101,10 +104,16 @@ mod real {
         video_paused: bool,
         /// Times the start of a music intro and the loop that follows it.
         clock: ClockHandle,
-        /// The track that is playing (the loop part, when there is an intro).
+        /// The music stream that is playing (or about to: it may be scheduled a moment ahead).
         music: Option<StreamingSoundHandle<FromFileError>>,
-        /// The intro, while it may still be playing.
-        music_intro: Option<StreamingSoundHandle<FromFileError>>,
+        /// The stream queued to start the moment `music` ends.
+        music_next: Option<StreamingSoundHandle<FromFileError>>,
+        /// What is left to queue after `music_next`.
+        music_queue: Option<Playlist>,
+        /// Where the last queued stream ends, in clock ticks: the next one starts there.
+        music_tail: ClockTime,
+        /// The music's own volume (0..1, with the channel gain), for streams queued later.
+        music_volume: f32,
         voice: Option<StreamingSoundHandle<FromFileError>>,
         sfx: HashMap<String, StaticSoundData>,
         /// The playing (streamed) loop of each looping sound effect, by file.
@@ -137,6 +146,7 @@ mod real {
             let (music_track, sfx_track, voice_track, video_track) = (track()?, track()?, track()?, track()?);
             let mut clock = manager.add_clock(ClockSpeed::TicksPerSecond(CLOCK_HZ)).ok()?;
             clock.start();
+            let music_tail = clock.time();
 
             Some(Audio {
                 assets: assets.clone(),
@@ -150,7 +160,10 @@ mod real {
                 video_paused: false,
                 clock,
                 music: None,
-                music_intro: None,
+                music_next: None,
+                music_queue: None,
+                music_tail,
+                music_volume: 1.0,
                 voice: None,
                 sfx: HashMap::new(),
                 sfx_loops: HashMap::new(),
@@ -170,12 +183,12 @@ mod real {
                 self.voice = None;
                 self.voice_ended = true;
             }
-            if self.music_intro.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped) {
-                self.music_intro = None;
-            }
-            let ended = self.music.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped);
-            if ended {
-                self.music = None;
+            let mut ended = false;
+            // the playing stream is done: the queued one is playing now; queue the one after it
+            while self.music.as_ref().is_some_and(|m| m.state() == PlaybackState::Stopped) {
+                self.music = self.music_next.take();
+                self.fill_music();
+                ended = self.music.is_none();
             }
             ended | std::mem::take(&mut self.music_failed)
         }
@@ -236,12 +249,14 @@ mod real {
             match action {
                 Action::PlayMusic { src, intro, fade, looped, volume } => self.play_music(&src, intro.as_deref(), fade, looped, volume),
                 Action::StopMusic { fade } => {
-                    for mut music in [self.music.take(), self.music_intro.take()].into_iter().flatten() {
+                    self.music_queue = None;
+                    for mut music in [self.music.take(), self.music_next.take()].into_iter().flatten() {
                         music.stop(tween(fade.max(DECLICK)));
                     }
                 }
                 Action::SetMusicVolume { volume, fade } => {
-                    for music in [self.music.as_mut(), self.music_intro.as_mut()].into_iter().flatten() {
+                    self.music_volume = volume;
+                    for music in [self.music.as_mut(), self.music_next.as_mut()].into_iter().flatten() {
                         music.set_volume(amplitude_to_db(volume), tween(fade));
                     }
                 }
@@ -313,61 +328,59 @@ mod real {
             }
         }
 
-        /// Start a music track. With an `intro` that opens, the intro and the loop are
-        /// both queued on the music clock: the intro at a moment just ahead, the loop
-        /// exactly one intro-length after it, so the loop begins as the intro ends.
-        /// An intro that cannot be opened is skipped (warned once): the loop plays alone.
+        /// Start music: `src` is one file or a comma-separated playlist, after an optional `intro`.
+        /// The first stream starts now (a single file straight away, as ever; a chain a moment
+        /// ahead on the music clock) and the one after it is queued to begin as it ends.
+        /// A file that cannot be opened is skipped (warned once); if none opens, the music failed.
         fn play_music(&mut self, src: &str, intro: Option<&str>, fade: f32, looped: bool, volume: f32) {
             self.music_failed = false;
-            let Some(main) = self.stream(src) else {
+            self.music_volume = volume;
+            self.music_tail = self.clock.time() + LEAD_TICKS;
+            let mut list = Playlist::new(intro, src, looped);
+            let Some(first) = self.queue_music(&mut list, fade, true) else {
                 self.music_failed = true;
                 return;
             };
-            let gain = amplitude_to_db(volume);
-            let mut main = main.volume(gain);
-            if looped {
-                main = main.loop_region(..);
-            }
-            let intro = intro.and_then(|name| self.stream(name).map(|data| (name, data)));
-            let Some((intro_name, intro)) = intro else {
-                if fade > 0.0 {
-                    main = main.fade_in_tween(tween(fade));
-                }
-                match self.music_track.play(main) {
-                    Ok(handle) => self.music = Some(handle),
-                    Err(e) => {
-                        self.warn(src, e);
-                        self.music_failed = true;
-                    }
-                }
+            self.music = Some(first);
+            self.music_queue = (!list.finished()).then_some(list);
+            self.fill_music();
+        }
+
+        /// Queue the stream after `music_next`'s predecessor, if there is one to queue.
+        fn fill_music(&mut self) {
+            if self.music_next.is_some() {
                 return;
-            };
-            let begin = self.clock.time() + LEAD_TICKS;
-            let join = begin + intro.duration().as_secs_f64() * CLOCK_HZ;
-            let mut intro = intro.volume(gain).start_time(begin);
-            if fade > 0.0 {
-                intro = intro.fade_in_tween(tween(fade)); // only the intro fades in; the loop joins at full level
             }
-            let main = main.start_time(join);
-            match self.music_track.play(intro) {
-                Ok(handle) => self.music_intro = Some(handle),
-                Err(e) => {
-                    self.warn(intro_name, e);
-                    self.music_failed = true;
-                    return;
+            let Some(mut list) = self.music_queue.take() else { return };
+            self.music_next = self.queue_music(&mut list, 0.0, false);
+            self.music_queue = (self.music_next.is_some() && !list.finished()).then_some(list);
+        }
+
+        /// Open and queue the playlist's next file that plays (each tried once), starting where the
+        /// last queued stream ends. A stream that repeats itself forever loops on its own. `first`:
+        /// nothing plays yet, so a lone stream starts at once.
+        fn queue_music(&mut self, list: &mut Playlist, fade: f32, first: bool) -> Option<StreamingSoundHandle<FromFileError>> {
+            for _ in 0..list.tracks.len() {
+                let (name, repeats) = list.take_next()?;
+                let Some(data) = self.stream(&name) else { continue };
+                let mut data = data.volume(amplitude_to_db(self.music_volume));
+                if repeats {
+                    data = data.loop_region(..);
+                }
+                if !(first && list.finished()) {
+                    let begin = self.music_tail;
+                    self.music_tail = next_start(begin, data.duration().as_secs_f64());
+                    data = data.start_time(begin);
+                }
+                if fade > 0.0 {
+                    data = data.fade_in_tween(tween(fade));
+                }
+                match self.music_track.play(data) {
+                    Ok(handle) => return Some(handle),
+                    Err(e) => self.warn(&name, e),
                 }
             }
-            match self.music_track.play(main) {
-                Ok(handle) => self.music = Some(handle),
-                Err(e) => {
-                    self.warn(src, e);
-                    // the intro alone would end in silence the mixer doesn't know about
-                    if let Some(mut intro) = self.music_intro.take() {
-                        intro.stop(tween(DECLICK));
-                    }
-                    self.music_failed = true;
-                }
-            }
+            None
         }
 
         /// Start streaming the loop of `src` on the sound track. On any failure the
@@ -494,6 +507,7 @@ mod real {
     #[cfg(test)]
     mod tests {
         use super::*;
+
 
         /// A 16-bit mono WAV of `n` silent samples.
         fn wav(n: u32) -> Vec<u8> {

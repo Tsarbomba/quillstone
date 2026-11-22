@@ -1087,7 +1087,10 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "textbox" => s.textbox_hidden = arg(1)? == "hidden",
             "music" => {
                 let intro = if t.len() > 4 { Some(path(4)?) } else { None };
-                s.music = Some(MusicState { src: path(1)?, intro, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) });
+                // a playlist is comma-joined: every file must be inside the game folder
+                let tracks = arg(1)?.split(',').map(|p| if is_inside(p) { Ok(normal_path(p)) } else { Err(format!("line {n}: unsafe file path `{p}`")) });
+                let src = tracks.collect::<Result<Vec<_>, _>>()?.join(",");
+                s.music = Some(MusicState { src, intro, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) });
             }
             "cover" => {
                 s.cover = Some(parse_rgb(arg(1)?, n)?);

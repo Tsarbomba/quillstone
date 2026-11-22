@@ -1434,6 +1434,12 @@ pub fn is_inside(path: &str) -> bool {
         })
 }
 
+/// The files of a music `src`: one name, or several joined by commas (a playlist). The parser checks
+/// each name, so a comma never belongs to a file name.
+pub fn music_tracks(src: &str) -> impl Iterator<Item = &str> {
+    src.split(',')
+}
+
 /// A game-folder path without empty and `.` parts, so two spellings of one file compare equal (callers
 /// compare ignoring case too, for systems that do). Only for paths [`is_inside`] already accepted.
 pub fn normal_path(path: &str) -> String {
@@ -1776,7 +1782,8 @@ pub enum Op {
     /// Set (`Some`) or remove (`None`) the colour filter over the stage, easing over `fade`
     /// seconds from what it is now. Doesn't wait.
     Filter { set: Option<Filter>, fade: f32 },
-    /// Background music. With an `intro`, that file plays once and `src` then loops.
+    /// Background music. `src` is one file or a comma-separated list (see [`music_tracks`]). With an `intro`,
+    /// that file plays once and `src` then loops.
     Music { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     StopMusic { fade: f32 },
     /// One-shot sound effect.
@@ -1903,7 +1910,7 @@ impl Op {
             }
             Op::Music { src, intro, .. } => {
                 let intro = intro.iter().map(|i| (AssetKind::Audio, i.as_str()));
-                std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()
+                music_tracks(src).map(|t| (AssetKind::Audio, t)).chain(intro).collect()
             }
             // Every layer file the command names (the ones it leaves out come from other commands).
             Op::Show { layers, .. } | Op::Portrait { layers, .. } if !layers.is_empty() => layers

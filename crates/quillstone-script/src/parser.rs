@@ -1718,7 +1718,13 @@ impl Parser {
                     if intro.is_some() && !a.0.iter().any(|(k, _)| k == "src") {
                         return Err("`intro=` needs `src=`: the file that loops after the intro".into());
                     }
-                    let src = self.require(name, a, "src")?;
+                    let src = match a.value("src") {
+                        Some(v) if !v.is_empty() => {
+                            let tracks = v.split(',').map(|t| check_inside("src", t)).collect::<Result<Vec<_>, _>>()?;
+                            tracks.join(",")
+                        }
+                        _ => return Err("`::music` needs `src=...`".into()),
+                    };
                     let intro = match intro {
                         None => None,
                         Some(Some(i)) if !i.is_empty() => match check_inside("intro", &i) {
@@ -6112,6 +6118,19 @@ mod tests {
         let assets: Vec<_> = p.assets().map(|(_, k, f)| (k, f.to_string())).collect();
         assert!(assets.contains(&(AssetKind::Audio, "intro.ogg".to_string())));
         assert!(assets.contains(&(AssetKind::Audio, "loop.ogg".to_string())));
+    }
+
+    #[test]
+    fn music_src_takes_a_list() {
+        let p = ok("::music{src=a.ogg,b/c.ogg,d.ogg fade=1}\n::music{src=a.ogg,b.ogg intro=i.ogg}\n::music{src=a.ogg,b.ogg loop=false}\n");
+        assert!(matches!(&p.ops[0], Op::Music { src, .. } if src == "a.ogg,b/c.ogg,d.ogg"), "{:?}", p.ops[0]);
+        assert!(matches!(&p.ops[1], Op::Music { src, intro: Some(i), .. } if src == "a.ogg,b.ogg" && i == "i.ogg"));
+        assert!(matches!(&p.ops[2], Op::Music { looped: false, .. }));
+        let assets: Vec<_> = p.assets().map(|(_, _, f)| f.to_string()).collect();
+        assert!(["a.ogg", "b/c.ogg", "d.ogg", "i.ogg"].iter().all(|f| assets.iter().any(|a| a == f)), "{assets:?}");
+        for bad in ["::music{src=a.ogg,,b.ogg}\n", "::music{src=a.ogg,../x.ogg}\n", "::music{src=a.ogg,}\n"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

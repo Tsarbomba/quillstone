@@ -3706,6 +3706,21 @@ vars: { amount: 99 }
         assert!(Session::load(&p, &bad).is_err());
     }
 
+    #[test]
+    fn a_music_playlist_is_kept_in_state_redraw_and_saves() {
+        let p = parse("::music{src=a.ogg,b/c.ogg loop=false}\n**A:** hi\n").unwrap();
+        let (game, first) = Session::start(&p);
+        let play = Cmd::PlayMusic { src: "a.ogg,b/c.ogg".into(), intro: None, fade: 0.0, looped: false, volume: 1.0 };
+        assert!(first.contains(&play) && game.state().redraw().contains(&play));
+        let text = game.save();
+        assert!(text.contains("music \"a.ogg,b/c.ogg\" false"), "{text}");
+        let (loaded, cmds) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded.state().music, game.state().music);
+        assert!(cmds.contains(&play));
+        // a save is untrusted: any file of the list outside the game folder refuses the load
+        assert!(Session::load(&p, &text.replace("a.ogg,b/c.ogg", "a.ogg,../x.ogg")).is_err());
+    }
+
     // ---- shake axis -----------------------------------------------------------------
 
     #[test]

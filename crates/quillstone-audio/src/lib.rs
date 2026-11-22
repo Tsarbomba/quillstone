@@ -12,6 +12,10 @@
 //!   crossfades. Where the track was when the player rolled back or loaded is not
 //!   kept: whatever starts afresh (another track, or nothing was playing) starts from
 //!   the intro again.
+//! - `src` may be a comma-separated playlist: the whole list loops (or plays once with
+//!   `loop=false`), after the intro if there is one. It is compared as a whole, like a single
+//!   `src`: the same list is never restarted, another list (or order) crossfades. The backend
+//!   joins the tracks without a gap.
 //! - A voice clip belongs to its line: it stops as soon as the player acts.
 //! - One-shot sound effects are fire-and-forget (the runtime never replays them on redraw).
 //! - A looping sound effect belongs to the scene, like music: starting one that is
@@ -46,7 +50,8 @@ pub enum Action {
     /// Start a music track, fading in over `fade`. Music that was playing before
     /// has already been sent a [`Action::StopMusic`], so the two crossfade.
     /// With an `intro`, the backend plays that file once and then loops `src`
-    /// with no audible gap.
+    /// with no audible gap. `src` may be several files joined by commas: they play in order,
+    /// each starting as the last ends, and the list repeats if `looped`.
     PlayMusic { src: String, intro: Option<String>, fade: f32, looped: bool, volume: f32 },
     /// Fade out and drop the current music track.
     StopMusic { fade: f32 },
@@ -622,6 +627,66 @@ mod tests {
             mixer.apply(&[intro_play("other.ogg", Some("b.ogg"), 1.0)]),
             vec![Action::StopMusic { fade: 1.0 }, intro_action("other.ogg", Some("b.ogg"), 1.0)]
         );
+    }
+
+    // ---- music playlist ------------------------------------------------------------
+
+    #[test]
+    fn a_playlist_starts_once_and_the_same_list_never_restarts() {
+        let mut mixer = Mixer::new();
+        let list = "a.ogg,b.ogg,c.ogg";
+        assert_eq!(mixer.apply(&[intro_play(list, None, 1.0)]), vec![intro_action(list, None, 1.0)]);
+        assert!(mixer.apply(&[intro_play(list, None, 1.0)]).is_empty(), "the same list keeps playing");
+        let quieter = Cmd::PlayMusic { src: list.into(), intro: None, fade: 2.0, looped: true, volume: 0.5 };
+        assert_eq!(mixer.apply(&[quieter]), vec![Action::SetMusicVolume { volume: 0.5, fade: 2.0 }], "a volume change applies to the playing track");
+    }
+
+    #[test]
+    fn another_list_or_order_crossfades() {
+        let mut mixer = Mixer::new();
+        mixer.apply(&[intro_play("a.ogg,b.ogg", None, 0.0)]);
+        for (next, fade) in [("b.ogg,a.ogg", 1.0), ("b.ogg,a.ogg,c.ogg", 2.0), ("b.ogg", 3.0)] {
+            assert_eq!(mixer.apply(&[intro_play(next, None, fade)]), vec![Action::StopMusic { fade }, intro_action(next, None, fade)]);
+        }
+    }
+
+    #[test]
+    fn a_list_played_once_and_a_list_with_an_intro() {
+        let mut mixer = Mixer::new();
+        let once = Cmd::PlayMusic { src: "a.ogg,b.ogg".into(), intro: None, fade: 0.0, looped: false, volume: 1.0 };
+        assert_eq!(mixer.apply(std::slice::from_ref(&once)).len(), 1);
+        assert!(mixer.apply(&[once]).is_empty());
+        assert_eq!(mixer.apply(&[intro_play("a.ogg,b.ogg", None, 0.0)]).len(), 2, "looping it is another piece");
+        let with_intro = intro_play("a.ogg,b.ogg", Some("i.ogg"), 0.0);
+        assert_eq!(mixer.apply(std::slice::from_ref(&with_intro)), vec![Action::StopMusic { fade: 0.0 }, intro_action("a.ogg,b.ogg", Some("i.ogg"), 0.0)]);
+        assert!(mixer.apply(&[with_intro]).is_empty());
+    }
+
+    #[test]
+    fn a_playlist_survives_rollback_and_load_and_starts_afresh_otherwise() {
+        let p = parse("::music{src=a.ogg,b.ogg volume=0.5}\n**A:** one\n**A:** two\n").unwrap();
+        let (mut game, first) = Session::start(&p);
+        let mut mixer = Mixer::new();
+        let started = Action::PlayMusic { src: "a.ogg,b.ogg".into(), intro: None, fade: 0.0, looped: true, volume: 0.5 };
+        assert_eq!(mixer.apply(&first), vec![started.clone()]);
+        mixer.apply(&game.input(Input::Advance));
+        assert!(mixer.apply(&game.rollback().unwrap()).is_empty(), "rollback while it plays: untouched");
+        let text = game.save();
+        let (loaded_game, loaded) = Session::load(&p, &text).unwrap();
+        assert_eq!(loaded_game.state().music, game.state().music);
+        assert!(mixer.apply(&loaded).is_empty(), "so is a load of the same moment");
+        assert_eq!(Mixer::new().apply(&loaded), vec![started], "afresh: from the first track");
+    }
+
+    #[test]
+    fn each_file_of_a_playlist_is_a_game_file_and_its_own_music_room_entry() {
+        let p = parse("---\nmusic_room: [a.ogg, c.ogg]\n---\n::music{src=a.ogg,b.ogg,c.ogg intro=i.ogg}\n**A:** hi\n").unwrap();
+        let files: Vec<_> = p.assets().map(|(_, _, f)| f.to_string()).collect();
+        for f in ["a.ogg", "b.ogg", "c.ogg", "i.ogg"] {
+            assert!(files.iter().any(|x| x == f), "{f} in {files:?}");
+        }
+        let (s, _) = Session::start(&p);
+        assert!(s.unlocked("a.ogg") && s.unlocked("c.ogg") && !s.unlocked("b.ogg"));
     }
 
     #[test]

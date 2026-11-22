@@ -1760,6 +1760,7 @@ Press Status.
 | --- | --- |
 | `::music{src=... fade=1 volume=0.8 loop=false}` | Background music; loops unless `loop=false`. `volume` 0 to 1. A different track crossfades over `fade` seconds. |
 | `::music{src=loop.ogg intro=intro.ogg}` | A track with an **intro**: `intro` plays once, and `src` then loops, without a gap. `intro` needs `src` (the loop) and a looping track (so not `loop=false`). `fade` fades the intro in. Both files are checked and packaged like any sound. |
+| `::music{src=a.ogg,b.ogg,c.ogg}` | A **playlist**: `src` lists several files, separated by commas (no spaces). They play in order, each starting just as the last ends, and the whole list loops. `loop=false` plays it once. `intro` works with it. `fade` fades the first track in; `volume` applies to every track. Every file is checked and packaged. |
 | `::music{stop fade=2}` | Stop it. |
 | `::sfx{src=door.ogg volume=0.5}` | One-shot sound effect. |
 | `::sfx{src=rain.ogg loop volume=0.6 fade=1}` | A **looping** sound effect, fading in over `fade` seconds. It belongs to the scene, like music. |
@@ -1821,6 +1822,18 @@ explicit `::voice` still wins).
 - `src` with a different `intro`, or none, is another piece and crossfades.
 - In the music room an entry is unlocked by its `src` file, and playing it there plays that
   file alone, without the intro.
+
+**A playlist** is a `src` with several files.
+
+- It plays a, then b, then c, then a again, with no gap between tracks. With `loop=false` it
+  plays once and stops. With an `intro`, the intro plays once and then the list loops.
+- The same list (same files, same order, same `intro`) already playing never restarts, so
+  repeating the line is safe, and rollback or a load into that scene leaves it alone. Another
+  list, or the same files in another order, crossfades.
+- The playing position is not saved: a list started afresh (a save loaded from the main
+  menu, another track playing before it) starts from its first track.
+- Each file of the list is its own music room entry, unlocked when the list plays. A file
+  that can't be opened is skipped.
 
 **Voice and one-shot sounds**
 
@@ -3373,7 +3386,7 @@ Going back one step restores:
 - **Effects that stay:** the colour cover of `::fade{out}`, the ambient particles' settings,
   the colour wash of `::tint`, the dark edges of `::vignette`, the colour filter of
   `::filter`, and the HUD elements (and whether `::hud{off}` is in effect).
-- **Sound:** music (an intro is not resumed part-way) and looping sound effects.
+- **Sound:** music (an intro, or where a playlist was, is not resumed part-way) and looping sound effects.
 
 One-shot sound effects, shakes and flashes are not replayed.
 
