@@ -746,6 +746,16 @@ mod tests {
         build_frame(&[draw], Size::new(1920.0, 1080.0)).texts.remove(0)
     }
 
+    /// A renderer with DejaVu Sans, the font the pixel tolerances of some tests are tuned to
+    /// (another system's default font draws other edges); None where it isn't installed.
+    fn dejavu() -> Option<TextRenderer> {
+        use cosmic_text::fontdb::{Database, Family, Query};
+        let mut db = Database::new();
+        db.load_system_fonts();
+        let id = db.query(&Query { families: &[Family::Name("DejaVu Sans")], ..Query::default() })?;
+        Some(TextRenderer::new(vec![db.with_face_data(id, |data, _| data.to_vec())?]))
+    }
+
     /// Row of the lowest lit pixel: how far down the text reaches.
     fn bottom(bitmap: &Bitmap) -> usize {
         let rows = bitmap.rgba.chunks(bitmap.width as usize * 4);
@@ -896,11 +906,10 @@ mod tests {
 
     #[test]
     fn a_strikethrough_is_a_line_through_the_typed_part_in_the_text_colour() {
-        let mut renderer = TextRenderer::new(Vec::new());
-        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
-            eprintln!("SKIPPED (no fonts on this machine): strikethrough test did not run");
+        let Some(mut renderer) = dejavu() else {
+            eprintln!("SKIPPED (no DejaVu Sans on this machine): strikethrough test did not run");
             return;
-        }
+        };
         let plain = renderer.rasterize(&job("Hello there")).unwrap();
         let struck = renderer.rasterize(&job("Hello {s}there{/s}")).unwrap();
         let under = renderer.rasterize(&job("Hello {u}there{/u}")).unwrap();
@@ -1002,11 +1011,10 @@ mod tests {
 
     #[test]
     fn moving_letters_leave_gaps_in_the_line_and_are_pictures_that_put_it_back() {
-        let mut renderer = TextRenderer::new(Vec::new());
-        if bottom(&renderer.rasterize(&job("Hello there")).unwrap()) == 0 {
-            eprintln!("SKIPPED (no fonts on this machine): moving letters test did not run");
+        let Some(mut renderer) = dejavu() else {
+            eprintln!("SKIPPED (no DejaVu Sans on this machine): moving letters test did not run");
             return;
-        }
+        };
         for (tag, outline) in [("shake", false), ("wave", false), ("glitch", false), ("shake", true)] {
             let tagged = format!("Say {{{tag}}}boo{{/{tag}}} now");
             let moving = animated_job(&tagged, usize::MAX, outline);
