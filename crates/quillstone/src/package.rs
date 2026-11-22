@@ -962,6 +962,27 @@ mod tests {
     }
 
     #[test]
+    fn packages_the_pictures_of_a_layered_portrait() {
+        let base = std::env::temp_dir().join(format!("quillstone-package-faces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, out) = (base.join("src"), base.join("out"));
+        std::fs::create_dir_all(src.join("assets")).unwrap();
+        for f in ["eyes_open.png", "mouth_smile.png", "unused.png"] {
+            std::fs::write(src.join("assets").join(f), "png").unwrap();
+        }
+        let script = "::character{id=ann portrait_layers=eyes,mouth portrait_sprites=assets/{layer}_{value}.png}\n::portrait{ann eyes=open mouth=smile}\n**Ann:** Hi.\n";
+        std::fs::write(src.join("p.quill.md"), script).unwrap();
+        std::fs::write(base.join("player.exe"), "exe").unwrap();
+        let program = quillstone_script::parse(script).unwrap();
+        let opts = Options { script: &src.join("p.quill.md"), player: &base.join("player.exe"), out: &out, name: None, libs: None, folder: true, zip: false };
+        package(&opts, &program).unwrap();
+        assert!(out.join("game/assets/eyes_open.png").is_file() && out.join("game/assets/mouth_smile.png").is_file());
+        assert!(!out.join("game/assets/unused.png").exists());
+        assert_eq!(unused_assets(&src, "p.quill.md", &program).unwrap(), ["assets/unused.png"]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn packages_the_files_a_whole_number_in_a_picture_pattern_can_build() {
         let base = std::env::temp_dir().join(format!("quillstone-package-number-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

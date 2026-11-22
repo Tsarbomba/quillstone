@@ -69,3 +69,54 @@ fn a_hidden_textbox_hides_the_portrait_and_a_fading_one_fades_it() {
     v.tick(0.5);
     assert_eq!(faces(&list(&v)), [(Rect::new(240.0, 460.0, 160.0, 320.0), 0.5)], "half way back");
 }
+
+fn srcs(list: &[Draw]) -> Vec<String> {
+    list.iter().filter_map(|d| if let Draw::Image { src, .. } = d { Some(src.clone()) } else { None }).collect()
+}
+
+/// Mika's layered portrait (eyes blinking, a mouth) and Jo's, a line by `speaker` typing `text`.
+fn layered_faces(speaker: Option<&str>, text: &str) -> View {
+    let anims = quillstone_script::parse("::anim{id=blink frames=\"open.png 1, closed.png 0.5\" loop}\n::anim{id=flap frames=\"f1.png 0.1, f2.png 0.1\" loop}\n").unwrap().anims;
+    let mut v = View::new().with_speed(10.0).with_anims(&anims);
+    let face = |id: &str, layers: &[(&str, &str)]| Cmd::Portrait { id: id.into(), layers: layers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+    v.apply(&[face("mika", &[("eyes", "anim:blink"), ("mouth", "mouth.png")]), face("jo", &[("eyes", "jo.png")])]);
+    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }]);
+    v.set_speaker(speaker.map(str::to_string), true);
+    v.set_talk(Some(("mouth".into(), "anim:flap".into())), None, None);
+    v
+}
+
+#[test]
+fn a_layered_portrait_draws_its_layers_back_to_front_in_the_rect_for_its_speaker_only() {
+    let mut v = layered_faces(Some("mika"), "Hi.");
+    v.tick(0.5);
+    let l = list(&v);
+    assert_eq!(srcs(&l), ["open.png", "mouth.png"], "one canvas each, the animation at its frame");
+    assert_eq!(faces(&l), [(Rect::new(240.0, 460.0, 160.0, 320.0), 1.0); 2], "fitted in the portrait rect like a picture");
+    v.tick(0.7);
+    assert_eq!(srcs(&list(&v))[0], "closed.png", "the blink goes on");
+    assert!(v.animating());
+    v.set_speaker(Some("jo".into()), true);
+    assert_eq!(srcs(&list(&v)), ["jo.png"]);
+    for who in [None, Some("ann")] {
+        v.set_speaker(who.map(str::to_string), true);
+        assert!(faces(&list(&v)).is_empty(), "narration, or a speaker without one");
+    }
+    v.set_speaker(Some("mika".into()), true);
+    v.apply(&[Cmd::Textbox { hidden: true, fade: 0.0 }]);
+    assert!(faces(&list(&v)).is_empty(), "it follows the textbox");
+    v.apply(&[Cmd::ClearScene]);
+    assert!(!v.shown_animations().contains(&"blink") && !v.animating(), "a cleared scene has no portraits");
+}
+
+#[test]
+fn the_talk_layer_flaps_the_speakers_portrait_while_typing() {
+    let mut v = layered_faces(Some("mika"), "abcdefghij");
+    v.tick(0.05);
+    assert_eq!(srcs(&list(&v)), ["open.png", "f1.png"]);
+    v.tick(2.0);
+    assert_eq!(srcs(&list(&v))[1], "mouth.png", "typed: the resting mouth");
+    let mut other = layered_faces(Some("jo"), "abcdefghij");
+    other.tick(0.05);
+    assert_eq!(srcs(&list(&other)), ["jo.png"], "a layer the portrait does not have");
+}

@@ -663,6 +663,7 @@ impl Explorer<'_> {
                     let names = std::iter::once(src).chain(layers.iter().map(|(_, p)| p));
                     read.extend(names.flat_map(|p| quillstone_script::pattern_vars(p)).map(|n| (at, n, false)));
                 }
+                Op::Portrait { layers, .. } => read.extend(layers.iter().flat_map(|(_, p)| quillstone_script::pattern_vars(p)).map(|n| (at, n, false))),
                 Op::Shop { pay, into, .. } => {
                     set.insert(into);
                     read.push((at, pay, false));

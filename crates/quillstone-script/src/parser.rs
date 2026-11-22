@@ -101,14 +101,14 @@ pub const SPRITE_BRIGHTNESS: RangeInclusive<f32> = -1.0..=1.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, bg, show, hide, portrait, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
-        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "talk", "portrait"],
+        "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "talk", "portrait", "portrait_layers", "portrait_sprites"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
         "choice" => &["time", "default"],
@@ -1509,6 +1509,7 @@ impl Parser {
                 Ok((Op::Bg { src, fade, wipe, sound, blur, mask }, None))
             }
             "show" => self.show(a),
+            "portrait" => self.portrait(a),
             "hud" => self.hud(line, a),
             "hide" => {
                 let all = a.flag("all");
@@ -2080,6 +2081,32 @@ impl Parser {
 
     /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
     fn show_layers(&mut self, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Result<(Op, Option<String>), String> {
+        let what = format!("`::show` of `{}` with layers", c.id);
+        let layers = self.layer_pictures((&c.layers, c.layer_sprites.as_deref()), &what, given)?;
+        self.show_rest(a, c.id.clone(), String::new(), layers, flip)
+    }
+
+    /// `::portrait{mika eyes=side mouth=none}`: set layers of a character's portrait.
+    fn portrait(&mut self, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
+        let bare = a.take_bare();
+        Self::extra_words("portrait", &bare, 1)?;
+        let Some(who) = bare.first() else { return Err("`::portrait` needs a character, like `::portrait{mika eyes=side}`".into()) };
+        let Some(c) = self.program.characters.get(&who.to_lowercase()).cloned() else {
+            return Err(format!("unknown character `{who}` (declare it first with `::character`)"));
+        };
+        if c.portrait_layers.is_empty() {
+            return Err(format!("character `{who}` has no `portrait_layers=...`"));
+        }
+        let given: Vec<(String, String)> = c.portrait_layers.iter().filter_map(|l| Some((l.clone(), a.value(l)?))).collect();
+        let what = format!("`::portrait` of `{}`", c.id);
+        let layers = self.layer_pictures((&c.portrait_layers, c.portrait_sprites.as_deref()), &what, given)?;
+        Ok((Op::Portrait { id: c.id, layers }, None))
+    }
+
+    /// The pictures of the layer values a `::show` or `::portrait` gives (`none`, `anim:<id>`, or a file of the
+    /// `(layer ids, template)`). The first one of a character has to name every layer: after that the
+    /// layers keep their values (a sprite hidden in between starts over at run time).
+    fn layer_pictures(&mut self, (ids, template): (&[String], Option<&str>), what: &str, given: Vec<(String, String)>) -> Result<Vec<(String, String)>, String> {
         let mut layers = Vec::new();
         for (layer, value) in &given {
             let picture = if value == LAYER_NONE {
@@ -2087,27 +2114,20 @@ impl Parser {
             } else if let Some(id) = value.strip_prefix(ANIM_PREFIX) {
                 self.anim_ref(id)?
             } else {
-                let path = c.layer_path(layer, value).unwrap_or_default();
+                let path = fill_layer(template.unwrap_or_default(), layer, value);
                 self.picture_path(layer, &path)?
             };
             layers.push((layer.clone(), picture));
         }
-        // The first layered show of a character has to name every layer: after that the
-        // layers keep their values (a sprite hidden in between starts over at run time).
-        if !self.layered_seen.contains(&c.id) {
-            let missing: Vec<&str> = c.layers.iter().filter(|l| !given.iter().any(|(g, _)| g == *l)).map(String::as_str).collect();
+        if !self.layered_seen.contains(what) {
+            let missing: Vec<&str> = ids.iter().filter(|l| !given.iter().any(|(g, _)| g == *l)).map(String::as_str).collect();
             if !missing.is_empty() {
-                let msg = format!(
-                    "the first `::show` of `{}` with layers must set every layer; missing: {} (use `{}=none` to leave one empty)",
-                    c.id,
-                    missing.join(", "),
-                    missing[0]
-                );
+                let msg = format!("the first {what} must set every layer; missing: {} (use `{}=none` to leave one empty)", missing.join(", "), missing[0]);
                 return Err(msg);
             }
         }
-        self.layered_seen.insert(c.id.clone());
-        self.show_rest(a, c.id.clone(), String::new(), layers, flip)
+        self.layered_seen.insert(what.to_string());
+        Ok(layers)
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
@@ -2148,6 +2168,7 @@ impl Parser {
         let sprites = a.value("sprites");
         let (layers, layer_sprites) = (a.value("layers"), a.value("layer_sprites"));
         let (portrait, talk) = (a.value("portrait"), a.value("talk"));
+        let (portrait_layers, portrait_sprites) = (a.value("portrait_layers"), a.value("portrait_sprites"));
         if let Some(extra) = a.leftover(&[]) {
             self.err(line, unknown_attr("character", extra));
         }
@@ -2187,14 +2208,27 @@ impl Parser {
             }
         };
         let layer_sprites = layer_sprites.map(|t| normal_path(&t));
-        let layers = match self.character_layers(line, layers.as_deref(), layer_sprites.as_deref()) {
+        let layers = match self.character_layers(("layers", "layer_sprites"), layers.as_deref(), layer_sprites.as_deref()) {
             Ok(l) => l,
             Err(m) => {
                 self.err(line, m);
                 return;
             }
         };
-        let talk = match self.character_talk(talk.as_deref(), &layers) {
+        let portrait_sprites = portrait_sprites.map(|t| normal_path(&t));
+        let portrait_layers = match self.character_layers(("portrait_layers", "portrait_sprites"), portrait_layers.as_deref(), portrait_sprites.as_deref()) {
+            Ok(l) if portrait.is_some() && !l.is_empty() => Err("`portrait=` and `portrait_layers=` can't be used together: a portrait is one picture or layers".to_string()),
+            r => r,
+        };
+        let portrait_layers = match portrait_layers {
+            Ok(l) => l,
+            Err(m) => {
+                self.err(line, m);
+                return;
+            }
+        };
+        let talk_layers: Vec<String> = layers.iter().chain(&portrait_layers).cloned().collect();
+        let talk = match self.character_talk(talk.as_deref(), &talk_layers) {
             Ok(t) => t,
             Err(m) => {
                 self.err(line, m);
@@ -2206,7 +2240,7 @@ impl Parser {
             self.err(line, m);
             return;
         }
-        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, talk, portrait });
+        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, talk, portrait, portrait_layers, portrait_sprites });
     }
 
     /// A display name may hold `{variable}` of declared variables (shown with their value at the line);
@@ -2255,21 +2289,22 @@ impl Parser {
     }
 
     /// The layer ids of `layers=body,eyes,mouth`, checked together with the `layer_sprites=` template.
-    fn character_layers(&self, _line: usize, layers: Option<&str>, template: Option<&str>) -> Result<Vec<String>, String> {
+    /// `keys` are the attribute names (`layers`, `layer_sprites`, or the portrait's).
+    fn character_layers(&self, (layers_key, sprites_key): (&str, &str), layers: Option<&str>, template: Option<&str>) -> Result<Vec<String>, String> {
         let Some(list) = layers else {
             return match template {
                 None => Ok(Vec::new()),
-                Some(_) => Err("`layer_sprites=` needs `layers=body,eyes,...` (the layer ids, back to front)".into()),
+                Some(_) => Err(format!("`{sprites_key}=` needs `{layers_key}=body,eyes,...` (the layer ids, back to front)")),
             };
         };
         let Some(template) = template else {
-            return Err("`layers=` needs `layer_sprites=assets/mika/{layer}_{value}.png` (where each layer's pictures are)".into());
+            return Err(format!("`{layers_key}=` needs `{sprites_key}=assets/mika/{{layer}}_{{value}}.png` (where each layer's pictures are)"));
         };
         let mut out: Vec<String> = Vec::new();
         for part in list.split(',') {
             let id = part.trim();
             if id.is_empty() {
-                return Err("`layers=` has an empty entry (an extra comma?)".into());
+                return Err(format!("`{layers_key}=` has an empty entry (an extra comma?)"));
             }
             if !is_plain_ident(id) || crate::unsafe_reason(id).is_some() {
                 return Err(format!("layer id `{id}` must be letters, digits and `_`"));
@@ -2287,11 +2322,11 @@ impl Parser {
         }
         for part in ["{layer}", "{value}"] {
             if !template.contains(part) {
-                return Err(format!("`layer_sprites={template}` needs `{part}` in it"));
+                return Err(format!("`{sprites_key}={template}` needs `{part}` in it"));
             }
         }
         let sample = template.replace("{layer}", "x").replace("{value}", "x");
-        check_image_path(&sample, "layer_sprites", "a layer picture")?;
+        check_image_path(&sample, sprites_key, "a layer picture")?;
         Ok(out)
     }
 

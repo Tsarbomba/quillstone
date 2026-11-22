@@ -593,6 +593,12 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
             w(format!("cycle {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}", q(&sp.id), l.x, l.y, l.scale, l.xscale, l.yscale, l.alpha, l.dx, l.dy, l.time, l.ease.name(), l.wait, l.blur, l.tint[0], l.tint[1], l.tint[2], l.brightness, l.crop[0], l.crop[1], l.crop[2], l.crop[3]));
         }
     }
+    // A layered portrait's layers are records of their own (absent: none given yet), so older saves load as before.
+    for (id, layers) in &s.portraits {
+        for (layer, picture) in layers {
+            w(format!("portrait {} {} {}", q(id), q(layer), q(picture)));
+        }
+    }
     if s.camera != Camera::default() {
         w(format!("camera {} {} {}", s.camera.zoom, s.camera.x, s.camera.y));
     }
@@ -937,6 +943,33 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     None => {
                         let at = sprite.layers.iter().position(|(l, _)| order(l).is_some_and(|o| o > rank)).unwrap_or(sprite.layers.len());
                         sprite.layers.insert(at, (layer.to_string(), picture));
+                    }
+                }
+            }
+            "portrait" => {
+                let (id, layer) = (arg(1)?, arg(2)?);
+                // Only layers the character declares for its portrait, once each (a script edit may have dropped one).
+                let ids = program.characters.get(id).map_or(&[][..], |c| &c.portrait_layers);
+                let Some(rank) = ids.iter().position(|l| l == layer) else {
+                    if edited {
+                        continue;
+                    }
+                    return Err(format!("line {n}: `{id}` has no portrait layer `{layer}`"));
+                };
+                let picture = if gone(3) { String::new() } else { layer_pic(3)? };
+                let at = match s.portraits.iter().position(|(c, _)| c == id) {
+                    Some(at) => at,
+                    None => {
+                        s.portraits.push((id.to_string(), Vec::new()));
+                        s.portraits.len() - 1
+                    }
+                };
+                let layers = &mut s.portraits[at].1;
+                match layers.iter_mut().find(|(l, _)| l == layer) {
+                    Some(old) => old.1 = picture,
+                    None => {
+                        let at = layers.iter().position(|(l, _)| ids.iter().position(|x| x == l).is_some_and(|o| o > rank)).unwrap_or(layers.len());
+                        layers.insert(at, (layer.to_string(), picture));
                     }
                 }
             }

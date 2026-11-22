@@ -571,12 +571,14 @@ fn icon_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> 
 /// are reported elsewhere. `(is an error, message)`, like [`picture_findings`].
 fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    for character in program.characters.values().filter(|c| !c.layers.is_empty()) {
+    // A character's sprite layers and its portrait layers are two stacks, each on its own canvas.
+    let stacks = program.characters.values().flat_map(|c| [(c, false, !c.layers.is_empty()), (c, true, !c.portrait_layers.is_empty())]).filter(|s| s.2);
+    for (character, portrait, _) in stacks {
         // (line, file) in script order, each file once.
         let mut files: Vec<(usize, String)> = Vec::new();
         for (pc, op) in program.ops.iter().enumerate() {
-            let Op::Show { id, layers, .. } = op else { continue };
-            if *id != character.id {
+            let (Op::Show { id, layers, .. } | Op::Portrait { id, layers }) = op else { continue };
+            if *id != character.id || matches!(op, Op::Portrait { .. }) != portrait {
                 continue;
             }
             for (_, picture) in layers {
@@ -618,13 +620,19 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
 fn talk_pattern_findings(program: &Program, script: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
     for c in program.characters.values() {
-        let (Some((layer, pattern)), Some(template)) = (&c.talk, &c.layer_sprites) else { continue };
+        let Some((layer, pattern)) = &c.talk else { continue };
         if !pattern.contains("{value}") {
             continue;
         }
         let (mut values, mut first, mut known) = (Vec::new(), None, true);
         for (pc, op) in program.ops.iter().enumerate() {
-            let Op::Show { id, layers, .. } = op else { continue };
+            // The talk layer is one of the sprite's or of the portrait's, each with its own picture template.
+            let (id, layers, template) = match op {
+                Op::Show { id, layers, .. } => (id, layers, &c.layer_sprites),
+                Op::Portrait { id, layers } => (id, layers, &c.portrait_sprites),
+                _ => continue,
+            };
+            let Some(template) = template else { continue };
             for (_, picture) in layers.iter().filter(|(l, p)| *id == c.id && l == layer && !p.is_empty()) {
                 first.get_or_insert(pc);
                 match quillstone_script::layer_value(template, layer, picture) {
@@ -1353,6 +1361,10 @@ fn print_cmds(cmds: &[Cmd]) {
                 println!("[show {id}: {what} at {:.0}%,{:.0}%]", x * 100.0, y * 100.0)
             }
             Cmd::HideSprite { id, .. } => println!("[hide {id}]"),
+            Cmd::Portrait { id, layers } => {
+                let what = layers.iter().map(|(l, p)| format!("{l}={}", if p.is_empty() { "none" } else { p })).collect::<Vec<_>>().join(" ");
+                println!("[portrait {id}: {what}]")
+            }
             Cmd::MoveSprite { id, to, queued, .. } => {
                 let then = if *queued { "then " } else { "" };
                 println!("[{then}move {id} to {:.0}%,{:.0}% at {}x, opacity {}]", to.x * 100.0, to.y * 100.0, to.scale, to.alpha)
@@ -2265,6 +2277,24 @@ mod tests {
         let p = parse("::character{id=a layers=body layer_sprites=q/{layer}_{value}.png}\n::character{id=b layers=body layer_sprites=r/{layer}_{value}.png}\n::show{a body=1}\n::show{b body=1}\n").unwrap();
         let files: &[(&str, &[u8])] = &[("q/body_1.png", &small), ("r/body_1.png", &big)];
         assert!(in_dir(files, |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir)).is_empty());
+    }
+
+    const FACES: &str = "---\nvars: { mood: \"smile\" }\n---\n::character{id=ann portrait_layers=eyes,mouth portrait_sprites=f/{layer}_{value}.png talk=mouth:anim:flap_{value}}\n\
+        ::anim{id=flap_smile frames=\"f/x.png 0.1\" loop}\n::portrait{ann eyes=open mouth={mood}}\n**Ann:** Hi.\n";
+
+    #[test]
+    fn check_looks_at_portrait_layer_files_and_compares_their_sizes_and_the_talk_pattern_with_their_values() {
+        let (small, big) = (picture::fake_png(10, 20), picture::fake_png(40, 80));
+        let all: &[(&str, &[u8])] = &[("f/eyes_open.png", &small), ("f/x.png", &small), ("f/mouth_smile.png", &small)];
+        assert!(checked(FACES, all).is_ok());
+        let e = checked(FACES, &all[..2]).unwrap_err();
+        assert!(e.contains("1 problem"), "{e}");
+        let p = parse(FACES).unwrap();
+        let w = in_dir(&[("f/eyes_open.png", &small), ("f/mouth_smile.png", &big)], |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir));
+        assert!(w.len() == 1 && !w[0].0 && w[0].1.contains("f/mouth_smile.png"), "{w:?}");
+        assert!(talk_pattern_findings(&p, Path::new("s.quill.md")).is_empty(), "`{{mood}}` may be any value: flap_smile fits");
+        let other = parse(&FACES.replace("::anim{id=flap_smile", "::anim{id=wave").replace("mouth={mood}", "mouth=open")).unwrap();
+        assert_eq!(talk_pattern_findings(&other, Path::new("s.quill.md")).len(), 1, "no animation fits the portrait's value");
     }
 
     #[test]

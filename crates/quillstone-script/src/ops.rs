@@ -530,6 +530,9 @@ pub struct Character {
     pub talk: Option<(String, String)>,
     /// `(source line, path)` of the picture shown by the textbox while this character speaks.
     pub portrait: Option<(usize, String)>,
+    /// Layer ids of a layered portrait, back to front (empty: none), and their picture template (like `layers` and `layer_sprites`).
+    pub portrait_layers: Vec<String>,
+    pub portrait_sprites: Option<String>,
 }
 
 /// The most layers one character may have.
@@ -541,9 +544,13 @@ pub const LAYER_NONE: &str = "none";
 impl Character {
     /// The picture of layer `layer` showing `value` (a pattern when `value` has `{variable}` parts).
     pub fn layer_path(&self, layer: &str, value: &str) -> Option<String> {
-        let template = self.layer_sprites.as_deref()?;
-        Some(template.replace("{layer}", layer).replace("{value}", value))
+        Some(fill_layer(self.layer_sprites.as_deref()?, layer, value))
     }
+}
+
+/// The picture of `layer` showing `value` in a `layer_sprites=` (or `portrait_sprites=`) template.
+pub fn fill_layer(template: &str, layer: &str, value: &str) -> String {
+    template.replace("{layer}", layer).replace("{value}", value)
 }
 
 /// The value a layer shows, read back from its picture: the `{value}` part of `template` (a `layer_sprites=`).
@@ -862,6 +869,7 @@ impl Program {
                     .chain(layers.iter().map(|(_, l)| l.as_str()))
                     .filter_map(|s| anim_id(s).and_then(|id| self.anims.get(id)))
                     .collect(),
+                Op::Portrait { layers, .. } => layers.iter().filter_map(|(_, l)| anim_id(l).and_then(|id| self.anims.get(id))).collect(),
                 _ => Vec::new(),
             };
             let frames = anims.into_iter().flat_map(|a| a.frames.iter().filter(|f| !f.file.is_empty()).map(|f| (AssetKind::Image, f.file.as_str())));
@@ -1738,6 +1746,8 @@ pub enum Op {
     },
     /// Hide one sprite, or all of them when `id` is `None`.
     Hide { id: Option<String>, fade: f32 },
+    /// Set layers of a character's portrait (`::portrait{mika eyes=side}`): (layer id, picture) as in [`Op::Show`]'s `layers`.
+    Portrait { id: String, layers: Vec<(String, String)> },
     /// Slide, resize and/or fade a sprite in one or more `steps` that run one after another (`then`).
     /// `flip` switches at the start of the move; the rest animate.
     Move {
@@ -1896,7 +1906,7 @@ impl Op {
                 std::iter::once((AssetKind::Audio, src.as_str())).chain(intro).collect()
             }
             // Every layer file the command names (the ones it leaves out come from other commands).
-            Op::Show { layers, .. } if !layers.is_empty() => layers
+            Op::Show { layers, .. } | Op::Portrait { layers, .. } if !layers.is_empty() => layers
                 .iter()
                 .filter(|(_, l)| !l.is_empty() && anim_id(l).is_none())
                 .map(|(_, l)| (AssetKind::Image, l.as_str()))

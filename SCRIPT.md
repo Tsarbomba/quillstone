@@ -497,6 +497,7 @@ The commands at a glance. Each group is explained below the table.
 | `::bg{src=... fade=1}` | set the background: a picture, a video, a colour or an animation |
 | `::character{id=mika name=Mika ...}` | declare a character |
 | `::show{mika happy x=20%}` | show a sprite, or change one that is on stage |
+| `::portrait{mika eyes=side}` | change the layers of a character's portrait |
 | `::hide{mika fade=0.5}` / `::hide{all}` | remove one sprite, or all |
 | `::move{mika x=80% time=0.8}` | animate a sprite |
 | `::camera{zoom=1.3 x=0.3 y=0.4 time=4}` | pan and zoom the stage |
@@ -620,6 +621,35 @@ pictures are: `{layer}` is the layer id, `{value}` what is shown on it. A charac
 - It follows the textbox: it is hidden with it (the `U` key, `::textbox{hide}`) and fades with it.
 - Where it goes is the theme's `portrait_rect` (see [Themes](#themes)). `quillstone check`
   looks for the file; `package` ships it.
+
+**A portrait from layers.** A face that blinks or changes its look can be drawn from layers,
+with the same rules as a [layered sprite](#layered-sprites) but state of its own, so the stage
+sprite and the portrait can use different art:
+
+```
+::anim{id=blink frames="assets/mika/face_eyes_open.png 3, assets/mika/face_eyes_shut.png 0.12" loop}
+::anim{id=flap frames="assets/mika/face_mouth_smile.png 0.15, assets/mika/face_mouth_open.png 0.15" loop}
+::character{id=mika name=Mika portrait_layers=eyes,mouth portrait_sprites=assets/mika/face_{layer}_{value}.png talk=mouth:anim:flap}
+
+::portrait{mika eyes=anim:blink mouth=smile}
+**Mika:** Oh, hello.
+::portrait{mika mouth=open}
+**Mika:** What was *that*?
+```
+
+- `portrait_layers` and `portrait_sprites` are like `layers` and `layer_sprites` (at most 32
+  layers, `{layer}` and `{value}` in the path, a picture type). Give both, and not `portrait=` too.
+- `::portrait{mika eyes=side}` sets the layers it names; a layer left out keeps its value. Values
+  are as in a layered `::show`: `none`, `anim:<id>` and `{variable}` parts. The first `::portrait`
+  of a character must give every layer, as the first layered `::show` must.
+- It puts nobody on stage, and it works whether or not the character is speaking. The face is
+  shown as above: only while a line by that character is on screen, in `portrait_rect`, layers
+  back to front (give them all the same canvas size). Before the first `::portrait` nothing is drawn.
+- `talk=mouth:anim:flap` may name a portrait layer: the speaker's portrait mouth flaps while
+  the line types, as a sprite's does. If a character has the same layer id in `layers` and in
+  `portrait_layers`, both flap.
+- Rollback and saves keep the layer values; a save from before loads with none given yet.
+  `quillstone check` looks for every layer file and warns about a layer of another size; `package` ships them.
 
 ### Showing sprites
 

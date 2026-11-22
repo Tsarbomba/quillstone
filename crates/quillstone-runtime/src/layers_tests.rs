@@ -248,3 +248,81 @@ fn the_tester_reports_layers_left_empty_and_unset_variables() {
     let report = explore(&q, 100);
     assert!(report.warnings.iter().any(|w| w.message.contains("`never` is never set")), "{:?}", report.warnings);
 }
+
+const FACE: &str = "\
+::anim{id=blink frames=\"e/open.png 3, e/closed.png 0.1\" loop}
+::character{id=ann portrait_layers=eyes,mouth portrait_sprites=face/{layer}_{value}.png}
+::portrait{ann eyes=open mouth=smile}
+One.
+::portrait{ann eyes=anim:blink}
+Two.
+::portrait{ann mouth=none}
+Three.
+";
+
+fn face(game: &Session) -> Vec<(String, String)> {
+    game.state().portraits.iter().find(|(c, _)| c == "ann").map(|(_, l)| l.clone()).unwrap_or_default()
+}
+
+#[test]
+fn a_portrait_command_keeps_the_layers_it_leaves_out_and_does_not_touch_the_stage() {
+    let p = parse(FACE).unwrap();
+    let (mut game, first) = Session::start(&p);
+    assert!(face(&game).len() == 2 && game.state().sprites.is_empty());
+    assert_eq!(face(&game), l(&[("eyes", "face/eyes_open.png"), ("mouth", "face/mouth_smile.png")]));
+    assert!(first.iter().any(|c| matches!(c, Cmd::Portrait { id, layers } if id == "ann" && *layers == face(&game))));
+    next(&mut game);
+    assert_eq!(face(&game), l(&[("eyes", "anim:blink"), ("mouth", "face/mouth_smile.png")]));
+    next(&mut game);
+    assert_eq!(face(&game), l(&[("eyes", "anim:blink"), ("mouth", "")]));
+    assert!(game.state().sprites.is_empty());
+}
+
+#[test]
+fn rollback_redraw_and_save_restore_the_portrait_and_an_old_save_has_none() {
+    let p = parse(FACE).unwrap();
+    let (mut game, _) = Session::start(&p);
+    let one = face(&game);
+    next(&mut game);
+    let back = game.rollback().unwrap();
+    assert_eq!(face(&game), one);
+    assert!(back.iter().any(|c| matches!(c, Cmd::Portrait { layers, .. } if *layers == one)));
+    assert!(game.state().redraw().iter().any(|c| matches!(c, Cmd::Portrait { layers, .. } if *layers == one)));
+    next(&mut game);
+    let text = game.save();
+    assert!(text.contains("portrait \"ann\" \"eyes\" \"anim:blink\""), "{text}");
+    let (loaded, cmds) = Session::load(&p, &text).unwrap();
+    assert_eq!(loaded.state().portraits, game.state().portraits);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Portrait { layers, .. } if *layers == face(&game))));
+    assert_eq!(loaded.save(), text, "stable");
+    // a save with no such records (every save from before) loads with nothing given yet
+    let old: String = text.lines().filter(|l| !l.starts_with("portrait ")).map(|l| format!("{l}\n")).collect();
+    let (loaded, cmds) = Session::load(&p, &old).unwrap();
+    assert!(loaded.state().portraits.is_empty() && !cmds.iter().any(|c| matches!(c, Cmd::Portrait { .. })));
+}
+
+#[test]
+fn hostile_portrait_records_are_refused_and_a_script_edit_drops_what_is_gone() {
+    let p = parse(FACE).unwrap();
+    let (game, _) = Session::start(&p);
+    let text = game.save();
+    let layer = "portrait \"ann\" \"eyes\" \"face/eyes_open.png\"";
+    assert!(text.contains(layer), "{text}");
+    for bad in [
+        "portrait \"ann\" \"eyes\" \"../../etc/passwd\"",
+        "portrait \"ann\" \"eyes\" \"/etc/passwd\"",
+        "portrait \"ann\" \"eyes\" \"anim:snow\"",
+        "portrait \"ann\" \"nose\" \"face/nose_a.png\"",
+        "portrait \"bob\" \"eyes\" \"face/eyes_open.png\"",
+        "portrait \"ann\" \"eyes\"",
+    ] {
+        assert!(Session::load(&p, &text.replace(layer, bad)).is_err(), "{bad} should be refused");
+    }
+    // records in any order end up in the character's order
+    let swapped = text.replace(layer, "portrait \"ann\" \"mouth\" \"face/mouth_smile.png\"").replacen("portrait \"ann\" \"mouth\" \"face/mouth_smile.png\"", layer, 1);
+    assert_eq!(face(&Session::load(&p, &swapped).unwrap().0), face(&game));
+    // the character lost its portrait layers in an edit: the record is dropped, not an error
+    let q = parse("::character{id=ann}\nOne.\n").unwrap();
+    assert!(Session::load(&q, &text).is_err(), "a plain load refuses it");
+    assert!(Session::load_edited(&q, &text).is_ok_and(|(s, _)| s.state().portraits.is_empty()), "an edited script drops it");
+}

@@ -937,6 +937,10 @@ pub struct View {
     talk: Option<(String, String)>,
     /// The speaker's `layer_sprites=` template, to read the value a talk layer shows (for a `{value}` talk animation).
     talk_template: Option<String>,
+    /// The same for the speaker's portrait layers (`portrait_sprites=`).
+    talk_portrait_template: Option<String>,
+    /// The layers of each character's portrait (`Cmd::Portrait`), drawn by the textbox while that character's line is up.
+    portraits: Vec<(String, Vec<LayerView>)>,
     /// The portrait picture of that character, drawn by the textbox while their line is up.
     speaker_portrait: Option<String>,
     /// `Some(k)`: sprites are drawn at their picture's pixel size times `k` (front matter `sprite_size: pixels`).
@@ -996,6 +1000,8 @@ impl View {
             speaker_id: None,
             talk: None,
             talk_template: None,
+            talk_portrait_template: None,
+            portraits: Vec::new(),
             speaker_portrait: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
@@ -1040,6 +1046,7 @@ impl View {
             .map(|b| b.src.as_str())
             .chain(self.previous_background.as_deref())
             .chain(self.sprites.iter().flat_map(SpriteView::pictures))
+            .chain(self.portraits.iter().flat_map(|(_, ls)| ls.iter().map(|l| l.src.as_str())))
             .chain(self.talk.iter().map(|(_, src)| src.as_str())); // loaded before the line starts typing
         let mut out: Vec<&str> = Vec::new();
         for id in srcs.filter_map(anim_id) {
@@ -1064,13 +1071,14 @@ impl View {
                 || self.playing(&s.src, s.anim_time)
                 || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
                 || s.layers.iter().any(|l| {
-                    self.playing(&self.layer_src(s, l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
+                    self.playing(&self.layer_src(&s.id, self.talk_template.as_deref(), l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
                 })
                 || s.previous_layers.iter().any(|(p, t)| self.playing(p, *t))
         };
         self.background.as_ref().is_some_and(|b| self.playing(&b.src, self.bg_clock))
             || self.previous_background.as_deref().is_some_and(|p| self.playing(p, self.previous_bg_clock))
             || self.sprites.iter().any(sprite)
+            || self.speaker_portrait_layers().iter().any(|l| self.playing(&self.layer_src(self.speaker_id.as_deref().unwrap_or_default(), self.talk_portrait_template.as_deref(), l), l.anim_time))
             || self.particles.active()
     }
 
@@ -1101,21 +1109,23 @@ impl View {
     }
 
     /// What the speaker's sprite shows on one layer while the line types (see [`Character::talk`](quillstone_script::Character)).
-    /// `layer_sprites` is the speaker's picture template: a `{value}` in the talk animation is the value read back from it.
-    pub fn set_talk(&mut self, talk: Option<(String, String)>, layer_sprites: Option<String>) {
+    /// `layer_sprites` and `portrait_sprites` are the speaker's picture templates: a `{value}` in the talk animation is the value read back from them.
+    pub fn set_talk(&mut self, talk: Option<(String, String)>, layer_sprites: Option<String>, portrait_sprites: Option<String>) {
         self.talk = talk;
         self.talk_template = layer_sprites;
+        self.talk_portrait_template = portrait_sprites;
     }
 
-    /// What layer `l` of sprite `s` is drawn with: the talk picture while its character's line types, else its own (a hidden layer stays hidden).
+    /// What layer `l` of the sprite or portrait of character `id` (its picture `template`) is drawn with: the talk picture while that
+    /// character's line types, else its own (a hidden layer stays hidden).
     /// A talk animation with `{value}` that is not declared for the layer's value leaves the layer as it is.
-    fn layer_src<'a>(&'a self, s: &SpriteView, l: &'a LayerView) -> Cow<'a, str> {
+    fn layer_src<'a>(&'a self, id: &str, template: Option<&str>, l: &'a LayerView) -> Cow<'a, str> {
         match &self.talk {
-            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(s.id.as_str()) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => {
+            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(id) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => {
                 if !src.contains("{value}") {
                     return Cow::Borrowed(src);
                 }
-                let value = self.talk_template.as_deref().and_then(|t| layer_value(t, layer, &l.src));
+                let value = template.and_then(|t| layer_value(t, layer, &l.src));
                 match value.map(|v| src.replace("{value}", v)) {
                     Some(own) if anim_id(&own).is_some_and(|id| self.anims.contains_key(id)) => Cow::Owned(own),
                     _ => Cow::Borrowed(&l.src),
@@ -1128,6 +1138,12 @@ impl View {
     /// The portrait picture of the character whose line is on screen (`None`: narration, or no portrait).
     pub fn set_portrait(&mut self, src: Option<String>) {
         self.speaker_portrait = src;
+    }
+
+    /// The layers of the speaker's portrait (none: narration, or a portrait that is a picture or has no values yet).
+    fn speaker_portrait_layers(&self) -> &[LayerView] {
+        let id = self.speaker_id.as_deref();
+        self.portraits.iter().find(|(c, _)| Some(c.as_str()) == id).map_or(&[], |(_, ls)| ls)
     }
 
     /// The brightness the sprite `id` is heading for: dimmed when a character who is on stage speaks and it is not them.
@@ -1219,6 +1235,7 @@ impl View {
                     self.background = None;
                     self.previous_background = None;
                     self.sprites.clear();
+                    self.portraits.clear();
                     self.set_camera(Camera::default(), 0.0, Ease::Linear);
                     self.shake = None;
                     self.flash = None;
@@ -1246,6 +1263,12 @@ impl View {
                     self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy, *blur, tint[0], tint[1], tint[2], *brightness], *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
+                Cmd::Portrait { id, layers } => {
+                    // A layer keeps its animation clock while its picture stays.
+                    let old = self.portraits.iter().position(|(c, _)| c == id).map(|i| self.portraits.remove(i).1).unwrap_or_default();
+                    let layers = layers.iter().map(|(n, src)| old.iter().find(|l| l.name == *n && l.src == *src).cloned().unwrap_or_else(|| LayerView::new(n, src, 0.0)));
+                    self.portraits.push((id.clone(), layers.collect()));
+                }
                 Cmd::LoopSprite { id, flip, to } => {
                     if let Some(s) = self.sprites.iter_mut().find(|s| s.id == *id && !s.hiding) {
                         // The first leg glides from wherever the sprite is to the far values; the
@@ -1592,6 +1615,9 @@ impl View {
             let step = dt / SHADE_TIME * (1.0 - self.theme.speaker_highlight).max(0.01);
             s.shade = if (target - s.shade).abs() <= step { target } else { s.shade + step.copysign(target - s.shade) };
         }
+        for l in self.portraits.iter_mut().flat_map(|(_, ls)| ls) {
+            l.tick(dt, animate);
+        }
         self.camera.elapsed += dt;
         if let Some(shake) = &mut self.shake {
             shake.elapsed += dt;
@@ -1761,7 +1787,7 @@ impl View {
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
                 push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
             }
-            push_sprite(stage, self.picture(&self.layer_src(s, l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+            push_sprite(stage, self.picture(&self.layer_src(&s.id, self.talk_template.as_deref(), l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
         }
     }
 
@@ -2037,6 +2063,10 @@ impl View {
             }
             if let Some(src) = &self.speaker_portrait {
                 push_portrait(&mut out, src, portrait_rect(theme), box_alpha, image_size);
+            }
+            let who = self.speaker_id.as_deref().unwrap_or_default();
+            for l in self.speaker_portrait_layers() {
+                push_portrait(&mut out, self.picture(&self.layer_src(who, self.talk_portrait_template.as_deref(), l), l.anim_time), portrait_rect(theme), box_alpha, image_size);
             }
             let has_name = match &d.speaker {
                 Some(name) => {

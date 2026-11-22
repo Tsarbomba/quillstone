@@ -141,6 +141,9 @@ pub enum Cmd {
         fade: f32,
     },
     HideSprite { id: String, fade: f32 },
+    /// The layers of a character's portrait, every one in order as (layer id, picture), like a layered sprite's.
+    /// It is drawn by the textbox while that character's line is up.
+    Portrait { id: String, layers: Vec<(String, String)> },
     /// Animate a sprite to the values of `to` (see [`SpriteStep`]). `flip` is what the sprite is from the start
     /// of the move. `queued`: the next leg of a sequence: it starts when the legs before it are done.
     MoveSprite { id: String, flip: bool, to: SpriteStep, queued: bool },
@@ -590,6 +593,8 @@ pub struct State {
     /// How blurred the background is, in stage pixels (`::bg{.. blur=8}`).
     pub background_blur: f32,
     pub sprites: Vec<SpriteState>,
+    /// Each layered portrait that has been given values (`::portrait`): the character and its layers as a layered sprite has them.
+    pub portraits: Vec<(String, Vec<(String, String)>)>,
     pub camera: Camera,
     /// The ambient particles (`::particles`): only their settings. Where each one is
     /// belongs to the view, which works it out from the time.
@@ -677,6 +682,7 @@ impl State {
             background_sound: false,
             background_blur: 0.0,
             sprites: Vec::new(),
+            portraits: Vec::new(),
             camera: Camera::default(),
             particles: None,
             tint: None,
@@ -732,6 +738,9 @@ impl State {
         }
         if self.hud_off {
             out.push(Cmd::HudHidden { hidden: true, fade: 0.0 });
+        }
+        for (id, layers) in &self.portraits {
+            out.push(Cmd::Portrait { id: id.clone(), layers: layers.clone() });
         }
         for s in &self.sprites {
             out.push(Cmd::ShowSprite {
@@ -1314,26 +1323,26 @@ fn picture_path(src: &str, vars: &Vars, out: &mut Vec<Cmd>) -> String {
     }
 }
 
-/// The layers of a layered sprite after a `::show` that sets `given` of them (see [`Op::Show`]): every
-/// layer of the character in its order, the given ones resolved, the rest as the sprite on stage has them.
-/// A layer with no value (the sprite is new, or was shown as a plain pose) stays hidden, with a warning.
+/// The layers of a layered sprite or portrait after a `::show` or `::portrait` that sets `given` of them (see [`Op::Show`]):
+/// every one of `ids` in its order, the given ones resolved, the rest as `before` has them.
+/// A layer with no value (new, or a sprite shown as a plain pose) stays hidden, with a warning.
 fn merge_layers(
-    program: &Program,
+    ids: &[String],
     id: &str,
     given: &[(String, String)],
-    before: Option<&SpriteState>,
+    before: Option<&[(String, String)]>,
     vars: &Vars,
     out: &mut Vec<Cmd>,
 ) -> Vec<(String, String)> {
-    let Some(character) = program.characters.get(id) else {
+    if ids.is_empty() {
         return given.iter().map(|(l, p)| (l.clone(), picture_path(p, vars, out))).collect();
-    };
-    let mut merged = Vec::with_capacity(character.layers.len());
+    }
+    let mut merged = Vec::with_capacity(ids.len());
     let mut missing = Vec::new();
-    for layer in &character.layers {
+    for layer in ids {
         let picture = match given.iter().find(|(l, _)| l == layer) {
             Some((_, p)) => picture_path(p, vars, out),
-            None => match before.and_then(|b| b.layers.iter().find(|(l, _)| l == layer)) {
+            None => match before.and_then(|b| b.iter().find(|(l, _)| l == layer)) {
                 Some((_, p)) => p.clone(),
                 None => {
                     missing.push(layer.as_str());
@@ -1602,7 +1611,12 @@ pub(crate) fn step_traced(
                 let (y, scale) = (*y_given, *scale_given);
                 let src = &picture_path(src, &state.vars, &mut out);
                 let existing = state.sprites.iter().position(|s| s.id == *id);
-                let layers = if src.is_empty() { merge_layers(program, id, layers_given, existing.map(|i| &state.sprites[i]), &state.vars, &mut out) } else { Vec::new() };
+                let layers = if src.is_empty() {
+                    let ids = program.characters.get(id).map_or(&[][..], |c| &c.layers);
+                    merge_layers(ids, id, layers_given, existing.map(|i| state.sprites[i].layers.as_slice()), &state.vars, &mut out)
+                } else {
+                    Vec::new()
+                };
                 // A sprite already on stage keeps its place and size unless told otherwise.
                 let x = x_given.or(existing.map(|i| state.sprites[i].x)).unwrap_or(0.5);
                 let scale = scale.or(existing.map(|i| state.sprites[i].scale)).unwrap_or(1.0);
@@ -1634,6 +1648,17 @@ pub(crate) fn step_traced(
                     // The view would keep a loop whose resting values did not change: end it.
                     out.push(Cmd::MoveSprite { id: id.clone(), flip, to: state.sprites[i].rest_step(), queued: false });
                 }
+                state.pc += 1;
+            }
+            Op::Portrait { id, layers: given } => {
+                let at = state.portraits.iter().position(|(c, _)| c == id);
+                let ids = program.characters.get(id).map_or(&[][..], |c| &c.portrait_layers);
+                let layers = merge_layers(ids, id, given, at.map(|i| state.portraits[i].1.as_slice()), &state.vars, &mut out);
+                match at {
+                    Some(i) => state.portraits[i].1 = layers.clone(),
+                    None => state.portraits.push((id.clone(), layers.clone())),
+                }
+                out.push(Cmd::Portrait { id: id.clone(), layers });
                 state.pc += 1;
             }
             Op::Hide { id, fade } => {

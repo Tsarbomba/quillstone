@@ -59,3 +59,24 @@ fn a_translated_speaker_name_still_finds_the_portrait() {
     assert_eq!(g.view().dialogue.as_ref().unwrap().speaker.as_deref(), Some("Mikaela"));
     assert_eq!(pictures(&g), ["faces/mika.png"]);
 }
+
+#[test]
+fn a_layered_portrait_shows_its_current_layers_with_its_characters_lines_also_after_a_rollback() {
+    let p = parse(
+        "::character{id=mika name=Mika portrait_layers=eyes,mouth portrait_sprites=faces/{layer}_{value}.png}\n\
+         ::portrait{mika eyes=open mouth=smile}\n**Mika:** Hi.\n\n::portrait{mika eyes=side}\n**Mika:** Hm.\n\nNarration.\n",
+    )
+    .unwrap();
+    let mut g = instant_game(&p);
+    g.tick(0.5, false);
+    assert_eq!(pictures(&g), ["faces/eyes_open.png", "faces/mouth_smile.png"]);
+    g.handle(Event::Key(Key::Space));
+    g.tick(0.5, false);
+    assert_eq!(pictures(&g), ["faces/eyes_side.png", "faces/mouth_smile.png"], "a layer left out keeps its value");
+    g.handle(Event::Key(Key::Space));
+    g.tick(0.5, false);
+    assert!(pictures(&g).is_empty(), "narration");
+    g.handle(Event::Key(Key::Backspace));
+    g.handle(Event::Key(Key::Backspace));
+    assert_eq!(pictures(&g), ["faces/eyes_open.png", "faces/mouth_smile.png"], "rolled back to the first");
+}

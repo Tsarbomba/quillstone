@@ -236,7 +236,7 @@ fn talking(speed: f32, text: &str, speaker: Option<&str>) -> View {
     v.apply(&[layered("m", &FACE, 0.3, 0.0), layered("j", &FACE, 0.7, 0.0)]);
     v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }]);
     v.set_speaker(speaker.map(str::to_string), true);
-    v.set_talk(Some(("mouth".into(), "anim:flap".into())), None);
+    v.set_talk(Some(("mouth".into(), "anim:flap".into())), None, None);
     v
 }
 
@@ -276,7 +276,7 @@ fn narration_and_other_speakers_flap_nobody() {
     assert_eq!(mouths(&v), ["mouth.png", "mouth.png"]);
     v.set_speaker(Some("j".into()), true);
     assert_eq!(mouths(&v), ["mouth.png", "f1.png"], "j speaks: only j flaps");
-    v.set_talk(None, None);
+    v.set_talk(None, None, None);
     assert_eq!(mouths(&v), ["mouth.png", "mouth.png"], "a character without `talk=`");
 }
 
@@ -306,7 +306,7 @@ fn a_value_pattern_flaps_each_value_with_its_own_animation_and_skips_one_without
     v.apply(&shown("a/mouth_smile.png", "a/mouth_grin.png"));
     v.apply(&[Cmd::Say { speaker: Some("m".into()), color: None, text: "abcdefghij".into(), centred: false }]);
     v.set_speaker(Some("m".into()), true);
-    v.set_talk(Some(("mouth".into(), "anim:flap_{value}".into())), Some("a/{layer}_{value}.png".into()));
+    v.set_talk(Some(("mouth".into(), "anim:flap_{value}".into())), Some("a/{layer}_{value}.png".into()), None);
     v.tick(0.05);
     assert_eq!(mouths2(&v), ["s1.png", "a/mouth_grin.png"]);
     assert_eq!(v.shown_animations(), ["flap_open", "flap_smile"], "every animation the pattern may pick is loaded");

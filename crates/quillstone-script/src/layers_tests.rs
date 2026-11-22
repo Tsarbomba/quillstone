@@ -165,3 +165,56 @@ fn talk_may_hold_a_value_pattern_that_needs_no_declared_animation() {
     assert_eq!(crate::layer_value("a/{layer}_{value}.png", "mouth", "a/mouth_smile.png"), Some("smile"));
     assert!(crate::talk_matches("anim:flap_{value}", "flap_smile") && !crate::talk_matches("anim:flap_{value}", "flap_"));
 }
+
+const FACE: &str = "::character{id=ann name=Ann portrait_layers=eyes,mouth portrait_sprites=face/{layer}_{value}.png talk=mouth:anim:blink}\n";
+
+fn portraits(p: &Program) -> Vec<&[(String, String)]> {
+    p.ops.iter().filter_map(|o| if let Op::Portrait { layers, .. } = o { Some(layers.as_slice()) } else { None }).collect()
+}
+
+#[test]
+fn a_portrait_is_declared_from_layers_with_the_rules_of_layers() {
+    let p = ok(&format!("{FACE}::portrait{{ann eyes=open mouth=anim:blink}}\n::portrait{{ann eyes=none}}\n::portrait{{ann mouth={{mood}}}}\n"));
+    let c = &p.characters["ann"];
+    assert_eq!((c.portrait_layers.as_slice(), c.portrait_sprites.as_deref()), (&["eyes".to_string(), "mouth".to_string()][..], Some("face/{layer}_{value}.png")));
+    assert!(c.layers.is_empty() && c.portrait.is_none());
+    assert_eq!(portraits(&p), [&[pair("eyes", "face/eyes_open.png"), pair("mouth", "anim:blink")][..], &[pair("eyes", "")], &[pair("mouth", "face/mouth_{mood}.png")]]);
+    assert!(p.ops.iter().all(|o| !matches!(o, Op::Show { id, .. } if id == "ann")), "it does not put her on stage");
+    let all = p.ops.iter().flat_map(|o| o.all_assets()).filter(|(k, _)| *k == AssetKind::Image).map(|(_, a)| a).collect::<Vec<_>>();
+    assert!(all.contains(&"face/eyes_open.png") && all.contains(&"face/mouth_{mood}.png"), "{all:?}");
+}
+
+#[test]
+fn bad_portrait_declarations_are_refused() {
+    let line = |attrs: &str| errors(&format!("::character{{id=a {attrs}}}\n")).join("; ");
+    let sprites = "portrait_sprites=a/{layer}_{value}.png";
+    assert!(line("portrait_layers=eyes").contains("needs `portrait_sprites="));
+    assert!(line(sprites).contains("needs `portrait_layers="));
+    assert!(line("portrait_layers=eyes portrait_sprites=a/{layer}.png").contains("needs `{value}`"));
+    assert!(line("portrait_layers=eyes,eyes portrait_sprites=a/{layer}_{value}.png").contains("listed twice"));
+    assert!(line("portrait_layers=x portrait_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
+    assert!(line("portrait_layers=eyes portrait_sprites=a/{layer}_{value}.gif").contains("picture"));
+    assert!(line("portrait_layers=eyes portrait_sprites=../a/{layer}_{value}.png").contains("inside the game folder"));
+    let many = (0..crate::ops::MAX_LAYERS + 1).map(|i| format!("l{i}")).collect::<Vec<_>>().join(",");
+    assert!(line(&format!("portrait_layers={many} {sprites}")).contains("at most 32"));
+    assert!(line(&format!("portrait=a.png portrait_layers=eyes {sprites}")).contains("can't be used together"));
+    assert!(line("talk=nope:anim:blink portrait_layers=eyes portrait_sprites=a/{layer}_{value}.png").contains("not a layer"));
+}
+
+#[test]
+fn a_portrait_command_checks_its_character_layers_and_values() {
+    let at = |body: &str, needle: &str| {
+        let e = errors(&format!("::anim{{id=blink frames=\"e/open.png 3\"}}\n::character{{id=jo}}\n{FACE}{body}"));
+        assert!(e.iter().any(|m| m.contains(needle)), "wanted `{needle}` in {e:?}");
+    };
+    at("::portrait{ann eyes=open}\n", "must set every layer; missing: mouth");
+    at("::portrait{ann}\n", "missing: eyes, mouth");
+    at("::portrait{ann eyes=open mouth=none}\n::portrait{ann brows=high}\n", "unknown attribute `brows`");
+    at("::portrait{ann eyes=anim:nope mouth=none}\n", "nope");
+    at("::portrait{jo eyes=open}\n", "no `portrait_layers");
+    at("::portrait{bob eyes=open}\n", "unknown character `bob`");
+    at("::portrait{eyes=open}\n", "eyes");
+    // a layer left out later keeps its value, and the first one is counted per character
+    let p = ok(&format!("{FACE}::portrait{{ann eyes=open mouth=none}}\n::portrait{{ann eyes=none}}\n"));
+    assert_eq!(portraits(&p).len(), 2);
+}
