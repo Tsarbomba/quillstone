@@ -71,7 +71,7 @@ fn it_is_over_the_tint_and_the_filter_and_under_the_cover_flash_and_text() {
         set(dark(0.6, 0.5), 0.0),
         Cmd::FadeOut { time: 0.0, color: [0.0; 3] },
         Cmd::Flash { time: 1.0, color: [1.0; 3] },
-        Cmd::Say { speaker: None, text: "hello".into(), color: None, centred: false },
+        Cmd::Say { speaker: None, text: "hello".into(), color: None, place: Place::Textbox },
     ]);
     let list = v.draw_list(&img, None);
     let at = |f: &dyn Fn(&Draw) -> bool| list.iter().position(f).unwrap();

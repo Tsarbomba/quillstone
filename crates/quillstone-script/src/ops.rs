@@ -1699,14 +1699,24 @@ impl MoveStep {
     }
 }
 
+/// Where a line is shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Place {
+    /// In the textbox, replacing the line before it.
+    #[default]
+    Textbox,
+    /// Written between `::page` and `::page{off}` (the parser's flag, not a run-time mode): it stacks up on
+    /// a full-screen page instead of replacing the line in the textbox.
+    Page,
+    /// `::center`: narration shown alone in the middle of the screen, without the textbox.
+    Centre,
+}
+
 /// One instruction of the compiled script.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    /// Dialogue (`speaker` is `Some`) or narration (`None`). Waits for the player. A `page` line was
-    /// written between `::page` and `::page{off}` (the parser's flag, not a run-time mode): it stacks up on
-    /// a full-screen page instead of replacing the line in the textbox.
-    /// A `centred` line (`::center`) is narration shown alone in the middle of the screen, without the textbox.
-    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, page: bool, centred: bool },
+    /// Dialogue (`speaker` is `Some`) or narration (`None`), shown at `place`. Waits for the player.
+    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, place: Place },
     /// `::page`: start a fresh, empty page (the lines that follow stack up on it, see [`Op::Say`]).
     Page,
     /// A still image shown inline (`![alt](path)`) together with the next waiting line.

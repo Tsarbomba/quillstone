@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
+use quillstone_script::Place;
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
 use quillstone_script::{anim_id, layer_value, talk_matches, Anim, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
@@ -586,8 +587,8 @@ pub struct Dialogue {
     revealed: f32,
     /// The line ends in `{nw}`: the story goes on by itself once it is typed.
     pub auto_advance: bool,
-    /// Shown alone in the middle of the screen, without the textbox (`::center`).
-    pub centred: bool,
+    /// Where it is shown: in the textbox, on the page, or alone in the middle of the screen (`::center`).
+    pub place: Place,
 }
 
 impl Dialogue {
@@ -596,7 +597,7 @@ impl Dialogue {
         let total = text.chars().count();
         let chars = |byte: usize| text[..byte].chars().count();
         let speeds = runs.iter().filter_map(|r| Some((chars(r.start), chars(r.end), r.style.speed?))).collect();
-        let mut d = Dialogue { speaker, color, text, runs, pauses, speeds, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, centred: false };
+        let mut d = Dialogue { speaker, color, text, runs, pauses, speeds, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, place: Place::Textbox };
         if instant {
             d.show_text();
         }
@@ -900,8 +901,7 @@ pub struct View {
     pub sprites: Vec<SpriteView>,
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
-    /// The lines of the full-screen page (`::page`), the newest last (it is also `dialogue`, which types out);
-    /// empty with the textbox.
+    /// The lines of the full-screen page (`::page`) before `dialogue` (a page line, which types out), the newest last.
     pub page: Vec<PageLine>,
     pub choices: Vec<String>,
     /// Alongside `choices`: `Some(reason)` for a greyed option that can't be picked (the reason may be empty).
@@ -1235,7 +1235,7 @@ impl View {
         for cmd in cmds {
             match cmd {
                 Cmd::ClearScene => {
-                    if !self.page.is_empty() {
+                    if !self.page.is_empty() || self.dialogue.as_ref().is_some_and(|d| d.place == Place::Page) {
                         self.page.clear();
                         self.dialogue = None; // a page line was the line; the redraw sends the one that is
                     }
@@ -1361,9 +1361,9 @@ impl View {
                 Cmd::ShowImage { src, alt } => {
                     self.images.push(InlineImage { src: src.clone(), alt: alt.clone() });
                 }
-                Cmd::Say { speaker, color, text, centred } => {
+                Cmd::Say { speaker, color, text, place } => {
                     let mut d = Dialogue::new(speaker.clone(), *color, text, redraw || self.chars_per_sec <= 0.0);
-                    d.centred = *centred;
+                    d.place = *place;
                     self.dialogue = Some(d);
                     if redraw {
                         if let Some(d) = &mut self.dialogue {
@@ -1372,7 +1372,7 @@ impl View {
                     }
                 }
                 Cmd::Page { lines } => {
-                    if lines.is_empty() && !self.page.is_empty() {
+                    if lines.is_empty() && self.dialogue.as_ref().is_some_and(|d| d.place == Place::Page) {
                         self.dialogue = None; // the page's last line goes with it
                     }
                     self.page = lines.iter().map(|l| PageLine::new(l.speaker.clone(), l.color, &l.text)).collect();
@@ -2022,7 +2022,7 @@ impl View {
 
         let box_alpha = self.box_alpha();
         let shown = self.dialogue.as_ref().filter(|_| ui && box_alpha > 0.0);
-        if let Some(d) = shown.filter(|d| d.centred) {
+        if let Some(d) = shown.filter(|d| d.place == Place::Centre) {
             // A centred line: no textbox or name plate; the words in the middle of the screen.
             let size = self.text_size();
             let h = (centred_lines(self.measure(), &d.text, &d.runs, size) as f32 * line_height(size)).min(VIRTUAL.h); // too tall: the engine shrinks it
@@ -2037,12 +2037,11 @@ impl View {
                 outline: text_outline(theme),
             });
         }
-        let shown = shown.filter(|d| !d.centred);
-        let paged = !self.page.is_empty();
-        if let Some(d) = shown.filter(|_| paged) {
+        let shown = shown.filter(|d| d.place != Place::Centre);
+        if let Some(d) = shown.filter(|d| d.place == Place::Page) {
             // A page line: no textbox, name plate or portrait; the page's lines over a dimmed screen.
             out.push(Draw::Rect { rect: screen, color: faded(theme.page_color, box_alpha) });
-            let mut paras: Vec<_> = self.page[..self.page.len() - 1].iter().map(|l| l.paragraph(theme)).collect();
+            let mut paras: Vec<_> = self.page.iter().map(|l| l.paragraph(theme)).collect();
             paras.push(PageLine { speaker: d.speaker.clone(), color: d.color, text: d.text.clone(), runs: d.runs.clone() }.paragraph(theme));
             let last = paras.len() - 1;
             // Choices sit over the page: its text steps back so the buttons can be read.
@@ -2061,7 +2060,7 @@ impl View {
                 });
             }
         }
-        if let Some(d) = shown.filter(|_| !paged) {
+        if let Some(d) = shown.filter(|d| d.place == Place::Textbox) {
             // The theme's textbox picture if it is loaded, else a plain panel.
             let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
             match picture {
@@ -2503,7 +2502,7 @@ mod tests {
     use quillstone_script::parse;
 
     fn say(speaker: Option<&str>, text: &str) -> Cmd {
-        Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }
+        Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), place: Place::Textbox }
     }
 
     fn bg(src: &str, fade: f32) -> Cmd {
@@ -3357,7 +3356,7 @@ mod tests {
     #[test]
     fn name_plate_uses_the_speakers_colour() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: Some([1.0, 0.0, 0.5]), text: "hi".into(), centred: false }]);
+        v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: Some([1.0, 0.0, 0.5]), text: "hi".into(), place: Place::Textbox }]);
         let list = v.draw_list(&no_images, None);
         let name_color = list
             .iter()
@@ -3835,7 +3834,7 @@ mod tests {
     #[test]
     fn a_centred_line_has_no_textbox_and_sits_in_the_middle() {
         let mut v = View::new().with_speed(0.0);
-        v.apply(&[Cmd::Say { speaker: None, color: None, text: "Later".into(), centred: true }]);
+        v.apply(&[Cmd::Say { speaker: None, color: None, text: "Later".into(), place: Place::Centre }]);
         let list = v.draw_list(&no_images, None);
         assert!(!list.iter().any(|d| matches!(d, Draw::Rect { rect, .. } if *rect == textbox_rect(&v.theme))));
         let rect = list.iter().find_map(|d| match d {

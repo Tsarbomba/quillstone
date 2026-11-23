@@ -55,31 +55,25 @@ impl Session<'_> {
         cmds.into_iter()
             .enumerate()
             .map(|(i, cmd)| match cmd {
-                Cmd::Say { speaker, color, text, centred } => {
+                Cmd::Say { speaker, color, text, place } => {
                     let from = if i == last && matches!(self.state.pending, Some(Cmd::Say { .. })) {
                         Some((self.state.pc, vars))
                     } else {
                         self.line_source()
                     };
                     match from.and_then(|(pc, v)| self.say_in(pc, v, &speaker, cat)) {
-                        Some((speaker, text)) => Cmd::Say { speaker, color, text, centred },
-                        None => Cmd::Say { speaker, color, text, centred },
+                        Some((speaker, text)) => Cmd::Say { speaker, color, text, place },
+                        None => Cmd::Say { speaker, color, text, place },
                     }
                 }
-                // The page lines are looked up like any line: the newest is the one waiting, the earlier ones
-                // are found in the history (one it no longer holds stays in the script's language).
+                // The page lines are looked up like any line, found in the history (one it no longer holds
+                // stays in the script's language).
                 Cmd::Page { lines } => {
-                    let waiting = matches!(self.state.pending, Some(Cmd::Say { .. }));
-                    let n = lines.len();
                     let lines = lines
                         .into_iter()
-                        .enumerate()
-                        .map(|(k, line)| {
-                            let from = if k + 1 == n && waiting { Some((self.state.pc, vars)) } else { self.find_line(&line) };
-                            match from.and_then(|(pc, v)| self.say_in(pc, v, &line.speaker, cat)) {
-                                Some((speaker, text)) => Line { speaker, color: line.color, text },
-                                None => line,
-                            }
+                        .map(|line| match self.find_line(&line).and_then(|(pc, v)| self.say_in(pc, v, &line.speaker, cat)) {
+                            Some((speaker, text)) => Line { speaker, text, ..line },
+                            None => line,
                         })
                         .collect();
                     Cmd::Page { lines }
@@ -115,14 +109,7 @@ impl Session<'_> {
     /// waits at, all in `cat`'s language. Nothing else on the stage is touched.
     pub fn relocalized(&self, cat: &Catalog) -> Vec<Cmd> {
         let mut cmds: Vec<Cmd> = self.state.hud.iter().map(|h| Cmd::HudShow { elem: Box::new(h.clone()), fade: 0.0 }).collect();
-        if !self.state.page.is_empty() {
-            cmds.push(Cmd::Page { lines: self.state.page.clone() });
-        }
-        if !matches!(self.state.pending, Some(Cmd::Say { .. })) {
-            if let Some(line) = &self.state.line {
-                cmds.push(Cmd::Say { speaker: line.speaker.clone(), color: line.color, text: line.text.clone(), centred: false });
-            }
-        }
+        cmds.extend(self.state.line_cmds());
         cmds.extend(self.state.pending.clone());
         self.localize(cmds, cat)
     }
@@ -138,7 +125,7 @@ impl Session<'_> {
                 let Some(line) = state.line.clone() else { return };
                 let said = self.say_in(state.pc, &state.vars, &line.speaker, cat);
                 out.push(Logged::Line(match said {
-                    Some((speaker, text)) => crate::Line { speaker, color: line.color, text },
+                    Some((speaker, text)) => crate::Line { speaker, text, ..line },
                     None => line,
                 }));
             }

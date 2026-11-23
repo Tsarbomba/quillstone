@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, HudKind, MoveStep, Op, Particles, Program, RegionText, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
+use quillstone_script::{roll, Area, Imagemap, AssignOp, Axis, ChoiceOption, Cond, is_dynamic, Ease, Effect, Expr, Fit, HudAction, HudElem, HudKind, MoveStep, Op, Particles, Place, Program, RegionText, ShopEntry, Tint, Vignette, Filter, TimingBar, Hit, KeyPress, Value, Vars, Wipe};
 
 mod explore;
 #[cfg(test)]
@@ -95,11 +95,11 @@ pub enum Cmd {
     ClearScene,
     /// Show a line and wait for [`Input::Advance`]. `speaker: None` is narration.
     /// `color` is the speaker's name plate colour, if the character declared one.
-    /// `centred`: shown alone in the middle of the screen, without the textbox (`::center`).
-    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, centred: bool },
-    /// The lines of the full-screen page (`::page`), oldest first, the newest last: it is the line a
-    /// [`Cmd::Say`] after it shows (and that stays on screen under choices). Sent whenever the page
-    /// changes; an empty list takes the page away. A redraw sends it before the line.
+    /// `place`: in the textbox, on the full-screen page, or alone in the middle of the screen (`::center`).
+    Say { speaker: Option<String>, color: Option<[f32; 3]>, text: String, place: Place },
+    /// The lines of the full-screen page (`::page`) before the one a [`Cmd::Say`] with `Place::Page`
+    /// shows (that line stays on screen under choices), oldest first. Sent whenever they change; an empty
+    /// list takes them away, and the page line with them. A redraw sends it before the line.
     Page { lines: Vec<Line> },
     /// An inline image shown with the next waiting line.
     ShowImage { src: String, alt: String },
@@ -353,6 +353,14 @@ pub enum Input {
     Text(String),
 }
 
+impl Input {
+    /// The input calls a label from the line the story waits at and comes back to it (a Use, a HUD button
+    /// or a later reply): the line stays unread and is shown again after the label.
+    pub fn returns_to_line(&self) -> bool {
+        matches!(self, Input::Use(_) | Input::Hud(_) | Input::Reply(..))
+    }
+}
+
 /// Typed text without its control characters (newlines, tabs, escapes...).
 pub fn filter_typed(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
@@ -541,6 +549,14 @@ pub struct Line {
     pub speaker: Option<String>,
     pub color: Option<[f32; 3]>,
     pub text: String,
+    pub place: Place,
+}
+
+impl Line {
+    /// The command that shows this line.
+    pub fn say(&self) -> Cmd {
+        Cmd::Say { speaker: self.speaker.clone(), color: self.color, text: self.text.clone(), place: self.place }
+    }
 }
 
 /// A message in a thread: the player's (`mine`) or the contact's. Text is tagged text with its values put in.
@@ -665,8 +681,8 @@ pub struct State {
     /// Its volume, 0..1 (`::voice{.. volume=}`).
     pub voice_volume: f32,
     pub line: Option<Line>,
-    /// The page lines shown so far on the current full-screen page (`::page`), the newest last (that is
-    /// `line` while it waits). Empty with the textbox. It never affects control flow, so `explore` leaves it out.
+    /// The page lines before `line` on the current full-screen page (`::page`), the newest last. Empty
+    /// with the textbox. It never affects control flow, so `explore` leaves it out.
     pub page: Vec<Line>,
     /// The blocking command currently waiting for input, if any.
     pub pending: Option<Cmd>,
@@ -740,6 +756,13 @@ impl State {
             pending: None,
             finished: false,
         }
+    }
+
+    /// The page and the line on screen again: a line stays up under choices and waits; a pending Say shows itself.
+    pub(crate) fn line_cmds(&self) -> Vec<Cmd> {
+        let page = (!self.page.is_empty()).then(|| Cmd::Page { lines: self.page.clone() });
+        let line = self.line.as_ref().filter(|_| !matches!(self.pending, Some(Cmd::Say { .. }))).map(Line::say);
+        page.into_iter().chain(line).collect()
     }
 
     /// Commands that rebuild the current screen from scratch (after rollback or load).
@@ -825,20 +848,7 @@ impl State {
         if let Some(src) = &self.voice {
             out.push(Cmd::PlayVoice { src: src.clone(), volume: self.voice_volume });
         }
-        if !self.page.is_empty() {
-            out.push(Cmd::Page { lines: self.page.clone() });
-        }
-        // A line stays on screen under choices and waits; a pending Say shows itself.
-        if !matches!(self.pending, Some(Cmd::Say { .. })) {
-            if let Some(line) = &self.line {
-                out.push(Cmd::Say {
-                    speaker: line.speaker.clone(),
-                    color: line.color,
-                    text: line.text.clone(),
-                    centred: false,
-                });
-            }
-        }
+        out.extend(self.line_cmds());
         out.extend(self.pending.clone());
         if self.finished {
             out.push(Cmd::Finished);
@@ -965,18 +975,13 @@ pub fn waits_at_line(state: &State) -> bool {
 /// A call that comes back to this same line, which is shown again. Passing the label's start
 /// counts a visit for `seen(label)`; the return takes that one back ([`return_to`]), but only when
 /// the label does come back (one that jumps away leaves the count as it was).
-fn call_from_line(state: &mut State, program: &Program, label: &str) {
-    unshow_page_line(state);
-    state.stack.push(Frame { ret: state.pc, line: true });
-    state.pc = program.labels[label];
-}
-
-/// A page line that is shown again later (after a line call returns, or a load that re-runs it) leaves
-/// the page now, so it joins the page once, not twice. A waiting line with a page is always its last entry.
-pub(crate) fn unshow_page_line(state: &mut State) {
-    if matches!(state.pending, Some(Cmd::Say { .. })) {
-        state.page.pop();
+fn call_from_line(state: &mut State, target: usize) {
+    // A page line that is shown again after the return leaves now, so it joins the page once, not twice.
+    if matches!(state.pending, Some(Cmd::Say { .. })) && state.line.as_ref().is_some_and(|l| l.place == Place::Page) {
+        state.line = None;
     }
+    state.stack.push(Frame { ret: state.pc, line: true });
+    state.pc = target;
 }
 
 /// Move the visit counters of the labels at `pc` (`seen(label)`) by `delta`; a counter not set yet starts at `default`.
@@ -995,7 +1000,7 @@ pub(crate) fn returned_to_line(before: &State, after: &State, input: &Input) -> 
     matches!(after.pending, Some(Cmd::Say { .. }))
         && (after.stack.len() < before.stack.len()
             && matches!(before.stack.get(after.stack.len()), Some(Frame { ret, line: true }) if *ret == after.pc)
-            || matches!(input, Input::Use(_) | Input::Hud(_) | Input::Reply(..))
+            || input.returns_to_line()
                 && matches!(before.pending, Some(Cmd::Say { .. }))
                 && (after.pc, after.stack.len()) == (before.pc, before.stack.len()))
 }
@@ -1008,32 +1013,23 @@ fn return_to(state: &mut State, program: &Program, frame: Frame) {
     state.pc = frame.ret;
 }
 
-/// The label of the shown HUD element `id` when it is a `call=` or `jump=` button, and whether it jumps.
-fn hud_call(program: &Program, state: &State, id: &str) -> Option<(String, bool)> {
-    let elem = state.hud.iter().find(|h| h.id == id)?;
-    match &elem.action {
-        Some(HudAction::Call(l)) if program.labels.contains_key(l) => Some((l.clone(), false)),
-        Some(HudAction::Jump(l)) if program.labels.contains_key(l) => Some((l.clone(), true)),
-        _ => None,
-    }
+/// Whether a HUD element is shown now: its `if=` holds, and a text has something left to show once its
+/// values are in and its tags are removed.
+pub fn hud_shown(elem: &HudElem, vars: &Vars) -> bool {
+    elem.cond.as_ref().is_none_or(|c| c.expr.test(vars))
+        && !matches!(&elem.kind, HudKind::Text { text, .. } if quillstone_script::markup::rich(&interpolate(text, vars)).text.trim().is_empty())
 }
 
-/// Whether the HUD button `id` may be pressed now: it is shown (its `if=` holds), the story waits at a
+/// Whether the HUD button `id` may be pressed now: it is shown (see [`hud_shown`]), the story waits at a
 /// line (see [`waits_at_line`]), and a `call=` button also has room on the call stack.
-/// Whether a HUD text, with its values filled in (`shown`), has nothing to show once its tags are removed.
-pub fn text_blank(shown: &str) -> bool {
-    quillstone_script::markup::rich(shown).text.trim().is_empty()
-}
-
 pub fn can_press(program: &Program, state: &State, id: &str) -> bool {
     let Some(elem) = state.hud.iter().find(|h| h.id == id) else { return false };
     !state.hud_off
         && waits_at_line(state)
-        && elem.cond.as_ref().is_none_or(|c| c.expr.test(&state.vars))
-        && !matches!(&elem.kind, HudKind::Text { text, .. } if text_blank(&interpolate(text, &state.vars)))
+        && hud_shown(elem, &state.vars)
         && match &elem.action {
-            Some(HudAction::Call(_)) => state.stack.len() < MAX_CALL_DEPTH && hud_call(program, state, id).is_some(),
-            Some(HudAction::Jump(_)) => hud_call(program, state, id).is_some(),
+            Some(HudAction::Call(l)) => state.stack.len() < MAX_CALL_DEPTH && program.labels.contains_key(l),
+            Some(HudAction::Jump(l)) => program.labels.contains_key(l),
             Some(HudAction::Open(_)) => true,
             None => false,
         }
@@ -1151,9 +1147,6 @@ pub(crate) fn refresh_pending(state: &mut State, program: &Program) {
     }
     if let Some(cmd) = rebuild_pending(program, op, &state.vars, &|s| s.to_string()) {
         remember_line(state, &cmd);
-        if let (Cmd::Say { .. }, Some(last)) = (&cmd, state.page.last_mut()) {
-            *last = state.line.clone().unwrap(); // the page line on screen shows the refreshed text
-        }
         state.pending = Some(cmd);
     }
     if waits_on_nothing(state, program) {
@@ -1183,27 +1176,29 @@ pub(crate) fn screen_matches(pending: &Cmd, op: &Op) -> bool {
 
 /// A line that is shown is also the current line (what the backlog and the textbox read).
 fn remember_line(state: &mut State, cmd: &Cmd) {
-    if let Cmd::Say { speaker, color, text, .. } = cmd {
-        state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone() });
+    if let Cmd::Say { speaker, color, text, place } = cmd {
+        state.line = Some(Line { speaker: speaker.clone(), color: *color, text: text.clone(), place: *place });
     }
 }
 
-/// The line just remembered is a page line (`page`) and joins the page, or a textbox line that takes the
-/// page away. A page that is full starts afresh.
-fn show_page(state: &mut State, out: &mut Vec<Cmd>, page: bool) {
-    if !page {
+/// Before the line at `place` is remembered: a page line takes the page line before it onto the page
+/// (a page that is full starts afresh); any other place takes the page away.
+fn show_page(state: &mut State, out: &mut Vec<Cmd>, place: Place) {
+    if place != Place::Page {
         return clear_page(state, out);
     }
-    if state.page.len() >= MAX_PAGE_LINES {
+    let Some(before) = state.line.clone().filter(|l| l.place == Place::Page) else { return };
+    if state.page.len() + 1 >= MAX_PAGE_LINES {
         state.page.clear();
+    } else {
+        state.page.push(before);
     }
-    state.page.extend(state.line.clone());
     out.push(Cmd::Page { lines: state.page.clone() });
 }
 
-/// Take the page away (when there is one).
+/// Take the page away (when there is one: the lines before the page line, or the page line itself).
 fn clear_page(state: &mut State, out: &mut Vec<Cmd>) {
-    if !state.page.is_empty() {
+    if !state.page.is_empty() || state.line.as_ref().is_some_and(|l| l.place == Place::Page) {
         state.page.clear();
         out.push(Cmd::Page { lines: Vec::new() });
     }
@@ -1215,8 +1210,8 @@ fn clear_page(state: &mut State, out: &mut Vec<Cmd>) {
 /// changed variable rebuilds them).
 pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dyn Fn(&str) -> String) -> Option<Cmd> {
     match op {
-        Op::Say { speaker, color, text, centred, .. } => {
-            Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars), centred: *centred })
+        Op::Say { speaker, color, text, place } => {
+            Some(Cmd::Say { speaker: speaker_name(program, speaker, vars), color: *color, text: interpolate(text, vars), place: *place })
         }
         Op::Choice { options, map, .. } => Some(choice_cmd(options, map, &visible_options(options, vars), vars, text)),
         Op::Inventory => Some(Cmd::ShowInventory),
@@ -1234,10 +1229,10 @@ pub(crate) fn rebuild_pending(program: &Program, op: &Op, vars: &Vars, text: &dy
 /// Show the screen the waiting op `op` stands for and wait at it.
 fn show_screen(state: &mut State, program: &Program, op: &Op, out: &mut Vec<Cmd>) -> Vec<Cmd> {
     let cmd = rebuild_pending(program, op, &state.vars, &|s| s.to_string()).expect("a waiting op has a screen");
-    remember_line(state, &cmd);
-    if let Op::Say { page, .. } = op {
-        show_page(state, out, *page);
+    if let Op::Say { place, .. } = op {
+        show_page(state, out, *place);
     }
+    remember_line(state, &cmd);
     block(state, out, cmd)
 }
 
@@ -1465,15 +1460,19 @@ pub(crate) fn step_traced(
                 if !can_use(program, state, &id) {
                     return Vec::new();
                 }
-                call_from_line(state, program, program.items[&id].use_label.as_ref().expect("checked by can_use"));
+                call_from_line(state, program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")]);
             }
             (Cmd::Say { .. }, Some(Input::Hud(id))) => {
-                let Some((label, jump)) = hud_call(program, state, &id).filter(|_| can_press(program, state, &id)) else { return Vec::new() };
-                if jump {
-                    state.stack.clear();
-                    state.pc = program.labels[&label];
-                } else {
-                    call_from_line(state, program, &label);
+                if !can_press(program, state, &id) {
+                    return Vec::new();
+                }
+                match state.hud.iter().find(|h| h.id == id).and_then(|h| h.action.as_ref()) {
+                    Some(HudAction::Call(l)) => call_from_line(state, program.labels[l]),
+                    Some(HudAction::Jump(l)) => {
+                        state.stack.clear();
+                        state.pc = program.labels[l];
+                    }
+                    _ => return Vec::new(), // `Open` is the frontend's
                 }
             }
             (Cmd::Say { .. }, Some(Input::Reply(id, i))) => {
@@ -1488,9 +1487,7 @@ pub(crate) fn step_traced(
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 }
-                unshow_page_line(state);
-                state.stack.push(Frame { ret: state.pc, line: true });
-                state.pc = chosen.target;
+                call_from_line(state, chosen.target);
             }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
                 let Some(Op::Input { var, default, max, number, .. }) = program.ops.get(state.pc) else { return Vec::new() };
@@ -1534,9 +1531,10 @@ pub(crate) fn step_traced(
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 }
                 if call {
-                    state.stack.push(Frame { ret: state.pc, line: true });
+                    call_from_line(state, chosen.target);
+                } else {
+                    state.pc = chosen.target;
                 }
-                state.pc = chosen.target;
             }
             _ => return Vec::new(),
         }
@@ -1567,15 +1565,15 @@ pub(crate) fn step_traced(
                 return show_screen(state, program, op, &mut out);
             }
             Op::Video { src, fit, looped, skippable } => {
-                state.line = None;
                 clear_page(state, &mut out);
+                state.line = None;
                 let cmd = Cmd::PlayVideo { src: src.clone(), fit: *fit, looped: *looped, skippable: *skippable };
                 return block(state, &mut out, cmd);
             }
             Op::Page => {
-                if !state.page.is_empty() {
-                    state.line = None;
+                if state.line.as_ref().is_some_and(|l| l.place == Place::Page) {
                     clear_page(state, &mut out);
+                    state.line = None;
                 }
                 state.pc += 1;
             }
@@ -1773,10 +1771,11 @@ pub(crate) fn step_traced(
                 state.pc += 1;
             }
             Op::Reply { to, options } => {
-                match options.is_empty() {
+                if options.is_empty() {
                     // Taking a reply away makes no thread of its own.
-                    true => state.threads.iter_mut().filter(|t| t.id == *to).for_each(|t| t.reply = None),
-                    false => state.thread(to).reply = Some(state.pc),
+                    state.threads.iter_mut().filter(|t| t.id == *to).for_each(|t| t.reply = None);
+                } else {
+                    state.thread(to).reply = Some(state.pc);
                 }
                 state.pc += 1;
             }
@@ -2095,7 +2094,7 @@ mod tests {
     use quillstone_script::{parse, Value};
 
     fn say(speaker: &str, text: &str) -> Cmd {
-        Cmd::Say { speaker: Some(speaker.into()), color: None, text: text.into(), centred: false }
+        Cmd::Say { speaker: Some(speaker.into()), color: None, text: text.into(), place: Place::Textbox }
     }
 
     fn int(n: i64) -> Value {
@@ -2257,7 +2256,7 @@ vars: { trust: 0 }
     fn the_backlog_lists_lines_and_choices_and_follows_rollback() {
         let p = parse(STORY).unwrap();
         let (mut game, _) = Session::start(&p);
-        let line = |t: &str| Logged::Line(Line { speaker: Some("A".into()), color: None, text: t.into() });
+        let line = |t: &str| Logged::Line(Line { speaker: Some("A".into()), color: None, text: t.into(), place: Place::Textbox });
         assert_eq!(game.backlog(), vec![line("First.")]);
         game.input(Input::Advance);
         assert!(game.input(Input::Advance).is_empty()); // ignored input leaves no trace
@@ -2335,7 +2334,7 @@ vars: { trust: 0 }
     fn the_backlog_and_saves_follow_roll_forward() {
         let p = parse(STORY).unwrap();
         let (mut game, _) = Session::start(&p);
-        let line = |t: &str| Logged::Line(Line { speaker: Some("A".into()), color: None, text: t.into() });
+        let line = |t: &str| Logged::Line(Line { speaker: Some("A".into()), color: None, text: t.into(), place: Place::Textbox });
         game.input(Input::Advance);
         game.input(Input::Choose(1));
         let full = game.backlog();
@@ -2444,7 +2443,7 @@ vars: { trust: 0 }
         assert_eq!(game.input(Input::Choose(1)), vec![say_none("done")]);
 
         fn say_none(t: &str) -> Cmd {
-            Cmd::Say { speaker: Some("A".into()), color: None, text: t.into(), centred: false }
+            Cmd::Say { speaker: Some("A".into()), color: None, text: t.into(), place: Place::Textbox }
         }
     }
 

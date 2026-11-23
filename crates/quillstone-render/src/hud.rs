@@ -3,7 +3,7 @@
 //! bar fractions, conditions) is worked out each time the draw list is built, from the
 //! variables the game last handed over with [`HudLayer::set_vars`].
 
-use quillstone_runtime::{interpolate, text_blank, Cmd};
+use quillstone_runtime::{hud_shown, interpolate, Cmd};
 use quillstone_script::markup::rich;
 use quillstone_script::{HudElem, HudKind, Vars};
 
@@ -166,7 +166,7 @@ impl HudLayer {
     fn draw_item(&self, item: &Item, theme: &Theme, image_size: &dyn Fn(&str) -> Option<Size>, look: HudLook, measure: Option<Measure>, out: &mut Vec<Draw>) -> Option<Rect> {
         let e = &item.elem;
         let fade = item.fade.alpha * self.master.alpha;
-        if e.cond.as_ref().is_some_and(|c| !c.expr.test(&self.vars)) {
+        if !hud_shown(e, &self.vars) {
             return None;
         }
         let button = e.action.is_some();
@@ -176,9 +176,6 @@ impl HudLayer {
         match &e.kind {
             HudKind::Text { text, size, color, back, pad, width } => {
                 let shown = interpolate(text, &self.vars);
-                if text_blank(&shown) {
-                    return None;
-                }
                 let size = size.unwrap_or(theme.text_size); // the writer's layout: HUD text does not follow the player's text size
                 let color = faded(color.unwrap_or(theme.text_color), alpha);
                 let back = back.map(|b| faded(b, alpha));

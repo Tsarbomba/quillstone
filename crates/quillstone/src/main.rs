@@ -1,7 +1,7 @@
 //! Quillstone command line: `check`, `test`, `voices`, `dump`, a text-mode `run`, and `package`.
 //! The windowed player is its own crate, in `player/`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::{annotated, plain};
 use quillstone_script::markup::MAX_PAUSE;
-use quillstone_script::{kind_from_path, AssetKind, Op, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
+use quillstone_script::{kind_from_path, AssetKind, Op, Place, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
 
 mod graph;
 mod lang;
@@ -566,21 +566,34 @@ fn icon_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> 
     }
 }
 
+/// `(pc, is a portrait, layers)` of a `::show` or `::portrait` op.
+type LayerOp<'a> = (usize, bool, &'a [(String, String)]);
+
+/// Each character's `::show` and `::portrait` ops with layers, in script order: `(pc, is a portrait, layers)`.
+fn layer_ops(program: &Program) -> HashMap<&str, Vec<LayerOp<'_>>> {
+    let mut by_character: HashMap<&str, Vec<_>> = HashMap::new();
+    for (pc, op) in program.ops.iter().enumerate() {
+        match op {
+            Op::Show { id, layers, .. } => by_character.entry(id).or_default().push((pc, false, layers.as_slice())),
+            Op::Portrait { id, layers } => by_character.entry(id).or_default().push((pc, true, layers.as_slice())),
+            _ => {}
+        }
+    }
+    by_character
+}
+
 /// The pictures of a character's layers must all have the canvas size of the first one (they are drawn
 /// stacked in the same place and size): one warning for each file that differs. Files that can't be read
 /// are reported elsewhere. `(is an error, message)`, like [`picture_findings`].
 fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
+    let ops = layer_ops(program);
     // A character's sprite layers and its portrait layers are two stacks, each on its own canvas.
     let stacks = program.characters.values().flat_map(|c| [(c, false, !c.layers.is_empty()), (c, true, !c.portrait_layers.is_empty())]).filter(|s| s.2);
     for (character, portrait, _) in stacks {
         // (line, file) in script order, each file once.
         let mut files: Vec<(usize, String)> = Vec::new();
-        for (pc, op) in program.ops.iter().enumerate() {
-            let (Op::Show { id, layers, .. } | Op::Portrait { id, layers }) = op else { continue };
-            if *id != character.id || matches!(op, Op::Portrait { .. }) != portrait {
-                continue;
-            }
+        for &(pc, _, layers) in ops.get(character.id.as_str()).into_iter().flatten().filter(|o| o.1 == portrait) {
             for (_, picture) in layers {
                 let named: Vec<String> = match quillstone_script::anim_id(picture).and_then(|a| program.anims.get(a)) {
                     Some(anim) => anim.frames.iter().filter(|f| !f.file.is_empty()).map(|f| f.file.clone()).collect(),
@@ -619,21 +632,17 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
 /// (all of them when a value is not known, such as one built from a variable): a warning, as some values may well stay still.
 fn talk_pattern_findings(program: &Program, script: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
+    let ops = layer_ops(program);
     for c in program.characters.values() {
         let Some((layer, pattern)) = &c.talk else { continue };
         if !pattern.contains("{value}") {
             continue;
         }
         let (mut values, mut first, mut known) = (Vec::new(), None, true);
-        for (pc, op) in program.ops.iter().enumerate() {
+        for &(pc, portrait, layers) in ops.get(c.id.as_str()).into_iter().flatten() {
             // The talk layer is one of the sprite's or of the portrait's, each with its own picture template.
-            let (id, layers, template) = match op {
-                Op::Show { id, layers, .. } => (id, layers, &c.layer_sprites),
-                Op::Portrait { id, layers } => (id, layers, &c.portrait_sprites),
-                _ => continue,
-            };
-            let Some(template) = template else { continue };
-            for (_, picture) in layers.iter().filter(|(l, p)| *id == c.id && l == layer && !p.is_empty()) {
+            let Some(template) = (if portrait { &c.portrait_sprites } else { &c.layer_sprites }) else { continue };
+            for (_, picture) in layers.iter().filter(|(l, p)| l == layer && !p.is_empty()) {
                 first.get_or_insert(pc);
                 match quillstone_script::layer_value(template, layer, picture) {
                     Some(v) if !quillstone_script::is_pattern(picture) => values.push(v),
@@ -734,37 +743,39 @@ fn line_warnings(program: &Program, theme: &quillstone_render::Theme, fonts: Opt
     let mut out = Vec::new();
     for (pc, op) in program.ops.iter().enumerate() {
         match op {
-            // A page line is judged against the page: too long only if it alone doesn't fit a page.
-            Op::Say { speaker, text, page: true, .. } => {
-                // The page lays itself out by the real measure, so a line is too long as soon as it overflows.
-                let real = fonts.map(|f| move |t: &str, s: f32, w: f32| f.measure(t, s, w));
-                let measure = real.as_ref().map(|m| m as quillstone_render::Measure);
-                let (lines, fit) = quillstone_render::view::page_lines_measured(theme, speaker.as_deref(), text, theme.text_size, measure);
-                if lines > fit + usize::from(measure.is_none()) {
-                    out.push((
-                        program.lines[pc],
-                        format!(
-                            "this line takes about {lines} lines and a page fits {fit}; it will be shown \
-                             smaller, or cut off if very long (split it into two lines?)"
-                        ),
-                    ));
+            Op::Say { speaker, text, place, .. } => match place {
+                // A page line is judged against the page: too long only if it alone doesn't fit a page.
+                Place::Page => {
+                    // The page lays itself out by the real measure, so a line is too long as soon as it overflows.
+                    let real = fonts.map(|f| move |t: &str, s: f32, w: f32| f.measure(t, s, w));
+                    let measure = real.as_ref().map(|m| m as quillstone_render::Measure);
+                    let (lines, fit) = quillstone_render::view::page_lines_measured(theme, speaker.as_deref(), text, theme.text_size, measure);
+                    if lines > fit + usize::from(measure.is_none()) {
+                        out.push((
+                            program.lines[pc],
+                            format!(
+                                "this line takes about {lines} lines and a page fits {fit}; it will be shown \
+                                 smaller, or cut off if very long (split it into two lines?)"
+                            ),
+                        ));
+                    }
                 }
-            }
-            // A centred line is judged against the screen at the centred width.
-            Op::Say { text, centred: true, .. } => {
-                let quillstone_script::markup::Rich { text: words, runs, .. } = quillstone_script::markup::rich(text);
-                let fit = (quillstone_render::VIRTUAL.h / quillstone_render::line_height(theme.text_size)).floor() as usize;
-                let lines = quillstone_render::view::centred_lines(None, &words, &runs, theme.text_size);
-                let screen = quillstone_render::view::centred_rect(quillstone_render::VIRTUAL.h);
-                let msg = too_long(fonts, text, screen, theme.text_size, (lines, fit), ["this line", "the screen", "split it into two lines?"]);
-                out.extend(msg.map(|m| (program.lines[pc], m)));
-            }
-            Op::Say { speaker, text, .. } => {
-                let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
-                let body = quillstone_render::dialogue_body(theme, speaker.is_some());
-                let msg = too_long(fonts, text, body, theme.text_size, (lines, fit), ["this line", "the textbox", "split it into two lines?"]);
-                out.extend(msg.map(|m| (program.lines[pc], m)));
-            }
+                // A centred line is judged against the screen at the centred width.
+                Place::Centre => {
+                    let quillstone_script::markup::Rich { text: words, runs, .. } = quillstone_script::markup::rich(text);
+                    let fit = (quillstone_render::VIRTUAL.h / quillstone_render::line_height(theme.text_size)).floor() as usize;
+                    let lines = quillstone_render::view::centred_lines(None, &words, &runs, theme.text_size);
+                    let screen = quillstone_render::view::centred_rect(quillstone_render::VIRTUAL.h);
+                    let msg = too_long(fonts, text, screen, theme.text_size, (lines, fit), ["this line", "the screen", "split it into two lines?"]);
+                    out.extend(msg.map(|m| (program.lines[pc], m)));
+                }
+                Place::Textbox => {
+                    let (lines, fit) = quillstone_render::view::dialogue_lines_tagged(theme, text, speaker.is_some(), theme.text_size);
+                    let body = quillstone_render::dialogue_body(theme, speaker.is_some());
+                    let msg = too_long(fonts, text, body, theme.text_size, (lines, fit), ["this line", "the textbox", "split it into two lines?"]);
+                    out.extend(msg.map(|m| (program.lines[pc], m)));
+                }
+            },
             Op::Choice { options, time, .. } => {
                 if let Some(t) = time.filter(|t| *t < MIN_READABLE_TIME) {
                     out.push((
@@ -907,12 +918,8 @@ fn check_extras(program: &Program, path: &Path, root: &Path) -> Vec<Finding> {
         }
     }
     for thumb in program.chapter_thumbs() {
-        let file = root.join(thumb);
-        if !file.exists() {
-            problem(format!("missing chapter thumbnail `{thumb}`"));
-        } else if let Err(why) = picture::read_picture(&file) {
-            problem(format!("`{thumb}` won't play in a shipped game: {why}"));
-        }
+        let msg = asset_problem(root, thumb, "chapter thumbnail", "won't play in a shipped game", |f| picture::read_picture(f).err());
+        msg.into_iter().for_each(&mut problem);
     }
     found
 }
@@ -1549,24 +1556,11 @@ mod tests {
 
     #[test]
     fn check_judges_the_game_icon() {
-        let png = |w: u32, h: u32| {
-            let mut out = std::io::Cursor::new(Vec::new());
-            image::RgbaImage::new(w, h).write_to(&mut out, image::ImageFormat::Png).unwrap();
-            out.into_inner()
-        };
+        let png = picture::fake_png;
         let script = "---\nicon: assets/icon.png\n---\nHi.\n";
         let findings = |files: &[(&str, &[u8])]| {
-            let dir = std::env::temp_dir().join(format!("quillstone-check-icon-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(dir.join("assets")).unwrap();
-            for (name, bytes) in files {
-                std::fs::write(dir.join(name), bytes).unwrap();
-            }
-            std::fs::write(dir.join("s.quill.md"), script).unwrap();
-            let program = load(&dir.join("s.quill.md")).unwrap();
-            let found = icon_findings(&program, &dir.join("s.quill.md"), &dir);
-            std::fs::remove_dir_all(&dir).unwrap();
-            found
+            let files = [files, &[("s.quill.md", script.as_bytes())]].concat();
+            in_dir(&files, |dir| icon_findings(&load(&dir.join("s.quill.md")).unwrap(), &dir.join("s.quill.md"), dir))
         };
         assert!(findings(&[("assets/icon.png", &png(256, 256))]).is_empty());
         assert!(findings(&[("assets/icon.png", &png(512, 512))]).is_empty());
@@ -1588,21 +1582,10 @@ mod tests {
     fn check_judges_character_portraits_as_pictures_with_the_line_of_the_character() {
         let script = "Hi.\n::character{id=mika portrait=faces/mika.png}\n**Mika:** Hello.\n";
         let findings = |files: &[(&str, &[u8])]| {
-            let dir = std::env::temp_dir().join(format!("quillstone-check-portrait-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(dir.join("faces")).unwrap();
-            for (name, bytes) in files {
-                std::fs::write(dir.join(name), bytes).unwrap();
-            }
-            std::fs::write(dir.join("s.quill.md"), script).unwrap();
-            let program = load(&dir.join("s.quill.md")).unwrap();
-            let found = picture_findings(&program, &dir.join("s.quill.md"), &dir, &HashSet::new());
-            std::fs::remove_dir_all(&dir).unwrap();
-            found
+            let files = [files, &[("s.quill.md", script.as_bytes())]].concat();
+            in_dir(&files, |dir| picture_findings(&load(&dir.join("s.quill.md")).unwrap(), &dir.join("s.quill.md"), dir, &HashSet::new()))
         };
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::RgbaImage::new(600, 900).write_to(&mut png, image::ImageFormat::Png).unwrap();
-        assert!(findings(&[("faces/mika.png", &png.into_inner())]).is_empty(), "a tall portrait is no oversized icon");
+        assert!(findings(&[("faces/mika.png", &picture::fake_png(600, 900))]).is_empty(), "a tall portrait is no oversized icon");
         let f = findings(&[]);
         assert!(f.len() == 1 && f[0].0 && f[0].1.contains(":2:") && f[0].1.contains("missing portrait"), "{f:?}");
         let f = findings(&[("faces/mika.png", b"not a picture")]);

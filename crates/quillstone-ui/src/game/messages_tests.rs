@@ -185,3 +185,15 @@ fn a_message_and_a_reply_with_variables_are_translated_by_their_source_and_keep_
     assert_eq!(g.state().vars["name"], Value::Str("Cy".into()), "the option's effect ran");
     assert_eq!(said(&g), ["Hej Bob!", "Jag är Bob"], "a later change of the variable leaves old messages alone");
 }
+
+#[test]
+fn a_reply_picked_from_the_phone_leaves_the_line_unread_like_a_use_does() {
+    let src = PHONE.replace("# fine\n**B:** fine!\n", "# fine\n::message{from=mika text=\"Great\"}\n");
+    let p = parse(&src).unwrap();
+    let mut g = new_game(&p, instant());
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    g.forward(Input::Reply("mika".into(), 0));
+    assert_eq!(line(&g), "two", "the label sent no line: back at the same one");
+    assert!(!g.current_line_read(), "a call from the line does not read it");
+}

@@ -1175,7 +1175,7 @@ impl Parser {
         if let Err(m) = crate::markup::check_markup(&text) {
             self.err(line, m);
         }
-        self.push(Op::Say { speaker, color: None, text, page: self.page, centred: false }, line);
+        self.push(Op::Say { speaker, color: None, text, place: if self.page { Place::Page } else { Place::Textbox } }, line);
     }
 
     /// `::center text`: a line of narration shown alone, centred on the screen (no textbox, not a page line).
@@ -1190,7 +1190,7 @@ impl Parser {
         if let Err(m) = crate::markup::check_markup(text) {
             self.err(line, m);
         }
-        self.push(Op::Say { speaker: None, color: None, text: text.to_string(), page: false, centred: true }, line);
+        self.push(Op::Say { speaker: None, color: None, text: text.to_string(), place: Place::Centre }, line);
     }
 
     fn image(&mut self, line: usize, alt: &str, path: &str) {
@@ -3930,7 +3930,7 @@ mod tests {
     }
 
     fn say(speaker: Option<&str>, text: &str) -> Op {
-        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), page: false, centred: false }
+        Op::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), place: Place::Textbox }
     }
 
     fn int(n: i64) -> Expr {
@@ -3983,7 +3983,7 @@ mod tests {
     }
 
     fn page_flags(p: &Program) -> Vec<(&str, bool)> {
-        p.ops.iter().filter_map(|op| if let Op::Say { text, page, .. } = op { Some((text.as_str(), *page)) } else { None }).collect()
+        p.ops.iter().filter_map(|op| if let Op::Say { text, place, .. } = op { Some((text.as_str(), *place == Place::Page)) } else { None }).collect()
     }
 
     #[test]
@@ -4079,8 +4079,8 @@ mod tests {
     #[test]
     fn a_centred_line_is_narration_marked_centred() {
         let p = parse("::center Three days {u}later{/u}…\n\n**Mia:** Hi.\n").unwrap();
-        assert!(matches!(&p.ops[0], Op::Say { speaker: None, text, page: false, centred: true, .. } if text == "Three days {u}later{/u}…"));
-        assert!(matches!(&p.ops[1], Op::Say { centred: false, .. }));
+        assert!(matches!(&p.ops[0], Op::Say { speaker: None, text, place: Place::Centre, .. } if text == "Three days {u}later{/u}…"));
+        assert!(matches!(&p.ops[1], Op::Say { place: Place::Textbox, .. }));
         assert!(parse("::center\n").is_err());
         assert!(parse("::center{x=1}\n").is_err());
         assert!(parse("::center {x=1}\n").is_err());
@@ -4220,7 +4220,7 @@ mod tests {
         let col = c.color.unwrap();
         assert!((col[0] - 1.0).abs() < 1e-6 && (col[1] - 0xd9 as f32 / 255.0).abs() < 1e-6);
         // speaker names are matched case-insensitively and normalised to the display name
-        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into(), page: false, centred: false });
+        assert_eq!(p.ops[0], Op::Say { speaker: Some("Mika".into()), color: c.color, text: "hi".into(), place: Place::Textbox });
         assert_eq!(p.ops[1], say(Some("Someone"), "yo"));
     }
 

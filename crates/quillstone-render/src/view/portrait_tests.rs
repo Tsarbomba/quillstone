@@ -2,7 +2,7 @@ use super::*;
 
 fn speaking(theme: Theme, portrait: Option<&str>) -> View {
     let mut v = View::new().with_theme(theme);
-    v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into(), centred: false }]);
+    v.apply(&[Cmd::Say { speaker: Some("Mika".into()), color: None, text: "Hi.".into(), place: Place::Textbox }]);
     v.set_portrait(portrait.map(str::to_string));
     v
 }
@@ -38,7 +38,7 @@ fn the_portrait_is_drawn_after_the_textbox_panel_and_before_the_name_and_the_lin
 #[test]
 fn narration_and_a_speaker_without_a_portrait_draw_none() {
     let mut narrated = speaking(Theme::default(), None);
-    narrated.apply(&[Cmd::Say { speaker: None, color: None, text: "Rain.".into(), centred: false }]);
+    narrated.apply(&[Cmd::Say { speaker: None, color: None, text: "Rain.".into(), place: Place::Textbox }]);
     narrated.set_portrait(None);
     assert!(faces(&list(&narrated)).is_empty());
     assert!(faces(&list(&speaking(Theme::default(), None))).is_empty());
@@ -80,7 +80,7 @@ fn layered_faces(speaker: Option<&str>, text: &str) -> View {
     let mut v = View::new().with_speed(10.0).with_anims(&anims);
     let face = |id: &str, layers: &[(&str, &str)]| Cmd::Portrait { id: id.into(), layers: layers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
     v.apply(&[face("mika", &[("eyes", "anim:blink"), ("mouth", "mouth.png")]), face("jo", &[("eyes", "jo.png")])]);
-    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }]);
+    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), place: Place::Textbox }]);
     v.set_speaker(speaker.map(str::to_string), true);
     v.set_talk(Some(("mouth".into(), "anim:flap".into())), None, None);
     v

@@ -10,11 +10,11 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Program, Tint, Vignette, VIGNETTE_RANGE, Filter, FILTER_AMOUNT, FILTER_GAIN, POSITION, TINT_ALPHA, Value, Vars};
+use quillstone_script::{bg_color, is_inside, normal_path, kind_from_path, AssetKind, ParticleKind, Particles, Fit, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, HudAction, HudElem, HudExpr, HudKind, HudScreen, Op, Place, Program, Tint, Vignette, VIGNETTE_RANGE, Filter, FILTER_AMOUNT, FILTER_GAIN, POSITION, TINT_ALPHA, Value, Vars};
 
 use quillstone_script::{KeyPress, TimingBar, INPUT_MAX_CAP};
 use quillstone_script::{Ease, ANIM_PREFIX, MAX_MOVE_STEPS, SPRITE_BLUR, SPRITE_BRIGHTNESS, SPRITE_OFFSET};
-use crate::{filter_typed, rebuild_pending, screen_matches, step, unshow_page_line, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
+use crate::{filter_typed, rebuild_pending, screen_matches, step, Camera, Cmd, Frame, Input, Line, MusicState, Session, SfxLoopState, SpriteState, SpriteStep, State};
 
 /// The longest leg of a looping move a save may hold (the script's own limit is far lower in practice).
 const MAX_LOOP_LEG: f32 = 3600.0;
@@ -183,7 +183,6 @@ impl<'p> Session<'p> {
             history.clear();
             if !consistent(&state, program) {
                 // Keep the scene, drop what belonged to the line being waited on.
-                unshow_page_line(&mut state);
                 state.pending = None;
                 state.line = None;
                 state.finished = false;
@@ -671,12 +670,19 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         let volume = if s.voice_volume < 1.0 { format!(" {}", s.voice_volume) } else { String::new() };
         w(format!("voice {}{volume}", q(v)));
     }
-    // Saves from before `::page` existed have no such records: they load with the textbox.
+    // Saves from before `::page` existed have no such records: they load with the textbox. The `page` records
+    // are the lines before the `line`, which says where it is shown when that is not the textbox (older saves
+    // wrote the page line among the `page` records and said nothing).
     for l in &s.page {
         w(line_record("page", l));
     }
     if let Some(l) = &s.line {
-        w(line_record("line", l));
+        let place = match l.place {
+            Place::Textbox => "",
+            Place::Page => " page",
+            Place::Centre => " centre",
+        };
+        w(format!("{}{place}", line_record("line", l)));
     }
     match &s.pending {
         Some(Cmd::Say { .. }) => w("pending say".into()),
@@ -1172,8 +1178,17 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                     "-" => None,
                     c => Some(parse_rgb(c, n)?),
                 };
-                let read = Line { speaker, color, text: arg(3)?.to_string() };
+                let mut read = Line { speaker, color, text: arg(3)?.to_string(), place: Place::Page };
                 if t[0] == "line" {
+                    read.place = match t.get(4).map(String::as_str) {
+                        Some("page") => Place::Page,
+                        Some("centre") => Place::Centre,
+                        _ if s.page.last() == Some(&read) => {
+                            s.page.pop(); // an older save: the page line is the page's last record
+                            Place::Page
+                        }
+                        _ => Place::Textbox,
+                    };
                     s.line = Some(read);
                 } else if s.page.len() >= crate::MAX_PAGE_LINES {
                     return Err(format!("line {n}: more than {} `page` records in a state", crate::MAX_PAGE_LINES));
@@ -1185,7 +1200,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 s.pending = Some(match arg(1)? {
                     "say" => {
                         let l = s.line.as_ref().ok_or(format!("line {n}: pending say without a line"))?;
-                        Cmd::Say { speaker: l.speaker.clone(), color: l.color, text: l.text.clone(), centred: false }
+                        l.say()
                     }
                     "wait" => Cmd::Wait { seconds: sane(f(2)?, 0.01, MAX_WAIT, 1.0) },
                     "waitclick" => Cmd::WaitClick,

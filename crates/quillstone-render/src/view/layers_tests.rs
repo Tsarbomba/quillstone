@@ -234,7 +234,7 @@ fn talking(speed: f32, text: &str, speaker: Option<&str>) -> View {
     let anims = parse("::anim{id=flap frames=\"f1.png 0.1, f2.png 0.1\" loop}\n").unwrap().anims;
     let mut v = View::new().with_speed(speed).with_anims(&anims);
     v.apply(&[layered("m", &FACE, 0.3, 0.0), layered("j", &FACE, 0.7, 0.0)]);
-    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), centred: false }]);
+    v.apply(&[Cmd::Say { speaker: speaker.map(str::to_string), color: None, text: text.into(), place: Place::Textbox }]);
     v.set_speaker(speaker.map(str::to_string), true);
     v.set_talk(Some(("mouth".into(), "anim:flap".into())), None, None);
     v
@@ -304,7 +304,7 @@ fn a_value_pattern_flaps_each_value_with_its_own_animation_and_skips_one_without
     let mut v = View::new().with_speed(10.0).with_anims(&anims);
     let shown = |m: &str, j: &str| [layered("m", &[("body", "body.png"), ("mouth", m)], 0.3, 0.0), layered("j", &[("body", "body.png"), ("mouth", j)], 0.7, 0.0)];
     v.apply(&shown("a/mouth_smile.png", "a/mouth_grin.png"));
-    v.apply(&[Cmd::Say { speaker: Some("m".into()), color: None, text: "abcdefghij".into(), centred: false }]);
+    v.apply(&[Cmd::Say { speaker: Some("m".into()), color: None, text: "abcdefghij".into(), place: Place::Textbox }]);
     v.set_speaker(Some("m".into()), true);
     v.set_talk(Some(("mouth".into(), "anim:flap_{value}".into())), Some("a/{layer}_{value}.png".into()), None);
     v.tick(0.05);

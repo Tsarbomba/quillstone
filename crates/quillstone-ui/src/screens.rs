@@ -1651,7 +1651,7 @@ mod tests {
     }
 
     fn line(t: &str) -> Logged {
-        Logged::Line(Line { speaker: Some("Mika".into()), color: None, text: t.into() })
+        Logged::Line(Line { speaker: Some("Mika".into()), color: None, text: t.into(), place: quillstone_script::Place::Textbox })
     }
 
     fn texts(draws: &[Draw]) -> Vec<String> {

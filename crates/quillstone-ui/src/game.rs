@@ -1225,7 +1225,7 @@ impl<'p> Game<'p> {
 
     /// There is a dialogue box for the quick menu to belong to.
     fn quick_menu_possible(&self) -> bool {
-        !self.splash && self.view.dialogue.as_ref().is_some_and(|d| !d.centred) && self.view.video.is_none() && !self.view.finished
+        !self.splash && self.view.dialogue.as_ref().is_some_and(|d| d.place != quillstone_script::Place::Centre) && self.view.video.is_none() && !self.view.finished
     }
 
     /// Whether the cursor is where the `hover` mode shows the menu.
@@ -1415,7 +1415,7 @@ impl<'p> Game<'p> {
     /// Move the story on. Arriving at a choice, shop or text entry is a checkpoint: auto save.
     fn forward(&mut self, input: Input) {
         // Using an item leaves the line unread: it comes back after the label.
-        if !matches!(input, Input::Use(_) | Input::Hud(_)) {
+        if !input.returns_to_line() {
             self.mark_current_read();
         }
         let purchase = matches!(input, Input::Buy(_));
