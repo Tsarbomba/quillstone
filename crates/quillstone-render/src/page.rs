@@ -123,6 +123,25 @@ mod tests {
     }
 
     #[test]
+    fn the_cached_page_layout_follows_the_text_scale_the_lines_and_the_typing_line() {
+        let lines = numbered(6);
+        let mut v = View::new().with_speed(0.0);
+        v.apply(&shown(&lines));
+        let before = texts(&v);
+        assert_eq!(texts(&v), before, "drawn again: the same");
+        v.set_text_scale(1.5);
+        let mut fresh = View::new().with_speed(0.0).with_text_scale(1.5);
+        fresh.apply(&shown(&lines));
+        assert_eq!(texts(&v), texts(&fresh));
+        assert_ne!(texts(&v), before);
+        v.apply(&shown(&numbered(3)));
+        fresh.apply(&shown(&numbered(3)));
+        assert_eq!(texts(&v), texts(&fresh));
+        v.apply(&shown(&numbered(2)));
+        assert_eq!(texts(&v).len(), 2, "a new typing line is laid out too");
+    }
+
+    #[test]
     fn a_page_line_draws_no_textbox_name_plate_or_portrait_but_a_dim_and_the_text_in_the_page_area() {
         let theme = Theme::default();
         let mut v = View::new().with_speed(0.0);

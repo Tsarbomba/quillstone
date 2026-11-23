@@ -275,7 +275,7 @@ mod real {
             let mut engine = self.engine.borrow_mut();
             let found = engine.get_or_insert_with(|| TextRenderer::new(self.files.clone())).measure(text, size, width);
             let mut cache = self.cache.borrow_mut();
-            if cache.len() >= 512 {
+            if cache.len() >= 8192 {
                 cache.clear();
             }
             cache.insert(key, found);
@@ -368,11 +368,15 @@ mod real {
         /// The letters of `job` that move, each as a picture of its own (see `quillstone_render::letters`), or
         /// `None` when nothing in it moves. Kept until a few other lines have been asked for.
         pub fn letters(&mut self, job: &TextJob) -> Option<Rc<LetterSet>> {
+            self.letters_keyed(job, &job.letters_key())
+        }
+
+        /// [`TextRenderer::letters`] for a caller that has the job's `key` ([`TextJob::letters_key`]) already.
+        pub fn letters_keyed(&mut self, job: &TextJob, key: &str) -> Option<Rc<LetterSet>> {
             if !job.animated() {
                 return None;
             }
-            let key = job.letters_key();
-            if let Some(set) = self.sets.get(&key) {
+            if let Some(set) = self.sets.get(key) {
                 return Some(set.clone());
             }
             let (layout_key, buffer) = self.take_layout(job);
@@ -381,7 +385,7 @@ mod real {
             if self.sets.len() >= MAX_LAYOUTS {
                 self.sets.clear();
             }
-            self.sets.insert(key, set.clone());
+            self.sets.insert(key.to_string(), set.clone());
             Some(set)
         }
 
@@ -1092,15 +1096,15 @@ mod tests {
         assert!(lit(&renderer.rasterize(&on.texts[0]).unwrap()) < lit(&whole) - 100, "the same text with animation has gaps");
         // and no quads for letters
         let mut f = off;
-        f.add_letters(size, 1.0, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+        f.add_letters(size, 1.0, &mut |j, _| renderer.letters(j).map(|s| s.letters.clone()));
         assert!(!f.quads.iter().any(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))));
         let mut f = on;
-        f.add_letters(size, 1.0, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+        f.add_letters(size, 1.0, &mut |j, _| renderer.letters(j).map(|s| s.letters.clone()));
         assert_eq!(f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).count(), 6);
         // the letters of a shake are in other places at other times
         let mut at = |t: f32| {
             let mut f = quillstone_render::build_frame(std::slice::from_ref(&draw), size);
-            f.add_letters(size, t, &mut |j| renderer.letters(j).map(|s| s.letters.clone()));
+            f.add_letters(size, t, &mut |j, _| renderer.letters(j).map(|s| s.letters.clone()));
             f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).map(|q| q.rect).collect::<Vec<_>>()
         };
         let (first, again) = (at(0.5), at(0.5));

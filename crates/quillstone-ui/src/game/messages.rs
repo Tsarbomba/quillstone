@@ -18,6 +18,15 @@ pub(super) struct Viewing {
     pub video: bool,
 }
 
+/// What a message shows enlarged: its picture, else its video (with the thumbnail).
+fn media(m: &quillstone_runtime::Msg) -> Option<Viewing> {
+    match (&m.image, &m.video) {
+        (Some(src), _) => Some(Viewing { src: src.clone(), thumb: None, video: false }),
+        (None, Some((src, thumb))) => Some(Viewing { src: src.clone(), thumb: thumb.clone(), video: true }),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct MsgUi {
     /// The thread open (a contact id); none: the contact list.
@@ -105,11 +114,7 @@ impl Game<'_> {
             .map(|m| ui::Bubble {
                 mine: m.mine,
                 text: m.shown(&|t| self.tr(t).to_string()),
-                pic: match (&m.image, &m.video) {
-                    (Some(src), _) => Some(ui::Pic { src: Some(src.clone()), video: false }),
-                    (None, Some((_, thumb))) => Some(ui::Pic { src: thumb.clone(), video: true }),
-                    _ => None,
-                },
+                pic: media(m).map(|v| if v.video { ui::Pic { src: v.thumb, video: true } } else { ui::Pic { src: Some(v.src), video: false } }),
             })
             .collect()
     }
@@ -151,8 +156,7 @@ impl Game<'_> {
             }
             Some(id) => {
                 let (bubbles, options) = (self.bubbles(id), self.thread_options(id));
-                let measure = |t: &str, s: f32, w: f32| self.view.measure().and_then(|m| m(t, s, w));
-                let placed = ui::layout_thread(&ui::Geo::new(theme), &bubbles, self.msgs.scroll, options.len(), image_size, Some(&measure));
+                let placed = ui::layout_thread(&ui::Geo::new(theme), &bubbles, self.msgs.scroll, options.len(), image_size, self.view.measure());
                 let texts: Vec<String> = options.into_iter().map(|(_, t)| t).collect();
                 let hover = pointer.and_then(|(x, y)| ui::Geo::new(self.view.theme()).option_at(x, y, texts.len())).or(self.msgs.focus);
                 let portrait = self.program.characters.get(id.as_str()).and_then(|c| c.portrait.as_ref()).map(|(_, p)| p.as_str());
@@ -270,7 +274,7 @@ impl Game<'_> {
                     self.leave_thread(waiting);
                 } else if let Some(i) = ui::Geo::new(self.view.theme()).option_at(x, y, options.len()) {
                     self.pick_reply(id, options[i].0, waiting);
-                } else if let Some(b) = self.picture_under(id, x, y) {
+                } else if let Some(b) = self.picture_under(&bubbles, options.len(), x, y) {
                     self.view_bubble(id, b);
                 }
             }
@@ -321,19 +325,14 @@ impl Game<'_> {
 
     /// The bubble whose picture is at the point (needs the sizes the draw used, so it asks the view's pictures: unknown
     /// sizes lay out as the placeholder shape, which is what a click on an unloaded picture is tested against).
-    fn picture_under(&self, id: &str, x: f32, y: f32) -> Option<usize> {
-        let (bubbles, options) = (self.bubbles(id), self.thread_options(id));
-        let placed = ui::layout_thread(&ui::Geo::new(self.view.theme()), &bubbles, self.msgs.scroll, options.len(), &|s| self.msg_sizes.borrow().get(s).copied(), Some(&|t: &str, s: f32, w: f32| self.view.measure().and_then(|m| m(t, s, w))));
+    fn picture_under(&self, bubbles: &[ui::Bubble], options: usize, x: f32, y: f32) -> Option<usize> {
+        let placed = ui::layout_thread(&ui::Geo::new(self.view.theme()), bubbles, self.msgs.scroll, options, &|s| self.msg_sizes.borrow().get(s).copied(), self.view.measure());
         ui::picture_at(&placed, x, y)
     }
 
     fn view_bubble(&mut self, id: &str, bubble: usize) {
         let Some(m) = self.session.state().threads.iter().find(|t| t.id == id).and_then(|t| t.msgs.get(bubble)) else { return };
-        let viewing = match (&m.image, &m.video) {
-            (Some(src), _) => Viewing { src: src.clone(), thumb: None, video: false },
-            (None, Some((src, thumb))) => Viewing { src: src.clone(), thumb: thumb.clone(), video: true },
-            _ => return,
-        };
+        let Some(viewing) = media(m) else { return };
         self.video_generation += 1;
         self.msgs.viewing = Some(viewing);
     }

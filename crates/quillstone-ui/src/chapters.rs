@@ -6,6 +6,7 @@ use quillstone_script::Fit;
 
 use crate::extras::{draw_pager, pager_hit};
 use crate::input::text;
+use crate::messages::lit;
 use crate::screens::{draw_backdrop, fit_value};
 use crate::texts::Tr;
 
@@ -70,13 +71,12 @@ pub struct ChaptersScreen<'a> {
 }
 
 pub fn draw_chapters(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ChaptersScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
-    let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     draw_backdrop(out, theme, &theme.chapters_background, image_size);
     text(out, tr.t("Chapters"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, tile) in s.tiles.iter().enumerate() {
         let r = tile_rect(i);
         let on = s.hover == Some(Hit::Item(i)) || s.focus == Some(i);
-        out.push(Draw::Rect { rect: r, color: lit(on) });
+        out.push(Draw::Rect { rect: r, color: lit(theme, on) });
         if !tile.open {
             text(out, "?", r, 72.0, theme.dim_color, Align::Center);
             text(out, "???", title_rect(i), 26.0, theme.dim_color, Align::Center);

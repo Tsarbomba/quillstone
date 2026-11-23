@@ -113,6 +113,17 @@ pub const MIN_TEXT_PX: f32 = 4.0;
 pub struct Frame {
     pub quads: Vec<Quad>,
     pub texts: Vec<TextJob>,
+    pub(crate) letter_keys: LetterKeys,
+}
+
+/// [`Frame::letter_keys`], made once. Not part of what a frame is: all of them are equal.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LetterKeys(pub(crate) std::cell::OnceCell<Vec<String>>);
+
+impl PartialEq for LetterKeys {
+    fn eq(&self, _: &LetterKeys) -> bool {
+        true
+    }
 }
 
 /// `runs` without their animation.
@@ -147,7 +158,7 @@ pub fn build_frame(draws: &[Draw], window: Size) -> Frame {
 pub fn build_frame_with(draws: &[Draw], window: Size, animate: bool) -> Frame {
     let lb = letterbox(window);
     let scale = lb.w / VIRTUAL.w;
-    let mut frame = Frame { quads: Vec::with_capacity(draws.len()), texts: Vec::new() };
+    let mut frame = Frame { quads: Vec::with_capacity(draws.len()), ..Frame::default() };
 
     let mut filter = IDENTITY;
     let mut mask: Option<&(String, f32)> = None;

@@ -133,10 +133,19 @@ impl Frame {
         self.texts.iter().any(TextJob::animated)
     }
 
+    /// The [`TextJob::letters_key`] of each text, in order (empty for one that doesn't move), made once per frame.
+    pub fn letter_keys(&self) -> &[String] {
+        self.letter_keys.0.get_or_init(|| letter_keys(&self.texts))
+    }
+
     /// Put the typed moving letters of each animated text right after the quad of its line, `time` seconds into
-    /// the animation. `letters` gives the letters of a job (`None`: no text backend, nothing moves);
-    /// they are drawn from `Tex::Letter(job, picture)`.
-    pub fn add_letters(&mut self, window: Size, time: f32, letters: &mut dyn FnMut(&TextJob) -> Option<Rc<Letters>>) {
+    /// the animation. `letters` gives the letters of a job and its [`letter_keys`](Frame::letter_keys) entry
+    /// (`None`: no text backend, nothing moves); they are drawn from `Tex::Letter(job, picture)`.
+    pub fn add_letters(&mut self, window: Size, time: f32, letters: &mut dyn FnMut(&TextJob, &str) -> Option<Rc<Letters>>) {
+        if !self.animated() {
+            return;
+        }
+        let keys = self.letter_keys.0.take().unwrap_or_else(|| letter_keys(&self.texts));
         let mut quads = Vec::with_capacity(self.quads.len());
         for quad in std::mem::take(&mut self.quads) {
             let job = match quad.texture {
@@ -147,7 +156,7 @@ impl Frame {
             quads.push(quad);
             let Some(i) = job else { continue };
             let job = &self.texts[i];
-            let Some(set) = job.animated().then(|| letters(job)).flatten() else { continue };
+            let Some(set) = job.animated().then(|| letters(job, &keys[i])).flatten() else { continue };
             for letter in set.letters.iter().filter(|l| l.index < job.visible_chars) {
                 let ((dx, dy), pic) = motion(letter, time, job.size_px);
                 let Some(p) = set.pics.get(pic) else { continue };
@@ -168,7 +177,12 @@ impl Frame {
             }
         }
         self.quads = quads;
+        self.letter_keys.0.set(keys).ok();
     }
+}
+
+fn letter_keys(texts: &[TextJob]) -> Vec<String> {
+    texts.iter().map(|t| if t.animated() { t.letters_key() } else { String::new() }).collect()
 }
 
 #[cfg(test)]
@@ -253,7 +267,7 @@ mod tests {
         let d = crate::view::Draw::Text { text: r.text, runs: r.runs, visible_chars: 9, rect: Rect::new(0.0, 0.0, 1920.0, 200.0), size: 40.0, color: [1.0; 4], align: crate::view::Align::Left, outline: None };
         let left = |time: f32| {
             let mut f = crate::batch::build_frame(std::slice::from_ref(&d), Size::new(1920.0, 1080.0));
-            f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_| Some(set.clone()));
+            f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_, _| Some(set.clone()));
             f.quads.iter().find_map(|q| match q.texture {
                 Tex::Letter(_, p) => Some((p, ((q.rect[0] + 1.0) / 2.0 * 1920.0).round() as i32 - motion(&set.letters[0], time, 40.0).0 .0.round() as i32)),
                 _ => None,
@@ -308,7 +322,7 @@ mod tests {
         let at = |visible: usize, time: f32| {
             let mut f = animated_frame(visible);
             assert!(f.animated());
-            f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_| Some(set.clone()));
+            f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_, _| Some(set.clone()));
             f
         };
         let f = at(3, 0.0);
@@ -325,7 +339,7 @@ mod tests {
         assert!((px.0 - (100.0 + 20.0 - 1.0 + dx.round())).abs() < 1e-2 && (px.1 - (50.0 - 30.0 + dy.round())).abs() < 1e-2, "{px:?}");
         // no text backend: nothing is added
         let mut none = animated_frame(4);
-        none.add_letters(Size::new(1920.0, 1080.0), 0.0, &mut |_| None);
+        none.add_letters(Size::new(1920.0, 1080.0), 0.0, &mut |_, _| None);
         assert_eq!(none.quads.len(), 1);
     }
 
@@ -336,7 +350,7 @@ mod tests {
         let d = Draw::Text { text: r.text, runs: r.runs, visible_chars: 9, rect: Rect::new(0.0, 0.0, 400.0, 100.0), size: 40.0, color: [1.0; 4], align: Align::Left, outline: None };
         let mut f = crate::batch::build_frame(&[d], Size::new(1920.0, 1080.0));
         assert!(!f.animated());
-        f.add_letters(Size::new(1920.0, 1080.0), 0.0, &mut |_| panic!("not asked"));
+        f.add_letters(Size::new(1920.0, 1080.0), 0.0, &mut |_, _| panic!("not asked"));
         assert_eq!(f.quads.len(), 1);
     }
 }

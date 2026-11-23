@@ -5,10 +5,11 @@
 //! `messages_*` keys say otherwise.
 
 use quillstone_render::{fit_row, line_height, lines_of, push_image, Align, Draw, Measure, Rect, Size, Theme, VIRTUAL};
-use quillstone_script::markup::{plain, rich};
+use quillstone_script::markup::plain;
 use quillstone_script::Fit;
 
-use crate::input::{screen, text};
+use crate::input::{picture_or_rect, rich_text, screen, text};
+use crate::screens::draw_full_picture;
 use crate::texts::Tr;
 
 /// Most reply options drawn at the foot of a thread.
@@ -178,7 +179,7 @@ pub fn picture_at(placed: &[Placed], x: f32, y: f32) -> Option<usize> {
     placed.iter().find(|p| p.pic.is_some_and(|r| r.contains(x, y))).map(|p| p.index)
 }
 
-fn lit(theme: &Theme, on: bool) -> [f32; 4] {
+pub(crate) fn lit(theme: &Theme, on: bool) -> [f32; 4] {
     if on { theme.button_hover_color } else { theme.button_color }
 }
 
@@ -191,8 +192,7 @@ fn image_in(out: &mut Vec<Draw>, src: &str, into: Rect, image_size: &dyn Fn(&str
 pub(crate) fn skin(out: &mut Vec<Draw>, pic: Option<&str>, border: f32, dest: Rect, color: [f32; 4], image_size: &dyn Fn(&str) -> Option<Size>) {
     match pic.and_then(|s| image_size(s).map(|z| (s, z))) {
         Some((s, z)) if border > 0.0 => crate::screens::nine_slice(out, s, z, dest, border),
-        Some((s, _)) => out.push(Draw::Image { src: s.to_string(), dest, uv: quillstone_render::FULL_UV, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false }),
-        None => out.push(Draw::Rect { rect: dest, color }),
+        _ => picture_or_rect(out, pic, dest, color, image_size),
     }
 }
 
@@ -203,19 +203,15 @@ fn button(out: &mut Vec<Draw>, theme: &Theme, dest: Rect, on: bool, image_size: 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, avatar: Option<Option<&str>>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
+fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, avatar: Option<&str>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
-    if let Some(src) = theme.messages_image.as_deref() {
-        push_image(out, src, screen(), Fit::Cover, 1.0, image_size);
-    }
-    // `avatar`: a chat header (with the contact's portrait, if it has one); none: the list.
+    draw_full_picture(out, theme.messages_image.as_deref(), image_size);
+    // `avatar`: a chat header (with the contact's portrait); none: the list.
     text(out, title, g.title_rect(avatar.is_some()), 40.0, theme.text_color, if avatar.is_some() { Align::Left } else { Align::Center });
-    if let Some(portrait) = avatar {
+    if let Some(src) = avatar {
         let r = g.avatar_rect();
-        if let Some(src) = portrait {
-            image_in(out, src, r, image_size);
-            skin(out, theme.messages_avatar_frame.as_deref(), 0.0, r, [0.0; 4], image_size);
-        }
+        image_in(out, src, r, image_size);
+        skin(out, theme.messages_avatar_frame.as_deref(), 0.0, r, [0.0; 4], image_size);
     }
     let back = if back_hover { theme.messages_back_hover.as_deref().or(theme.messages_back_image.as_deref()) } else { theme.messages_back_image.as_deref() };
     match back.filter(|s| image_size(s).is_some()) {
@@ -279,7 +275,7 @@ pub fn draw_thread(
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
     let g = Geo::new(theme);
-    draw_frame(out, theme, tr, &g, name, portrait.map(Some), back_hover, image_size);
+    draw_frame(out, theme, tr, &g, name, portrait, back_hover, image_size);
     if bubbles.is_empty() {
         text(out, tr.t("No messages yet."), Rect::new(g.area.x, g.area.y + HEAD + 40.0, g.area.w, 60.0), g.text, theme.dim_color, Align::Center);
     }
@@ -307,16 +303,14 @@ pub fn draw_thread(
             y = area.y + area.h + 10.0;
         }
         if let Some(t) = &b.text {
-            let r = rich(t);
             let rect = Rect::new(p.rect.x + PAD, y, p.rect.w - 2.0 * PAD, p.rect.y + p.rect.h - PAD - y);
-            out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size: g.text, color: text_color, align: Align::Left, outline: None });
+            rich_text(out, t, rect, g.text, text_color, Align::Left);
         }
     }
     for (i, o) in options.iter().enumerate().take(MAX_OPTIONS) {
         let r = g.option_rect(i, options.len());
         button(out, theme, r, option_hover == Some(i), image_size);
-        let t = rich(o);
-        out.push(Draw::Text { text: t.text, runs: t.runs, visible_chars: usize::MAX, rect: r, size: g.text * 0.85, color: theme.accent_color, align: Align::Center, outline: None });
+        rich_text(out, o, r, g.text * 0.85, theme.accent_color, Align::Center);
     }
 }
 

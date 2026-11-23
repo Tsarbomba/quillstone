@@ -135,6 +135,8 @@ const SLIDER_STEP: f32 = 0.05;
 
 pub struct Game<'p> {
     program: &'p Program,
+    /// Every character's portrait file, for [`Game::upcoming_images`].
+    portraits: Vec<&'p str>,
     storage: Box<dyn Storage>,
     session: Session<'p>,
     view: View,
@@ -264,6 +266,7 @@ impl<'p> Game<'p> {
         let (read, read_locked) = skip::load_read(&*storage);
         let mut game = Game {
             program,
+            portraits: program.portraits().map(|(_, f)| f).collect(),
             storage,
             session,
             view: View::new().with_speed(settings.text_speed).with_text_scale(settings.text_scale).with_anims(&program.anims).with_art_scale(program.art_scale),
@@ -456,6 +459,7 @@ impl<'p> Game<'p> {
         if self.replay.as_ref().is_some_and(|r| !program.labels.contains_key(&r.label)) {
             // The scene being replayed is gone: back to Extras.
             self.program = program;
+            self.portraits = program.portraits().map(|(_, f)| f).collect();
             self.end_replay();
             self.notify("The replayed scene was removed from the script");
         }
@@ -463,6 +467,7 @@ impl<'p> Game<'p> {
         if self.in_story {
             let (session, cmds) = Session::reload_with(program, &self.session.save(), persistent)?;
             self.program = program;
+            self.portraits = program.portraits().map(|(_, f)| f).collect();
             self.session = session;
             self.fresh_view();
             self.show(&cmds);
@@ -473,6 +478,7 @@ impl<'p> Game<'p> {
             }
         } else {
             self.program = program;
+            self.portraits = program.portraits().map(|(_, f)| f).collect();
             self.session = idle_session(program, persistent);
         }
         self.choice_focus = None;
@@ -938,7 +944,7 @@ impl<'p> Game<'p> {
         }
         let pc = self.session.state().pc;
         let mut out = self.program.images_ahead(pc, AHEAD);
-        out.extend(self.program.portraits().map(|(_, file)| file)); // a portrait line must not wait for its picture
+        out.extend(&self.portraits); // a portrait line must not wait for its picture
         // Every frame of an animation on stage now: later frames are not in the draw list yet.
         for id in self.view.shown_animations() {
             if let Some(anim) = self.program.anims.get(id) {

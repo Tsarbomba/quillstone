@@ -23,7 +23,7 @@ use crate::filter::ColorMatrix;
 use crate::hud::{HudLayer, HudLook};
 use crate::particles::ParticleLayer;
 use crate::layout::{clip, fit_row, is_wide, line_height, lines_of, lines_styled, place, Measure, Rect, SharedMeasure, Size, FULL_UV, VIRTUAL};
-use crate::page::{screen_page, PageLine};
+use crate::page::{screen_page, PageLine, Paragraph, Placed};
 use crate::theme::Theme;
 
 /// The dialogue box, in virtual coordinates.
@@ -267,28 +267,28 @@ pub struct SpriteView {
 }
 
 impl SpriteView {
-    fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 8], fade: f32) -> SpriteView {
+    fn new(id: &str, (src, layers): (&str, &[(String, String)]), z: i32, (flip, additive): (bool, bool), step: &SpriteStep, fade: f32) -> SpriteView {
         let mut sprite = SpriteView {
             id: id.to_string(),
             src: src.to_string(),
             previous_src: None,
             layers: layers.iter().map(|(n, p)| LayerView::new(n, p, 0.0)).collect(),
             previous_layers: Vec::new(),
-            x,
-            y,
+            x: step.x,
+            y: step.y,
             z,
-            scale: look.scale,
-            flip: look.flip,
-            xscale: look.xscale,
-            yscale: look.yscale,
-            alpha_to: fx[0],
-            dx: fx[1],
-            dy: fx[2],
-            blur: fx[3],
-            tint: [fx[4], fx[5], fx[6]],
-            brightness: fx[7],
-            crop: [look.crop.x, look.crop.y, look.crop.w, look.crop.h],
-            additive: look.additive,
+            scale: step.scale,
+            flip,
+            xscale: step.xscale,
+            yscale: step.yscale,
+            alpha_to: step.alpha,
+            dx: step.dx,
+            dy: step.dy,
+            blur: step.blur,
+            tint: step.tint,
+            brightness: step.brightness,
+            crop: step.crop,
+            additive,
             hiding: false,
             fade,
             elapsed: 0.0,
@@ -902,7 +902,7 @@ pub struct View {
     pub images: Vec<InlineImage>,
     pub dialogue: Option<Dialogue>,
     /// The lines of the full-screen page (`::page`) before `dialogue` (a page line, which types out), the newest last.
-    pub page: Vec<PageLine>,
+    pub(crate) page: Vec<PageLine>,
     pub choices: Vec<String>,
     /// Alongside `choices`: `Some(reason)` for a greyed option that can't be picked (the reason may be empty).
     pub locked: Vec<Option<String>>,
@@ -957,6 +957,17 @@ pub struct View {
     /// The frontend's text measuring, for layouts that fit text to a box (else the estimates).
     measure: Option<SharedMeasure>,
     previous_bg_clock: f32,
+    /// The page's paragraphs and their places, kept while the lines, theme, text scale and measure stay (see [`PageCache`]).
+    page_cache: RefCell<Option<PageCache>>,
+}
+
+/// What the page view lays out once instead of every frame: the paragraphs of the page's lines and of the line
+/// being typed (`last`, the one that can change under it), and where [`screen_page`] puts them.
+#[derive(Debug, Clone)]
+struct PageCache {
+    last: PageLine,
+    paras: Vec<Paragraph>,
+    placed: Vec<Placed>,
 }
 
 impl Default for View {
@@ -1007,6 +1018,7 @@ impl View {
             speaker_portrait: None,
             art_scale: None,
             sprite_sizes: RefCell::default(),
+            page_cache: RefCell::default(),
             anims: BTreeMap::new(),
             bg_clock: 0.0,
             previous_bg_clock: 0.0,
@@ -1086,12 +1098,13 @@ impl View {
 
     /// Draw with this theme's colours, sizes and textbox image.
     pub fn with_theme(mut self, theme: Theme) -> View {
-        self.theme = theme;
+        self.set_theme(theme);
         self
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        *self.page_cache.get_mut() = None;
     }
 
     pub fn theme(&self) -> &Theme {
@@ -1170,12 +1183,13 @@ impl View {
 
     /// Scale the theme's text size by the player's setting (1.0 is the theme's own).
     pub fn with_text_scale(mut self, scale: f32) -> View {
-        self.text_scale = scale;
+        self.set_text_scale(scale);
         self
     }
 
     pub fn set_text_scale(&mut self, scale: f32) {
         self.text_scale = scale;
+        *self.page_cache.get_mut() = None;
     }
 
     /// The size to draw dialogue `d` at: the theme's times the text scale, or when the line doesn't fit the
@@ -1194,6 +1208,7 @@ impl View {
 
     pub fn set_measure(&mut self, measure: Option<SharedMeasure>) {
         self.measure = measure;
+        *self.page_cache.get_mut() = None;
     }
 
     /// The text measure the game's screens and this view share (none: they estimate).
@@ -1237,6 +1252,7 @@ impl View {
                 Cmd::ClearScene => {
                     if !self.page.is_empty() || self.dialogue.as_ref().is_some_and(|d| d.place == Place::Page) {
                         self.page.clear();
+                        *self.page_cache.get_mut() = None;
                         self.dialogue = None; // a page line was the line; the redraw sends the one that is
                     }
                     self.background = None;
@@ -1266,8 +1282,8 @@ impl View {
                 }
                 Cmd::SetBackground { src, fade, wipe, sound, blur, mask } => self.set_background(src, *fade, *wipe, *sound, *blur, mask.clone()),
                 Cmd::ShowSprite { id, src, layers, x, y, z, scale, flip, xscale, yscale, alpha, dx, dy, blur, tint, brightness, crop, additive, fade } => {
-                    let look = Look { scale: *scale, xscale: *xscale, yscale: *yscale, flip: *flip, additive: *additive, crop: Rect::new(crop[0], crop[1], crop[2], crop[3]) };
-                    self.show_sprite(id, (src, layers), (*x, *y), *z, look, [*alpha, *dx, *dy, *blur, tint[0], tint[1], tint[2], *brightness], *fade)
+                    let step = SpriteStep { x: *x, y: *y, scale: *scale, xscale: *xscale, yscale: *yscale, alpha: *alpha, dx: *dx, dy: *dy, blur: *blur, tint: *tint, brightness: *brightness, crop: *crop, time: 0.0, ease: Ease::Linear, wait: 0.0 };
+                    self.show_sprite(id, (src, layers), *z, (*flip, *additive), &step, *fade)
                 }
                 Cmd::HideSprite { id, fade } => self.hide_sprite(id, *fade),
                 Cmd::Portrait { id, layers } => {
@@ -1376,6 +1392,7 @@ impl View {
                         self.dialogue = None; // the page's last line goes with it
                     }
                     self.page = lines.iter().map(|l| PageLine::new(l.speaker.clone(), l.color, &l.text)).collect();
+                    *self.page_cache.get_mut() = None;
                 }
                 Cmd::ShowChoices { options, locked } => {
                     self.choices = options.clone();
@@ -1533,8 +1550,7 @@ impl View {
         self.camera.current()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 8], fade: f32) {
+    fn show_sprite(&mut self, id: &str, (src, layers): (&str, &[(String, String)]), z: i32, (flip, additive): (bool, bool), step: &SpriteStep, fade: f32) {
         // A sprite that is mid-hide and shown again starts over.
         self.sprites.retain(|s| s.id != id || !s.hiding);
         match self.sprites.iter_mut().find(|s| s.id == id) {
@@ -1551,30 +1567,26 @@ impl View {
                     s.fade = fade;
                 }
                 // A new pose that leaves the resting values alone does not disturb a loop.
-                let values = [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3], fx[4], fx[5], fx[6], fx[7], look.crop.x, look.crop.y, look.crop.w, look.crop.h];
+                let values = step.values();
                 if (s.loop_far.is_some() || s.cycle) && s.home() == values {
                     s.z = z;
-                    s.flip = look.flip;
-                    s.additive = look.additive;
+                    s.flip = flip;
+                    s.additive = additive;
                     return;
                 }
                 s.loop_far = None;
                 s.end_sequence();
                 s.out = false;
                 s.from = values;
-                (s.alpha_to, s.dx, s.dy, s.blur, s.tint, s.brightness, s.crop) = (fx[0], fx[1], fx[2], fx[3], [fx[4], fx[5], fx[6]], fx[7], [look.crop.x, look.crop.y, look.crop.w, look.crop.h]);
-                s.x = x;
-                s.y = y;
+                (s.x, s.y, s.scale, s.xscale, s.yscale, s.alpha_to, s.dx, s.dy, s.blur, s.tint, s.brightness, s.crop) =
+                    (step.x, step.y, step.scale, step.xscale, step.yscale, step.alpha, step.dx, step.dy, step.blur, step.tint, step.brightness, step.crop);
                 s.z = z;
-                s.additive = look.additive;
+                s.additive = additive;
                 s.move_time = 0.0;
                 s.move_elapsed = 0.0;
-                s.scale = look.scale;
-                s.flip = look.flip;
-                s.xscale = look.xscale;
-                s.yscale = look.yscale;
+                s.flip = flip;
             }
-            None => self.sprites.push(SpriteView::new(id, (src, layers), (x, y), z, look, fx, fade)),
+            None => self.sprites.push(SpriteView::new(id, (src, layers), z, (flip, additive), step, fade)),
         }
     }
 
@@ -2041,12 +2053,19 @@ impl View {
         if let Some(d) = shown.filter(|d| d.place == Place::Page) {
             // A page line: no textbox, name plate or portrait; the page's lines over a dimmed screen.
             out.push(Draw::Rect { rect: screen, color: faded(theme.page_color, box_alpha) });
-            let mut paras: Vec<_> = self.page.iter().map(|l| l.paragraph(theme)).collect();
-            paras.push(PageLine { speaker: d.speaker.clone(), color: d.color, text: d.text.clone(), runs: d.runs.clone() }.paragraph(theme));
+            let mut cache = self.page_cache.borrow_mut();
+            if !cache.as_ref().is_some_and(|c| c.last.speaker == d.speaker && c.last.color == d.color && c.last.text == d.text && c.last.runs == d.runs) {
+                let last = PageLine { speaker: d.speaker.clone(), color: d.color, text: d.text.clone(), runs: d.runs.clone() };
+                let mut paras: Vec<_> = self.page.iter().map(|l| l.paragraph(theme)).collect();
+                paras.push(last.paragraph(theme));
+                let placed = screen_page(theme, self.text_scale, &paras, self.measure());
+                *cache = Some(PageCache { last, paras, placed });
+            }
+            let PageCache { paras, placed, .. } = cache.as_ref().unwrap();
             let last = paras.len() - 1;
             // Choices sit over the page: its text steps back so the buttons can be read.
             let text_alpha = if self.choices.is_empty() { box_alpha } else { box_alpha * 0.3 };
-            for p in screen_page(theme, self.text_scale, &paras, self.measure()) {
+            for p in placed {
                 let para = &paras[p.index];
                 out.push(Draw::Text {
                     text: para.text.clone(),
@@ -4441,6 +4460,22 @@ mod tests {
 
     fn look_show(id: &str, flip: bool, xscale: f32, yscale: f32, x: f32) -> Cmd {
         Cmd::ShowSprite { id: id.into(), src: format!("{id}.png"), layers: vec![], x, y: 1.0, z: 0, scale: 1.0, flip, xscale, yscale, alpha: 1.0, dx: 0.0, dy: 0.0, blur: 0.0, tint: [1.0; 3], brightness: 0.0, crop: [0.0, 0.0, 1.0, 1.0], additive: false, fade: 0.0 }
+    }
+
+    #[test]
+    fn a_shown_sprite_takes_every_value_of_the_command_into_its_own_slot() {
+        let show = |x: f32| Cmd::ShowSprite { id: "m".into(), src: "m.png".into(), layers: vec![], x, y: 0.9, z: 3, scale: 0.7, flip: true, xscale: 1.1, yscale: 1.2, alpha: 0.6, dx: 5.0, dy: -6.0, blur: 4.0, tint: [0.2, 0.3, 0.4], brightness: 0.15, crop: [0.1, 0.2, 0.5, 0.6], additive: true, fade: 0.0 };
+        let expect = |v: &View, x: f32| {
+            let s = &v.sprites[0];
+            assert_eq!(s.home(), [x, 0.9, 0.7, 1.1, 1.2, 0.6, 5.0, -6.0, 4.0, 0.2, 0.3, 0.4, 0.15, 0.1, 0.2, 0.5, 0.6]);
+            assert_eq!(s.from, s.home());
+            assert!(s.flip && s.additive && s.z == 3);
+        };
+        let mut v = View::new();
+        v.apply(&[show(0.3)]);
+        expect(&v, 0.3);
+        v.apply(&[show(0.8)]); // shown again: the same slots
+        expect(&v, 0.8);
     }
 
     #[test]

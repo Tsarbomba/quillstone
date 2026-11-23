@@ -127,9 +127,9 @@ pub(crate) fn text(out: &mut Vec<Draw>, s: impl Into<String>, rect: Rect, size: 
 }
 
 /// [`text`] for a prompt written with `{b}`/`{i}`/colour tags.
-pub(crate) fn rich_text(out: &mut Vec<Draw>, prompt: &str, rect: Rect, size: f32, color: [f32; 4]) {
+pub(crate) fn rich_text(out: &mut Vec<Draw>, prompt: &str, rect: Rect, size: f32, color: [f32; 4], align: Align) {
     let r = rich(prompt);
-    out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align: Align::Center, outline: None });
+    out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align, outline: None });
 }
 
 /// The whole virtual screen.
@@ -152,7 +152,7 @@ pub fn draw_input(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &InputScreen, i
 
     let pr = prompt_rect(theme);
     let size = if lines_of(measure, &rich(s.prompt).text, PROMPT_SIZE, pr.w).0 > 3 { PROMPT_SMALL } else { PROMPT_SIZE };
-    rich_text(out, s.prompt, pr, size, theme.text_color);
+    rich_text(out, s.prompt, pr, size, theme.text_color, Align::Center);
 
     // The field: a dark well with a thin accent outline.
     let f = field_rect(theme);

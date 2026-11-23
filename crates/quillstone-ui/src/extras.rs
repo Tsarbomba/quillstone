@@ -7,6 +7,7 @@ use quillstone_script::{kind_from_path, AssetKind, Fit};
 
 use crate::game::Key;
 use crate::input::{screen, text};
+use crate::messages::lit;
 use crate::texts::Tr;
 use crate::screens::{draw_backdrop, fit_value, extras_back_rect};
 
@@ -138,19 +139,18 @@ pub(crate) fn pager_hit<T>(x: f32, y: f32, page: usize, pages: usize, prev: T, n
 }
 
 /// The page arrows and "Page n of m" (when there are several pages) and the Back button.
-/// `lit`: whether the cursor is on prev, next, back. An arrow with no page that way is dim and does nothing.
-pub(crate) fn draw_pager(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, page: usize, pages: usize, label_y: f32, lit: [bool; 3]) {
-    let color = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
+/// `over`: whether the cursor is on prev, next, back. An arrow with no page that way is dim and does nothing.
+pub(crate) fn draw_pager(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, page: usize, pages: usize, label_y: f32, over: [bool; 3]) {
     if pages > 1 {
-        for (r, arrow, live, hover) in [(prev_rect(), "\u{2039}", page > 0, lit[0]), (next_rect(), "\u{203A}", page + 1 < pages, lit[1])] {
-            out.push(Draw::Rect { rect: r, color: color(live && hover) });
+        for (r, arrow, live, hover) in [(prev_rect(), "\u{2039}", page > 0, over[0]), (next_rect(), "\u{203A}", page + 1 < pages, over[1])] {
+            out.push(Draw::Rect { rect: r, color: lit(theme, live && hover) });
             text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
         }
         let label = tr.f("Page {n} of {pages}", &[("n", &(page + 1)), ("pages", &pages)]);
         text(out, label, Rect::new(0.0, label_y, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
     }
     let back = extras_back_rect();
-    out.push(Draw::Rect { rect: back, color: color(lit[2]) });
+    out.push(Draw::Rect { rect: back, color: lit(theme, over[2]) });
     text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
 }
 
@@ -185,12 +185,11 @@ pub struct ExtrasScreen<'a> {
 }
 
 pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
-    let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     draw_backdrop(out, theme, &theme.extras_background, image_size);
     text(out, tr.t("Extras"), Rect::new(0.0, 40.0, VIRTUAL.w, 70.0), 48.0, theme.text_color, Align::Center);
     for (i, &t) in s.tabs.iter().enumerate() {
         let r = tab_rect(i, s.tabs.len());
-        out.push(Draw::Rect { rect: r, color: lit(t == s.tab || s.hover == Some(Hit::Tab(t))) });
+        out.push(Draw::Rect { rect: r, color: lit(theme, t == s.tab || s.hover == Some(Hit::Tab(t))) });
         let label = match t {
             Tab::Gallery => "Gallery",
             Tab::Music => "Music room",
@@ -201,7 +200,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen,
     for (i, &(src, unlocked)) in s.entries.iter().enumerate() {
         let r = item_rect(s.tab, i);
         let on = s.hover == Some(Hit::Item(i)) || s.focus == Some(i);
-        out.push(Draw::Rect { rect: r, color: lit(on) });
+        out.push(Draw::Rect { rect: r, color: lit(theme, on) });
         match (s.tab, unlocked) {
             (Tab::Gallery, true) => {
                 let thumb = s.thumbs.get(i).copied().flatten();

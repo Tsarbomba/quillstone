@@ -321,10 +321,9 @@ impl Gfx {
     /// animation: each letter is drawn once as a picture and then only placed.
     pub fn add_letters(&mut self, frame: &mut Frame, time: f32) {
         let mut sets = HashMap::new();
-        for job in frame.texts.iter().filter(|j| j.animated()) {
-            let key = job.letters_key();
-            if let (false, Some(set)) = (sets.contains_key(&key), self.text_renderer.letters(job)) {
-                sets.insert(key, set);
+        for (job, key) in frame.texts.iter().zip(frame.letter_keys()).filter(|(j, _)| j.animated()) {
+            if let (false, Some(set)) = (sets.contains_key(key), self.text_renderer.letters_keyed(job, key)) {
+                sets.insert(key.clone(), set);
             }
         }
         self.letters.retain(|k, _| sets.contains_key(k));
@@ -335,7 +334,7 @@ impl Gfx {
             }
         }
         let (w, h) = self.size();
-        frame.add_letters(quillstone_render::Size::new(w as f32, h as f32), time, &mut |job| sets.get(&job.letters_key()).map(|s| s.letters.clone()));
+        frame.add_letters(quillstone_render::Size::new(w as f32, h as f32), time, &mut |_, key| sets.get(key).map(|s| s.letters.clone()));
     }
 
     pub fn render(&mut self, frame: &Frame) {
@@ -343,7 +342,7 @@ impl Gfx {
         // A forgotten texture of the right size is rewritten instead of making a
         // new one: a typing line changes every character, at the same size.
         let text_keys: Vec<String> = frame.texts.iter().map(|t| t.key()).collect();
-        let letter_keys: Vec<String> = frame.texts.iter().map(|t| if t.animated() { t.letters_key() } else { String::new() }).collect();
+        let letter_keys = frame.letter_keys();
         let live: HashSet<&String> = text_keys.iter().collect();
         let mut spare: Vec<GpuTexture> = Vec::new();
         self.texts.retain(|k, tex| {

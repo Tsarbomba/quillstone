@@ -9,7 +9,8 @@
 use quillstone_render::{line_height, lines_of, push_image, Align, CellStyle, Draw, Measure, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
-use crate::input::text;
+use crate::input::{rich_text, text};
+use crate::messages::lit;
 use crate::screens::backdrop;
 use crate::texts::Tr;
 
@@ -229,7 +230,6 @@ fn fill(out: &mut Vec<Draw>, style: Option<&CellStyle>, fallback: [f32; 4], rect
 }
 
 pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image_size: &dyn Fn(&str) -> Option<Size>) {
-    let lit = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
     let name_color = theme.inventory_name_color.unwrap_or(theme.text_color);
     let price_color = theme.inventory_price_color.unwrap_or(theme.accent_color);
     let text_color = theme.inventory_text_color.unwrap_or(theme.text_color);
@@ -299,13 +299,9 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     if let Some(detail) = s.detail {
         let inner = Rect::new(d.x + 24.0, d.y + 10.0, d.w - 48.0, d.h - 20.0);
         // The writer's name and text may carry tags: drawn as lines are.
-        let tagged = |out: &mut Vec<Draw>, s: &str, rect: Rect, size: f32, color: [f32; 4]| {
-            let r = quillstone_script::markup::rich(s);
-            out.push(Draw::Text { text: r.text, runs: r.runs, visible_chars: usize::MAX, rect, size, color, align: Align::Left, outline: None });
-        };
-        tagged(out, &detail.name, Rect::new(inner.x, inner.y, inner.w, 40.0), 32.0, name_color);
+        rich_text(out, &detail.name, Rect::new(inner.x, inner.y, inner.w, 40.0), 32.0, name_color, Align::Left);
         let body = description_body(theme, detail.price.is_some());
-        tagged(out, &detail.text, body, 26.0, text_color);
+        rich_text(out, &detail.text, body, 26.0, text_color, Align::Left);
         if let Some(price) = &detail.price {
             let row = Rect::new(inner.x, inner.y + inner.h - 34.0, inner.w, 34.0);
             text(out, price.clone(), row, 26.0, price_color, Align::Left);
@@ -314,7 +310,7 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
 
     if s.pages > 1 {
         for (h, r, arrow) in [(Hit::Prev, prev_rect(theme), "\u{2039}"), (Hit::Next, next_rect(theme), "\u{203A}")] {
-            out.push(Draw::Rect { rect: r, color: lit(s.hover == Some(h)) });
+            out.push(Draw::Rect { rect: r, color: lit(theme, s.hover == Some(h)) });
             text(out, arrow, r, 44.0, theme.text_color, Align::Center);
         }
         let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
@@ -323,12 +319,12 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     if let Some(enabled) = s.use_button {
         let r = use_rect(theme);
         let [br, bg, bb, ba] = theme.button_color;
-        let (fill, label) = if enabled { (lit(s.hover == Some(Hit::Use)), theme.text_color) } else { ([br, bg, bb, ba * 0.45], theme.dim_color) };
+        let (fill, label) = if enabled { (lit(theme, s.hover == Some(Hit::Use)), theme.text_color) } else { ([br, bg, bb, ba * 0.45], theme.dim_color) };
         out.push(Draw::Rect { rect: r, color: fill });
         text(out, tr.t("Use"), r, 34.0, label, Align::Center);
     }
     let close = close_rect(theme);
-    out.push(Draw::Rect { rect: close, color: lit(s.hover == Some(Hit::Close)) });
+    out.push(Draw::Rect { rect: close, color: lit(theme, s.hover == Some(Hit::Close)) });
     text(out, s.close_label, close, 34.0, theme.text_color, Align::Center);
 }
 
@@ -426,12 +422,11 @@ pub fn draw_journal_list(
         if let Some(done) = &row.done {
             text(out, done.clone(), g.name, ROW_TEXT, theme.dim_color, Align::Right);
         }
-        let t = quillstone_script::markup::rich(&row.text);
-        out.push(Draw::Text { text: t.text, runs: t.runs, visible_chars: usize::MAX, rect: g.body, size: ROW_TEXT, color: dim(text_color), align: Align::Left, outline: None });
+        rich_text(out, &row.text, g.body, ROW_TEXT, dim(text_color), Align::Left);
     }
     let close = close_rect(theme);
     let pic = if close_hover { theme.journal_row_hover.as_deref().or(theme.journal_row_image.as_deref()) } else { theme.journal_row_image.as_deref() };
-    let fill = if close_hover { theme.button_hover_color } else { theme.button_color };
+    let fill = lit(theme, close_hover);
     crate::messages::skin(out, pic, theme.journal_row_border, close, fill, image_size);
     text(out, tr.t("Close"), close, 34.0, theme.text_color, Align::Center);
 }

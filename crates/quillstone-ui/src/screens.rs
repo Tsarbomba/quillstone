@@ -326,7 +326,7 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
         None => out.push(Draw::Rect { rect: marker, color: theme.timing_marker_color.unwrap_or(theme.text_color) }),
     }
     if !prompt.is_empty() {
-        rich_text(out, prompt, Rect::new(track.x, track.y - 100.0, track.w, 60.0), 44.0, theme.text_color);
+        rich_text(out, prompt, Rect::new(track.x, track.y - 100.0, track.w, 60.0), 44.0, theme.text_color, Align::Center);
     }
 }
 
@@ -335,7 +335,7 @@ pub fn draw_timing_bar(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, bar: &T
 /// loaded, else `panel_color`; the time bar is the timed choice's colour, the presses fill `name_color`.
 pub fn draw_press_prompt(out: &mut Vec<Draw>, theme: &Theme, prompt: &str, press: &KeyPress, presses: u32, elapsed: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
     if !prompt.is_empty() {
-        rich_text(out, prompt, Rect::new(460.0, 330.0, 1000.0, 60.0), 44.0, theme.text_color);
+        rich_text(out, prompt, Rect::new(460.0, 330.0, 1000.0, 60.0), 44.0, theme.text_color, Align::Center);
     }
     let cap = Rect::new(880.0, 410.0, 160.0, 120.0);
     picture_or_rect(out, theme.press_key_image.as_deref(), cap, theme.panel_color, image_size);
@@ -418,7 +418,7 @@ pub(crate) fn backdrop(out: &mut Vec<Draw>, theme: &Theme, pic: Option<&str>, fi
 }
 
 /// A theme picture over the whole screen (nothing if there is none or it isn't loaded).
-fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
+pub(crate) fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
     if let Some(src) = src {
         push_image(out, src, screen(), quillstone_script::Fit::Cover, 1.0, image_size);
     }
