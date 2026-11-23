@@ -256,6 +256,17 @@ fn switching_language_keeps_the_cutscene_the_inline_image_and_the_end() {
     assert!(g.view().finished, "the end screen is still the end");
 }
 
+#[test]
+fn switching_language_translates_the_earlier_page_lines_too() {
+    let (p, s) = plain_game("::page\n**Mika:** Second line.\n\nNarration.\n\nLast.\n");
+    let mut g = game(&p, s);
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Space);
+    switch(&mut g, Key::Right);
+    let t = texts(&g);
+    assert!(t.iter().any(|x| x.contains("Andra raden.")) && t.iter().any(|x| x.contains("Berättelse.")), "{t:?}");
+}
+
 const SV_UI: &str = "\
 > Settings\n= Inställningar\n\n> Text speed\n= Textfart\n\n> {n} chars/s\n= {n} tecken/s\n\n> Main menu\n= Huvudmeny\n\n\
 > Save\n= Spara\n\n> Quit the game?\n= Avsluta spelet?\n\n> Yes\n= Ja\n\n> No\n=\n\n> Loaded\n= Laddad\n";

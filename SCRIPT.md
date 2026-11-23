@@ -1366,6 +1366,7 @@ every combination. Declare the layers on the character, back to front:
   (declared above the character). While a line by that character is typing, that layer shows
   the animation instead of its value; when the line is fully typed, skipped, or instant text, it
   shows its value again, so `::show{mika mouth=smile}` still changes the resting mouth.
+  The animation starts when the line starts, so one that does not `loop` plays once per line.
   A `{w=}` pause in the middle of a line counts as typing. Only the speaking character's sprite
   flaps, not narration or the other characters, and a layer that is `none` stays hidden.
   `quillstone check` reports a layer the character does not have and an animation not declared.
@@ -2937,7 +2938,8 @@ options sit in Mika's thread (the list marks it "Waiting for your reply") until 
   line, no options) takes it away. `later` options have no `{default}` or `{show}`.
 
 **Rollback, saves and replays.** Threads, unread marks and a waiting reply are part of the game: they are saved,
-and going back un-sends what was sent after that point. A scene replay starts with no messages, and what it sends is not kept.
+and going back un-sends what was sent after that point. Opening a conversation marks it read for good: going back
+does not make its messages unread again. A scene replay starts with no messages, and what it sends is not kept.
 
 **Tools.** `quillstone check` names the line of every mistake (an unknown character, a missing picture, both `image=` and
 `video=`, an option without a label...). `quillstone test` follows every option of a reply as a branch, a later one
@@ -3434,6 +3436,9 @@ existing saves.
 - If a saved spot no longer matches the script (say, a line was inserted just before it), the
   game picks up from that spot instead.
 - A save whose label was renamed or removed can't be loaded.
+- A `::reply{.. later}` waiting in a conversation is kept by its place like any position. If the update
+  changed or removed it, the save still loads, with no reply waiting. A conversation with a character the
+  update removed is left out of the save.
 - Moving part of a story into an `::include` (or back) changes nothing for saves, since they
   are checked against the one compiled story.
 - A save that was waiting at a choice, hotspot block or shop where nothing is on offer any

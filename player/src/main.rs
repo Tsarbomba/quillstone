@@ -69,7 +69,7 @@ struct App {
     /// Images on the GPU come and go as the story needs them (see `images.rs`).
     images: images::Images,
     image_sizes: HashMap<String, Size>,
-    /// The theme's font files (regular first), handed to the text renderer when the GPU exists.
+    /// The theme's font files (regular first) the text renderer uses; handed to it when the GPU exists, and again on a reload.
     fonts: Vec<Vec<u8>>,
     videos: Videos,
     /// The frame of each playing video that is on the GPU (to upload only new ones).
@@ -105,7 +105,7 @@ struct App {
 const HOLD_MAX: Duration = Duration::from_secs(1);
 
 /// What to draw for `draws`; `animate` false (the "Animated text" setting) keeps moving text still.
-fn frame_of(gfx: &mut Gfx, draws: &[Draw], animate: bool, time: f32) -> Frame {
+fn frame_of(gfx: &mut Gfx, draws: &[Draw], animate: bool, time: f64) -> Frame {
     let (w, h) = gfx.size();
     let mut frame = build_frame_with(draws, Size::new(w as f32, h as f32), animate);
     gfx.add_letters(&mut frame, time);
@@ -418,7 +418,14 @@ impl App {
             Ok(()) => {
                 let fonts = load_fonts(&theme, &self.assets);
                 self.game.set_theme(theme);
-                self.game.set_text_measure(Some(quillstone_text::Measurer::new(fonts).into_measure()));
+                self.game.set_text_measure(Some(quillstone_text::Measurer::new(fonts.clone()).into_measure()));
+                // A changed theme font must reach the drawn text too, not only the measure.
+                if fonts != self.fonts {
+                    if let Some(gfx) = self.gfx.as_mut() {
+                        gfx.set_fonts(fonts.clone());
+                    }
+                    self.fonts = fonts;
+                }
                 self.game.set_translations(translations);
                 self.game.set_patches(patches);
                 self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());
@@ -560,7 +567,7 @@ impl App {
         let voice = self.audio.as_ref().is_some_and(|a| a.voice_playing());
         self.game.tick(dt, voice);
 
-        let (animate, time) = (self.game.settings().animated_text, self.started.elapsed().as_secs_f32());
+        let (animate, time) = (self.game.settings().animated_text, self.started.elapsed().as_secs_f64());
         let Some(gfx) = self.gfx.as_mut() else { return };
         // Every image the screen asks the size of is one it wants drawn: load what isn't yet.
         let sizes = &self.image_sizes;
@@ -745,7 +752,7 @@ impl ApplicationHandler for App {
         };
         let window = Arc::new(event_loop.create_window(attributes).expect("failed to create window"));
 
-        self.gfx = Some(Gfx::new(event_loop, window.clone(), std::mem::take(&mut self.fonts)));
+        self.gfx = Some(Gfx::new(event_loop, window.clone(), self.fonts.clone()));
         self.last_frame = Instant::now();
         window.request_redraw();
         self.window = Some(window);

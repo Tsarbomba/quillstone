@@ -247,6 +247,13 @@ impl Gfx {
         }
     }
 
+    /// Use new theme fonts (a hot reload): text drawn so far is rasterized again with them.
+    pub fn set_fonts(&mut self, fonts: Vec<Vec<u8>>) {
+        self.text_renderer = TextRenderer::new(fonts);
+        self.texts.clear();
+        self.letters.clear();
+    }
+
     /// Current surface size in physical pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
@@ -319,7 +326,7 @@ impl Gfx {
 
     /// Add the moving letters of `{shake}`, `{wave}` and `{glitch}` text to `frame`, `time` seconds into the
     /// animation: each letter is drawn once as a picture and then only placed.
-    pub fn add_letters(&mut self, frame: &mut Frame, time: f32) {
+    pub fn add_letters(&mut self, frame: &mut Frame, time: f64) {
         let mut sets = HashMap::new();
         for (job, key) in frame.texts.iter().zip(frame.letter_keys()).filter(|(j, _)| j.animated()) {
             if let (false, Some(set)) = (sets.contains_key(key), self.text_renderer.letters_keyed(job, key)) {

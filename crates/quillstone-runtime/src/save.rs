@@ -639,9 +639,9 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         w("hud_off".to_string());
     }
     // Saves from before `::message` existed have no such records: they load with no threads.
-    // `thread "id" unread reply` (`-`: no later reply waiting), then its `msg mine "text" "image"` records ("" is none).
+    // `thread "id" unread reply` (`-`: no later reply waiting, else a position like `at`), then its `msg mine "text" "image"` records ("" is none).
     for t in &s.threads {
-        w(format!("thread {} {} {}", q(&t.id), t.unread, t.reply.map_or("-".to_string(), |pc| pc.to_string())));
+        w(format!("thread {} {} {}", q(&t.id), t.unread, t.reply.map_or("-".to_string(), |pc| position(program, pc))));
         for m in &t.msgs {
             let (video, thumb) = m.video.as_ref().map_or(("", ""), |(v, t)| (v.as_str(), t.as_deref().unwrap_or("")));
             w(format!("msg {} {} {} {} {}", u8::from(m.mine), q(m.text.as_deref().unwrap_or("")), q(m.image.as_deref().unwrap_or("")), q(video), q(thumb)));
@@ -795,6 +795,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
     let mut s = State::new(program); // starts from the script's defaults, so new variables exist
     let mut saw_at = false;
     let mut dropped: Vec<String> = Vec::new(); // sprites an edit took the picture of
+    let mut skip_thread = false; // inside the records of a thread whose character is gone
     for (n, line) in lines.by_ref() {
         let t = tokens(line).map_err(|e| format!("line {n}: {e}"))?;
         let arg = |i: usize| t.get(i).map(String::as_str).ok_or(format!("line {n}: `{line}` is too short"));
@@ -1117,22 +1118,28 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             }
             "thread" => {
                 let id = arg(1)?.to_string();
-                if !quillstone_script::is_plain_ident(&id) || s.threads.len() >= program.characters.len().max(1) {
-                    return Err(format!("line {n}: a bad or surplus `thread` record"));
+                if !quillstone_script::is_plain_ident(&id) {
+                    return Err(format!("line {n}: a bad `thread` record"));
                 }
+                // A character the update removed: its thread and messages are left out.
+                skip_thread = !program.characters.contains_key(&id);
+                if skip_thread {
+                    continue;
+                }
+                if s.threads.len() >= program.characters.len() {
+                    return Err(format!("line {n}: a surplus `thread` record"));
+                }
+                // A reply that moved or went away is dropped; older saves have a bare op index here.
                 let reply = match arg(3)? {
                     "-" => None,
                     pc => {
-                        let pc: usize = num(pc, n)?;
-                        match program.ops.get(pc) {
-                            Some(Op::Reply { to, .. }) if *to == id => Some(pc),
-                            _ if edited => None,
-                            _ => return Err(format!("line {n}: the `thread` reply is not one this script offers")),
-                        }
+                        let pc = if t.len() == 4 { num::<usize>(pc, n)? } else { resolve(program, &t[3..], n)? };
+                        matches!(program.ops.get(pc), Some(Op::Reply { to, .. }) if *to == id).then_some(pc)
                     }
                 };
                 s.threads.push(crate::Thread { id, msgs: Vec::new(), unread: num::<usize>(arg(2)?, n)?.min(crate::MAX_THREAD_MSGS), reply });
             }
+            "msg" | "msgsrc" | "msgvar" if skip_thread => {}
             "msg" => {
                 let image = match arg(3)? {
                     "" => None,

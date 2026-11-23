@@ -587,6 +587,8 @@ pub struct Dialogue {
     revealed: f32,
     /// The line ends in `{nw}`: the story goes on by itself once it is typed.
     pub auto_advance: bool,
+    /// Seconds since the line was shown: the clock of the talk (lip flap) animation.
+    age: f32,
     /// Where it is shown: in the textbox, on the page, or alone in the middle of the screen (`::center`).
     pub place: Place,
 }
@@ -597,7 +599,7 @@ impl Dialogue {
         let total = text.chars().count();
         let chars = |byte: usize| text[..byte].chars().count();
         let speeds = runs.iter().filter_map(|r| Some((chars(r.start), chars(r.end), r.style.speed?))).collect();
-        let mut d = Dialogue { speaker, color, text, runs, pauses, speeds, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, place: Place::Textbox };
+        let mut d = Dialogue { speaker, color, text, runs, pauses, speeds, hold: 0.0, total, revealed: 0.0, auto_advance: no_wait, age: 0.0, place: Place::Textbox };
         if instant {
             d.show_text();
         }
@@ -1085,14 +1087,18 @@ impl View {
                 || self.playing(&s.src, s.anim_time)
                 || s.previous_src.as_deref().is_some_and(|p| self.playing(p, s.previous_anim_time))
                 || s.layers.iter().any(|l| {
-                    self.playing(&self.layer_src(&s.id, self.talk_template.as_deref(), l), l.anim_time) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
+                    let (src, t) = self.layer_src(&s.id, self.talk_template.as_deref(), l);
+                    self.playing(&src, t) || l.previous_src.as_deref().is_some_and(|p| self.playing(p, l.previous_anim_time))
                 })
                 || s.previous_layers.iter().any(|(p, t)| self.playing(p, *t))
         };
         self.background.as_ref().is_some_and(|b| self.playing(&b.src, self.bg_clock))
             || self.previous_background.as_deref().is_some_and(|p| self.playing(p, self.previous_bg_clock))
             || self.sprites.iter().any(sprite)
-            || self.speaker_portrait_layers().iter().any(|l| self.playing(&self.layer_src(self.speaker_id.as_deref().unwrap_or_default(), self.talk_portrait_template.as_deref(), l), l.anim_time))
+            || self.speaker_portrait_layers().iter().any(|l| {
+                let (src, t) = self.layer_src(self.speaker_id.as_deref().unwrap_or_default(), self.talk_portrait_template.as_deref(), l);
+                self.playing(&src, t)
+            })
             || self.particles.active()
     }
 
@@ -1134,19 +1140,22 @@ impl View {
     /// What layer `l` of the sprite or portrait of character `id` (its picture `template`) is drawn with: the talk picture while that
     /// character's line types, else its own (a hidden layer stays hidden).
     /// A talk animation with `{value}` that is not declared for the layer's value leaves the layer as it is.
-    fn layer_src<'a>(&'a self, id: &str, template: Option<&str>, l: &'a LayerView) -> Cow<'a, str> {
+    fn layer_src<'a>(&'a self, id: &str, template: Option<&str>, l: &'a LayerView) -> (Cow<'a, str>, f32) {
+        let own = (Cow::Borrowed(l.src.as_str()), l.anim_time);
+        let Some(d) = self.dialogue.as_ref().filter(|d| d.typing()) else { return own };
         match &self.talk {
-            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(id) && self.dialogue.as_ref().is_some_and(Dialogue::typing) => {
+            // The talk animation runs from the start of the line, not from when the layer got its value.
+            Some((layer, src)) if !l.src.is_empty() && *layer == l.name && self.speaker_id.as_deref() == Some(id) => {
                 if !src.contains("{value}") {
-                    return Cow::Borrowed(src);
+                    return (Cow::Borrowed(src), d.age);
                 }
                 let value = template.and_then(|t| layer_value(t, layer, &l.src));
                 match value.map(|v| src.replace("{value}", v)) {
-                    Some(own) if anim_id(&own).is_some_and(|id| self.anims.contains_key(id)) => Cow::Owned(own),
-                    _ => Cow::Borrowed(&l.src),
+                    Some(talk) if anim_id(&talk).is_some_and(|id| self.anims.contains_key(id)) => (Cow::Owned(talk), d.age),
+                    _ => own,
                 }
             }
-            _ => Cow::Borrowed(&l.src),
+            _ => own,
         }
     }
 
@@ -1673,6 +1682,7 @@ impl View {
             *left -= dt;
         }
         if let Some(d) = &mut self.dialogue {
+            d.age += dt;
             if self.chars_per_sec > 0.0 {
                 d.type_on(dt, self.chars_per_sec);
             } else {
@@ -1806,7 +1816,8 @@ impl View {
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
                 push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
             }
-            push_sprite(stage, self.picture(&self.layer_src(&s.id, self.talk_template.as_deref(), l), l.anim_time), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+            let (src, t) = self.layer_src(&s.id, self.talk_template.as_deref(), l);
+            push_sprite(stage, self.picture(&src, t), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
         }
     }
 
@@ -2093,7 +2104,8 @@ impl View {
             }
             let who = self.speaker_id.as_deref().unwrap_or_default();
             for l in self.speaker_portrait_layers() {
-                push_portrait(&mut out, self.picture(&self.layer_src(who, self.talk_portrait_template.as_deref(), l), l.anim_time), portrait_rect(theme), box_alpha, image_size);
+                let (src, t) = self.layer_src(who, self.talk_portrait_template.as_deref(), l);
+                push_portrait(&mut out, self.picture(&src, t), portrait_rect(theme), box_alpha, image_size);
             }
             let has_name = match &d.speaker {
                 Some(name) => {

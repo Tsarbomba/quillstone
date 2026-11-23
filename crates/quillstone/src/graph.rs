@@ -114,7 +114,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
     for op in &program.ops {
         match op {
             Op::Jump { target, .. } | Op::Call { target, .. } => drop(jump_targets.insert(*target)),
-            Op::Choice { options, .. } => jump_targets.extend(options.iter().map(|o| o.target)),
+            Op::Choice { options, .. } | Op::Reply { options, .. } => jump_targets.extend(options.iter().map(|o| o.target)),
             _ => {}
         }
     }
@@ -173,7 +173,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
                     add(from, to, Kind::Call, with(None));
                 }
             }
-            Op::Choice { options, .. } => {
+            Op::Choice { options, .. } | Op::Reply { options, .. } => {
                 for o in options {
                     let Some(to) = target(o.target) else { continue };
                     let mut text = shorten(&o.text);
@@ -564,5 +564,13 @@ Prologue.\n# Start\nHi.\n::jump{to=shop if=\"gold > 2\"}\n# Shop\n::if{gold == 1
     fn a_label_that_only_loops_back_is_not_drawn_as_an_ending() {
         let m = both("# A\n::jump{to=a}\n::end\n").0;
         assert!(m.contains("n0[\"A\"]"), "{m}");
+    }
+
+    #[test]
+    fn a_chapter_reached_only_by_a_later_reply_is_reached() {
+        let src = "---\nchapters: { two: \"Two\" }\n---\n::character{id=mika name=Mika}\n# start\n::reply{to=mika later}\n- [Hey](#two)\n::\nHi.\n::end\n# two\nTwo.\n::end\n";
+        let p = quillstone_script::parse(src).unwrap();
+        assert!(unreachable_chapters(&p).is_empty());
+        assert!(both(src).0.contains("Hey"), "the graph has the edge");
     }
 }

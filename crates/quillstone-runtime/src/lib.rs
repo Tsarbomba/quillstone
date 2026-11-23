@@ -976,12 +976,22 @@ pub fn waits_at_line(state: &State) -> bool {
 /// counts a visit for `seen(label)`; the return takes that one back ([`return_to`]), but only when
 /// the label does come back (one that jumps away leaves the count as it was).
 fn call_from_line(state: &mut State, target: usize) {
-    // A page line that is shown again after the return leaves now, so it joins the page once, not twice.
-    if matches!(state.pending, Some(Cmd::Say { .. })) && state.line.as_ref().is_some_and(|l| l.place == Place::Page) {
-        state.line = None;
-    }
     state.stack.push(Frame { ret: state.pc, line: true });
     state.pc = target;
+}
+
+/// A page line that is shown again after a return must not also be on the page: it joined the page
+/// when the called label showed its first page line, or is still the current line (the label showed none).
+/// A call that never returns leaves it on the page. (Shortcut: found by its text, so a variable the
+/// label changed in that line leaves one old copy; keep the page position in the frame to fix that.)
+fn unshow_page_line(state: &mut State, program: &Program, ret: usize) {
+    let Some(Cmd::Say { speaker, text, place: Place::Page, .. }) = program.ops.get(ret).and_then(|op| rebuild_pending(program, op, &state.vars, &|t| t.to_string())) else { return };
+    let same = |l: &Line| l.text == text && l.speaker == speaker;
+    if state.line.as_ref().is_some_and(same) {
+        state.line = None;
+    } else if let Some(i) = state.page.iter().rposition(same) {
+        state.page.remove(i);
+    }
 }
 
 /// Move the visit counters of the labels at `pc` (`seen(label)`) by `delta`; a counter not set yet starts at `default`.
@@ -1009,6 +1019,7 @@ pub(crate) fn returned_to_line(before: &State, after: &State, input: &Input) -> 
 fn return_to(state: &mut State, program: &Program, frame: Frame) {
     if frame.line {
         count_visits(state, program, frame.ret, 1, -1);
+        unshow_page_line(state, program, frame.ret);
     }
     state.pc = frame.ret;
 }
@@ -1995,7 +2006,8 @@ impl<'p> Session<'p> {
 
     /// The player opened the thread with `id`: its messages are read. Not an input (rolling back doesn't un-read it).
     pub fn mark_read(&mut self, id: &str) {
-        if let Some(t) = self.state.threads.iter_mut().find(|t| t.id == id) {
+        let states = std::iter::once(&mut self.state).chain(self.history.iter_mut().map(|(s, _)| s)).chain(self.redo.iter_mut().map(|(s, _)| s));
+        for t in states.flat_map(|s| s.threads.iter_mut()).filter(|t| t.id == id) {
             t.unread = 0;
         }
     }

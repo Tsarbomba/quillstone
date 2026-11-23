@@ -82,16 +82,17 @@ fn unit(h: u64) -> f32 {
 
 /// Where `letter` is drawn `time` seconds in, for text `size` pixels tall: the offset in pixels, and which picture
 /// (its own, or one of a glitch's symbols).
-pub fn motion(letter: &Letter, time: f32, size: f32) -> ((f32, f32), usize) {
+pub fn motion(letter: &Letter, time: f64, size: f32) -> ((f32, f32), usize) {
     let i = letter.index;
     match letter.anim {
         Anim::Shake => {
-            let step = (time * SHAKE_RATE).floor() as u64;
+            let step = (time * f64::from(SHAKE_RATE)).floor() as u64;
             ((unit(hash(i, step, 1)) * SHAKE_REACH * size * letter.amount, unit(hash(i, step, 2)) * SHAKE_REACH * size * letter.amount), letter.pic)
         }
-        Anim::Wave => ((0.0, (time * WAVE_SPEED - i as f32 * WAVE_LAG).sin() * 0.12 * size * letter.amount), letter.pic),
+        // the phase is worked out in f64 and wrapped, so it stays exact after days of play
+        Anim::Wave => ((0.0, ((time * f64::from(WAVE_SPEED) - i as f64 * f64::from(WAVE_LAG)).rem_euclid(std::f64::consts::TAU) as f32).sin() * 0.12 * size * letter.amount), letter.pic),
         Anim::Glitch => {
-            let h = hash(i, (time * GLITCH_RATE).floor() as u64, 3);
+            let h = hash(i, (time * f64::from(GLITCH_RATE)).floor() as u64, 3);
             if (h >> 40) as f32 / (1u64 << 24) as f32 >= letter.amount || letter.symbols.is_empty() {
                 return ((0.0, 0.0), letter.pic);
             }
@@ -141,7 +142,7 @@ impl Frame {
     /// Put the typed moving letters of each animated text right after the quad of its line, `time` seconds into
     /// the animation. `letters` gives the letters of a job and its [`letter_keys`](Frame::letter_keys) entry
     /// (`None`: no text backend, nothing moves); they are drawn from `Tex::Letter(job, picture)`.
-    pub fn add_letters(&mut self, window: Size, time: f32, letters: &mut dyn FnMut(&TextJob, &str) -> Option<Rc<Letters>>) {
+    pub fn add_letters(&mut self, window: Size, time: f64, letters: &mut dyn FnMut(&TextJob, &str) -> Option<Rc<Letters>>) {
         if !self.animated() {
             return;
         }
@@ -196,30 +197,39 @@ mod tests {
     #[test]
     fn a_shake_jitters_a_few_pixels_and_changes_over_time() {
         let l = letter(3, Anim::Shake);
-        let offsets: Vec<_> = (0..40).map(|k| motion(&l, k as f32 * 0.04, 40.0).0).collect();
+        let offsets: Vec<_> = (0..40).map(|k| motion(&l, k as f64 * 0.04, 40.0).0).collect();
         assert!(offsets.iter().all(|(x, y)| x.abs() <= 0.8 && y.abs() <= 0.8), "a gentle tremble scaled to the size: {offsets:?}");
         assert!(offsets.windows(2).any(|w| w[0] != w[1]) && offsets.iter().any(|o| o.0.abs() > 0.2));
         // the strength scales the movement
         let strong = Letter { amount: 3.0, ..l.clone() };
         assert!((0..40).all(|k| {
-            let (a, b) = (motion(&l, k as f32 * 0.04, 40.0).0, motion(&strong, k as f32 * 0.04, 40.0).0);
+            let (a, b) = (motion(&l, k as f64 * 0.04, 40.0).0, motion(&strong, k as f64 * 0.04, 40.0).0);
             (b.0 - 3.0 * a.0).abs() < 1e-4 && (b.1 - 3.0 * a.1).abs() < 1e-4
         }));
-        assert!((0..40).any(|k| motion(&strong, k as f32 * 0.04, 40.0).0 .0.abs() > 1.8), "up to about a sixth of the height");
+        assert!((0..40).any(|k| motion(&strong, k as f64 * 0.04, 40.0).0 .0.abs() > 1.8), "up to about a sixth of the height");
         assert_eq!(motion(&l, 1.0, 40.0), motion(&l, 1.0, 40.0), "a function of the time alone");
         assert_ne!(motion(&l, 1.0, 40.0), motion(&letter(4, Anim::Shake), 1.0, 40.0), "each letter on its own");
         assert!(motion(&l, 1.0, 80.0).0 .0.abs() >= motion(&l, 1.0, 40.0).0 .0.abs());
     }
 
     #[test]
+    fn a_wave_still_moves_smoothly_after_weeks_of_uptime() {
+        let ys = |t| motion(&letter(0, Anim::Wave), t, 40.0).0 .1;
+        let weeks = 3.0e6;
+        // 1/60 s apart is about a twelfth of a radian: an f32 clock would stand still or jump here
+        let steps: Vec<f32> = (0..6).map(|k| ys(weeks + k as f64 / 60.0)).collect();
+        assert!(steps.windows(2).all(|w| (w[1] - w[0]).abs() > 1e-3 && (w[1] - w[0]).abs() < 0.8), "{steps:?}");
+    }
+
+    #[test]
     fn a_wave_bobs_up_and_down_travelling_along_the_line() {
         let ys = |i, t| motion(&letter(i, Anim::Wave), t, 40.0).0;
-        assert!((0..100).all(|k| ys(0, k as f32 * 0.05).0 == 0.0 && ys(0, k as f32 * 0.05).1.abs() <= 4.8 + 1e-3));
-        let ups = (0..100).filter(|k| ys(0, *k as f32 * 0.05).1 > 2.0).count();
-        let downs = (0..100).filter(|k| ys(0, *k as f32 * 0.05).1 < -2.0).count();
+        assert!((0..100).all(|k| ys(0, k as f64 * 0.05).0 == 0.0 && ys(0, k as f64 * 0.05).1.abs() <= 4.8 + 1e-3));
+        let ups = (0..100).filter(|k| ys(0, *k as f64 * 0.05).1 > 2.0).count();
+        let downs = (0..100).filter(|k| ys(0, *k as f64 * 0.05).1 < -2.0).count();
         assert!(ups > 10 && downs > 10, "both ways: {ups} {downs}");
         // the next letter does what this one did a moment ago
-        let lag = WAVE_LAG / WAVE_SPEED;
+        let lag = f64::from(WAVE_LAG / WAVE_SPEED);
         assert!((ys(1, 1.0 + lag).1 - ys(0, 1.0).1).abs() < 1e-3);
         assert_eq!(ys(0, 0.0), (0.0, 0.0), "starts level");
         let high = Letter { amount: 2.0, ..letter(0, Anim::Wave) };
@@ -229,7 +239,7 @@ mod tests {
     #[test]
     fn a_glitch_now_and_then_swaps_a_letter_for_a_symbol_and_jumps_it_sideways() {
         let l = Letter { amount: 0.07, ..letter(2, Anim::Glitch) };
-        let samples: Vec<_> = (0..400).map(|k| motion(&l, k as f32 / GLITCH_RATE, 40.0)).collect();
+        let samples: Vec<_> = (0..400).map(|k| motion(&l, k as f64 / f64::from(GLITCH_RATE), 40.0)).collect();
         let hit = samples.iter().filter(|s| s.1 != l.pic).count();
         assert!(hit > 5 && hit < 100, "now and then: {hit} of 400");
         for ((dx, dy), pic) in samples {
@@ -240,7 +250,7 @@ mod tests {
             }
         }
         let bare = Letter { symbols: 0..0, ..l.clone() };
-        assert!((0..400).all(|k| motion(&bare, k as f32 / GLITCH_RATE, 40.0).1 == bare.pic), "no symbols, no swap");
+        assert!((0..400).all(|k| motion(&bare, k as f64 / f64::from(GLITCH_RATE), 40.0).1 == bare.pic), "no symbols, no swap");
     }
 
     #[test]
@@ -248,12 +258,12 @@ mod tests {
         for share in [0.0f32, 0.1, 0.5, 0.9, 1.0] {
             let letters: Vec<_> = (0..20).map(|i| Letter { amount: share, pic: 100 + i, ..letter(i, Anim::Glitch) }).collect();
             let total = 20 * 500;
-            let hit = letters.iter().map(|l| (0..500).filter(|k| motion(l, *k as f32 / GLITCH_RATE, 40.0).1 != l.pic).count()).sum::<usize>();
+            let hit = letters.iter().map(|l| (0..500).filter(|k| motion(l, *k as f64 / f64::from(GLITCH_RATE), 40.0).1 != l.pic).count()).sum::<usize>();
             let got = hit as f32 / total as f32;
             assert!((got - share).abs() < 0.03, "share {share}: {got}");
         }
         // at a full share the symbols vary from letter to letter and step to step
-        let all: std::collections::BTreeSet<_> = (0..20).flat_map(|i| (0..50).map(move |k| motion(&Letter { amount: 1.0, ..letter(i, Anim::Glitch) }, k as f32 / GLITCH_RATE, 40.0).1)).collect();
+        let all: std::collections::BTreeSet<_> = (0..20).flat_map(|i| (0..50).map(move |k| motion(&Letter { amount: 1.0, ..letter(i, Anim::Glitch) }, k as f64 / f64::from(GLITCH_RATE), 40.0).1)).collect();
         assert_eq!(all.len(), GLITCH_PICK);
     }
 
@@ -265,7 +275,7 @@ mod tests {
         });
         let r = quillstone_script::markup::rich("a{glitch=1}bcd{/glitch}");
         let d = crate::view::Draw::Text { text: r.text, runs: r.runs, visible_chars: 9, rect: Rect::new(0.0, 0.0, 1920.0, 200.0), size: 40.0, color: [1.0; 4], align: crate::view::Align::Left, outline: None };
-        let left = |time: f32| {
+        let left = |time: f64| {
             let mut f = crate::batch::build_frame(std::slice::from_ref(&d), Size::new(1920.0, 1080.0));
             f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_, _| Some(set.clone()));
             f.quads.iter().find_map(|q| match q.texture {
@@ -279,8 +289,8 @@ mod tests {
         assert_eq!(x, 100 + (30 - 10) / 2, "the middle of the letter's width, not its own pen position");
         // wherever the glitch jumps it, the symbol's box stays inside the letter's advance (a pixel or two over)
         for k in 0..200 {
-            let (_, x) = left(k as f32 / GLITCH_RATE);
-            let jump = motion(&set.letters[0], k as f32 / GLITCH_RATE, 40.0).0 .0.round() as i32;
+            let (_, x) = left(k as f64 / f64::from(GLITCH_RATE));
+            let jump = motion(&set.letters[0], k as f64 / f64::from(GLITCH_RATE), 40.0).0 .0.round() as i32;
             assert!(x + jump >= 100 - 2 && x + jump + 10 <= 100 + 30 + 2, "{}", x + jump);
         }
     }
@@ -293,14 +303,14 @@ mod tests {
             let fit = widths.iter().filter(|w| **w as i32 <= width).count().max(1);
             let l = Letter { amount: 1.0, width, symbols: 0..widths.len(), fit, ..letter(0, Anim::Glitch) };
             for k in 0..300 {
-                let pic = motion(&l, k as f32 / GLITCH_RATE, 40.0).1;
+                let pic = motion(&l, k as f64 / f64::from(GLITCH_RATE), 40.0).1;
                 assert!(widths[pic] as i32 <= width || pic == 0, "width {width}: symbol {pic} is {} wide", widths[pic]);
                 assert!(pic < fit && pic + GLITCH_PICK >= fit.max(GLITCH_PICK), "one of the widest {GLITCH_PICK} that fit: {pic} of {fit}");
                 if pic == l.pic || widths[pic] as i32 > width {
                     continue;
                 }
                 // with the jump, the drawn box stays within the advance (a pixel or two over)
-                let left = symbol_dx(&l, &Pic { dx: 0, dy: 0, w: widths[pic], h: 1 }, motion(&l, k as f32 / GLITCH_RATE, 40.0).0 .0);
+                let left = symbol_dx(&l, &Pic { dx: 0, dy: 0, w: widths[pic], h: 1 }, motion(&l, k as f64 / f64::from(GLITCH_RATE), 40.0).0 .0);
                 assert!(left >= 0 && left + widths[pic] as i32 <= width + 1, "width {width}, symbol {pic}: {left}");
             }
         }
@@ -319,7 +329,7 @@ mod tests {
             letters: (1..4).map(|i| Letter { symbols: 0..0, ..letter(i, Anim::Shake) }).collect(),
             pics: vec![Pic { dx: -1, dy: -30, w: 24, h: 40 }; 4],
         });
-        let at = |visible: usize, time: f32| {
+        let at = |visible: usize, time: f64| {
             let mut f = animated_frame(visible);
             assert!(f.animated());
             f.add_letters(Size::new(1920.0, 1080.0), time, &mut |_, _| Some(set.clone()));

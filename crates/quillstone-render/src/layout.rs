@@ -218,10 +218,10 @@ pub fn fit_row(measure: Option<Measure>, s: &str, size: f32, width: f32) -> Stri
     chars[..lo].iter().collect::<String>().trim_end().to_string() + "…"
 }
 
-/// [`estimate_lines_styled`], by the real measure when there is one and the text has no `{size}`, `{whisper}` or ruby runs (which
-/// the measure can't see; those keep the estimate).
+/// [`estimate_lines_styled`], by the real measure when there is one and the text has no `{size}`, `{whisper}`, bold, italic or ruby runs (which
+/// the measure can't see, as it draws the regular face; those keep the estimate).
 pub fn lines_styled(measure: Option<Measure>, text: &str, runs: &[quillstone_script::markup::TextRun], size: f32, width: f32) -> usize {
-    let plain = runs.iter().all(|r| r.style.size.is_none() && !r.style.whisper && r.ruby.is_none());
+    let plain = runs.iter().all(|r| r.style.size.is_none() && !r.style.whisper && !r.style.bold && !r.style.italic && r.ruby.is_none());
     match measure.filter(|_| plain).and_then(|m| m(text, size, width)) {
         Some((lines, _)) => lines,
         None => estimate_lines_styled(text, runs, size, width),
@@ -423,5 +423,17 @@ mod tests {
         let measure: Measure = &|_, _, _| Some((99, 0.0));
         assert_eq!(lines_styled(Some(measure), &soft.text, &soft.runs, 32.0, 1260.0), whisper, "the measure can't see it");
         assert_eq!(lines_styled(Some(measure), &word, &[], 32.0, 1260.0), 99);
+    }
+
+    #[test]
+    fn bold_and_italic_text_keeps_the_estimate_as_the_measure_sees_only_the_regular_face() {
+        use quillstone_script::markup::rich;
+        let word = "wordy ".repeat(60);
+        let measure: Measure = &|_, _, _| Some((99, 0.0));
+        for tagged in [format!("**{word}**"), format!("*{word}*")] {
+            let r = rich(&tagged);
+            assert!(r.runs.iter().any(|r| r.style.bold || r.style.italic), "{tagged:.8}");
+            assert_eq!(lines_styled(Some(measure), &r.text, &r.runs, 32.0, 1260.0), estimate_lines_styled(&r.text, &r.runs, 32.0, 1260.0));
+        }
     }
 }

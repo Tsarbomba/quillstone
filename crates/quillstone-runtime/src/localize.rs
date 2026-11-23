@@ -27,6 +27,8 @@ impl Session<'_> {
     }
 
     /// The op and variables an earlier `line` was said from, found in the rollback history.
+    /// Limit: after `::rollback{block}` clears the history, older page lines are not found and stay in the
+    /// script's language (a page line keeps only its text, not the op and variables it needs to be translated).
     fn find_line(&self, line: &Line) -> Option<(usize, &Vars)> {
         self.history
             .iter()

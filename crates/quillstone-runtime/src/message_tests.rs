@@ -105,3 +105,50 @@ fn the_story_tester_tries_a_later_reply_option_as_a_branch() {
     let r = explore(&p, 1000);
     assert!(r.errors.is_empty() && r.warnings.is_empty() && !r.partial, "{r:?}");
 }
+
+#[test]
+fn a_waiting_reply_is_saved_as_a_place_so_a_line_added_above_it_keeps_it() {
+    let p = parse(&story(LATER)).unwrap();
+    let (s, _) = Session::start(&p);
+    let text = s.save();
+    let updated = parse(&story(&LATER.replace("# start\n", "# start\n**A:** zero\n"))).unwrap();
+    let (loaded, _) = Session::load(&updated, &text).unwrap();
+    assert_eq!(thread(loaded.state()).reply, Some(1), "the reply moved down one op");
+    // an older save wrote the bare op index: still read, and dropped when it no longer points at the reply
+    let old = text.lines().map(|l| if l.starts_with("thread ") { "thread \"mika\" 0 0".to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
+    assert_eq!(thread(Session::load(&p, &old).unwrap().0.state()).reply, Some(0));
+    assert_eq!(thread(Session::load(&p, &old.replace("\"mika\" 0 0", "\"mika\" 0 2")).unwrap().0.state()).reply, None, "not a reply: dropped");
+}
+
+#[test]
+fn a_thread_of_a_removed_character_is_skipped_not_refused() {
+    let both = "---\nvars: { met: 0 }\n---\n::character{id=mika name=Mika}\n::character{id=bo name=Bo}\n# start\n::message{from=mika text=\"hi\"}\n::message{from=bo text=\"yo\"}\n::message{from=mika text=\"again\"}\n**A:** x\n";
+    let before = parse(both).unwrap();
+    let (s, _) = Session::start(&before);
+    let text = s.save();
+    let gone = parse(&both.replace("::character{id=mika name=Mika}\n", "").replace("from=mika", "from=bo")).unwrap();
+    let (loaded, _) = Session::load(&gone, &text).unwrap();
+    assert_eq!(loaded.state().threads.len(), 1);
+    assert_eq!(loaded.state().threads[0].id, "bo");
+    assert_eq!(loaded.state().threads[0].msgs.len(), 1);
+}
+
+#[test]
+fn opening_a_thread_stays_read_when_the_story_is_rolled_back_or_forward() {
+    let p = parse(&story("# start\n::message{from=mika text=\"hi\"}\n**A:** one\n**A:** two\n::end\n")).unwrap();
+    let (mut s, _) = Session::start(&p);
+    s.input(Input::Advance);
+    s.rollback();
+    s.input(Input::Advance);
+    s.rollback();
+    s.mark_read("mika");
+    assert_eq!(thread(s.state()).unread, 0);
+    s.input(Input::Advance);
+    s.rollback();
+    assert_eq!(thread(s.state()).unread, 0, "back in history");
+    s.rollback();
+    s.input(Input::Advance);
+    s.rollback();
+    s.roll_forward();
+    assert_eq!(thread(s.state()).unread, 0, "forward again");
+}

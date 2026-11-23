@@ -245,6 +245,21 @@ fn mouths(v: &View) -> Vec<String> {
 }
 
 #[test]
+fn the_talk_animation_runs_from_the_start_of_the_line_not_from_when_the_layer_got_its_value() {
+    let anims = parse("::anim{id=flap frames=\"f1.png 0.1, f2.png 0.1\"}\n").unwrap().anims;
+    let mut v = View::new().with_speed(10.0).with_anims(&anims);
+    v.apply(&[layered("m", &FACE, 0.3, 0.0)]);
+    v.tick(5.0); // the layer has had its value for a long while
+    v.apply(&[Cmd::Say { speaker: Some("m".into()), color: None, text: "abcdefghij".into(), place: Place::Textbox }]);
+    v.set_speaker(Some("m".into()), true);
+    v.set_talk(Some(("mouth".into(), "anim:flap".into())), None, None);
+    v.tick(0.05);
+    assert_eq!(mouths(&v), ["f1.png"], "the first frame at the start of the line");
+    v.tick(0.1);
+    assert_eq!(mouths(&v), ["f2.png"]);
+}
+
+#[test]
 fn the_talk_layer_flaps_while_the_speaker_types_and_rests_after() {
     let mut v = talking(10.0, "abcdefghij", Some("m"));
     v.tick(0.05);

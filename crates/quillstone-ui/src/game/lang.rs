@@ -127,7 +127,7 @@ impl<'p> Game<'p> {
         let empty = Catalog::default();
         let cat = self.catalog().unwrap_or(&empty);
         let mut cmds = self.session.relocalized(cat);
-        cmds.retain(|c| matches!(c, Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::HudShow { .. }));
+        cmds.retain(|c| matches!(c, Cmd::Say { .. } | Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. } | Cmd::HudShow { .. } | Cmd::Page { .. }));
         self.view.apply_each(&cmds, true); // not `apply`: that would end the line's wait, video and images
         if !self.view.hud().is_empty() {
             self.view.set_vars(&self.session.state().vars);

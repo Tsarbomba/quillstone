@@ -1102,7 +1102,7 @@ mod tests {
         f.add_letters(size, 1.0, &mut |j, _| renderer.letters(j).map(|s| s.letters.clone()));
         assert_eq!(f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).count(), 6);
         // the letters of a shake are in other places at other times
-        let mut at = |t: f32| {
+        let mut at = |t: f64| {
             let mut f = quillstone_render::build_frame(std::slice::from_ref(&draw), size);
             f.add_letters(size, t, &mut |j, _| renderer.letters(j).map(|s| s.letters.clone()));
             f.quads.iter().filter(|q| matches!(q.texture, quillstone_render::Tex::Letter(..))).map(|q| q.rect).collect::<Vec<_>>()

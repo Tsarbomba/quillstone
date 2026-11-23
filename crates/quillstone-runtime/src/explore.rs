@@ -307,14 +307,24 @@ fn situation_key(state: &State) -> u128 {
     (hash(1) as u128) << 64 | hash(2) as u128
 }
 
-/// A rough size of `state` in bytes: its variables, which are what grows (about 100 bytes of map and string overhead each).
+/// A rough size of `state` in bytes: its variables, message threads, page lines and HUD, which are what grows
+/// (about 100 bytes of map and string overhead per variable or message).
 fn state_bytes(state: &State) -> usize {
     let value = |v: &Value| match v {
         Value::Str(s) => s.len(),
         Value::List(items) => items.iter().map(|i| i.len() + 24).sum(),
         _ => 0,
     };
-    1024 + state.vars.iter().map(|(k, v)| 100 + k.len() + value(v)).sum::<usize>()
+    let vars = |vars: &quillstone_script::Vars| vars.iter().map(|(k, v)| 100 + k.len() + value(v)).sum::<usize>();
+    let msg = |m: &crate::Msg| {
+        let src = m.src.as_ref().map_or(0, |(text, v)| text.len() + vars(v));
+        let files = m.image.as_ref().map_or(0, String::len) + m.video.as_ref().map_or(0, |(v, t)| v.len() + t.as_ref().map_or(0, String::len));
+        100 + m.text.as_ref().map_or(0, String::len) + src + files
+    };
+    let threads: usize = state.threads.iter().map(|t| 64 + t.id.len() + t.msgs.iter().map(msg).sum::<usize>()).sum();
+    let page: usize = state.page.iter().map(|l| 100 + l.text.len() + l.speaker.as_ref().map_or(0, String::len)).sum();
+    let hud: usize = state.hud.iter().map(|h| 200 + h.id.len()).sum();
+    1024 + vars(&state.vars) + threads + page + hud
 }
 
 struct Explorer<'p> {
@@ -1534,5 +1544,17 @@ mod tests {
         assert_eq!(r.endings.len(), 1, "only the story's `::end`");
         let plain = test("# splash\nW.\n# start\nHi.\n::end\n");
         assert!(plain.warnings.is_empty() && plain.endings.len() == 1, "{:?}", messages(&plain.warnings));
+    }
+
+    #[test]
+    fn a_states_size_counts_its_threads_and_page() {
+        let p = parse("---\n---\n::character{id=mika name=Mika}\n# start\n::message{from=mika text=\"hello there\"}\nHi.\n").unwrap();
+        let (s, _) = crate::Session::start(&p);
+        let mut state = s.state().clone();
+        let before = state_bytes(&state);
+        for _ in 0..50 {
+            state.threads[0].msgs.push(crate::Msg { mine: false, text: Some("x".repeat(1000)), src: None, image: None, video: None });
+        }
+        assert!(state_bytes(&state) >= before + 50_000);
     }
 }

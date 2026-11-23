@@ -300,9 +300,21 @@ fn a_label_called_from_a_page_line_with_page_lines_of_its_own_leaves_the_line_on
     let (mut game, _) = Session::start(&p);
     next(&mut game);
     game.input(Input::Use("pill".into()));
-    assert_eq!(texts(&game), ["One.", "Nope."]);
+    assert_eq!(texts(&game), ["One.", "Two.", "Nope."]);
     next(&mut game);
     assert_eq!(texts(&game), ["One.", "Nope.", "Two."]);
+}
+
+#[test]
+fn a_called_label_that_jumps_away_leaves_the_line_on_the_page() {
+    let src = "---\ninventory: bag\nvars: { bag: [] }\n---\n::item{id=pill name=Pill use=#eat}\n::set{bag+=\"pill\"}\n::page\nP1.\n\nP2.\n\nP3.\n::end\n# eat\n::jump{to=more}\n# more\nP4.\n\nP5.\n";
+    let p = parse(src).unwrap();
+    let (mut game, _) = Session::start(&p);
+    next(&mut game);
+    next(&mut game);
+    game.input(Input::Use("pill".into()));
+    next(&mut game);
+    assert_eq!(texts(&game), ["P1.", "P2.", "P3.", "P4.", "P5."]);
 }
 
 #[test]
