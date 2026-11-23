@@ -4,7 +4,7 @@
 //! layout; [`crate::Game`] holds the state and decides which screen is up.
 
 use quillstone_render::theme::{DEFAULT_HISTORY_RECT, DEFAULT_HISTORY_TEXT_SIZE, DEFAULT_MENU_RECT, DEFAULT_MENU_TITLE_RECT, DEFAULT_SLOTS_RECT, QuickAlign, QuickIcon, DEFAULT_OPTIONS_TEXT_SIZE, QUICK_ICON_SIDE};
-use quillstone_render::{fit_row, line_height, lines_of, place, Align, Draw, Measure, Rect, Size, Theme, FULL_UV, VIRTUAL};
+use quillstone_render::{fit_row, line_height, lines_of, place, push_image, Align, Draw, Measure, Rect, Size, Theme, FULL_UV, VIRTUAL};
 use quillstone_runtime::Logged;
 use quillstone_script::markup::plain;
 use quillstone_script::{KeyPress, TimingBar};
@@ -407,20 +407,20 @@ fn loaded<'a>(p: &'a Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) 
 
 /// A screen's backdrop: its picture Cover-fit over the whole screen, or the `overlay_color` rect if there is none or it isn't loaded.
 pub(crate) fn draw_backdrop(out: &mut Vec<Draw>, theme: &Theme, pic: &Option<String>, image_size: &dyn Fn(&str) -> Option<Size>) {
-    match loaded(pic, image_size) {
-        Some((src, size)) => {
-            let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-        }
-        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
+    backdrop(out, theme, pic.as_deref(), quillstone_script::Fit::Cover, image_size);
+}
+
+/// [`draw_backdrop`] with the picture fitted as `fit`.
+pub(crate) fn backdrop(out: &mut Vec<Draw>, theme: &Theme, pic: Option<&str>, fit: quillstone_script::Fit, image_size: &dyn Fn(&str) -> Option<Size>) {
+    if !pic.is_some_and(|src| push_image(out, src, screen(), fit, 1.0, image_size)) {
+        out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
     }
 }
 
 /// A theme picture over the whole screen (nothing if there is none or it isn't loaded).
 fn draw_full_picture(out: &mut Vec<Draw>, src: Option<&str>, image_size: &dyn Fn(&str) -> Option<Size>) {
-    if let Some((src, size)) = src.and_then(|src| image_size(src).map(|size| (src, size))) {
-        let p = quillstone_render::place(size, screen(), quillstone_script::Fit::Cover);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+    if let Some(src) = src {
+        push_image(out, src, screen(), quillstone_script::Fit::Cover, 1.0, image_size);
     }
 }
 

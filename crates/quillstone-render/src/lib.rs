@@ -41,4 +41,4 @@ pub use view::{
     Align, Background, Dialogue, Draw, InlineImage, Outline, SpriteView, TextRun, VideoView, View, SPRITE_HEIGHT,
     TEXTBOX,
 };
-pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, page_lines_measured, page_lines_tagged, name_plate_rect, portrait_rect, textbox_rect};
+pub use view::{choice_rects, dialogue_body, dialogue_lines_tagged, faded, page_lines_measured, name_plate_rect, portrait_rect, push_image, textbox_rect};

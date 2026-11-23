@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::chapters::{self as ch, Hit, Tile};
+use crate::extras::{grid_move, GridMove};
 
 /// Where the chapters screen is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -99,14 +100,10 @@ impl Game<'_> {
             self.chapters.focus = Some(0);
             return;
         };
-        match key {
-            Key::Left if f % ch::COLS > 0 => self.chapters.focus = Some(f - 1),
-            Key::Right if f % ch::COLS < ch::COLS - 1 && f + 1 < on_page => self.chapters.focus = Some(f + 1),
-            Key::Left => self.turn_chapters_page(-1),
-            Key::Right => self.turn_chapters_page(1),
-            Key::Up if f >= ch::COLS => self.chapters.focus = Some(f - ch::COLS),
-            Key::Down if f + ch::COLS < on_page => self.chapters.focus = Some(f + ch::COLS),
-            _ => {}
+        match grid_move(key, f, ch::COLS, on_page) {
+            GridMove::Focus(i) => self.chapters.focus = Some(i),
+            GridMove::Page(by) => self.turn_chapters_page(by),
+            GridMove::Stay => {}
         }
     }
 

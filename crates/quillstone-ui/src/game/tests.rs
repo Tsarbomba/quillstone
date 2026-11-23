@@ -3517,6 +3517,17 @@ fn an_item_name_and_text_hold_values_and_tags_and_the_journal_button_and_title_f
 }
 
 #[test]
+fn the_text_measure_survives_a_theme_change_and_a_fresh_view() {
+    let p = parse("Hi.\n").unwrap();
+    let mut g = new_game(&p, instant());
+    g.set_text_measure(Some(Box::new(|_, _, _| Some((3, 300.0)))));
+    g.set_theme(quillstone_render::Theme::parse("journal_layout = list\n").0);
+    assert!(g.view.measure().is_some(), "a new theme keeps it");
+    g.go_to_menu(); // starts a fresh view
+    assert_eq!(g.view.measure().and_then(|m| m("x", 20.0, 100.0)), Some((3, 300.0)), "a fresh view takes it over");
+}
+
+#[test]
 fn the_journal_as_a_list_shows_whole_texts_scrolls_and_follows_the_focus() {
     let items: String = ('a'..='h').map(|c| format!("::item{{id={c} name=\"Item {c}\" text=\"The full hint for {c}, long enough to wrap.\"}}\n")).collect();
     let src = format!("---\nvars: {{ hints: [a, b, c, d, e, f, g, h], fin: [b] }}\njournal: hints\njournal_done: fin\n---\n{items}Hi.\n");

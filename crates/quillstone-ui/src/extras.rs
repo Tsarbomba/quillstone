@@ -2,9 +2,10 @@
 //! playing (see `quillstone_runtime::Session::unlocked`). Layout, hit-testing and
 //! drawing; what the input does is in `game/extras.rs`.
 
-use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{push_image, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::{kind_from_path, AssetKind, Fit};
 
+use crate::game::Key;
 use crate::input::{screen, text};
 use crate::texts::Tr;
 use crate::screens::{draw_backdrop, fit_value, extras_back_rect};
@@ -102,13 +103,55 @@ pub fn hit(x: f32, y: f32, tabs: &[Tab], tab: Tab, on_page: usize, page: usize, 
     if let Some(i) = (0..on_page).find(|&i| item_rect(tab, i).contains(x, y)) {
         return Some(Hit::Item(i));
     }
+    pager_hit(x, y, page, pages, Hit::Prev, Hit::Next, Hit::Back)
+}
+
+/// What an arrow key does in a `cols`-wide grid with `on_page` entries, the focus on `f`: moves it, turns the page
+/// (off the left or right side), or nothing.
+pub(crate) enum GridMove {
+    Focus(usize),
+    Page(isize),
+    Stay,
+}
+
+pub(crate) fn grid_move(key: Key, f: usize, cols: usize, on_page: usize) -> GridMove {
+    match key {
+        Key::Left if cols > 1 && !f.is_multiple_of(cols) => GridMove::Focus(f - 1),
+        Key::Right if cols > 1 && f % cols < cols - 1 && f + 1 < on_page => GridMove::Focus(f + 1),
+        Key::Left => GridMove::Page(-1),
+        Key::Right => GridMove::Page(1),
+        Key::Up if f >= cols => GridMove::Focus(f - cols),
+        Key::Down if f + cols < on_page => GridMove::Focus(f + cols),
+        _ => GridMove::Stay,
+    }
+}
+
+/// The paging controls under a grid: an arrow with no page beyond it is not there, then Back. Each screen has its own `Hit`.
+pub(crate) fn pager_hit<T>(x: f32, y: f32, page: usize, pages: usize, prev: T, next: T, back: T) -> Option<T> {
     if page > 0 && prev_rect().contains(x, y) {
-        return Some(Hit::Prev);
+        return Some(prev);
     }
     if page + 1 < pages && next_rect().contains(x, y) {
-        return Some(Hit::Next);
+        return Some(next);
     }
-    extras_back_rect().contains(x, y).then_some(Hit::Back)
+    extras_back_rect().contains(x, y).then_some(back)
+}
+
+/// The page arrows and "Page n of m" (when there are several pages) and the Back button.
+/// `lit`: whether the cursor is on prev, next, back. An arrow with no page that way is dim and does nothing.
+pub(crate) fn draw_pager(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, page: usize, pages: usize, label_y: f32, lit: [bool; 3]) {
+    let color = |on: bool| if on { theme.button_hover_color } else { theme.button_color };
+    if pages > 1 {
+        for (r, arrow, live, hover) in [(prev_rect(), "\u{2039}", page > 0, lit[0]), (next_rect(), "\u{203A}", page + 1 < pages, lit[1])] {
+            out.push(Draw::Rect { rect: r, color: color(live && hover) });
+            text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
+        }
+        let label = tr.f("Page {n} of {pages}", &[("n", &(page + 1)), ("pages", &pages)]);
+        text(out, label, Rect::new(0.0, label_y, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
+    }
+    let back = extras_back_rect();
+    out.push(Draw::Rect { rect: back, color: color(lit[2]) });
+    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
 }
 
 /// A track's display name: its file name without folder or extension, tidied
@@ -165,10 +208,7 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen,
                 // a picture shows itself; a video with no thumbnail gets a play mark
                 if let Some(pic) = thumb.or_else(|| (kind_from_path(src) != AssetKind::Video).then_some(src)) {
                     let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
-                    if let Some(size) = image_size(pic) {
-                        let p = place(size, inner, Fit::Cover);
-                        out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-                    }
+                    push_image(out, pic, inner, Fit::Cover, 1.0, image_size);
                 } else {
                     // No thumbnail decoding: a dark tile with a play glyph and the clip's name.
                     let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
@@ -195,28 +235,13 @@ pub fn draw_extras(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ExtrasScreen,
             }
         }
     }
-    if s.pages > 1 {
-        for (hit, r, arrow) in [(Hit::Prev, prev_rect(), "\u{2039}"), (Hit::Next, next_rect(), "\u{203A}")] {
-            // No page that way: the arrow is dim and does nothing.
-            let live = if hit == Hit::Prev { s.page > 0 } else { s.page + 1 < s.pages };
-            out.push(Draw::Rect { rect: r, color: lit(live && s.hover == Some(hit)) });
-            text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
-        }
-        let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
-        text(out, label, Rect::new(0.0, 912.0, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
-    }
-    let back = extras_back_rect();
-    out.push(Draw::Rect { rect: back, color: lit(s.hover == Some(Hit::Back)) });
-    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
+    draw_pager(out, theme, tr, s.page, s.pages, 912.0, [s.hover == Some(Hit::Prev), s.hover == Some(Hit::Next), s.hover == Some(Hit::Back)]);
 }
 
 /// One gallery picture filling the screen (letterboxed), over black.
 pub fn draw_picture(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, src: &str, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: [0.0, 0.0, 0.0, 1.0] });
-    if let Some(size) = image_size(src) {
-        let p = place(size, screen(), Fit::Contain);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-    }
+    push_image(out, src, screen(), Fit::Contain, 1.0, image_size);
     let hint = tr.t("Click or Esc to go back  ·  Left/Right for the others");
     text(out, hint, Rect::new(0.0, VIRTUAL.h - 44.0, VIRTUAL.w, 32.0), 22.0, theme.dim_color, Align::Center);
 }

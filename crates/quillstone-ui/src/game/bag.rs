@@ -252,7 +252,7 @@ impl Game<'_> {
     fn draw_journal_list_screen(&self, out: &mut Vec<Draw>, image_size: &dyn Fn(&str) -> Option<Size>) {
         let (theme, tr) = (self.view.theme(), self.ui());
         let rows = self.journal_rows();
-        let measure = |t: &str, s: f32, w: f32| self.measure.as_ref().and_then(|m| m(t, s, w));
+        let measure = |t: &str, s: f32, w: f32| self.view.measure().and_then(|m| m(t, s, w));
         let placed = bag::layout_journal(theme, &rows, self.bag.scroll, Some(&measure));
         let hover = self.pointer().and_then(|(x, y)| bag::row_at(&placed, x, y)).or(self.bag.focus);
         let close_hover = self.pointer().is_some_and(|(x, y)| bag::list_close_at(theme, x, y));
@@ -265,8 +265,8 @@ impl Game<'_> {
         let theme = self.view.theme();
         let rows = self.journal_rows();
         let n = rows.len();
-        let m = &self.measure;
-        let measure = |t: &str, s: f32, w: f32| m.as_ref().and_then(|f| f(t, s, w));
+        let m = self.view.measure();
+        let measure = |t: &str, s: f32, w: f32| m.and_then(|f| f(t, s, w));
         let visible = |scroll: usize| bag::layout_journal(theme, &rows, scroll, Some(&measure)).len();
         let max_scroll = (0..n).find(|&s| s + visible(s) >= n).unwrap_or(0);
         let mut scroll = self.bag.scroll.min(max_scroll);

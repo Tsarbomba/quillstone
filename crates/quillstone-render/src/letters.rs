@@ -151,7 +151,6 @@ impl Frame {
             for letter in set.letters.iter().filter(|l| l.index < job.visible_chars) {
                 let ((dx, dy), pic) = motion(letter, time, job.size_px);
                 let Some(p) = set.pics.get(pic) else { continue };
-                // whole pixels keep the letter as sharp as the line is
                 // a symbol is centred in the width of the letter it replaces
                 let px = if pic == letter.pic { p.dx } else { symbol_dx(letter, p, dx) };
                 // whole pixels keep the letter as sharp as the line is

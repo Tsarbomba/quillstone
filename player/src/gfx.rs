@@ -13,7 +13,7 @@ use wgpu::CurrentSurfaceTexture;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-use crate::text::TextRenderer;
+use quillstone_text::TextRenderer;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

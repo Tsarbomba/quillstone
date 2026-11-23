@@ -20,7 +20,6 @@ mod reload;
 mod gfx;
 mod icon;
 mod setup;
-mod text;
 mod video;
 
 use std::collections::HashMap;
@@ -188,10 +187,7 @@ fn main() {
     game.set_unlock_all(unlock_all);
     game.set_dev(dev);
     game.set_theme(theme);
-    game.set_text_measure(Some(Box::new({
-        let measurer = text::Measurer::new(fonts.clone());
-        move |t: &str, size, width| measurer.measure(t, size, width)
-    })));
+    game.set_text_measure(Some(quillstone_text::Measurer::new(fonts.clone()).into_measure()));
     let (translations, problems) = quillstone_ui::source::load_translations_in(&assets, program);
     for p in &problems {
         eprintln!("warning: {p}");
@@ -203,7 +199,7 @@ fn main() {
     }
     game.set_patches(patches);
     if let Some(first) = problems.iter().chain(&patch_problems).next() {
-        game.notify(format!("Translation not loaded: {first}"));
+        game.notify(format!("Translation or patch not loaded: {first}"));
     }
     // `random(lo, hi)` rolls start from the clock, so every new game rolls differently.
     game.set_seed(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64));
@@ -422,10 +418,7 @@ impl App {
             Ok(()) => {
                 let fonts = load_fonts(&theme, &self.assets);
                 self.game.set_theme(theme);
-                self.game.set_text_measure(Some(Box::new({
-                    let measurer = text::Measurer::new(fonts);
-                    move |t: &str, size, width| measurer.measure(t, size, width)
-                })));
+                self.game.set_text_measure(Some(quillstone_text::Measurer::new(fonts).into_measure()));
                 self.game.set_translations(translations);
                 self.game.set_patches(patches);
                 self.game.set_voice_files(quillstone_ui::source::voice_files(&self.assets, program).into_iter().collect());

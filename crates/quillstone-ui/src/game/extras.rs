@@ -6,7 +6,7 @@ use quillstone_runtime::{is_persistent_file, read_persistent, write_persistent};
 use quillstone_script::Vars;
 
 use super::*;
-use crate::extras::{self as ex, Hit, Tab};
+use crate::extras::{self as ex, grid_move, GridMove, Hit, Tab};
 
 /// What is kept across playthroughs (persistent variables, unlocked extras).
 pub(super) const PERSISTENT_FILE: &str = "persistent.txt";
@@ -231,14 +231,10 @@ impl Game<'_> {
             return;
         };
         let cols = if self.extras.tab == Tab::Gallery { ex::GALLERY_COLS } else { 1 };
-        match key {
-            Key::Left if cols > 1 && f % cols > 0 => self.extras.focus = Some(f - 1),
-            Key::Right if cols > 1 && f % cols < cols - 1 && f + 1 < on_page => self.extras.focus = Some(f + 1),
-            Key::Left => self.turn_extras_page(-1),
-            Key::Right => self.turn_extras_page(1),
-            Key::Up if f >= cols => self.extras.focus = Some(f - cols),
-            Key::Down if f + cols < on_page => self.extras.focus = Some(f + cols),
-            _ => {}
+        match grid_move(key, f, cols, on_page) {
+            GridMove::Focus(i) => self.extras.focus = Some(i),
+            GridMove::Page(by) => self.turn_extras_page(by),
+            GridMove::Stay => {}
         }
     }
 

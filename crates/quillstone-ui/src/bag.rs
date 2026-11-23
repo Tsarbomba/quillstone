@@ -6,11 +6,11 @@
 //! shop the player's money, a grid of cells (icon, name, price), the description
 //! of the hovered or selected item, a page control and a Close/Leave button.
 
-use quillstone_render::{line_height, place, Align, CellStyle, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{line_height, lines_of, push_image, Align, CellStyle, Draw, Measure, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
-use crate::input::{screen, text};
-use crate::measure::{lines_of, Measure};
+use crate::input::text;
+use crate::screens::backdrop;
 use crate::texts::Tr;
 
 const MARGIN: f32 = 40.0;
@@ -222,13 +222,8 @@ fn fit_size(s: &str, base: f32, width: f32) -> f32 {
 fn fill(out: &mut Vec<Draw>, style: Option<&CellStyle>, fallback: [f32; 4], rect: Rect, image_size: &dyn Fn(&str) -> Option<Size>) {
     match style {
         Some(CellStyle::Color(c)) => out.push(Draw::Rect { rect, color: *c }),
-        Some(CellStyle::Image(src)) => match image_size(src) {
-            Some(size) => {
-                let p = place(size, rect, Fit::Stretch);
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-            }
-            None => out.push(Draw::Rect { rect, color: fallback }),
-        },
+        Some(CellStyle::Image(src)) if push_image(out, src, rect, Fit::Stretch, 1.0, image_size) => {}
+        Some(CellStyle::Image(_)) => out.push(Draw::Rect { rect, color: fallback }),
         None => out.push(Draw::Rect { rect, color: fallback }),
     }
 }
@@ -240,16 +235,9 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
     let text_color = theme.inventory_text_color.unwrap_or(theme.text_color);
 
     // Behind everything: the theme's picture, or the usual dimming of the story.
-    match s.background.and_then(|src| Some((src, image_size(src)?))) {
-        Some((src, size)) => {
-            let p = place(size, screen(), Fit::Stretch);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-        }
-        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
-    }
-    if let Some((src, size)) = theme.inventory_panel.as_deref().and_then(|src| Some((src, image_size(src)?))) {
-        let p = place(size, panel_rect(theme), Fit::Stretch);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+    backdrop(out, theme, s.background, Fit::Stretch, image_size);
+    if let Some(src) = theme.inventory_panel.as_deref() {
+        push_image(out, src, panel_rect(theme), Fit::Stretch, 1.0, image_size);
     }
     text(out, s.title, title_rect(theme), 48.0, theme.text_color, Align::Center);
     if let Some(money) = s.money {
@@ -290,11 +278,8 @@ pub fn draw_bag(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &BagScreen, image
         let icon = theme.inventory_icon_size.min(r.w - 16.0).min((r.h - 100.0).max(16.0));
         let icon_rect = Rect::new(r.x + (r.w - icon) / 2.0, r.y + 12.0, icon, icon);
         if let Some(src) = &cell.icon {
-            if let Some(size) = image_size(src) {
-                let p = place(size, icon_rect, Fit::Contain);
-                let alpha = if cell.state == CellState::Disabled { 0.45 } else { 1.0 };
-                out.push(Draw::Image { src: src.clone(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-            }
+            let alpha = if cell.state == CellState::Disabled { 0.45 } else { 1.0 };
+            push_image(out, src, icon_rect, Fit::Contain, alpha, image_size);
         }
         let name_rect = Rect::new(r.x + 8.0, icon_rect.y + icon + 8.0, r.w - 16.0, 36.0);
         let name_col = if cell.state == CellState::Disabled { dim } else { name_color };
@@ -418,13 +403,7 @@ pub fn draw_journal_list(
     background: Option<&str>,
     image_size: &dyn Fn(&str) -> Option<Size>,
 ) {
-    match background.and_then(|src| Some((src, image_size(src)?))) {
-        Some((src, size)) => {
-            let p = place(size, screen(), Fit::Stretch);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-        }
-        None => out.push(Draw::Rect { rect: screen(), color: theme.overlay_color }),
-    }
+    backdrop(out, theme, background, Fit::Stretch, image_size);
     text(out, title, title_rect(theme), 48.0, theme.text_color, Align::Center);
     if rows.is_empty() {
         text(out, tr.t("Nothing here yet."), list_area(theme), 32.0, theme.dim_color, Align::Center);
@@ -439,9 +418,8 @@ pub fn draw_journal_list(
         let fill = if on { theme.button_hover_color } else if row.done.is_some() { [br, bg, bb, ba * 0.6] } else { theme.button_color };
         crate::messages::skin(out, pic, theme.journal_row_border, g.rect, fill, image_size);
         let alpha = if row.done.is_some() { 0.45 } else { 1.0 };
-        if let Some((src, size)) = row.icon.as_deref().and_then(|s| image_size(s).map(|z| (s, z))) {
-            let p = place(size, g.icon, Fit::Contain);
-            out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+        if let Some(src) = row.icon.as_deref() {
+            push_image(out, src, g.icon, Fit::Contain, alpha, image_size);
         }
         let dim = |c: [f32; 4]| if row.done.is_some() { theme.dim_color } else { c };
         text(out, row.name.clone(), g.name, ROW_NAME, dim(name_color), Align::Left);

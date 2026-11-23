@@ -4,12 +4,11 @@
 //! bubbles), `accent_color` (the player's), `overlay_color`, `text_color` and `dim_color`, unless the theme's `bubble_*`,
 //! `messages_*` keys say otherwise.
 
-use quillstone_render::{line_height, place, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{fit_row, line_height, lines_of, push_image, Align, Draw, Measure, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::markup::{plain, rich};
 use quillstone_script::Fit;
 
 use crate::input::{screen, text};
-use crate::measure::{fit_row, lines_of, Measure};
 use crate::texts::Tr;
 
 /// Most reply options drawn at the foot of a thread.
@@ -184,10 +183,7 @@ fn lit(theme: &Theme, on: bool) -> [f32; 4] {
 }
 
 fn image_in(out: &mut Vec<Draw>, src: &str, into: Rect, image_size: &dyn Fn(&str) -> Option<Size>) {
-    if let Some(size) = image_size(src) {
-        let p = place(size, into, Fit::Contain);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-    }
+    push_image(out, src, into, Fit::Contain, 1.0, image_size);
 }
 
 /// The backdrop (the dim, then the theme's `messages_image` covering the screen), the title and the Back button.
@@ -209,9 +205,8 @@ fn button(out: &mut Vec<Draw>, theme: &Theme, dest: Rect, on: bool, image_size: 
 #[allow(clippy::too_many_arguments)]
 fn draw_frame(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, g: &Geo, title: &str, avatar: Option<Option<&str>>, back_hover: bool, image_size: &dyn Fn(&str) -> Option<Size>) {
     out.push(Draw::Rect { rect: screen(), color: theme.overlay_color });
-    if let Some((src, size)) = theme.messages_image.as_deref().and_then(|s| image_size(s).map(|z| (s, z))) {
-        let p = place(size, screen(), Fit::Cover);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+    if let Some(src) = theme.messages_image.as_deref() {
+        push_image(out, src, screen(), Fit::Cover, 1.0, image_size);
     }
     // `avatar`: a chat header (with the contact's portrait, if it has one); none: the list.
     text(out, title, g.title_rect(avatar.is_some()), 40.0, theme.text_color, if avatar.is_some() { Align::Left } else { Align::Center });

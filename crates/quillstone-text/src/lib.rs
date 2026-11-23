@@ -1,6 +1,6 @@
 //! Text rasterization: [`TextJob`] -> RGBA pixels.
 //!
-//! With the `text` feature this uses cosmic-text. Without it, [`TextRenderer::rasterize`]
+//! With the `cosmic` feature this uses cosmic-text. Without it, [`TextRenderer::rasterize`]
 //! returns `None` and text simply isn't drawn.
 
 use quillstone_render::TextJob;
@@ -69,6 +69,11 @@ mod stub {
         pub fn fit(&self, _job: &TextJob) -> Option<Fit> {
             None
         }
+
+        /// The measure as a function, as `Game::set_text_measure` takes it.
+        pub fn into_measure(self) -> quillstone_render::MeasureFn {
+            Box::new(|_, _, _| None)
+        }
     }
 }
 
@@ -120,6 +125,38 @@ mod real {
     /// `color` with its alpha scaled by `k`.
     fn faded(color: Color, k: f32) -> Color {
         Color::rgba(color.r(), color.g(), color.b(), (color.a() as f32 * k.clamp(0.0, 1.0)).round() as u8)
+    }
+
+    /// A colour channel in 0..1 as a byte.
+    fn byte(c: f32) -> u8 {
+        (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// The attributes every text starts from: the theme font's family, if one was loaded.
+    fn base_attrs(family: &Option<String>) -> Attrs<'_> {
+        match family {
+            Some(name) => Attrs::new().family(Family::Name(name)),
+            None => Attrs::new(),
+        }
+    }
+
+    /// Plain text of `px` size shaped with `attrs`, wrapped at `width` (`None`: one line).
+    fn plain_buffer(fonts: &mut FontSystem, text: &str, attrs: &Attrs, px: f32, width: Option<f32>) -> Buffer {
+        let mut buffer = Buffer::new(fonts, Metrics::new(px, quillstone_render::line_height(px)));
+        buffer.borrow_with(fonts).set_size(width, None);
+        buffer.borrow_with(fonts).set_text(text, attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        buffer
+    }
+
+    /// How far down a text block is pushed in a box `height` tall: `Align::Center` puts it in the middle.
+    /// The drawn line and its moving letters both use this, so letters sit in their gaps.
+    fn block_top(buffer: &Buffer, align: Align, height: u32) -> f32 {
+        let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
+        match align {
+            Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
+            Align::Left | Align::CenterX | Align::Right => 0.0,
+        }
     }
 
     /// Where a line `line_w` wide starts across a text `width` wide.
@@ -214,7 +251,7 @@ mod real {
         sets: HashMap<String, Rc<LetterSet>>,
     }
 
-    /// Measures text for layouts that fit themselves to it (see `quillstone_ui::measure`). It has a text engine of its
+    /// Measures text for layouts that fit themselves to it (see `quillstone_render::Measure`). It has a text engine of its
     /// own, made when first asked, and remembers its answers (a screen asks the same ones every frame).
     type MeasureKey = (String, u32, u32);
 
@@ -244,9 +281,12 @@ mod real {
             cache.insert(key, found);
             Some(found)
         }
-    }
 
-    impl Measurer {
+        /// The measure as a function, as `Game::set_text_measure` takes it.
+        pub fn into_measure(self) -> quillstone_render::MeasureFn {
+            Box::new(move |text, size, width| self.measure(text, size, width))
+        }
+
         /// How the player draws `job`: whole, shrunk to fit its box, or cut off (the same shaping and fit test as
         /// `TextRenderer::rasterize`). `None` when there is no font to lay the text out with. Answers are kept.
         pub fn fit(&self, job: &TextJob) -> Option<Fit> {
@@ -348,18 +388,7 @@ mod real {
         /// How `text` wraps at `size` px in `width` px: the lines it makes and the widest one's width, as
         /// [`TextRenderer::rasterize`] will lay it out.
         fn measure(&mut self, text: &str, size: f32, width: f32) -> (usize, f32) {
-            let size = size.max(1.0);
-            let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(size, quillstone_render::line_height(size)));
-            {
-                let mut b = buffer.borrow_with(&mut self.fonts);
-                b.set_size(Some(width.max(1.0)), None);
-                let attrs = match &self.family {
-                    Some(name) => Attrs::new().family(Family::Name(name)),
-                    None => Attrs::new(),
-                };
-                b.set_text(text, &attrs, Shaping::Advanced, None);
-            }
-            buffer.shape_until_scroll(&mut self.fonts, false);
+            let buffer = plain_buffer(&mut self.fonts, text, &base_attrs(&self.family), size.max(1.0), Some(width.max(1.0)));
             let (mut lines, mut widest) = (0, 0.0f32);
             for run in buffer.layout_runs() {
                 lines += 1;
@@ -402,14 +431,10 @@ mod real {
             {
                 let mut b = buffer.borrow_with(&mut self.fonts);
                 b.set_size(Some(width as f32), None);
-                let attrs = match &self.family {
-                    Some(name) => Attrs::new().family(Family::Name(name)),
-                    None => Attrs::new(),
-                };
+                let attrs = base_attrs(&self.family);
                 if job.runs.is_empty() {
                     b.set_text(&job.text, &attrs, Shaping::Advanced, None);
                 } else {
-                    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
                     // `{size=..}`: when any run has one, every run gets its own metrics, so a line is
                     // as tall as its largest run (a line of smaller text alone is shorter).
                     // A run with ruby also gets its own, taller line (room for the reading above).
@@ -450,18 +475,7 @@ mod real {
 
         /// A ruby reading of `px` size, centred on `centre` with its baseline at `baseline`.
         fn draw_ruby(&mut self, acc: &mut [[f32; 4]], size: (i32, i32), text: &str, color: Color, (centre, baseline): (f32, i32), px: f32) {
-            let px = px.max(1.0);
-            let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(px, quillstone_render::line_height(px)));
-            {
-                let attrs = match &self.family {
-                    Some(name) => Attrs::new().family(Family::Name(name)),
-                    None => Attrs::new(),
-                };
-                let mut b = buffer.borrow_with(&mut self.fonts);
-                b.set_size(None, None);
-                b.set_text(text, &attrs, Shaping::Advanced, None);
-            }
-            buffer.shape_until_scroll(&mut self.fonts, false);
+            let buffer = plain_buffer(&mut self.fonts, text, &base_attrs(&self.family), px.max(1.0), None);
             let wide = buffer.layout_runs().map(|run| run.line_w).fold(0.0, f32::max);
             let left = (centre - wide / 2.0).min(size.0 as f32 - wide).max(0.0);
             for run in buffer.layout_runs() {
@@ -501,11 +515,8 @@ mod real {
         /// The symbols a glitching letter of `style` swaps to, as pictures in the text's colour.
         fn glitch_pictures(&mut self, glyph: &cosmic_text::LayoutGlyph, color: Color, opacity: f32, job: &TextJob) -> Vec<(Pic, Bitmap)> {
             let run = job.runs.get(glyph.metadata);
-            let family = self.family.clone();
-            let mut attrs = match &family {
-                Some(name) => Attrs::new().family(Family::Name(name)),
-                None => Attrs::new(),
-            };
+            let family = self.family.clone(); // `picture` borrows `self` whole
+            let mut attrs = base_attrs(&family);
             if run.is_some_and(|r| r.style.bold) {
                 attrs = attrs.weight(Weight::BOLD);
             }
@@ -514,14 +525,7 @@ mod real {
             }
             let mut out = Vec::new();
             for symbol in quillstone_render::letters::GLITCH_CHARS.chars() {
-                let px = glyph.font_size.max(1.0);
-                let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(px, quillstone_render::line_height(px)));
-                {
-                    let mut b = buffer.borrow_with(&mut self.fonts);
-                    b.set_size(None, None);
-                    b.set_text(&symbol.to_string(), &attrs, Shaping::Advanced, None);
-                }
-                buffer.shape_until_scroll(&mut self.fonts, false);
+                let buffer = plain_buffer(&mut self.fonts, &symbol.to_string(), &attrs, glyph.font_size.max(1.0), None);
                 let key = buffer.layout_runs().next().and_then(|run| run.glyphs.first().map(|g| g.physical((0.0, 0.0), 1.0).cache_key));
                 // a symbol the fonts can't draw is a blank one: the letter just doesn't change
                 out.extend(key.and_then(|key| self.picture(key, color, opacity, job)));
@@ -535,12 +539,9 @@ mod real {
         fn make_letters(&mut self, job: &TextJob, buffer: &Buffer) -> LetterSet {
             let (width, height) = (job.rect.w.max(1.0) as u32, job.rect.h.max(1.0) as u32);
             let line_starts = line_starts(buffer, &job.text, !job.runs.is_empty());
-            let base = Color::rgba((job.color[0].clamp(0.0, 1.0) * 255.0).round() as u8, (job.color[1].clamp(0.0, 1.0) * 255.0).round() as u8, (job.color[2].clamp(0.0, 1.0) * 255.0).round() as u8, 255);
-            let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
-            let y_off = match job.align {
-                Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
-                Align::Left | Align::CenterX | Align::Right => 0.0,
-            };
+            let [r, g, b, _] = job.color.map(byte);
+            let base = Color::rgba(r, g, b, 255);
+            let y_off = block_top(buffer, job.align, height);
             let mut letters = Letters::default();
             let mut bitmaps = Vec::new();
             let mut symbols: HashMap<usize, std::ops::Range<usize>> = HashMap::new(); // by run
@@ -605,7 +606,7 @@ mod real {
             // buffer line per paragraph), so add where that paragraph begins in the text.
             let line_starts = line_starts(buffer, &job.text, !job.runs.is_empty());
 
-            let [r, g, b, a] = job.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            let [r, g, b, a] = job.color.map(byte);
             let base = Color::rgba(r, g, b, 255);
             // Letters that move are not in the line: they are pictures of their own (see `letters`).
             let moving = |glyph: &cosmic_text::LayoutGlyph| job.runs.get(glyph.metadata).is_some_and(|run| run.style.anim.is_some());
@@ -613,11 +614,7 @@ mod real {
             let opacity_of = |glyph: &cosmic_text::LayoutGlyph| job.runs.get(glyph.metadata).map_or(1.0, |run| run.style.opacity());
 
             let line_count = buffer.layout_runs().count();
-            let block_h: f32 = buffer.layout_runs().map(|run| run.line_height).sum();
-            let y_off = match job.align {
-                Align::Center => ((height as f32 - block_h) / 2.0).max(0.0),
-                Align::Left | Align::CenterX | Align::Right => 0.0,
-            };
+            let y_off = block_top(buffer, job.align, height);
 
             if line_count == 0 && !job.text.trim().is_empty() {
                 eprintln!(
@@ -683,7 +680,7 @@ mod real {
                     Some((first, x_off + (left + right) / 2.0, (run.line_y + y_off - RUBY_LIFT * px).round() as i32, px * RUBY_SCALE))
                 });
                 if let (Some((first, centre, baseline, px)), Some(reading)) = (found, &tr.ruby) {
-                    let [r, g, b] = tr.style.color.map_or([r, g, b], |c| c.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+                    let [r, g, b] = tr.style.color.map_or([r, g, b], |c| c.map(byte));
                     if first < byte_limit {
                         self.draw_ruby(&mut acc, size, reading, Color::rgba(r, g, b, 255), (centre, baseline), px);
                     }

@@ -1,12 +1,12 @@
 //! The main menu's Chapters screen: a grid of tiles, one per `chapters:` entry, each starting a new game at its
 //! label once open. Layout, hit-testing and drawing; what the input does is in `game/chapters.rs`.
 
-use quillstone_render::{place, Align, Draw, Rect, Size, Theme, VIRTUAL};
+use quillstone_render::{push_image, Align, Draw, Rect, Size, Theme, VIRTUAL};
 use quillstone_script::Fit;
 
-use crate::extras::{next_rect, prev_rect};
+use crate::extras::{draw_pager, pager_hit};
 use crate::input::text;
-use crate::screens::{draw_backdrop, extras_back_rect, fit_value};
+use crate::screens::{draw_backdrop, fit_value};
 use crate::texts::Tr;
 
 /// Tiles per page: 4 columns, 3 rows.
@@ -48,13 +48,7 @@ pub fn hit(x: f32, y: f32, on_page: usize, page: usize, pages: usize) -> Option<
     if let Some(i) = (0..on_page).find(|&i| tile_rect(i).contains(x, y)) {
         return Some(Hit::Item(i));
     }
-    if page > 0 && prev_rect().contains(x, y) {
-        return Some(Hit::Prev);
-    }
-    if page + 1 < pages && next_rect().contains(x, y) {
-        return Some(Hit::Next);
-    }
-    extras_back_rect().contains(x, y).then_some(Hit::Back)
+    pager_hit(x, y, page, pages, Hit::Prev, Hit::Next, Hit::Back)
 }
 
 /// One tile of the page.
@@ -89,38 +83,22 @@ pub fn draw_chapters(out: &mut Vec<Draw>, theme: &Theme, tr: Tr, s: &ChaptersScr
             continue;
         }
         let inner = Rect::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0);
-        match tile.thumb.and_then(|pic| image_size(pic).map(|size| (pic, size))) {
-            Some((pic, size)) => {
-                let p = place(size, inner, Fit::Cover);
-                out.push(Draw::Image { src: pic.to_string(), dest: p.dest, uv: p.uv, alpha: 1.0, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-            }
-            // No picture: a dark tile with the title on it.
-            None => {
-                out.push(Draw::Rect { rect: inner, color: [0.04, 0.04, 0.06, 1.0] });
-                text(out, tile.title, Rect::new(inner.x + 16.0, inner.y, inner.w - 32.0, inner.h), 30.0, theme.accent_color, Align::Center);
-            }
+        // No picture: a dark tile with the title on it.
+        if !tile.thumb.is_some_and(|pic| push_image(out, pic, inner, Fit::Cover, 1.0, image_size)) {
+            out.push(Draw::Rect { rect: inner, color: [0.04, 0.04, 0.06, 1.0] });
+            text(out, tile.title, Rect::new(inner.x + 16.0, inner.y, inner.w - 32.0, inner.h), 30.0, theme.accent_color, Align::Center);
         }
         let t = title_rect(i);
         let (title, size) = fit_value(tile.title, 26.0, t.w, None);
         text(out, title, t, size, theme.text_color, Align::Center);
     }
-    if s.pages > 1 {
-        for (hit, r, arrow) in [(Hit::Prev, prev_rect(), "\u{2039}"), (Hit::Next, next_rect(), "\u{203A}")] {
-            let live = if hit == Hit::Prev { s.page > 0 } else { s.page + 1 < s.pages };
-            out.push(Draw::Rect { rect: r, color: lit(live && s.hover == Some(hit)) });
-            text(out, arrow, r, 64.0, if live { theme.text_color } else { theme.dim_color }, Align::Center);
-        }
-        let label = tr.f("Page {n} of {pages}", &[("n", &(s.page + 1)), ("pages", &s.pages)]);
-        text(out, label, Rect::new(0.0, 890.0, VIRTUAL.w, 36.0), 26.0, theme.dim_color, Align::Center);
-    }
-    let back = extras_back_rect();
-    out.push(Draw::Rect { rect: back, color: lit(s.hover == Some(Hit::Back)) });
-    text(out, tr.t("Back"), back, 34.0, theme.text_color, Align::Center);
+    draw_pager(out, theme, tr, s.page, s.pages, 890.0, [s.hover == Some(Hit::Prev), s.hover == Some(Hit::Next), s.hover == Some(Hit::Back)]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extras::{next_rect, prev_rect};
 
     #[test]
     fn the_chapters_background_picture_replaces_the_overlay_rect_when_known() {

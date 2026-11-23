@@ -267,7 +267,7 @@ pub struct SpriteView {
 
 impl SpriteView {
     fn new(id: &str, (src, layers): (&str, &[(String, String)]), (x, y): (f32, f32), z: i32, look: Look, fx: [f32; 8], fade: f32) -> SpriteView {
-        SpriteView {
+        let mut sprite = SpriteView {
             id: id.to_string(),
             src: src.to_string(),
             previous_src: None,
@@ -291,7 +291,7 @@ impl SpriteView {
             hiding: false,
             fade,
             elapsed: 0.0,
-            from: [x, y, look.scale, look.xscale, look.yscale, fx[0], fx[1], fx[2], fx[3], fx[4], fx[5], fx[6], fx[7], look.crop.x, look.crop.y, look.crop.w, look.crop.h],
+            from: [0.0; 17],
             move_time: 0.0,
             move_elapsed: 0.0,
             move_ease: Ease::Linear,
@@ -303,7 +303,9 @@ impl SpriteView {
             anim_time: 0.0,
             previous_anim_time: 0.0,
             shade: 1.0,
-        }
+        };
+        sprite.from = sprite.rest(); // a sprite starts at rest
+        sprite
     }
 
     /// Take the layers a `ShowSprite` names: a layer whose picture changed crossfades on its own
@@ -1186,12 +1188,17 @@ impl View {
     }
 
     /// Lay text out by the frontend's real text measuring (see `quillstone_render::Measure`) instead of the estimates.
+    pub fn shared_measure(&self) -> Option<SharedMeasure> {
+        self.measure.clone()
+    }
+
     pub fn set_measure(&mut self, measure: Option<SharedMeasure>) {
         self.measure = measure;
     }
 
-    fn measure(&self) -> Option<Measure<'_>> {
-        self.measure.as_ref().map(|m| &*m.0 as Measure)
+    /// The text measure the game's screens and this view share (none: they estimate).
+    pub fn measure(&self) -> Option<Measure<'_>> {
+        self.measure.as_ref().map(SharedMeasure::get)
     }
 
     /// The theme's text size times the player's text scale.
@@ -2058,7 +2065,9 @@ impl View {
             // The theme's textbox picture if it is loaded, else a plain panel.
             let picture = theme.textbox_image.as_deref().filter(|src| image_size(src).is_some());
             match picture {
-                Some(src) => push_image(&mut out, src, textbox, Fit::Stretch, box_alpha, image_size),
+                Some(src) => {
+                    push_image(&mut out, src, textbox, Fit::Stretch, box_alpha, image_size);
+                }
                 None => out.push(Draw::Rect { rect: textbox, color: faded(theme.panel_color, box_alpha) }),
             }
             if let Some(src) = &self.speaker_portrait {
@@ -2318,12 +2327,7 @@ fn dialogue_lines(theme: &Theme, text: &str, runs: &[TextRun], with_speaker: boo
 }
 
 /// [`dialogue_lines_tagged`] for a page line: about how many lines it takes at `size` px (the speaker's name
-/// in front), and how many the page area fits.
-pub fn page_lines_tagged(theme: &Theme, speaker: Option<&str>, tagged: &str, size: f32) -> (usize, usize) {
-    page_lines_measured(theme, speaker, tagged, size, None)
-}
-
-/// [`page_lines_tagged`] by the real text measure (as the page lays itself out), when there is one.
+/// in front) by the real text measure (as the page lays itself out) when there is one, and how many the page area fits.
 pub fn page_lines_measured(theme: &Theme, speaker: Option<&str>, tagged: &str, size: f32, measure: Option<Measure>) -> (usize, usize) {
     let para = PageLine::new(speaker.map(str::to_string), None, tagged).paragraph(theme);
     let [_, _, w, h] = theme.page_rect;
@@ -2404,25 +2408,29 @@ fn blur_all(draws: &mut [Draw], radius: f32) {
 fn push_backdrop(out: &mut Vec<Draw>, src: &str, screen: Rect, alpha: f32, image_size: &dyn Fn(&str) -> Option<Size>) {
     match quillstone_script::bg_color(src) {
         Some([r, g, b]) => out.push(Draw::Rect { rect: screen, color: [r, g, b, alpha] }),
-        None => push_image(out, src, screen, Fit::Cover, alpha, image_size),
+        None => {
+            push_image(out, src, screen, Fit::Cover, alpha, image_size);
+        }
     }
 }
 
-fn push_image(
+/// Fit the picture `src` into `container` and push it; false when it isn't loaded (or `src` is empty:
+/// an animation this view doesn't know), and nothing is pushed.
+pub fn push_image(
     out: &mut Vec<Draw>,
     src: &str,
     container: Rect,
     fit: Fit,
     alpha: f32,
     image_size: &dyn Fn(&str) -> Option<Size>,
-) {
+) -> bool {
     if src.is_empty() {
-        return; // an animation this view doesn't know
+        return false;
     }
-    if let Some(size) = image_size(src) {
-        let p = place(size, container, fit);
-        out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
-    }
+    let Some(size) = image_size(src) else { return false };
+    let p = place(size, container, fit);
+    out.push(Draw::Image { src: src.to_string(), dest: p.dest, uv: p.uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+    true
 }
 
 /// Where an object of `size` starts on a screen of `screen` when placed at `v`: inside 0..1 the point

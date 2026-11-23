@@ -172,10 +172,17 @@ pub type MeasureFn = Box<dyn Fn(&str, f32, f32) -> Option<(usize, f32)>>;
 
 /// A measuring function shared by the game's screens and its [`crate::View`].
 #[derive(Clone)]
-pub struct SharedMeasure(pub std::rc::Rc<MeasureDyn>);
+pub struct SharedMeasure(std::rc::Rc<MeasureFn>);
 
-/// A measuring function as a trait object.
-pub type MeasureDyn = dyn Fn(&str, f32, f32) -> Option<(usize, f32)>;
+impl SharedMeasure {
+    pub fn new(measure: MeasureFn) -> Self {
+        SharedMeasure(std::rc::Rc::new(measure))
+    }
+
+    pub fn get(&self) -> Measure<'_> {
+        &**self.0
+    }
+}
 
 impl std::fmt::Debug for SharedMeasure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
