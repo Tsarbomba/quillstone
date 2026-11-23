@@ -548,9 +548,46 @@ pub struct Line {
 pub struct Msg {
     pub mine: bool,
     pub text: Option<String>,
+    /// For a text with `{variables}`: the script's text and the values it used when sent, so a translation
+    /// can be looked up by the source and filled with the same values (see [`Msg::shown`]). Messages are
+    /// history: a later change of a variable does not touch them. Saves from before have none.
+    pub src: Option<(String, Vars)>,
     pub image: Option<String>,
     /// A video (shown as its `thumb`, or a placeholder, with a play mark) and its thumbnail picture.
     pub video: Option<(String, Option<String>)>,
+}
+
+impl Msg {
+    /// A text message with `source`'s values put in (from `vars`, kept with the source when it has any).
+    pub(crate) fn new(mine: bool, source: Option<&str>, vars: &Vars) -> Msg {
+        let src = source.filter(|t| t.contains('{')).map(|t| (t.to_string(), used_vars(t, vars)));
+        Msg { mine, text: source.map(|t| interpolate(t, vars)), src, image: None, video: None }
+    }
+
+    /// The text as shown: the source looked up with `tr` (a translation), then filled with the values it had when sent.
+    pub fn shown(&self, tr: &dyn Fn(&str) -> String) -> Option<String> {
+        match &self.src {
+            Some((source, vars)) => Some(interpolate(&tr(source), vars)),
+            None => self.text.as_deref().map(tr),
+        }
+    }
+}
+
+/// The variables `text`'s `{}` parts read (and the inner ones of a `{love.{who}}` name), with their values now.
+fn used_vars(text: &str, vars: &Vars) -> Vars {
+    let mut out = Vars::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start..];
+        let Some(end) = brace_end(rest) else { break };
+        let name = rest[1..end].trim();
+        let resolved = quillstone_script::resolve_name(name, vars);
+        for n in quillstone_script::name_vars(name).into_iter().chain(resolved.as_deref()) {
+            out.extend(vars.get(n).map(|v| (n.to_string(), v.clone())));
+        }
+        rest = &rest[end + 1..];
+    }
+    out
 }
 
 /// The messages with one contact (a `::character`), and what is waiting in it.
@@ -1446,8 +1483,7 @@ pub(crate) fn step_traced(
                 let pc = state.threads.iter().find(|t| t.id == id).and_then(|t| t.reply).expect("checked by can_reply");
                 let Some(Op::Reply { options, .. }) = program.ops.get(pc) else { return Vec::new() };
                 let chosen = &options[i];
-                let text = interpolate(&chosen.text, &state.vars);
-                state.post(&id, Msg { mine: true, text: Some(text), image: None, video: None });
+                state.post(&id, Msg::new(true, Some(&chosen.text), &state.vars));
                 state.thread(&id).reply = None;
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
@@ -1492,8 +1528,7 @@ pub(crate) fn step_traced(
                     return Vec::new();
                 }
                 if let Some(id) = reply {
-                    let text = interpolate(&chosen.text, &state.vars);
-                    state.post(id, Msg { mine: true, text: Some(text), image: None, video: None });
+                    state.post(id, Msg::new(true, Some(&chosen.text), &state.vars));
                 }
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
@@ -1728,12 +1763,12 @@ pub(crate) fn step_traced(
                 state.pc += 1;
             }
             Op::Message { contact, mine, text, image, video, thumb, quiet } => {
-                let text = text.as_ref().map(|t| interpolate(t, &state.vars));
                 let stored = video.clone().map(|v| (v, thumb.clone()));
-                state.post(contact, Msg { mine: *mine, text, image: image.clone(), video: stored });
+                let msg = Msg { image: image.clone(), video: stored, ..Msg::new(*mine, text.as_deref(), &state.vars) };
+                let text = msg.text.clone();
+                state.post(contact, msg);
                 let name = program.characters.get(contact).map_or(contact.as_str(), |c| c.name.as_str());
                 let media = if image.is_some() { Some("picture") } else { video.as_ref().map(|_| "video") };
-                let text = state.threads.last().and_then(|t| t.msgs.last()).and_then(|m| m.text.clone());
                 out.push(Cmd::Message { name: fill_name(name, &state.vars), mine: *mine, quiet: *quiet, text, media });
                 state.pc += 1;
             }

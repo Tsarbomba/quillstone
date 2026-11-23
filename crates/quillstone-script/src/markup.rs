@@ -61,6 +61,9 @@ pub const MAX_SPEED: f32 = 10.0;
 pub const WHISPER_SIZE: f32 = 0.75;
 pub const WHISPER_ALPHA: f32 = 0.55;
 
+/// The tags that switch a style on and off, in the order of `Style`'s `underline`, `strike` and `whisper`.
+const FLAG_TAGS: [&str; 3] = ["u", "s", "whisper"];
+
 /// Tags written without arguments that are not variables (`{u}` is never the variable `u`).
 pub fn is_flag_tag(name: &str) -> bool {
     matches!(name, "p" | "nw" | "u" | "s" | "whisper" | "shake" | "wave" | "glitch")
@@ -184,9 +187,8 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     let mut colors: Vec<(Option<[f32; 3]>, Option<f32>)> = Vec::new();
     let mut speeds: Vec<Option<f32>> = Vec::new();
     let mut anims: Vec<(Option<Anim>, f32)> = Vec::new();
-    let (mut strikes, mut whispers) = (0, 0); // open `{s}` and `{whisper}` tags
+    let mut flags = [0usize; FLAG_TAGS.len()]; // open `{u}`, `{s}` and `{whisper}` tags
     let mut sizes: Vec<Option<TextSize>> = Vec::new();
-    let mut underlines = 0; // open `{u}` tags
     let mut ruby: Option<(String, usize)> = None; // the reading and where in the text its words start
     let mut runs: Vec<TextRun> = Vec::new();
     let mut run_start = 0;
@@ -258,30 +260,18 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
                     }
                     close_run(out.text.len(), style, &ruby);
                     ruby = Some((reading.to_string(), out.text.len()));
-                } else if tag == "/u" {
-                    underlines = usize::checked_sub(underlines, 1).ok_or("`{/u}` without a `{u}` before it")?;
+                } else if let Some((k, opens)) = FLAG_TAGS.iter().enumerate().find_map(|(k, f)| match tag.strip_prefix('/') {
+                    Some(t) if t == *f => Some((k, false)),
+                    None if tag == *f => Some((k, true)),
+                    _ => None,
+                }) {
+                    let name = FLAG_TAGS[k];
+                    if !opens {
+                        flags[k] = usize::checked_sub(flags[k], 1).ok_or_else(|| format!("`{{/{name}}}` without a `{{{name}}}` before it"))?;
+                    }
                     close_run(out.text.len(), style, &ruby);
-                    style.underline = underlines > 0;
-                } else if tag == "u" {
-                    close_run(out.text.len(), style, &ruby);
-                    underlines += 1;
-                    style.underline = true;
-                } else if tag == "/s" {
-                    strikes = usize::checked_sub(strikes, 1).ok_or("`{/s}` without a `{s}` before it")?;
-                    close_run(out.text.len(), style, &ruby);
-                    style.strike = strikes > 0;
-                } else if tag == "s" {
-                    close_run(out.text.len(), style, &ruby);
-                    strikes += 1;
-                    style.strike = true;
-                } else if tag == "/whisper" {
-                    whispers = usize::checked_sub(whispers, 1).ok_or("`{/whisper}` without a `{whisper}` before it")?;
-                    close_run(out.text.len(), style, &ruby);
-                    style.whisper = whispers > 0;
-                } else if tag == "whisper" {
-                    close_run(out.text.len(), style, &ruby);
-                    whispers += 1;
-                    style.whisper = true;
+                    flags[k] += usize::from(opens);
+                    *[&mut style.underline, &mut style.strike, &mut style.whisper][k] = flags[k] > 0;
                 } else if let Some((anim, value)) = [Anim::Shake, Anim::Wave, Anim::Glitch].into_iter().find_map(|a| match tag.strip_prefix(a.tag()) {
                     Some("") => Some((a, None)),
                     Some(rest) => rest.strip_prefix('=').map(|v| (a, Some(v))),
@@ -401,14 +391,8 @@ pub fn parse_markup(src: &str) -> Result<Rich, String> {
     if !sizes.is_empty() {
         return Err("`{size=...}` is never closed with `{/size}`".into());
     }
-    if underlines > 0 {
-        return Err("`{u}` is never closed with `{/u}`".into());
-    }
-    if strikes > 0 {
-        return Err("`{s}` is never closed with `{/s}`".into());
-    }
-    if whispers > 0 {
-        return Err("`{whisper}` is never closed with `{/whisper}`".into());
+    if let Some(k) = flags.iter().position(|n| *n > 0) {
+        return Err(format!("`{{{0}}}` is never closed with `{{/{0}}}`", FLAG_TAGS[k]));
     }
     if !speeds.is_empty() {
         return Err("`{speed=...}` is never closed with `{/speed}`".into());

@@ -74,7 +74,7 @@ impl Game<'_> {
     }
 
     /// The contacts, most recent first.
-    fn contact_rows(&self) -> Vec<(String, ui::ContactRow)> {
+    pub(super) fn contact_rows(&self) -> Vec<(String, ui::ContactRow)> {
         let state = self.session.state();
         state
             .threads
@@ -84,7 +84,7 @@ impl Game<'_> {
                 let last = t.msgs.last();
                 let preview = match last {
                     Some(m) => {
-                        let body = m.text.as_deref().map(|t| plain(self.tr(t))).unwrap_or_else(|| {
+                        let body = m.shown(&|t| self.tr(t).to_string()).map(|t| plain(&t)).unwrap_or_else(|| {
                             self.ui().t(if m.video.is_some() { "Video" } else { "Picture" }).to_string()
                         });
                         if m.mine { format!("> {body}") } else { body }
@@ -98,13 +98,13 @@ impl Game<'_> {
             .collect()
     }
 
-    fn bubbles(&self, id: &str) -> Vec<ui::Bubble> {
+    pub(super) fn bubbles(&self, id: &str) -> Vec<ui::Bubble> {
         let Some(t) = self.session.state().threads.iter().find(|t| t.id == id) else { return Vec::new() };
         t.msgs
             .iter()
             .map(|m| ui::Bubble {
                 mine: m.mine,
-                text: m.text.as_deref().map(|t| self.tr(t).to_string()),
+                text: m.shown(&|t| self.tr(t).to_string()),
                 pic: match (&m.image, &m.video) {
                     (Some(src), _) => Some(ui::Pic { src: Some(src.clone()), video: false }),
                     (None, Some((_, thumb))) => Some(ui::Pic { src: thumb.clone(), video: true }),
@@ -115,7 +115,7 @@ impl Game<'_> {
     }
 
     /// The reply options at the foot of the open thread: `(index to send, text)`.
-    fn thread_options(&self, id: &str) -> Vec<(usize, String)> {
+    pub(super) fn thread_options(&self, id: &str) -> Vec<(usize, String)> {
         if self.reply_contact() == Some(id) {
             return self.view.choices.iter().cloned().enumerate().collect();
         }

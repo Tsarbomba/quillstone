@@ -4,7 +4,7 @@ use super::test_util::{instant, key, line, new_game};
 use super::*;
 use crate::messages as ui;
 use quillstone_render::Size;
-use quillstone_script::parse;
+use quillstone_script::{parse, Catalog};
 
 const PHONE: &str = "---\nvars: { met: 0 }\n---\n::character{id=mika name=Mika}\n::hud{id=ph text=Phone open=messages x=0.9 y=0.05}\n**A:** one\n::message{from=mika text=\"Hi\"}\n::message{from=mika video=c.webm}\n::message{from=mika image=a.png}\n::reply{to=mika later}\n- [Fine](#fine){met+=1}\n::\n**A:** two\n::reply{to=mika}\n- [Sure](#end)\n::\n# end\n**A:** done\n::end\n# fine\n**B:** fine!\n::return\n";
 
@@ -159,4 +159,29 @@ fn bubbles_and_buttons_are_drawn_as_nine_pieces_when_the_theme_gives_a_border() 
     let count = |g: &Game, name: &str| g.draw_list(&known).iter().filter(|d| matches!(d, Draw::Image { src, .. } if src == name)).count();
     assert!(count(&g, "b.png") % 9 == 0 && count(&g, "b.png") >= 9, "each bubble is nine pieces");
     assert!(count(&g, "k.png") >= 9, "the Back button and the reply option too");
+}
+
+#[test]
+fn a_message_and_a_reply_with_variables_are_translated_by_their_source_and_keep_the_values_they_were_sent_with() {
+    let src = "---\ntitle: T\nlanguages: en=English, sv=Svenska\nvars: { name: \"Bob\" }\n---\n::character{id=mika name=Mika}\n::hud{id=ph text=Phone open=messages x=0.9 y=0.05}\n**A:** one\n::message{from=mika text=\"Hi {name}!\"}\n::reply{to=mika later}\n- [I am {name}](#fine){name=\"Cy\"}\n::\n**A:** two\n::end\n# fine\n**B:** fine!\n::return\n";
+    let p = parse(src).unwrap();
+    let cat = Catalog::parse("> Hi {name}!\n= Hej {name}!\n\n> I am {name}\n= Jag är {name}\n").unwrap();
+    let mut g = Game::new(&p, Settings { language: Some("sv".into()), ..instant() }, Box::new(crate::MemoryStorage::default()));
+    g.set_translations([("sv".to_string(), cat)].into());
+    g.start_story();
+    key(&mut g, Key::Space);
+    assert_eq!(line(&g), "two");
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.screen(), Screen::Messages);
+    assert_eq!(g.contact_rows()[0].1.preview, "Hej Bob!", "the contact list's preview");
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Enter);
+    let said = |g: &Game| g.bubbles("mika").into_iter().filter_map(|b| b.text).collect::<Vec<_>>();
+    assert_eq!(said(&g), ["Hej Bob!"]);
+    assert_eq!(g.thread_options("mika"), [(0, "Jag är Bob".to_string())]);
+    key(&mut g, Key::Down);
+    key(&mut g, Key::Enter);
+    assert_eq!(g.state().vars["name"], Value::Str("Cy".into()), "the option's effect ran");
+    assert_eq!(said(&g), ["Hej Bob!", "Jag är Bob"], "a later change of the variable leaves old messages alone");
 }

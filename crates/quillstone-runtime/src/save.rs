@@ -51,6 +51,8 @@ const MAX_SPRITES: usize = 256;
 const MAX_INLINE: usize = 256;
 const MAX_SFX_LOOPS: usize = 64;
 const MAX_EXTRA_VARS: usize = 1_024;
+/// Most captured values a message keeps (see `Msg::src`).
+const MAX_MSG_VARS: usize = 64;
 
 /// The largest save the game reads (the whole file, header included): a hostile or
 /// damaged file costs several times its size in memory while it is parsed. A typical
@@ -499,9 +501,7 @@ fn read_hud(t: &[String], n: usize, program: &Program, edited: bool) -> Result<H
             Some(("open", s)) => HudScreen::from_name(s).map(HudAction::Open).filter(|a| match a {
                 HudAction::Open(HudScreen::Inventory) => program.inventory.is_some(),
                 HudAction::Open(HudScreen::Journal) => program.journal.is_some(),
-                HudAction::Open(HudScreen::Messages) => {
-                    program.ops.iter().any(|op| matches!(op, Op::Message { .. } | Op::Reply { .. } | Op::Choice { reply: Some(_), .. }))
-                }
+                HudAction::Open(HudScreen::Messages) => program.uses_messages(),
                 HudAction::Open(HudScreen::Extras) => {
                     !program.gallery.is_empty() || !program.music_room.is_empty() || !program.replays.is_empty()
                 }
@@ -646,6 +646,10 @@ fn write_state(out: &mut String, s: &State, program: &Program) {
         for m in &t.msgs {
             let (video, thumb) = m.video.as_ref().map_or(("", ""), |(v, t)| (v.as_str(), t.as_deref().unwrap_or("")));
             w(format!("msg {} {} {} {} {}", u8::from(m.mine), q(m.text.as_deref().unwrap_or("")), q(m.image.as_deref().unwrap_or("")), q(video), q(thumb)));
+            if let Some((source, vars)) = &m.src {
+                w(format!("msgsrc {}", q(source)));
+                vars.iter().for_each(|(name, value)| w(format!("msg{}", var_record(name, value))));
+            }
         }
     }
     // The intro, if any, is a fourth value; saves from before it existed load without one.
@@ -1088,7 +1092,7 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
             "music" => {
                 let intro = if t.len() > 4 { Some(path(4)?) } else { None };
                 // a playlist is comma-joined: every file must be inside the game folder
-                let tracks = arg(1)?.split(',').map(|p| if is_inside(p) { Ok(normal_path(p)) } else { Err(format!("line {n}: unsafe file path `{p}`")) });
+                let tracks = quillstone_script::music_tracks(arg(1)?).map(|p| if is_inside(p) { Ok(normal_path(p)) } else { Err(format!("line {n}: unsafe file path `{p}`")) });
                 let src = tracks.collect::<Result<Vec<_>, _>>()?.join(",");
                 s.music = Some(MusicState { src, intro, looped: b(2)?, volume: sane(f(3)?, 0.0, 1.0, 1.0) });
             }
@@ -1137,7 +1141,19 @@ fn read_state<'a>(lines: &mut impl Iterator<Item = (usize, &'a str)>, program: &
                 let Some(thread) = s.threads.last_mut().filter(|t| t.msgs.len() < crate::MAX_THREAD_MSGS) else {
                     return Err(format!("line {n}: a `msg` record without a `thread`, or too many"));
                 };
-                thread.msgs.push(crate::Msg { mine: num::<u8>(arg(1)?, n)? != 0, text, image, video });
+                thread.msgs.push(crate::Msg { mine: num::<u8>(arg(1)?, n)? != 0, text, src: None, image, video });
+            }
+            // What a message with `{variables}` said before they were put in, and the values they had (see `Msg::src`).
+            "msgsrc" | "msgvar" => {
+                let Some(msg) = s.threads.last_mut().and_then(|t| t.msgs.last_mut()) else {
+                    return Err(format!("line {n}: a `{}` record without a `msg`", t[0]));
+                };
+                if t[0] == "msgsrc" {
+                    msg.src = Some((arg(1)?.to_string(), Vars::new()));
+                } else if let Some((_, vars)) = msg.src.as_mut().filter(|(_, v)| v.len() < MAX_MSG_VARS) {
+                    let (name, value) = read_var(&t).map_err(|e| format!("line {n}: {e}"))?;
+                    vars.insert(name, value);
+                }
             }
             "inline" if s.inline.len() >= MAX_INLINE => {
                 return Err(format!("line {n}: more than {MAX_INLINE} `inline` records in a state"));

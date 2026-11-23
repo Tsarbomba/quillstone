@@ -805,6 +805,11 @@ pub struct SourceSpan {
 }
 
 impl Program {
+    /// Whether the game has messages: a `::message`, a `::reply`, or a choice that replies in a thread.
+    pub fn uses_messages(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, Op::Message { .. } | Op::Reply { .. } | Op::Choice { reply: Some(_), .. }))
+    }
+
     /// The file and line a program line number stands for: `(None, line)` for the main
     /// script, `(Some(path), line)` for an included file.
     pub fn locate(&self, line: usize) -> (Option<&str>, usize) {

@@ -431,7 +431,7 @@ impl Parser {
             }
         }
 
-        let uses_messages = self.program.ops.iter().any(|op| matches!(op, Op::Message { .. } | Op::Reply { .. } | Op::Choice { reply: Some(_), .. }));
+        let uses_messages = self.program.uses_messages();
         for line in std::mem::take(&mut self.messages_open).into_iter().filter(|_| !uses_messages) {
             self.err(line, "`open=messages` needs a game that uses `::message` or `::reply`");
         }
@@ -809,15 +809,8 @@ impl Parser {
                     continue;
                 }
             };
-            if let Some(t) = thumb {
-                match check_inside("thumbnail", t) {
-                    _ if t.is_empty() => self.err(line, format!("`{entry}` has a `|` but no thumbnail after it")),
-                    Err(m) => self.err(line, m),
-                    Ok(_) if kind_from_path(t) != AssetKind::Image => {
-                        self.err(line, format!("the thumbnail `{t}` of `{entry}` must be a picture (PNG, JPEG or WebP)"))
-                    }
-                    Ok(t) => drop(self.program.gallery_thumbs.entry(entry.clone()).or_insert(t)),
-                }
+            if let Some(t) = thumb.and_then(|t| self.thumbnail(line, &format!("`{entry}`"), t)) {
+                self.program.gallery_thumbs.entry(entry.clone()).or_insert(t);
             }
             if !pictures {
                 if !self.program.music_room.contains(&entry) {
@@ -836,6 +829,19 @@ impl Parser {
                 }
             }
         }
+    }
+
+    /// The path of the thumbnail `t` of `owner` (an entry or a chapter), or an error on `line` and `None`.
+    fn thumbnail(&mut self, line: usize, owner: &str, t: &str) -> Option<String> {
+        match check_inside("thumbnail", t) {
+            _ if t.is_empty() => self.err(line, format!("{owner} has a `|` but no thumbnail after it")),
+            Err(m) => self.err(line, m),
+            Ok(_) if kind_from_path(t) != AssetKind::Image => {
+                self.err(line, format!("the thumbnail `{t}` of {owner} must be a picture (PNG, JPEG or WebP)"))
+            }
+            Ok(t) => return Some(t),
+        }
+        None
     }
 
     /// `languages: en=English, sv=Svenska`: code `=` name, the script's own language first.
@@ -879,18 +885,10 @@ impl Parser {
             };
             let label = slug(unquote(key.trim()));
             let title = unescape_title(unquote(title.trim()).trim());
-            if label.is_empty() {
-                self.err(line, format!("bad replay `{part}`: the label is empty"));
-            } else if title.is_empty() {
-                self.err(line, format!("replay `{label}` needs a title, like `{label}: \"The rooftop\"`"));
-            } else if title.chars().any(char::is_control) {
-                self.err(line, format!("the title of replay `{label}` can't hold control characters"));
-            } else if self.replay_decls.iter().any(|(_, l, _)| *l == label) {
-                self.err(line, format!("replay `{label}` is listed twice"));
-            } else if self.replay_decls.iter().any(|(_, _, t)| *t == title) {
-                self.err(line, format!("two replays are titled \"{title}\"; titles must differ"));
-            } else {
-                self.replay_decls.push((line, label, title));
+            let taken = (self.replay_decls.iter().any(|(_, l, _)| *l == label), self.replay_decls.iter().any(|(_, _, t)| *t == title));
+            match entry_error("replay", part, &label, &title, "The rooftop", taken) {
+                Some(m) => self.err(line, m),
+                None => self.replay_decls.push((line, label, title)),
             }
         }
     }
@@ -922,34 +920,17 @@ impl Parser {
                 }
             };
             let title = unescape_title(unquote(title.trim()).trim());
-            let thumb = match thumb.map(|t| (t.is_empty(), check_inside("thumbnail", t), t)) {
+            let thumb = match thumb {
                 None => None,
-                Some((true, ..)) => {
-                    self.err(line, format!("chapter `{label}` has a `|` but no thumbnail after it"));
-                    continue;
-                }
-                Some((_, Err(m), _)) => {
-                    self.err(line, m);
-                    continue;
-                }
-                Some((_, Ok(_), t)) if kind_from_path(t) != AssetKind::Image => {
-                    self.err(line, format!("the thumbnail `{t}` of chapter `{label}` must be a picture (PNG, JPEG or WebP)"));
-                    continue;
-                }
-                Some((_, Ok(path), _)) => Some(path),
+                Some(t) => match self.thumbnail(line, &format!("chapter `{label}`"), t) {
+                    Some(path) => Some(path),
+                    None => continue,
+                },
             };
-            if label.is_empty() {
-                self.err(line, format!("bad chapter `{part}`: the label is empty"));
-            } else if title.is_empty() {
-                self.err(line, format!("chapter `{label}` needs a title, like `{label}: \"Part 1\"`"));
-            } else if title.chars().any(char::is_control) {
-                self.err(line, format!("the title of chapter `{label}` can't hold control characters"));
-            } else if self.chapter_decls.iter().any(|(_, c)| c.label == label) {
-                self.err(line, format!("chapter `{label}` is listed twice"));
-            } else if self.chapter_decls.iter().any(|(_, c)| c.title == title) {
-                self.err(line, format!("two chapters are titled \"{title}\"; titles must differ"));
-            } else {
-                self.chapter_decls.push((line, Chapter { label, title, thumb, open }));
+            let taken = (self.chapter_decls.iter().any(|(_, c)| c.label == label), self.chapter_decls.iter().any(|(_, c)| c.title == title));
+            match entry_error("chapter", part, &label, &title, "Part 1", taken) {
+                Some(m) => self.err(line, m),
+                None => self.chapter_decls.push((line, Chapter { label, title, thumb, open })),
             }
         }
     }
@@ -2750,29 +2731,25 @@ impl Parser {
     /// `call=#label`, `jump=#label` or `open=journal`: what a press on the element does (none when none is given).
     fn hud_action(&mut self, line: usize, a: &mut Attrs, kind_name: &str) -> Result<Option<HudAction>, String> {
         let (call, jump, open) = (a.value("call"), a.value("jump"), a.value("open"));
+        let (is_call, set) = (call.is_some(), [call.is_some(), jump.is_some(), open.is_some()]);
         let action = match (call, jump, open) {
             (None, None, None) => return Ok(None),
-            (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+            _ if set.into_iter().filter(|b| *b).count() > 1 => {
                 return Err("`::hud` takes one of `call=`, `jump=` and `open=`, not several".into())
             }
             _ if kind_name == "bar" || kind_name == "box" => {
                 return Err(format!("a {kind_name} can't be a button (`call=`, `jump=` and `open=` work on `text=` and `image=` elements)"))
             }
-            (Some(c), None, None) => match c.strip_prefix('#').filter(|l| !l.is_empty()) {
-                Some(l) => {
-                    self.hud_calls.push((l.to_string(), line, "call"));
-                    HudAction::Call(l.to_string())
-                }
-                None => return Err("`call=` names a label, like `call=#phone`".into()),
-            },
-            (None, Some(j), None) => match j.strip_prefix('#').filter(|l| !l.is_empty()) {
-                Some(l) => {
-                    self.hud_calls.push((l.to_string(), line, "jump"));
-                    HudAction::Jump(l.to_string())
-                }
-                None => return Err("`jump=` names a label, like `jump=#map`".into()),
-            },
-            (None, None, Some(o)) => {
+            (Some(l), _, None) | (None, Some(l), None) => {
+                let (key, jump) = if is_call { ("call", false) } else { ("jump", true) };
+                let Some(l) = l.strip_prefix('#').filter(|l| !l.is_empty()) else {
+                    let example = if jump { "jump=#map" } else { "call=#phone" };
+                    return Err(format!("`{key}=` names a label, like `{example}`"));
+                };
+                self.hud_calls.push((l.to_string(), line, key));
+                if jump { HudAction::Jump(l.to_string()) } else { HudAction::Call(l.to_string()) }
+            }
+            (_, _, Some(o)) => {
                 let Some(screen) = HudScreen::from_name(&o) else {
                     let names: Vec<&str> = HudScreen::NAMES.iter().map(|(n, _)| *n).collect();
                     return Err(format!("unknown `open={o}` (it can open: {})", names.join(", ")));
@@ -3747,6 +3724,23 @@ fn check_game_id(id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// What is wrong with a `replays`/`chapters` entry (`noun`), if anything; `taken`: the label and the title are already used.
+fn entry_error(noun: &str, part: &str, label: &str, title: &str, example: &str, (label_taken, title_taken): (bool, bool)) -> Option<String> {
+    Some(if label.is_empty() {
+        format!("bad {noun} `{part}`: the label is empty")
+    } else if title.is_empty() {
+        format!("{noun} `{label}` needs a title, like `{label}: \"{example}\"`")
+    } else if title.chars().any(char::is_control) {
+        format!("the title of {noun} `{label}` can't hold control characters")
+    } else if label_taken {
+        format!("{noun} `{label}` is listed twice")
+    } else if title_taken {
+        format!("two {noun}s are titled \"{title}\"; titles must differ")
+    } else {
+        return None;
+    })
 }
 
 fn unescape_title(s: &str) -> String {
