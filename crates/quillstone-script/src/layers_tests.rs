@@ -51,8 +51,8 @@ fn bad_layer_declarations_are_refused() {
     assert!(line("layers=none layer_sprites=a/{layer}_{value}.png").contains("can't be a layer id"));
     let many = |n: usize| (0..n).map(|i| format!("l{i}")).collect::<Vec<_>>().join(",");
     let sprites = "layer_sprites=a/{layer}_{value}.png";
-    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS + 1))).contains("at most 32"));
-    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS))).is_empty(), "thirty-two are fine");
+    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS + 1))).contains("at most 256"));
+    assert!(line(&format!("layers={} {sprites}", many(crate::ops::MAX_LAYERS))).is_empty(), "the most are fine");
     assert!(line("layers=body layer_sprites=a/{layer}_{value}.webm").contains("picture"));
     assert!(line("layers=body layer_sprites=../a/{layer}_{value}.png").contains("inside the game folder"));
     assert!(line("layers=body layer_sprites=a/{layer}_{value}_{x}.png").contains("braces"), "only {{layer}} and {{value}}");
@@ -196,7 +196,7 @@ fn bad_portrait_declarations_are_refused() {
     assert!(line("portrait_layers=eyes portrait_sprites=a/{layer}_{value}.gif").contains("picture"));
     assert!(line("portrait_layers=eyes portrait_sprites=../a/{layer}_{value}.png").contains("inside the game folder"));
     let many = (0..crate::ops::MAX_LAYERS + 1).map(|i| format!("l{i}")).collect::<Vec<_>>().join(",");
-    assert!(line(&format!("portrait_layers={many} {sprites}")).contains("at most 32"));
+    assert!(line(&format!("portrait_layers={many} {sprites}")).contains("at most 256"));
     assert!(line(&format!("portrait=a.png portrait_layers=eyes {sprites}")).contains("can't be used together"));
     assert!(line("talk=nope:anim:blink portrait_layers=eyes portrait_sprites=a/{layer}_{value}.png").contains("not a layer"));
 }

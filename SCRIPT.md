@@ -607,7 +607,7 @@ may hold `{variable}`s of declared variables (an unknown one is an error).
 ::character{id=mika name=Mika layers=body,eyes,mouth layer_sprites=assets/mika/{layer}_{value}.png}
 ```
 
-`layers` lists the layer ids back to front (at most 32). `layer_sprites` is where each layer's
+`layers` lists the layer ids back to front (at most 256). `layer_sprites` is where each layer's
 pictures are: `{layer}` is the layer id, `{value}` what is shown on it. A character may have
 `sprites=` poses, layers, or both.
 
@@ -641,7 +641,7 @@ sprite and the portrait can use different art:
 **Mika:** What was *that*?
 ```
 
-- `portrait_layers` and `portrait_sprites` are like `layers` and `layer_sprites` (at most 32
+- `portrait_layers` and `portrait_sprites` are like `layers` and `layer_sprites` (at most 256
   layers, `{layer}` and `{value}` in the path, a picture type). Give both, and not `portrait=` too.
 - `::portrait{mika eyes=side}` sets the layers it names; a layer left out keeps its value. Values
   are as in a layered `::show`: `none`, `anim:<id>` and `{variable}` parts. The first `::portrait`
@@ -1345,7 +1345,7 @@ every combination. Declare the layers on the character, back to front:
 ::show{mika eyes=none}
 ```
 
-- `layers` is a comma-separated list of layer ids: letters, digits and `_`, at most 32, no
+- `layers` is a comma-separated list of layer ids: letters, digits and `_`, at most 256, no
   repeats. An id can't be `none`, or the name of a `::show` attribute such as `x` or `scale`.
 - `layer_sprites` must contain both `{layer}` and `{value}` and end in a picture type
   (`.png`, `.jpg`, `.jpeg` or `.webp`). With `layer_sprites=assets/mika/{layer}_{value}.png`,

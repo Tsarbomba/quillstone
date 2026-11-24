@@ -536,7 +536,7 @@ pub struct Character {
 }
 
 /// The most layers one character may have.
-pub const MAX_LAYERS: usize = 32;
+pub const MAX_LAYERS: usize = 256;
 
 /// The layer value that hides a layer (`::show{mika eyes=none}`).
 pub const LAYER_NONE: &str = "none";
