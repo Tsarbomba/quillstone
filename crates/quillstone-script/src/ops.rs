@@ -535,6 +535,19 @@ pub struct Character {
     pub portrait_sprites: Option<String>,
 }
 
+/// One `::layer{mika body=dress if="outfit == 1"}` rule: the picture its layer shows while `cond` holds
+/// (none: always). The picture is as a `::show` gives it: empty for `none`, `anim:<id>`, or a file / pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerRule {
+    pub cond: Option<HudExpr>,
+    pub picture: String,
+}
+
+/// The picture a ruled layer shows: that of the first rule whose condition holds (`None`: no rule holds).
+pub fn ruled_picture<'a>(rules: &'a [LayerRule], vars: &Vars) -> Option<&'a str> {
+    rules.iter().find(|r| r.cond.as_ref().is_none_or(|c| c.expr.test(vars))).map(|r| r.picture.as_str())
+}
+
 /// The most layers one character may have.
 pub const MAX_LAYERS: usize = 256;
 
@@ -715,6 +728,9 @@ pub struct Program {
     pub characters: BTreeMap<String, Character>,
     /// Frame animations declared with `::anim`, by id.
     pub anims: BTreeMap<String, Anim>,
+    /// The `::layer` rules of each character: its ruled layers, each with its rules in script order
+    /// (the same rules the `Op::Layer` ops hold, kept here for the runtime and the view).
+    pub layer_rules: BTreeMap<String, Vec<(String, Vec<LayerRule>)>>,
     /// Items declared with `::item`, by id.
     pub items: BTreeMap<String, Item>,
     /// The list variable the inventory screen shows (front matter `inventory:`).
@@ -1769,6 +1785,9 @@ pub enum Op {
     Hide { id: Option<String>, fade: f32 },
     /// Set layers of a character's portrait (`::portrait{mika eyes=side}`): (layer id, picture) as in [`Op::Show`]'s `layers`.
     Portrait { id: String, layers: Vec<(String, String)> },
+    /// A `::layer` rule. It does nothing when it runs: the view follows the rules in [`Program::layer_rules`]; the op
+    /// is there so that `check`, `package` and the variable checks see the rule's condition and picture.
+    Layer { id: String, layer: String, rule: LayerRule },
     /// Slide, resize and/or fade a sprite in one or more `steps` that run one after another (`then`).
     /// `flip` switches at the start of the move; the rest animate.
     Move {
@@ -1905,6 +1924,7 @@ impl Op {
             Op::Notify { delta: Some(d), .. } => vec![d],
             Op::Set(e) => vec![&e.value],
             Op::Hud { elem, .. } => elem.exprs(),
+            Op::Layer { rule, .. } => rule.cond.iter().map(|c| &c.expr).collect(),
             Op::Call { args, .. } => args.iter().map(|(_, e)| e).collect(),
             Op::Shop { stock, .. } => stock.iter().filter_map(|s| s.cond.as_ref()).collect(),
             Op::Choice { options, .. } | Op::Reply { options, .. } => options
@@ -1933,6 +1953,7 @@ impl Op {
                 .filter(|(_, l)| !l.is_empty() && anim_id(l).is_none())
                 .map(|(_, l)| (AssetKind::Image, l.as_str()))
                 .collect(),
+            Op::Layer { rule, .. } if !rule.picture.is_empty() && anim_id(&rule.picture).is_none() => vec![(AssetKind::Image, rule.picture.as_str())],
             Op::Bg { mask: Some(m), .. } => self.asset().into_iter().chain([(AssetKind::Image, m.as_str())]).collect(),
             Op::Hud { elem, .. } => self.asset().into_iter().chain(elem.hover.iter().map(|h| (AssetKind::Image, h.as_str()))).collect(),
             _ => self.asset().into_iter().collect(),

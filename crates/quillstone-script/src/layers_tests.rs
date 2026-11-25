@@ -218,3 +218,54 @@ fn a_portrait_command_checks_its_character_layers_and_values() {
     let p = ok(&format!("{FACE}::portrait{{ann eyes=open mouth=none}}\n::portrait{{ann eyes=none}}\n"));
     assert_eq!(portraits(&p).len(), 2);
 }
+
+// ---- `::layer` rules ----------------------------------------------------------
+
+const RULED: &str = "::layer{mika body=casual if=\"n == 0\"}\n::layer{mika body=dress if=\"n == 1\"}\n::layer{mika body=coat}\n::layer{mika mouth={mood} if=flag}\n";
+
+#[test]
+fn layer_rules_are_kept_in_script_order_and_a_ruled_layer_is_not_the_shows() {
+    let p = ok(&format!("{RULED}::show{{mika eyes=open}}\n"));
+    let rules = &p.layer_rules["mika"];
+    assert_eq!(rules.iter().map(|(l, r)| (l.as_str(), r.len())).collect::<Vec<_>>(), [("body", 3), ("mouth", 1)]);
+    let pictures: Vec<&str> = rules[0].1.iter().map(|r| r.picture.as_str()).collect();
+    assert_eq!(pictures, ["art/body_casual.png", "art/body_dress.png", "art/body_coat.png"]);
+    assert_eq!(rules[0].1[2].cond, None, "no `if`: always");
+    assert_eq!(rules[0].1[0].cond.as_ref().unwrap().src, "n == 0");
+    assert_eq!(rules[1].1[0].picture, "art/mouth_{mood}.png", "a {{variable}} part is built live");
+    // the first show gives only the layers without rules
+    assert_eq!(shows(&p)[0].1, [pair("eyes", "art/eyes_open.png")]);
+    // the rules are ops too, so check, package and the variable reads see them
+    assert_eq!(p.ops.iter().filter(|o| matches!(o, Op::Layer { .. })).count(), 4);
+    let files: Vec<&str> = p.assets().filter(|(_, k, _)| *k == AssetKind::Image).map(|(_, _, f)| f).collect();
+    assert!(files.contains(&"art/body_dress.png") && files.contains(&"art/mouth_{mood}.png"), "{files:?}");
+    // `none` and an animation are values too
+    let p = ok("::layer{mika eyes=anim:blink if=flag}\n::layer{mika eyes=none}\n");
+    assert_eq!(p.layer_rules["mika"][0].1.iter().map(|r| r.picture.as_str()).collect::<Vec<_>>(), ["anim:blink", ""]);
+}
+
+#[test]
+fn a_show_of_a_ruled_layer_is_refused() {
+    bad(&format!("{RULED}::show{{mika body=dress eyes=open}}\n"), "follows its `::layer` rules");
+    bad("::layer{mika mouth=none}\n::show{mika mouth=open body=a eyes=b}\n", "`mouth` follows");
+    ok("::layer{mika body=a}\n::layer{mika eyes=b}\n::layer{mika mouth=c}\n::show{mika x=left}\n"); // every layer ruled: nothing left to give
+    bad("::show{mika body=a eyes=b mouth=c}\n::layer{mika body=a}\n", "before the first `::show`");
+}
+
+#[test]
+fn bad_layer_rules_are_refused() {
+    bad("::layer{ghost body=a}\n", "unknown character `ghost`");
+    bad("::character{id=bob}\n::layer{bob body=a}\n", "has no `layers=");
+    bad("::layer{mika hair=a}\n", "no layer `hair`");
+    bad("::layer{mika}\n", "exactly one");
+    bad("::layer{mika body=a eyes=b}\n", "exactly one");
+    bad("::layer{body=a}\n", "needs a character");
+    bad("::layer{mika body}\n", "not a bare `body`");
+    bad("::layer{mika body=a if=\"n ==\"}\n", "");
+    bad("::layer{mika body=a if=\"nope(1)\"}\n", "");
+    bad("::layer{mika body=anim:nope}\n", "unknown animation `nope`");
+    bad("::layer{mika body=a}\n::layer{mika body=b if=flag}\n", "never used");
+    ok("::layer{mika body=a if=flag}\n::layer{mika eyes=b}\n::layer{mika body=c}\n");
+    let e = errors("::character{id=p portrait_layers=eyes portrait_sprites=f/{layer}_{value}.png layers=body layer_sprites=a/{layer}_{value}.png}\n::layer{p eyes=a}\n").join(";");
+    assert!(e.contains("portrait layer"), "{e}");
+}

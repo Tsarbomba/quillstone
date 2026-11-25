@@ -32,7 +32,7 @@ mod filter_tests;
 pub use dynpath::{is_dynamic, is_name_piece, is_pattern, name_piece, name_pieces, name_vars, pattern_matches, resolve_name, pattern_vars, pieces, resolve, unsafe_reason, Piece, MISSING_PICTURE, PICTURE_EXTENSIONS};
 pub use expr::{is_ident, is_plain_ident, parse_effect, parse_expr};
 pub use ops::{
-    get_var, is_inside, music_tracks, normal_path, kind_from_path, anim_id, layer_value, talk_matches, bg_color, Anim, AnimFrame, AssetKind, ANIM_PREFIX, AssignOp, Area, BinOp, Imagemap, Character, ChoiceOption, Lock, Cmp, Cond, Ease, Effect, Expr,
+    get_var, is_inside, music_tracks, normal_path, kind_from_path, anim_id, layer_value, talk_matches, bg_color, Anim, AnimFrame, AssetKind, ANIM_PREFIX, AssignOp, Area, BinOp, Imagemap, Character, LayerRule, ruled_picture, ChoiceOption, Lock, Cmp, Cond, Ease, Effect, Expr,
     Axis, Fit, Func, Heading, HudAction, HudScreen, HudElem, HudExpr, HudKind, Item, MoveStep, Op, Place, Program, RegionText, Language, Replay, Chapter, SourceSpan, ShopEntry, Value, Vars, Wipe, Hit, KeyPress, TimingBar, DEFAULT_SEED, INPUT_MAX_CAP, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_CHOICE_TIME_CAP, MAX_LIST_ITEMS, ONCE, SEEN, POSITION,
     roll, splitmix64, ParticleKind, Particles, MAX_PARTICLES, PARTICLE_SPEED, PARTICLE_WIND, Tint, TINT_ALPHA, Vignette, VIGNETTE_RANGE, Filter, FILTER_AMOUNT, FILTER_GAIN,
 };

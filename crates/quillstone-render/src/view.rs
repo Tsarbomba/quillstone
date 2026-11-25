@@ -15,7 +15,7 @@ use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
 use quillstone_script::Place;
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, layer_value, talk_matches, Anim, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
+use quillstone_script::{anim_id, layer_value, ruled_picture, talk_matches, Anim, LayerRule, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
 
 use crate::fade::Fade;
 use crate::pixels::vignette_zoom;
@@ -37,6 +37,8 @@ pub const SPRITE_HEIGHT: f32 = 940.0;
 /// Thickness of the outline around a hovered hotspot.
 /// Seconds a sprite takes to dim or brighten when the speaker changes.
 const SHADE_TIME: f32 = 0.25;
+/// Seconds a layer that follows `::layer` rules takes to crossfade when its picture changes.
+const RULE_FADE: f32 = 0.25;
 const HOTSPOT_OUTLINE: f32 = 4.0;
 /// Hotspot tooltip: padding around the label, and the gap kept to the screen edge.
 const TIP_PAD: f32 = 20.0;
@@ -171,6 +173,8 @@ pub struct LayerView {
     elapsed: f32,
     anim_time: f32,
     previous_anim_time: f32,
+    /// A layer that follows `::layer` rules: whether it has been given its first picture (that one shows at once).
+    live: bool,
 }
 
 impl LayerView {
@@ -183,6 +187,7 @@ impl LayerView {
             elapsed: 0.0,
             anim_time: 0.0,
             previous_anim_time: 0.0,
+            live: false,
         }
     }
 
@@ -311,7 +316,8 @@ impl SpriteView {
 
     /// Take the layers a `ShowSprite` names: a layer whose picture changed crossfades on its own
     /// (over `fade`), the others stay as they are. Empty `layers` makes the sprite a plain one.
-    fn set_layers(&mut self, layers: &[(String, String)], fade: f32) {
+    /// A layer of `ruled` (it follows `::layer` rules) is not the command's to set: it stays as it is.
+    fn set_layers(&mut self, layers: &[(String, String)], fade: f32, ruled: &[(String, Vec<LayerRule>)]) {
         let old = std::mem::take(&mut self.layers);
         if layers.is_empty() {
             let keep = fade > 0.0;
@@ -322,7 +328,7 @@ impl SpriteView {
         self.layers = layers
             .iter()
             .map(|(name, src)| match old.iter().find(|l| l.name == *name) {
-                Some(o) if o.src == *src => o.clone(),
+                Some(o) if o.src == *src || ruled.iter().any(|(r, _)| r == name) => o.clone(),
                 Some(o) => LayerView {
                     previous_src: (fade > 0.0 && !o.src.is_empty()).then(|| o.src.clone()),
                     previous_anim_time: o.anim_time,
@@ -954,6 +960,8 @@ pub struct View {
     sprite_sizes: RefCell<HashMap<String, Size>>,
     /// The script's frame animations (a picture `anim:<id>` plays one).
     anims: BTreeMap<String, Anim>,
+    /// The `::layer` rules of each character (see `Program::layer_rules`); [`View::set_vars`] applies them.
+    layer_rules: BTreeMap<String, Vec<(String, Vec<LayerRule>)>>,
     /// Seconds since the background / the outgoing background started being shown.
     bg_clock: f32,
     /// The frontend's text measuring, for layouts that fit text to a box (else the estimates).
@@ -1022,6 +1030,7 @@ impl View {
             sprite_sizes: RefCell::default(),
             page_cache: RefCell::default(),
             anims: BTreeMap::new(),
+            layer_rules: BTreeMap::new(),
             bg_clock: 0.0,
             previous_bg_clock: 0.0,
         }
@@ -1035,6 +1044,12 @@ impl View {
 
     /// Know the script's frame animations (`anim:<id>` pictures play them). Clocks
     /// are visual state: every animation starts at its first frame when it appears.
+    /// The story's `::layer` rules: the sprite layers they name follow the variables handed over by [`View::set_vars`].
+    pub fn with_layer_rules(mut self, rules: &BTreeMap<String, Vec<(String, Vec<LayerRule>)>>) -> View {
+        self.layer_rules = rules.clone();
+        self
+    }
+
     pub fn with_anims(mut self, anims: &BTreeMap<String, Anim>) -> View {
         self.anims = anims.clone();
         self
@@ -1490,6 +1505,33 @@ impl View {
     /// the draw list is built.
     pub fn set_vars(&mut self, vars: &quillstone_script::Vars) {
         self.hud.set_vars(vars);
+        self.follow_layer_rules(vars);
+    }
+
+    /// Whether `::layer` rules need the variables after every step (see [`View::set_vars`]).
+    pub fn has_layer_rules(&self) -> bool {
+        !self.layer_rules.is_empty()
+    }
+
+    /// Give each ruled layer of the sprites on stage the picture of the first rule that holds. The first picture of
+    /// a layer shows at once; a change crossfades (over `RULE_FADE`). No rule holding: the layer shows nothing.
+    fn follow_layer_rules(&mut self, vars: &quillstone_script::Vars) {
+        for s in &mut self.sprites {
+            for (name, rules) in self.layer_rules.get(&s.id).into_iter().flatten() {
+                let want = match ruled_picture(rules, vars) {
+                    Some(p) if quillstone_script::is_pattern(p) => quillstone_script::resolve(p, vars).unwrap_or_else(|_| quillstone_script::MISSING_PICTURE.to_string()),
+                    Some(p) => p.to_string(),
+                    None => String::new(),
+                };
+                let Some(l) = s.layers.iter_mut().find(|l| l.name == *name) else { continue };
+                if l.src != want {
+                    let fade = if l.live { RULE_FADE } else { 0.0 };
+                    let previous_src = (fade > 0.0 && !l.src.is_empty()).then(|| l.src.clone());
+                    *l = LayerView { previous_src, previous_anim_time: l.anim_time, ..LayerView::new(name, &want, fade) };
+                }
+                l.live = true;
+            }
+        }
     }
 
     /// The HUD elements, in drawing order.
@@ -1565,7 +1607,7 @@ impl View {
         match self.sprites.iter_mut().find(|s| s.id == id) {
             Some(s) => {
                 if !layers.is_empty() || !s.layers.is_empty() {
-                    s.set_layers(layers, fade);
+                    s.set_layers(layers, fade, self.layer_rules.get(id).map_or(&[][..], Vec::as_slice));
                 }
                 if s.src != src {
                     let old = std::mem::replace(&mut s.src, src.to_string());

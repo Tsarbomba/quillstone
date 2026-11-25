@@ -2220,6 +2220,17 @@ mod tests {
     }
 
     #[test]
+    fn check_looks_at_the_pictures_of_layer_rules() {
+        let png = picture::fake_png(10, 20);
+        let src = "---\nvars: { mood: \"smile\", hurt: false }\n---\n::character{id=m layers=body,mouth,band layer_sprites=a/{layer}_{value}.png}\n\
+            ::layer{m body=casual}\n::layer{m band=on if=hurt}\n::layer{m mouth={mood}}\n::show{m}\nHi.\n";
+        let all: &[(&str, &[u8])] = &[("a/body_casual.png", &png), ("a/band_on.png", &png), ("a/mouth_smile.png", &png)];
+        assert!(checked(src, all).is_ok());
+        assert!(checked(src, &all[..1]).is_err(), "a rule's file that is missing, and a pattern that builds nothing");
+        assert!(checked(src, &all[1..]).is_err());
+    }
+
+    #[test]
     fn check_looks_at_every_layer_file_and_the_files_a_layer_pattern_can_build() {
         let png = picture::fake_png(10, 20);
         let all: &[(&str, &[u8])] =

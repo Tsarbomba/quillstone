@@ -1352,7 +1352,7 @@ every combination. Declare the layers on the character, back to front:
   `eyes=open` shows `assets/mika/eyes_open.png`.
 - A `::show` names the layers it changes. **A layer you leave out keeps what it showed**, and so
   do the sprite's position, size and everything else.
-- The first `::show` of a character with layers must give a value for every layer. The script
+- The first `::show` of a character with layers must give a value for every layer (except ruled layers, see "Layer rules" below). The script
   is refused otherwise, and the error lists the missing ones. Use `none` for a layer that
   starts empty.
 - A bare `::show{mika x=80%}` on a character that has only layers just moves the sprite.
@@ -1404,6 +1404,49 @@ every combination. Declare the layers on the character, back to front:
   game folder, an unknown animation or a layer the character does not declare is refused.
   After a script edit that removed a layer or an animation, the load drops it. Saves from
   before layers existed load as they were.
+
+### Layer rules
+
+Some layers should follow the story instead of being set by every `::show`: her outfit follows an
+`outfit` variable, a bandage shows while `hurt` is true. Give the layer **rules** with `::layer`,
+declared after its `::character` and before the character's first `::show` (like `::anim`):
+
+```
+::character{id=mika name=Mika layers=body,eyes,mouth,bandage layer_sprites=assets/mika/{layer}_{value}.png}
+::layer{mika body=casual if="outfit == 0"}
+::layer{mika body=dress if="outfit == 1"}
+::layer{mika body=coat}
+::layer{mika bandage=on if="hurt"}
+```
+
+- Each `::layer` has exactly one `layer=value` and an optional `if="..."`, a condition like the
+  one of `::jump` or `::hud`. A layer with one or more rules is a **ruled layer**: it shows the
+  value of the **first rule, in script order, whose condition holds**. A rule with no `if` always
+  holds, so put it last as the "else". When no rule holds, the layer shows nothing (above, no
+  bandage while `hurt` is false).
+- The rules are **live**, like `::hud{if=}`: the layer changes whenever the variables do, with no
+  new `::show`. They are not part of a save: they come from the script and the saved variables, so
+  rollback, loading a save and a hot reload show the right picture by themselves. Hiding and showing
+  the sprite again changes nothing: the ruled layers keep following their rules.
+- The value is any value a layer can have: a plain value (`dress`), `none`, `anim:<id>` of an
+  animation declared above, and `{variable}` parts (`mouth={mood}`), built each time with the
+  same rules as in "Picture names from variables".
+- When a ruled layer's picture changes, **that layer crossfades** over a quarter of a second. Its
+  first picture, when the sprite is shown, appears with the sprite.
+- A `::show` can't set a ruled layer (the script is refused: the rules own it), and the "first
+  `::show` must give every layer" rule counts only the layers without rules. If every layer is
+  ruled, `::show{mika x=left}` is all a show needs.
+- `talk=` can name a ruled layer: the lip-flap animation plays over whatever the rules show.
+- Only the layers of the sprite (`layers=`) can have rules, not `portrait_layers`.
+- Mistakes are refused with the line: an unknown character, a character with no `layers=`, a layer
+  it does not have, more or less than one `layer=value`, a bad condition, an `anim:` not declared
+  above, a rule after a rule with no `if` (it could never be used), and a `::layer` after the
+  character's first `::show`. A `::layer` takes effect wherever it is written (not only when the
+  story reaches it), so keep them together at the top.
+- `quillstone check` looks at every picture a rule can build, like the other layer pictures
+  (`{variable}` values included), `package` ships them, and variables in conditions count as read
+  (so a name that nothing sets is reported). `quillstone test` has nothing to explore: conditions
+  only read. `check` does not compare the sizes of rule pictures with the others.
 
 `quillstone check` looks at every layer picture the script can show, including every file a
 `{variable}` value can build, and `quillstone package` ships them all. A demo is in

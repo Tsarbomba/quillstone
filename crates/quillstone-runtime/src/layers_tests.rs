@@ -326,3 +326,25 @@ fn hostile_portrait_records_are_refused_and_a_script_edit_drops_what_is_gone() {
     assert!(Session::load(&q, &text).is_err(), "a plain load refuses it");
     assert!(Session::load_edited(&q, &text).is_ok_and(|(s, _)| s.state().portraits.is_empty()), "an edited script drops it");
 }
+
+#[test]
+fn ruled_layers_are_left_to_the_view_and_need_nothing_from_a_show_or_a_save() {
+    let p = parse("---\nvars: { outfit: 0 }\n---\n::character{id=m layers=body,eyes layer_sprites=a/{layer}_{value}.png}\n::layer{m body=casual if=\"outfit == 0\"}\n::layer{m body=dress}\n# start\n::show{m eyes=open}\nOne.\n::set{outfit=1}\n::show{m x=left}\nTwo.\n::hide{m}\n::show{m eyes=none}\nThree.\n").unwrap();
+    let (mut game, first) = Session::start(&p);
+    let state = l(&[("body", ""), ("eyes", "a/eyes_open.png")]);
+    assert_eq!(layers(&game, "m"), state, "the rules own the layer: the state holds nothing for it");
+    assert!(warnings(&first).is_empty(), "{:?}", warnings(&first));
+    let cmds = next(&mut game);
+    assert_eq!(layers(&game, "m"), state);
+    assert!(warnings(&cmds).is_empty());
+    // a save keeps no ruled value; loading it gives the same state
+    let text = game.save();
+    assert!(!text.contains("casual") && !text.contains("dress"), "{text}");
+    let (loaded, cmds) = Session::load(&p, &text).unwrap();
+    assert_eq!(layers(&loaded, "m"), state);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::ShowSprite { layers, .. } if *layers == state)));
+    // a sprite shown again after a hide has no layer to warn about
+    let cmds = next(&mut game);
+    assert!(warnings(&cmds).is_empty(), "{:?}", warnings(&cmds));
+    assert_eq!(layers(&game, "m"), l(&[("body", ""), ("eyes", "")]));
+}

@@ -1369,8 +1369,10 @@ fn picture_path(src: &str, vars: &Vars, out: &mut Vec<Cmd>) -> String {
 /// The layers of a layered sprite or portrait after a `::show` or `::portrait` that sets `given` of them (see [`Op::Show`]):
 /// every one of `ids` in its order, the given ones resolved, the rest as `before` has them.
 /// A layer with no value (new, or a sprite shown as a plain pose) stays hidden, with a warning.
+/// A layer of `ruled` (its `::layer` rules) is left empty: the view fills it in from the rules, as the variables change.
 fn merge_layers(
     ids: &[String],
+    ruled: &[(String, Vec<quillstone_script::LayerRule>)],
     id: &str,
     given: &[(String, String)],
     before: Option<&[(String, String)]>,
@@ -1383,6 +1385,10 @@ fn merge_layers(
     let mut merged = Vec::with_capacity(ids.len());
     let mut missing = Vec::new();
     for layer in ids {
+        if ruled.iter().any(|(l, _)| l == layer) {
+            merged.push((layer.clone(), String::new()));
+            continue;
+        }
         let picture = match given.iter().find(|(l, _)| l == layer) {
             Some((_, p)) => picture_path(p, vars, out),
             None => match before.and_then(|b| b.iter().find(|(l, _)| l == layer)) {
@@ -1588,6 +1594,7 @@ pub(crate) fn step_traced(
                 }
                 state.pc += 1;
             }
+            Op::Layer { .. } => state.pc += 1, // the view follows the rules (`Program::layer_rules`)
             Op::Wait { seconds } => {
                 return block(state, &mut out, Cmd::Wait { seconds: *seconds });
             }
@@ -1657,7 +1664,7 @@ pub(crate) fn step_traced(
                 let existing = state.sprites.iter().position(|s| s.id == *id);
                 let layers = if src.is_empty() {
                     let ids = program.characters.get(id).map_or(&[][..], |c| &c.layers);
-                    merge_layers(ids, id, layers_given, existing.map(|i| state.sprites[i].layers.as_slice()), &state.vars, &mut out)
+                    merge_layers(ids, program.layer_rules.get(id).map_or(&[][..], Vec::as_slice), id, layers_given, existing.map(|i| state.sprites[i].layers.as_slice()), &state.vars, &mut out)
                 } else {
                     Vec::new()
                 };
@@ -1697,7 +1704,7 @@ pub(crate) fn step_traced(
             Op::Portrait { id, layers: given } => {
                 let at = state.portraits.iter().position(|(c, _)| c == id);
                 let ids = program.characters.get(id).map_or(&[][..], |c| &c.portrait_layers);
-                let layers = merge_layers(ids, id, given, at.map(|i| state.portraits[i].1.as_slice()), &state.vars, &mut out);
+                let layers = merge_layers(ids, &[], id, given, at.map(|i| state.portraits[i].1.as_slice()), &state.vars, &mut out);
                 match at {
                     Some(i) => state.portraits[i].1 = layers.clone(),
                     None => state.portraits.push((id.clone(), layers.clone())),

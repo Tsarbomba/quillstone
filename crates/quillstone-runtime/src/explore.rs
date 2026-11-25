@@ -673,6 +673,7 @@ impl Explorer<'_> {
                     let names = std::iter::once(src).chain(layers.iter().map(|(_, p)| p));
                     read.extend(names.flat_map(|p| quillstone_script::pattern_vars(p)).map(|n| (at, n, false)));
                 }
+                Op::Layer { rule, .. } => read.extend(quillstone_script::pattern_vars(&rule.picture).into_iter().map(|n| (at, n, false))),
                 Op::Portrait { layers, .. } => read.extend(layers.iter().flat_map(|(_, p)| quillstone_script::pattern_vars(p)).map(|n| (at, n, false))),
                 Op::Shop { pay, into, .. } => {
                     set.insert(into);
@@ -1072,6 +1073,16 @@ mod tests {
         assert!(w.iter().any(|m| m.contains("`orphan` is never reached")), "{w:?}");
         assert!(w.iter().any(|m| m.contains("never shown: \"Never.\"")), "{w:?}");
         assert!(!w.iter().any(|m| m.contains("Alone")), "covered by the label: {w:?}");
+    }
+
+    #[test]
+    fn a_layer_rule_condition_and_picture_read_variables() {
+        let head = "---\nvars: { outfit: 0 }\n---\n::character{id=m layers=body,eyes layer_sprites=a/{layer}_{value}.png}\n";
+        let w = messages(&test(&format!("{head}::layer{{m body=a if=\"outfti == 0\"}}\n::layer{{m eyes={{mood}}}}\n::show{{m}}\nHi.\n")).warnings);
+        assert!(w.iter().any(|m| m.contains("`outfti` is never set")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("`mood` is never set")), "{w:?}");
+        let w = messages(&test(&format!("{head}::layer{{m body=a if=\"outfit == 0\"}}\n::show{{m eyes=x}}\nHi.\n")).warnings);
+        assert!(!w.iter().any(|m| m.contains("outfit")), "{w:?}");
     }
 
     #[test]

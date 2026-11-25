@@ -101,13 +101,14 @@ pub const SPRITE_BRIGHTNESS: RangeInclusive<f32> = -1.0..=1.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, bg, show, hide, portrait, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, layer, bg, show, hide, portrait, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
 fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
+        "layer" => &["if"],
         "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "talk", "portrait", "portrait_layers", "portrait_sprites"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
@@ -1491,6 +1492,7 @@ impl Parser {
             }
             "show" => self.show(a),
             "portrait" => self.portrait(a),
+            "layer" => self.layer(a),
             "hud" => self.hud(line, a),
             "hide" => {
                 let all = a.flag("all");
@@ -2069,7 +2071,13 @@ impl Parser {
     /// `::show{mika body=casual eyes=anim:blink mouth=none x=left}`: set layers of a layered sprite.
     fn show_layers(&mut self, a: &mut Attrs, c: &Character, given: Vec<(String, String)>, flip: Option<bool>) -> Result<(Op, Option<String>), String> {
         let what = format!("`::show` of `{}` with layers", c.id);
-        let layers = self.layer_pictures((&c.layers, c.layer_sprites.as_deref()), &what, given)?;
+        // The layers that follow `::layer` rules are not the show's to set (and not part of what the first show must give).
+        let ruled = |l: &str| self.program.layer_rules.get(&c.id).is_some_and(|r| r.iter().any(|(n, _)| n == l));
+        if let Some((l, _)) = given.iter().find(|(l, _)| ruled(l)) {
+            return Err(format!("`::show{{{} {l}=...}}`: the layer `{l}` follows its `::layer` rules, so a `::show` can't set it", c.id));
+        }
+        let ids: Vec<String> = c.layers.iter().filter(|l| !ruled(l)).cloned().collect();
+        let layers = self.layer_pictures((&ids, c.layer_sprites.as_deref()), &what, given)?;
         self.show_rest(a, c.id.clone(), String::new(), layers, flip)
     }
 
@@ -2096,15 +2104,7 @@ impl Parser {
     fn layer_pictures(&mut self, (ids, template): (&[String], Option<&str>), what: &str, given: Vec<(String, String)>) -> Result<Vec<(String, String)>, String> {
         let mut layers = Vec::new();
         for (layer, value) in &given {
-            let picture = if value == LAYER_NONE {
-                String::new()
-            } else if let Some(id) = value.strip_prefix(ANIM_PREFIX) {
-                self.anim_ref(id)?
-            } else {
-                let path = fill_layer(template.unwrap_or_default(), layer, value);
-                self.picture_path(layer, &path)?
-            };
-            layers.push((layer.clone(), picture));
+            layers.push((layer.clone(), self.layer_picture(template, layer, value)?));
         }
         if !self.layered_seen.contains(what) {
             let missing: Vec<&str> = ids.iter().filter(|l| !given.iter().any(|(g, _)| g == *l)).map(String::as_str).collect();
@@ -2115,6 +2115,68 @@ impl Parser {
         }
         self.layered_seen.insert(what.to_string());
         Ok(layers)
+    }
+
+    /// The picture of a layer value: empty for `none`, `anim:<id>` of a declared animation, or a file of the template.
+    fn layer_picture(&self, template: Option<&str>, layer: &str, value: &str) -> Result<String, String> {
+        if value == LAYER_NONE {
+            Ok(String::new())
+        } else if let Some(id) = value.strip_prefix(ANIM_PREFIX) {
+            self.anim_ref(id)
+        } else {
+            self.picture_path(layer, &fill_layer(template.unwrap_or_default(), layer, value))
+        }
+    }
+
+    /// `::layer{mika body=dress if="outfit == 1"}`: one rule of a layer of `mika`'s sprite that the story's state
+    /// chooses (see [`LayerRule`]). Declared before the character's first `::show`; the first rule that holds wins.
+    fn layer(&mut self, a: &mut Attrs) -> Result<(Op, Option<String>), String> {
+        let bare = a.take_bare();
+        let Some(who) = bare.first() else { return Err("`::layer` needs a character, like `::layer{mika body=dress if=\"outfit == 1\"}`".into()) };
+        if let Some(extra) = bare.get(1) {
+            return Err(format!("`::layer` takes a character and one `layer=value`, not a bare `{extra}` (write `{extra}=dress`)"));
+        }
+        let Some(c) = self.program.characters.get(&who.to_lowercase()).cloned() else {
+            return Err(format!("unknown character `{who}` (declare it first with `::character`)"));
+        };
+        if c.layers.is_empty() {
+            return Err(format!("character `{who}` has no `layers=...`"));
+        }
+        let cond = a.value("if");
+        let named: Vec<(String, String)> = c.layers.iter().filter_map(|l| Some((l.clone(), a.value(l)?))).collect();
+        if let Some(extra) = a.leftover(&[]) {
+            if c.portrait_layers.iter().any(|l| l == extra) {
+                return Err(format!("`{extra}` is a portrait layer: only the layers of the sprite (`layers=`) can have `::layer` rules"));
+            }
+            let hint = suggest(extra, c.layers.iter().map(String::as_str), "layer");
+            return Err(format!("`{who}` has no layer `{extra}` ({hint})"));
+        }
+        let [(layer, value)] = &named[..] else {
+            return Err("`::layer` takes exactly one `layer=value`, like `::layer{mika body=dress}`".into());
+        };
+        if self.layered_seen.contains(&format!("`::show` of `{}` with layers", c.id)) {
+            return Err(format!("declare `::layer` rules before the first `::show` of `{}`", c.id));
+        }
+        let picture = self.layer_picture(c.layer_sprites.as_deref(), layer, value)?;
+        let cond = match cond {
+            None => None,
+            Some(src) => Some(HudExpr::parse(&src).and_then(|e| self.check_expr(&e.expr).map(|()| e))?),
+        };
+        let rules = &mut self.program.layer_rules;
+        let ruled = rules.entry(c.id.clone()).or_default();
+        let at = match ruled.iter().position(|(l, _)| l == layer) {
+            Some(i) => i,
+            None => {
+                ruled.push((layer.clone(), Vec::new()));
+                ruled.len() - 1
+            }
+        };
+        if ruled[at].1.iter().any(|r| r.cond.is_none()) {
+            return Err(format!("this rule for `{layer}` is never used: an earlier rule has no `if`, so it always holds (put the rule with no `if` last)"));
+        }
+        let rule = LayerRule { cond, picture };
+        ruled[at].1.push(rule.clone());
+        Ok((Op::Layer { id: c.id, layer: layer.clone(), rule }, None))
     }
 
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).

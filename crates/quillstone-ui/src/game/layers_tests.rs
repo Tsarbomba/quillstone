@@ -129,3 +129,19 @@ fn the_mouth_of_the_character_who_speaks_flaps_while_its_line_types() {
     assert_eq!(pics(&g)[1], "a/mouth_smile.png", "Jo speaks and has no `talk=`: nobody flaps");
     assert_eq!(pics(&g)[3], "b/mouth_smile.png");
 }
+
+#[test]
+fn a_ruled_layer_follows_the_story_state_through_a_set_and_a_rollback() {
+    let story = "---\nvars: { outfit: 0 }\n---\n::character{id=mika layers=body,eyes layer_sprites=a/{layer}_{value}.png}\n\
+        ::layer{mika body=casual if=\"outfit == 0\"}\n::layer{mika body=dress}\n::show{mika eyes=open}\nOne.\n::set{outfit=1}\nTwo.\n";
+    let p = parse(story).unwrap();
+    let mut g = instant_game(&p);
+    assert_eq!(pics(&g), ["a/body_casual.png", "a/eyes_open.png"]);
+    key(&mut g, Key::Space);
+    run(&mut g, 0.5);
+    assert_eq!(pics(&g), ["a/body_dress.png", "a/eyes_open.png"], "no new ::show: the layer follows the variable");
+    // back one line: the rules show the variable's value then
+    key(&mut g, Key::Backspace);
+    run(&mut g, 0.5);
+    assert_eq!(pics(&g)[0], "a/body_casual.png");
+}

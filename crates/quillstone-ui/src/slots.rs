@@ -217,9 +217,10 @@ pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option
     let Some(file) = slot_file(storage, slot)? else {
         return Some(SlotInfo { seq: 0, time: String::new(), preview: "Unreadable save".into(), scene: None });
     };
-    let scene = Session::load(program, &file.session).ok().map(|(_, cmds)| {
-        let mut view = View::new().with_speed(0.0).with_anims(&program.anims).with_art_scale(program.art_scale);
+    let scene = Session::load(program, &file.session).ok().map(|(session, cmds)| {
+        let mut view = View::new().with_speed(0.0).with_anims(&program.anims).with_layer_rules(&program.layer_rules).with_art_scale(program.art_scale);
         view.apply(&cmds);
+        view.set_vars(&session.state().vars);
         view
     });
     let preview = if scene.is_some() { file.preview } else { "This save doesn't fit the current script".into() };

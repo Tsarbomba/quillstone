@@ -336,3 +336,57 @@ fn a_value_pattern_flaps_each_value_with_its_own_animation_and_skips_one_without
 fn mouths2(v: &View) -> Vec<String> {
     names(v).into_iter().filter(|n| n != "body.png").collect()
 }
+
+// ---- `::layer` rules ----------------------------------------------------------
+
+const RULES: &str = "---\nvars: { outfit: 0, hurt: false, mood: \"smile\" }\n---\n\
+    ::character{id=m layers=body,mouth,bandage layer_sprites=a/{layer}_{value}.png}\n\
+    ::layer{m body=casual if=\"outfit == 0\"}\n::layer{m body=dress if=\"outfit == 1\"}\n\
+    ::layer{m bandage=on if=hurt}\n::layer{m mouth={mood}}\n";
+
+fn ruled() -> (View, quillstone_script::Vars) {
+    let p = parse(RULES).unwrap();
+    let mut v = View::new().with_speed(0.0).with_layer_rules(&p.layer_rules);
+    v.apply(&[layered("m", &[("body", ""), ("mouth", ""), ("bandage", "")], 0.5, 0.0)]);
+    (v, p.vars)
+}
+
+#[test]
+fn a_ruled_layer_follows_the_variables_with_a_crossfade() {
+    let (mut v, mut vars) = ruled();
+    v.set_vars(&vars);
+    assert_eq!(names(&v), ["a/body_casual.png", "a/mouth_smile.png"], "the first pictures show at once; no rule holds for the bandage");
+    assert_eq!(alpha_of(&v, "a/body_casual.png"), 1.0);
+    vars.insert("outfit".into(), quillstone_script::Value::Int(1));
+    vars.insert("hurt".into(), quillstone_script::Value::Bool(true));
+    vars.insert("mood".into(), quillstone_script::Value::Str("open".into()));
+    v.set_vars(&vars);
+    assert_eq!(names(&v), ["a/body_casual.png", "a/body_dress.png", "a/mouth_smile.png", "a/mouth_open.png", "a/bandage_on.png"]);
+    assert_eq!(alpha_of(&v, "a/body_dress.png"), 0.0);
+    v.tick(RULE_FADE);
+    assert_eq!(names(&v), ["a/body_dress.png", "a/mouth_open.png", "a/bandage_on.png"], "the old pictures are gone once it is done");
+    // no rule holds any more: the layer is empty again
+    vars.insert("outfit".into(), quillstone_script::Value::Int(7));
+    vars.insert("hurt".into(), quillstone_script::Value::Bool(false));
+    v.set_vars(&vars);
+    v.tick(RULE_FADE);
+    assert_eq!(names(&v), ["a/mouth_open.png"]);
+}
+
+#[test]
+fn a_new_show_keeps_the_ruled_layers_and_a_hidden_sprite_starts_over() {
+    let (mut v, mut vars) = ruled();
+    v.set_vars(&vars);
+    // a `::show` that moves the sprite carries the ruled layers as empty: they keep what the rules gave
+    v.apply(&[layered("m", &[("body", ""), ("mouth", ""), ("bandage", "")], 0.2, 0.5)]);
+    v.set_vars(&vars);
+    assert_eq!(names(&v), ["a/body_casual.png", "a/mouth_smile.png"]);
+    assert_eq!(alpha_of(&v, "a/body_casual.png"), 1.0, "no flicker");
+    // hidden and shown again: the layers appear whole at once, from the variables now
+    v.apply(&[Cmd::HideSprite { id: "m".into(), fade: 0.0 }]);
+    vars.insert("outfit".into(), quillstone_script::Value::Int(1));
+    v.apply(&[layered("m", &[("body", ""), ("mouth", ""), ("bandage", "")], 0.5, 0.0)]);
+    v.set_vars(&vars);
+    assert_eq!(names(&v), ["a/body_dress.png", "a/mouth_smile.png"]);
+    assert_eq!(alpha_of(&v, "a/body_dress.png"), 1.0);
+}
