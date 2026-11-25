@@ -269,7 +269,7 @@ impl<'p> Game<'p> {
             portraits: program.portraits().map(|(_, f)| f).collect(),
             storage,
             session,
-            view: View::new().with_speed(settings.text_speed).with_text_scale(settings.text_scale).with_anims(&program.anims).with_layer_rules(&program.layer_rules).with_art_scale(program.art_scale),
+            view: View::new().with_speed(settings.text_speed).with_text_scale(settings.text_scale).with_anims(&program.anims).with_layer_rules(&program.layer_rules).with_layer_places(&program.characters).with_art_scale(program.art_scale),
             mixer: Mixer::new(),
             settings_before: settings.clone(),
             settings,
@@ -419,7 +419,7 @@ impl<'p> Game<'p> {
     /// A view with nothing in it yet (same speed and theme).
     fn fresh_view(&mut self) {
         let (theme, measure) = (self.view.theme().clone(), self.view.shared_measure());
-        self.view = View::new().with_speed(self.settings.text_speed).with_text_scale(self.settings.text_scale).with_theme(theme).with_anims(&self.program.anims).with_layer_rules(&self.program.layer_rules).with_art_scale(self.program.art_scale);
+        self.view = View::new().with_speed(self.settings.text_speed).with_text_scale(self.settings.text_scale).with_theme(theme).with_anims(&self.program.anims).with_layer_rules(&self.program.layer_rules).with_layer_places(&self.program.characters).with_art_scale(self.program.art_scale);
         self.view.set_measure(measure);
     }
 

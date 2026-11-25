@@ -604,14 +604,19 @@ fn layer_size_findings(program: &Program, script: &Path, root: &Path) -> Vec<Fin
         // (line, file) in script order, each file once.
         let mut files: Vec<(usize, String)> = Vec::new();
         for &(pc, _, layers) in ops.get(character.id.as_str()).into_iter().flatten().filter(|o| o.1 == portrait) {
-            for (_, picture) in layers {
+            for (layer, picture) in layers {
                 let named: Vec<String> = match quillstone_script::anim_id(picture).and_then(|a| program.anims.get(a)) {
                     Some(anim) => anim.frames.iter().filter(|f| !f.file.is_empty()).map(|f| f.file.clone()).collect(),
                     None if picture.is_empty() || quillstone_script::anim_id(picture).is_some() => Vec::new(),
                     None if quillstone_script::is_pattern(picture) => pattern::expand(root, picture),
                     None => vec![picture.clone()],
                 };
-                for file in named {
+                // A `::place`d layer picture has a canvas of its own: its size is the art's business.
+                let placed = |file: &str| match (portrait, &character.layer_sprites) {
+                    (false, Some(t)) => quillstone_script::layer_place(&character.layer_places, t, layer, file).is_some(),
+                    _ => false,
+                };
+                for file in named.into_iter().filter(|f| !placed(f)) {
                     if !files.iter().any(|(_, f)| *f == file) {
                         files.push((program.lines[pc], file));
                     }
@@ -2291,6 +2296,20 @@ Bye.
         let p = parse("::character{id=a layers=body layer_sprites=q/{layer}_{value}.png}\n::character{id=b layers=body layer_sprites=r/{layer}_{value}.png}\n::show{a body=1}\n::show{b body=1}\n").unwrap();
         let files: &[(&str, &[u8])] = &[("q/body_1.png", &small), ("r/body_1.png", &big)];
         assert!(in_dir(files, |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir)).is_empty());
+    }
+
+    #[test]
+    fn a_placed_layer_picture_is_not_compared_with_the_canvas_size() {
+        let (canvas, hat) = (picture::fake_png(40, 80), picture::fake_png(10, 12));
+        let src = "::character{id=m layers=body,hat layer_sprites=a/{layer}_{value}.png}\n::place{m hat=cap at=5,5}\n::show{m body=x hat=cap}\n::show{m hat=bow}\n::show{m hat=big}\n";
+        let p = parse(src).unwrap();
+        let files: &[(&str, &[u8])] = &[("a/body_x.png", &canvas), ("a/hat_cap.png", &hat), ("a/hat_bow.png", &hat), ("a/hat_big.png", &canvas)];
+        let w = in_dir(files, |dir| layer_size_findings(&p, &dir.join("s.quill.md"), dir));
+        assert_eq!(w.len(), 1, "only the unplaced, mismatched `hat_bow` is reported: {w:?}");
+        assert!(w[0].1.contains("a/hat_bow.png"), "{}", w[0].1);
+        // a place for the whole layer exempts every value
+        let all = parse(&src.replace("hat=cap at=5,5", "hat at=5,5")).unwrap();
+        assert!(in_dir(files, |dir| layer_size_findings(&all, &dir.join("s.quill.md"), dir)).is_empty());
     }
 
     const FACES: &str = "---\nvars: { mood: \"smile\" }\n---\n::character{id=ann portrait_layers=eyes,mouth portrait_sprites=f/{layer}_{value}.png talk=mouth:anim:flap_{value}}\n\

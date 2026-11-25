@@ -533,6 +533,28 @@ pub struct Character {
     /// Layer ids of a layered portrait, back to front (empty: none), and their picture template (like `layers` and `layer_sprites`).
     pub portrait_layers: Vec<String>,
     pub portrait_sprites: Option<String>,
+    /// Where the sprite layers whose art is smaller than the canvas sit (`::place`), in script order.
+    pub layer_places: Vec<LayerPlace>,
+}
+
+/// One `::place{mika hat=cap at=120,40 scale=0.5}`: where a layer's picture sits on the character's canvas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerPlace {
+    pub layer: String,
+    /// The value it is for (`cap`), or `None` for every value of the layer, animations included.
+    pub value: Option<String>,
+    /// The picture's top-left corner, in pixels of the canvas from the canvas's top-left.
+    pub x: f32,
+    pub y: f32,
+    /// The picture's own size factor (1: its pixel size).
+    pub scale: f32,
+}
+
+/// The placement of the picture `picture` shown on `layer` (a `layer_sprites=` `template`): the entry for its value, else the layer's own.
+pub fn layer_place<'a>(places: &'a [LayerPlace], template: &str, layer: &str, picture: &str) -> Option<&'a LayerPlace> {
+    let value = layer_value(template, layer, picture);
+    let named = |v: Option<&str>| places.iter().find(|p| p.layer == layer && p.value.as_deref() == v);
+    value.and_then(|v| named(Some(v))).or_else(|| named(None))
 }
 
 /// One `::layer{mika body=dress if="outfit == 1"}` rule: the picture its layer shows while `cond` holds

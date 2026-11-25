@@ -15,7 +15,7 @@ use quillstone_runtime::{Camera, Cmd, Spot, SpriteStep};
 use quillstone_script::Place;
 use quillstone_script::markup::{rich, Rich};
 pub use quillstone_script::markup::TextRun;
-use quillstone_script::{anim_id, layer_value, ruled_picture, talk_matches, Anim, LayerRule, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
+use quillstone_script::{anim_id, layer_place, layer_value, ruled_picture, Character, LayerPlace, talk_matches, Anim, LayerRule, Axis, Ease, Filter, Fit, Imagemap, Vignette, Wipe};
 
 use crate::fade::Fade;
 use crate::pixels::vignette_zoom;
@@ -962,6 +962,8 @@ pub struct View {
     anims: BTreeMap<String, Anim>,
     /// The `::layer` rules of each character (see `Program::layer_rules`); [`View::set_vars`] applies them.
     layer_rules: BTreeMap<String, Vec<(String, Vec<LayerRule>)>>,
+    /// The `::place`d layers of each character with any: its `layer_sprites=` template and the placements.
+    layer_places: BTreeMap<String, (String, Vec<LayerPlace>)>,
     /// Seconds since the background / the outgoing background started being shown.
     bg_clock: f32,
     /// The frontend's text measuring, for layouts that fit text to a box (else the estimates).
@@ -1031,6 +1033,7 @@ impl View {
             page_cache: RefCell::default(),
             anims: BTreeMap::new(),
             layer_rules: BTreeMap::new(),
+            layer_places: BTreeMap::new(),
             bg_clock: 0.0,
             previous_bg_clock: 0.0,
         }
@@ -1047,6 +1050,13 @@ impl View {
     /// The story's `::layer` rules: the sprite layers they name follow the variables handed over by [`View::set_vars`].
     pub fn with_layer_rules(mut self, rules: &BTreeMap<String, Vec<(String, Vec<LayerRule>)>>) -> View {
         self.layer_rules = rules.clone();
+        self
+    }
+
+    /// The characters' `::place`d layers: those pictures sit on the sprite's canvas where the script says.
+    pub fn with_layer_places(mut self, characters: &BTreeMap<String, Character>) -> View {
+        let placed = characters.values().filter(|c| !c.layer_places.is_empty());
+        self.layer_places = placed.filter_map(|c| Some((c.id.clone(), (c.layer_sprites.clone()?, c.layer_places.clone())))).collect();
         self
     }
 
@@ -1852,15 +1862,24 @@ impl View {
             push_sprite(stage, self.picture(src, *t), (x, y), look, base, self.art_scale, image_size);
         }
         push_sprite(stage, self.picture(&s.src, s.anim_time), (x, y), look, s.opacity(), self.art_scale, image_size);
+        // A `::place`d layer sits on the canvas, the size of the first picture that isn't placed.
+        let places = self.layer_places.get(&s.id);
+        let placed = |l: &LayerView, src: &str| places.and_then(|(t, p)| layer_place(p, t, &l.name, src));
+        let canvas = places.and_then(|_| s.layers.iter().filter(|l| !l.src.is_empty() && placed(l, &l.src).is_none()).find_map(|l| image_size(self.picture(&l.src, l.anim_time))));
+        let push = |stage: &mut Vec<Draw>, l: &LayerView, declared: &str, src: &str, t: f32, alpha: f32| match (placed(l, declared), canvas) {
+            (Some(p), Some(canvas)) => push_placed(stage, self.picture(src, t), (x, y), (look, alpha), self.art_scale, image_size, (canvas, p)),
+            (Some(_), None) => {}
+            (None, _) => push_sprite(stage, self.picture(src, t), (x, y), look, alpha, self.art_scale, image_size),
+        };
         for l in &s.layers {
             let (sprite_alpha, layer_alpha) = (s.opacity(), l.alpha());
             if let Some(prev) = &l.previous_src {
                 // Under a layer that fades in; when the layer fades out to nothing, it fades with it.
                 let alpha = if l.src.is_empty() { sprite_alpha * (1.0 - layer_alpha) } else { sprite_alpha };
-                push_sprite(stage, self.picture(prev, l.previous_anim_time), (x, y), look, alpha, self.art_scale, image_size);
+                push(stage, l, prev, prev, l.previous_anim_time, alpha);
             }
             let (src, t) = self.layer_src(&s.id, self.talk_template.as_deref(), l);
-            push_sprite(stage, self.picture(&src, t), (x, y), look, sprite_alpha * layer_alpha, self.art_scale, image_size);
+            push(stage, l, &l.src, &src, t, sprite_alpha * layer_alpha);
         }
     }
 
@@ -2514,6 +2533,54 @@ fn place_axis(v: f32, screen: f32, size: f32) -> f32 {
     c * (screen - size) + (v - c) * screen
 }
 
+/// A sprite picture's size at scale 1. Fixed: every picture is SPRITE_HEIGHT tall. Pixels: its own size, times the game's art scale.
+fn sprite_base(size: Size, art_scale: Option<f32>) -> (f32, f32) {
+    match art_scale {
+        Some(k) => (size.w * k, size.h * k),
+        None => (size.w / size.h * SPRITE_HEIGHT, SPRITE_HEIGHT),
+    }
+}
+
+/// A `::place`d layer: its picture on the sprite's `canvas`, the sprite placed by `x`, `y` as [`push_sprite`] does. A crop shows
+/// only the part of the layer that lies in the cropped canvas; a mirrored sprite mirrors the layer's place too.
+fn push_placed(
+    out: &mut Vec<Draw>,
+    src: &str,
+    (x, y): (f32, f32),
+    (look, alpha): (Look, f32),
+    art_scale: Option<f32>,
+    image_size: &dyn Fn(&str) -> Option<Size>,
+    (canvas, place): (Size, &LayerPlace),
+) {
+    let Some(size) = (!src.is_empty()).then(|| image_size(src)).flatten().filter(|s| s.w > 0.0 && s.h > 0.0 && canvas.w > 0.0 && canvas.h > 0.0) else { return };
+    let (base_w, base_h) = sprite_base(canvas, art_scale);
+    let crop = look.crop;
+    let (w, h) = (base_w * crop.w * look.scale * look.xscale, base_h * crop.h * look.scale * look.yscale);
+    // The layer and what is seen of it, as fractions of the canvas (outside it too, unless a crop cuts it).
+    let layer = Rect::new(place.x / canvas.w, place.y / canvas.h, size.w * place.scale / canvas.w, size.h * place.scale / canvas.h);
+    let seen = if crop == Rect::new(0.0, 0.0, 1.0, 1.0) {
+        layer
+    } else {
+        let (l, t) = (layer.x.max(crop.x), layer.y.max(crop.y));
+        let (r, b) = ((layer.x + layer.w).min(crop.x + crop.w), (layer.y + layer.h).min(crop.y + crop.h));
+        if r <= l || b <= t {
+            return;
+        }
+        Rect::new(l, t, r - l, b - t)
+    };
+    let uv = Rect::new((seen.x - layer.x) / layer.w, (seen.y - layer.y) / layer.h, seen.w / layer.w, seen.h / layer.h);
+    let (dw, dh) = (seen.w / crop.w * w, seen.h / crop.h * h);
+    let (mut dx, dy) = ((seen.x - crop.x) / crop.w * w, (seen.y - crop.y) / crop.h * h);
+    let uv = if look.flip {
+        dx = w - dx - dw;
+        Rect::new(uv.x + uv.w, uv.y, -uv.w, uv.h)
+    } else {
+        uv
+    };
+    let dest = Rect::new(place_axis(x, VIRTUAL.w, w) + dx, place_axis(y, VIRTUAL.h, h) + dy, dw, dh);
+    out.push(Draw::Image { src: src.to_string(), dest, uv, alpha, shade: [1.0; 3], brightness: 0.0, blur: 0.0, additive: false });
+}
+
 /// A sprite placed by `x`, `y`: the point that far across (down) it is that far across (down) the screen.
 fn push_sprite(
     out: &mut Vec<Draw>,
@@ -2531,11 +2598,7 @@ fn push_sprite(
     if size.w <= 0.0 || size.h <= 0.0 {
         return;
     }
-    // Fixed: every picture is SPRITE_HEIGHT tall. Pixels: the picture's own size, times the game's art scale.
-    let (base_w, base_h) = match art_scale {
-        Some(k) => (size.w * k, size.h * k),
-        None => (size.w / size.h * SPRITE_HEIGHT, SPRITE_HEIGHT),
-    };
+    let (base_w, base_h) = sprite_base(size, art_scale);
     // Only the cropped part is drawn, at its own size.
     let crop = look.crop;
     let h = base_h * crop.h * look.scale * look.yscale;

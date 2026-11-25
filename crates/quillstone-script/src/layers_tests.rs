@@ -269,3 +269,38 @@ fn bad_layer_rules_are_refused() {
     let e = errors("::character{id=p portrait_layers=eyes portrait_sprites=f/{layer}_{value}.png layers=body layer_sprites=a/{layer}_{value}.png}\n::layer{p eyes=a}\n").join(";");
     assert!(e.contains("portrait layer"), "{e}");
 }
+
+#[test]
+fn place_says_where_a_layers_smaller_picture_sits_on_the_canvas() {
+    let p = ok("::place{mika eyes at=120,40}\n::place{mika eyes=wide at=-5,7.5 scale=0.5}\n::show{mika body=a eyes=b mouth=c}\n");
+    let places = &p.characters["mika"].layer_places;
+    assert_eq!(places.len(), 2);
+    assert_eq!((places[0].layer.as_str(), places[0].value.as_deref(), places[0].x, places[0].y, places[0].scale), ("eyes", None, 120.0, 40.0, 1.0));
+    assert_eq!((places[1].value.as_deref(), places[1].x, places[1].y, places[1].scale), (Some("wide"), -5.0, 7.5, 0.5));
+    // a value's own place wins over the layer's; an animation or another value takes the layer's
+    let find = |pic: &str| crate::layer_place(places, "art/{layer}_{value}.png", "eyes", pic).map(|p| p.x);
+    assert_eq!((find("art/eyes_wide.png"), find("art/eyes_b.png"), find("e/open.png")), (Some(-5.0), Some(120.0), Some(120.0)));
+    assert!(crate::layer_place(places, "art/{layer}_{value}.png", "body", "art/body_a.png").is_none());
+}
+
+#[test]
+fn bad_places_are_refused() {
+    bad("::place{ghost eyes at=1,2}\n", "unknown character `ghost`");
+    bad("::character{id=bob}\n::place{bob eyes at=1,2}\n", "has no `layers=");
+    bad("::place{mika hair at=1,2}\n", "no layer `hair`");
+    bad("::place{mika hair=a at=1,2}\n", "no layer `hair`");
+    bad("::place{at=1,2}\n", "needs a character");
+    bad("::place{mika at=1,2}\n", "exactly one layer");
+    bad("::place{mika eyes mouth at=1,2}\n", "exactly one layer");
+    bad("::place{mika eyes=a mouth=b at=1,2}\n", "exactly one layer");
+    bad("::place{mika eyes}\n", "needs `at=x,y`");
+    bad("::place{mika eyes at=1}\n", "bad `at=1`");
+    bad("::place{mika eyes at=1,x}\n", "bad `at=1,x`");
+    bad("::place{mika eyes at=1,99999}\n", "bad `at=");
+    bad("::place{mika eyes at=1,2 scale=0}\n", "`scale=0` must be a number");
+    bad("::place{mika eyes=none at=1,2}\n", "can't be placed");
+    bad("::place{mika eyes=anim:blink at=1,2}\n", "can't be placed");
+    bad("::place{mika eyes at=1,2}\n::place{mika eyes at=3,4}\n", "`eyes` is placed twice");
+    bad("::place{mika eyes=a at=1,2}\n::place{mika eyes=a at=3,4}\n", "`eyes=a` is placed twice");
+    ok("::place{mika eyes at=1,2}\n::place{mika eyes=a at=3,4}\n");
+}

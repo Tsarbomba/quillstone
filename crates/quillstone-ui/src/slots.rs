@@ -218,7 +218,7 @@ pub fn read_slot(storage: &dyn Storage, program: &Program, slot: Slot) -> Option
         return Some(SlotInfo { seq: 0, time: String::new(), preview: "Unreadable save".into(), scene: None });
     };
     let scene = Session::load(program, &file.session).ok().map(|(session, cmds)| {
-        let mut view = View::new().with_speed(0.0).with_anims(&program.anims).with_layer_rules(&program.layer_rules).with_art_scale(program.art_scale);
+        let mut view = View::new().with_speed(0.0).with_anims(&program.anims).with_layer_rules(&program.layer_rules).with_layer_places(&program.characters).with_art_scale(program.art_scale);
         view.apply(&cmds);
         view.set_vars(&session.state().vars);
         view

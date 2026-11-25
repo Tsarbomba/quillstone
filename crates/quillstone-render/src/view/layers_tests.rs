@@ -390,3 +390,84 @@ fn a_new_show_keeps_the_ruled_layers_and_a_hidden_sprite_starts_over() {
     assert_eq!(names(&v), ["a/body_dress.png", "a/mouth_smile.png"]);
     assert_eq!(alpha_of(&v, "a/body_dress.png"), 1.0);
 }
+
+// ---- `::place`d layers ---------------------------------------------------------------------
+
+/// A 280x500 canvas (the body) with a 40x50 hat placed at 100,50 at scale 2: 80x100 of the canvas.
+fn hatted(crop: [f32; 4], flip: bool) -> (View, impl Fn(&str) -> Option<Size>) {
+    let p = parse("::character{id=m layers=body,hat layer_sprites=a/{layer}_{value}.png}\n::place{m hat=cap at=100,50 scale=2}\n").unwrap();
+    let mut v = View::new().with_speed(0.0).with_layer_places(&p.characters);
+    let mut show = layered("m", &[("body", "a/body_x.png"), ("hat", "a/hat_cap.png")], 0.5, 0.0);
+    if let Cmd::ShowSprite { crop: c, flip: f, .. } = &mut show {
+        (*c, *f) = (crop, flip);
+    }
+    v.apply(&[show]);
+    (v, |s: &str| Some(if s.contains("hat") { Size::new(40.0, 50.0) } else { Size::new(280.0, 500.0) }))
+}
+
+fn hat_and_body(v: &View, sizes: &dyn Fn(&str) -> Option<Size>) -> (Rect, Rect, Rect) {
+    let d: Vec<(Rect, Rect)> = v.draw_list(sizes, None).into_iter().filter_map(|d| if let Draw::Image { dest, uv, .. } = d { Some((dest, uv)) } else { None }).collect();
+    assert_eq!(d.len(), 2, "{d:?}");
+    (d[0].0, d[1].0, d[1].1)
+}
+
+#[test]
+fn a_placed_layer_sits_on_the_canvas_at_its_own_size() {
+    let (v, sizes) = hatted([0.0, 0.0, 1.0, 1.0], false);
+    let (body, hat, uv) = hat_and_body(&v, &sizes);
+    let k = body.w / 280.0;
+    assert!(close(hat.x, body.x + 100.0 * k) && close(hat.y, body.y + 50.0 * k), "{hat:?} on {body:?}");
+    assert!(close(hat.w, 80.0 * k) && close(hat.h, 100.0 * k));
+    assert_eq!(uv, FULL_UV);
+}
+
+#[test]
+fn a_flipped_sprite_mirrors_the_place_of_its_layer() {
+    let (v, sizes) = hatted([0.0, 0.0, 1.0, 1.0], true);
+    let (body, hat, uv) = hat_and_body(&v, &sizes);
+    let k = body.w / 280.0;
+    assert!(close(hat.x, body.x + (280.0 - 180.0) * k), "{hat:?} on {body:?}");
+    assert!(close(hat.w, 80.0 * k) && close(hat.y, body.y + 50.0 * k));
+    assert!(uv.w < 0.0, "read right to left: {uv:?}");
+}
+
+#[test]
+fn a_crop_cuts_a_placed_layer_to_the_cropped_canvas() {
+    // the left half and top half of the canvas: the hat (x 100..180, y 50..150) keeps x 100..140
+    let (v, sizes) = hatted([0.0, 0.0, 0.5, 0.5], false);
+    let (body, hat, uv) = hat_and_body(&v, &sizes);
+    let k = body.w / 140.0;
+    assert!(close(hat.x, body.x + 100.0 * k) && close(hat.w, 40.0 * k) && close(hat.h, 100.0 * k), "{hat:?} on {body:?}");
+    assert!(close(uv.x, 0.0) && close(uv.w, 0.5) && close(uv.h, 1.0), "{uv:?}");
+    // a crop that holds none of it draws no hat
+    let (v, sizes) = hatted([0.5, 0.5, 0.5, 0.5], false);
+    let n = v.draw_list(&sizes, None).iter().filter(|d| matches!(d, Draw::Image { src, .. } if src.contains("hat"))).count();
+    assert_eq!(n, 0);
+}
+
+#[test]
+fn the_sprites_scale_and_a_layers_own_scale_both_apply() {
+    let (mut v, sizes) = hatted([0.0, 0.0, 1.0, 1.0], false);
+    let mut big = layered("m", &[("body", "a/body_x.png"), ("hat", "a/hat_cap.png")], 0.5, 0.0);
+    if let Cmd::ShowSprite { scale, .. } = &mut big {
+        *scale = 0.5;
+    }
+    v.apply(&[big]);
+    let (body, hat, _) = hat_and_body(&v, &sizes);
+    assert!(close(hat.w / body.w, 80.0 / 280.0) && close(hat.h / body.h, 100.0 / 500.0), "{hat:?} on {body:?}");
+}
+
+#[test]
+fn the_canvas_is_the_first_layer_that_is_not_placed_and_with_none_nothing_is_drawn() {
+    let p = parse("::character{id=m layers=body,hat layer_sprites=a/{layer}_{value}.png}\n::place{m hat at=0,0}\n").unwrap();
+    let mut v = View::new().with_speed(0.0).with_layer_places(&p.characters);
+    v.apply(&[layered("m", &[("body", ""), ("hat", "a/hat_cap.png")], 0.5, 0.0)]);
+    assert!(v.draw_list(&size, None).iter().all(|d| !matches!(d, Draw::Image { .. })));
+    // a layer-wide place also covers an animation's frames
+    let q = parse("::anim{id=wob frames=\"a/w1.png 1\"}\n::character{id=m layers=body,hat layer_sprites=a/{layer}_{value}.png}\n::place{m hat at=10,0}\n").unwrap();
+    let mut v = View::new().with_speed(0.0).with_anims(&q.anims).with_layer_places(&q.characters);
+    v.apply(&[layered("m", &[("body", "a/body_x.png"), ("hat", "anim:wob")], 0.5, 0.0)]);
+    let sizes = |s: &str| Some(if s.contains("w1") { Size::new(28.0, 50.0) } else { Size::new(280.0, 500.0) });
+    let (body, frame, _) = hat_and_body(&v, &sizes);
+    assert!(close(frame.x, body.x + 10.0 * body.w / 280.0) && close(frame.w, body.w / 10.0), "{frame:?} on {body:?}");
+}

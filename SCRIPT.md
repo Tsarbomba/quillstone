@@ -1384,7 +1384,8 @@ every combination. Declare the layers on the character, back to front:
   ```
 
 - All the layers of a character should be the **same size** (the same canvas): they are drawn
-  stacked, each at the same place, size and mirroring, so one layer is not placed on its own.
+  stacked, each at the same place, size and mirroring. A picture that is smaller than the canvas
+  (a hat, a held prop, a blush) can instead be put where it belongs, see "Placing a layer" below.
   `quillstone check` warns about a layer picture whose size differs from the first.
 - Everything that works on a sprite works on the whole stack: `x`, `y`, `z`, `scale`, `flip`,
   `xscale`, `yscale`, `fade`, `::move`, `::move{... loop}`, `::hide`, the camera and shake.
@@ -1404,6 +1405,39 @@ every combination. Declare the layers on the character, back to front:
   game folder, an unknown animation or a layer the character does not declare is refused.
   After a script edit that removed a layer or an animation, the load drops it. Saves from
   before layers existed load as they were.
+
+### Placing a layer
+
+A layer whose art is smaller than the canvas needs no padding to the canvas size: say where it
+sits with `::place`. This saves the art and the memory of a full-size picture for every hat:
+
+```
+::character{id=mika name=Mika layers=body,hat,blush layer_sprites=assets/mika/{layer}_{value}.png}
+::place{mika hat=cap at=410,25}
+::place{mika hat=bow at=380,60 scale=0.5}
+::place{mika blush at=300,200}
+```
+
+- `at=x,y` is where the picture's top-left corner goes, in **pixels of the canvas** counted from
+  the canvas's top-left. `scale` (optional, default 1) sizes the picture itself, so `scale=0.5`
+  draws a 400 pixel wide hat 200 pixels wide on the canvas. A negative `at` or a picture that
+  reaches past the canvas is fine: it is drawn there.
+- `::place{mika hat=cap ...}` is for one value, `::place{mika blush ...}` (no `=value`) for every
+  value of the layer, animation frames included. A value's own place wins over its layer's.
+  Pictures that are not placed fill the canvas, as always, so a layer can mix both. A `::place`
+  names one layer, takes effect wherever it is written (like `::character`, so keep them
+  together), and each layer or value can be placed once.
+- **The canvas** is the size of the first layer, back to front, that shows a picture that is not
+  placed. If every picture showing is placed (or none shows), nothing of the sprite is drawn.
+- The sprite still moves, scales, flips, fades and crops as one: `scale`, `xscale`, `flip` and
+  `crop` act on the canvas and carry the placed layers with them (flipped, a hat sits mirrored
+  on the other side; with `crop`, only the part of a layer inside the cropped canvas shows).
+  `::move` works as before. A hotspot bound to the sprite covers what is drawn of it.
+- The place comes from the script, not from saves; a hot reload picks up an edited `::place`.
+- `quillstone check` leaves a placed layer's picture out of the "same size as the first" warning.
+  `::place` is refused for an unknown character or layer, a value that is `none` or an
+  `anim:` (use the layer's own place for animations), a missing or bad `at`, a `scale` outside
+  0.05 to 10, and a layer or value placed twice.
 
 ### Layer rules
 

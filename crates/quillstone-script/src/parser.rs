@@ -89,6 +89,9 @@ struct Files<'a> {
 /// Allowed `scale=`, `xscale=` and `yscale=` of a sprite.
 const SPRITE_SCALE: RangeInclusive<f32> = 0.05..=10.0;
 
+/// Allowed `at=` coordinates of a `::place`, in pixels of the character's canvas.
+const PLACE_PIXELS: RangeInclusive<f32> = -16384.0..=16384.0;
+
 /// Allowed `xoffset=` / `yoffset=` of a sprite, in pixels of the 1920x1080 stage (two stage widths either way).
 pub const SPRITE_OFFSET: RangeInclusive<f32> = -3840.0..=3840.0;
 
@@ -101,7 +104,7 @@ pub const SPRITE_BRIGHTNESS: RangeInclusive<f32> = -1.0..=1.0;
 /// Most steps (`then`) one `::move` may have.
 pub const MAX_MOVE_STEPS: usize = 32;
 
-const COMMANDS: &str = "character, anim, layer, bg, show, hide, portrait, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
+const COMMANDS: &str = "character, anim, layer, place, bg, show, hide, portrait, move, shake, flash, notify, unlock, fade, camera, particles, tint, vignette, filter, textbox, rollback, page, center, hud, music, sfx, voice, wait, video, \
                         choice, hotspots, reply, message, item, inventory, journal, shop, input, timing, press, include, jump, call, return, set, if, elif, else, endif, end, end_replay";
 
 /// The attributes each command takes (for error messages).
@@ -109,6 +112,7 @@ fn known_attrs(command: &str) -> &'static [&'static str] {
     match command {
         "anim" => &["id", "frames", "loop"],
         "layer" => &["if"],
+        "place" => &["at", "scale"],
         "character" => &["id", "name", "color", "sprites", "layers", "layer_sprites", "talk", "portrait", "portrait_layers", "portrait_sprites"],
         "item" => &["id", "name", "icon", "price", "text", "count", "use"],
         "shop" => &["pay", "into"],
@@ -1313,6 +1317,10 @@ impl Parser {
                 self.anim(line, inner);
                 return i;
             }
+            "place" => {
+                self.place_layer(line, inner);
+                return i;
+            }
             "if" => {
                 self.if_start(line, inner);
                 return i;
@@ -2230,6 +2238,55 @@ impl Parser {
         Ok((Op::Layer { id: c.id, layer: layer.clone(), rule }, None))
     }
 
+    /// `::place{mika hat=cap at=120,40 scale=0.5}`: a declaration of where a layer's picture sits on the canvas
+    /// (see [`LayerPlace`]). `hat` instead of `hat=cap` is every value of the layer.
+    fn place_layer(&mut self, line: usize, inner: &str) {
+        if let Err(m) = self.place_layer_inner(inner) {
+            self.err(line, m);
+        }
+    }
+
+    fn place_layer_inner(&mut self, inner: &str) -> Result<(), String> {
+        let mut a = Attrs::parse(inner)?;
+        let at = a.value("at");
+        let scale = Self::number(&mut a, "scale", SPRITE_SCALE)?;
+        let bare = a.take_bare();
+        let example = "`::place{mika hat=cap at=120,40}`";
+        let Some(who) = bare.first() else { return Err(format!("`::place` needs a character, like {example}")) };
+        let Some(c) = self.program.characters.get(&who.to_lowercase()) else {
+            return Err(format!("unknown character `{who}` (declare it first with `::character`)"));
+        };
+        if c.layers.is_empty() {
+            return Err(format!("character `{who}` has no `layers=...`"));
+        }
+        let mut named: Vec<(String, Option<String>)> = bare[1..].iter().map(|l| (l.clone(), None)).collect();
+        named.extend(c.layers.iter().filter_map(|l| Some((l.clone(), Some(a.value(l)?)))));
+        if let Some(extra) = a.leftover(&[]) {
+            let hint = suggest(extra, c.layers.iter().map(String::as_str), "layer");
+            return Err(format!("`{who}` has no layer `{extra}` ({hint})"));
+        }
+        let [(layer, value)] = &named[..] else { return Err(format!("`::place` takes exactly one layer, `hat` or `hat=cap`, like {example}")) };
+        if !c.layers.contains(layer) {
+            let hint = suggest(layer, c.layers.iter().map(String::as_str), "layer");
+            return Err(format!("`{who}` has no layer `{layer}` ({hint})"));
+        }
+        if let Some(v) = value.as_deref().filter(|v| !is_plain_ident(v) || *v == LAYER_NONE) {
+            return Err(format!("`{layer}={v}` can't be placed: a value is letters, digits and `_` (not `none`; `anim:` frames follow the layer's own place)"));
+        }
+        let Some(at) = at else { return Err(format!("`::place` needs `at=x,y` (the picture's top-left on the canvas, in its pixels), like {example}")) };
+        let bad = || format!("bad `at={at}` (two numbers x,y in pixels of the canvas, like `at=120,40`)");
+        let (x, y) = at.split_once(',').ok_or_else(bad)?;
+        let parse = |s: &str| s.trim().parse::<f32>().ok().filter(|n| n.is_finite() && PLACE_PIXELS.contains(n)).ok_or_else(bad);
+        let (x, y) = (parse(x)?, parse(y)?);
+        let c = self.program.characters.get_mut(&who.to_lowercase()).expect("looked up above");
+        if c.layer_places.iter().any(|p| p.layer == *layer && p.value == *value) {
+            let what = value.as_ref().map_or(format!("`{layer}`"), |v| format!("`{layer}={v}`"));
+            return Err(format!("{what} is placed twice"));
+        }
+        c.layer_places.push(LayerPlace { layer: layer.clone(), value: value.clone(), x, y, scale: scale.unwrap_or(1.0) });
+        Ok(())
+    }
+
     /// Report bare words beyond the first `allowed` (`::show{mika happy sad}`).
     fn extra_words(command: &str, bare: &[String], allowed: usize) -> Result<(), String> {
         match bare.get(allowed) {
@@ -2340,7 +2397,7 @@ impl Parser {
             self.err(line, m);
             return;
         }
-        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, talk, portrait, portrait_layers, portrait_sprites });
+        self.program.characters.insert(key.clone(), Character { id: key, name, color, sprites, layers, layer_sprites, talk, portrait, portrait_layers, portrait_sprites, layer_places: Vec::new() });
     }
 
     /// A display name may hold `{variable}` of declared variables (shown with their value at the line);
