@@ -1652,12 +1652,12 @@ check` tests it as a picture and `package` includes it.
 | `hover=assets/phone_hover.png` | for a picture button: shown instead of the picture while the mouse is over it |
 
 - **`call=`** calls the label and, when it ends with `::return`, shows the same line again
-  (like an item's Use). The label must exist and take no parameters; `check` says which line
-  is wrong.
+  (like an item's Use). The label must exist and every parameter it has must have a default (the defaults are stored
+  on a press); `check` says which line is wrong.
 - **`jump=`** leaves the line the story waits at and goes on at the label, with nothing to
   return to. Unlike `::jump`, it also leaves every `::call` and `call` region the story is
   inside, so no `::return` ever comes back to the scene it left. Use it for a button that leaves
-  wherever you are, such as a map button. The label must exist and take no parameters, and a
+  wherever you are, such as a map button. The label must exist and every parameter it has must have a default, and a
   press needs no room on the call stack.
 - **`open=`** opens a screen as the quick menu and keys do: `journal` (J), `inventory` (I),
   `history` (H), `save` (S), `load` (L), `settings` (the quick menu's Settings button) or
@@ -1952,6 +1952,8 @@ decoded never traps the player.
 ::jump{to=ending}
 <!-- only if true -->
 ::jump{to=ending if="trust > 1"}
+<!-- a label with parameters gets its values like a ::call (see below) -->
+::jump{to=room time="night"}
 <!-- run a label like a subroutine... -->
 ::call{to=flashback}
 <!-- ...which may take parameters (see below) -->
@@ -2086,7 +2088,7 @@ A label can take values from the `::call` that runs it:
     whole heading is just a title. Its label is the slug of all of it: `chapter-1-the-start`,
     `heal-amount` (the parentheses and spaces turn into dashes).
   - If you meant a plain title and wrote `# Round 1(a)`, the errors that follow ("can run
-    into", "can only be reached by `::call`") say so: put a space before the `(`.
+    into", "has a parameter without a default") say so: put a space before the `(`.
 - **Passing values.** A `::call` passes every parameter as `name=value`, with exactly the names
   the heading lists. The value is an ordinary expression, as on the right of a `::set`: a
   number, `"text"` in quotes, `true`/`false`, a variable, a calculation in parentheses
@@ -2116,12 +2118,22 @@ A label can take values from the `::call` that runs it:
   - Rollback and saves treat them like any variable, and `{amount}` in a line shows them.
   - Pick parameter names that don't clash with variables the story uses for something else.
   - A list variable can't be a parameter.
-- **A label with parameters can only be reached by `::call`.** `quillstone check` reports,
-  with the line:
-  - a call that leaves out a parameter that has no default, passes one the label doesn't have
+- **One rule for arguments: `::jump` takes them like `::call`.**
+  `::jump{to=room time="night"}` passes `name=value` arguments with the same syntax, the same
+  expressions (no `random`) and the same defaults as `::call`: the values are worked out first, then
+  stored, and the story goes on at the label (with no `::return` to come back to).
+  A `::jump` with `if=` stores its values only when it jumps.
+  - **Everything else gives only the defaults.** A bare `::jump`, a choice or hotspot link, a reply option, a
+    HUD `call=` / `jump=` button, an item's `use=`, a replay or a chapter may go to a label whose parameters
+    **all** have defaults: the defaults are stored on arrival, as a `::call` that passes nothing
+    would. (`::jump{to=hit}` to `# hit(power=1)` leaves `power` at 1 even if it was 9 before.)
+  - **One parameter without a default** keeps those routes closed: only `::call{to=x name=...}` or
+    `::jump{to=x name=...}` can go there, and the error says so. A `splash` label takes no parameters at all.
+- `quillstone check` reports, with the line:
+  - a `::call` or `::jump` that leaves out a parameter that has no default, passes one the label doesn't have
     (a misspelling shows up as both), or passes arguments to a label without parameters;
-  - a `::jump`, choice link or hotspot link to it;
-  - a label above it that runs on into it. End the label above with `::jump`, `::return` or
+  - a bare `::jump`, choice link, hotspot link or HUD button to a label with a parameter without a default;
+  - a label above it that runs on into it (nobody passes values there, even if they all have defaults). End the label above with `::jump`, `::return` or
     `::end` (put subroutines after the story, as in `examples/shop.quill.md`).
 - `quillstone test` plays them like any other label.
 
@@ -2268,7 +2280,7 @@ A cold draught comes up the steps.
 ::return
 ````
 
-- The label can't take parameters.
+- The label's parameters must all have defaults (stored when the region is clicked).
 - A rollback or a load inside it comes back to the screen.
 - A click does nothing while the call stack is full.
 - The screen's own line (if any) is not restored. The dialogue box is hidden again on the
@@ -2573,7 +2585,7 @@ used, like characters:
     `pack += "potion"`. Items without it work as before.
   - Counted items are listed after the others, in the order they are declared.
 - `use=#drink-potion` gives the item a **Use** button on the [inventory](#inventory)
-  screen: it calls that label (a label without parameters; `quillstone check` reports
+  screen: it calls that label (its parameters, if any, must all have defaults; `quillstone check` reports
   an unknown one). The item's count is not changed for you, the label does it:
 
   ````markdown
@@ -2990,7 +3002,7 @@ options sit in Mika's thread (the list marks it "Waiting for your reply") until 
 ```
 
 - The pick adds the player's message and **calls** the option's label, then the story comes back to the line it
-  was at, like a HUD `call=` button: the label ends with `::return`, and can't take parameters.
+  was at, like a HUD `call=` button: the label ends with `::return`; its parameters, if any, must all have defaults.
   If the label only sends messages (and maybe a new reply), the Messages screen stays open on the thread, so a chat
   can go back and forth; if it shows a line or a choice, the story screen comes back.
 - Like those buttons, it works only while the story waits at a normal line; otherwise a pick says "Can't use that now".
@@ -3166,7 +3178,7 @@ replays: { the-rooftop: "The rooftop", night-walk: "A walk at night" }
 the title shown in the menu.
 
 - The label is written the way a `::jump` writes it: `# The rooftop` is `the-rooftop` (spaces
-  and underscores become dashes). It must exist and take no parameters.
+  and underscores become dashes). It must exist, and every parameter it has must have a default.
 - Titles must be different and not empty. Write `\"` for a quote mark inside one. A long title
   is shrunk or cut to fit its row.
 - Any number of scenes. Entries show in the order written, and several `replays:` lines add
@@ -3239,7 +3251,7 @@ chapters: { part-1: "Part 1" | assets/ch1.jpg, part-2: "Part 2" | assets/ch2.jpg
   thumbnail fills an open tile (a tile without one shows its title); the title is under it. Mouse,
   arrow keys with Enter, and a gamepad all work; Esc goes back to the main menu. A picture can
   go behind the screen: `chapters_background` (see The Extras and Chapters screens).
-- **Errors** (line-numbered): a label that doesn't exist or takes parameters, the same label or
+- **Errors** (line-numbered): a label that doesn't exist or has a parameter without a default, the same label or
   title twice, or a thumbnail that is not a picture inside the game folder.
 - `quillstone check` reads each thumbnail and warns about a chapter the story can never reach
   from its start (it could never unlock) unless it is `{open}`; `package` ships the thumbnails.

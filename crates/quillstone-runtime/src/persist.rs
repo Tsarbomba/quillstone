@@ -13,7 +13,7 @@
 use quillstone_script::{Program, Value, Vars};
 
 use crate::save::{read_var, tokens, var_record};
-use crate::{step, Cmd, Session};
+use crate::{arrive, step, Cmd, Session};
 
 /// Persistent entries `unlocked:<file>` mark gallery pictures and music room
 /// tracks the player has seen or heard.
@@ -52,6 +52,7 @@ impl<'p> Session<'p> {
         let pc = *program.labels.get(label)?;
         let mut session = Session::fresh(program, persistent, seed);
         session.state.pc = pc;
+        arrive(&mut session.state, program, pc);
         let mut cmds = vec![Cmd::ClearScene];
         cmds.extend(step(&mut session.state, program, None));
         session.note(&cmds);

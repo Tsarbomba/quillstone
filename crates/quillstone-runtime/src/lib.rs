@@ -980,6 +980,25 @@ pub fn waits_at_line(state: &State) -> bool {
 /// A call that comes back to this same line, which is shown again. Passing the label's start
 /// counts a visit for `seen(label)`; the return takes that one back ([`return_to`]), but only when
 /// the label does come back (one that jumps away leaves the count as it was).
+/// The parameters are ordinary variables: every value is worked out first (so `a=b b=a`
+/// swaps), then stored. Nothing undoes it at `::return`.
+fn store_args(state: &mut State, args: &[(String, Expr)]) {
+    let values: Vec<Value> = args.iter().map(|(_, e)| e.eval(&state.vars)).collect();
+    for ((name, _), value) in args.iter().zip(values) {
+        if !matches!(value, Value::List(_)) {
+            state.vars.insert(name.clone(), value);
+        }
+    }
+}
+
+/// Arriving at a label by a link, HUD button or replay (no op carries values): its parameters
+/// all have defaults (the parser refuses any other), and they are stored as a bare `::call` would.
+pub(crate) fn arrive(state: &mut State, program: &Program, pc: usize) {
+    for (name, value) in program.entry_defaults.get(&pc).into_iter().flatten() {
+        state.vars.insert(name.clone(), value.clone());
+    }
+}
+
 fn call_from_line(state: &mut State, target: usize) {
     state.stack.push(Frame { ret: state.pc, line: true });
     state.pc = target;
@@ -1483,17 +1502,23 @@ pub(crate) fn step_traced(
                 if !can_use(program, state, &id) {
                     return Vec::new();
                 }
-                call_from_line(state, program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")]);
+                let at = program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")];
+                arrive(state, program, at);
+                call_from_line(state, at);
             }
             (Cmd::Say { .. } | Cmd::WaitHud, Some(Input::Hud(id))) => {
                 if !can_press(program, state, &id) {
                     return Vec::new();
                 }
-                match state.hud.iter().find(|h| h.id == id).and_then(|h| h.action.as_ref()) {
-                    Some(HudAction::Call(l)) => call_from_line(state, program.labels[l]),
+                match state.hud.iter().find(|h| h.id == id).and_then(|h| h.action.clone()) {
+                    Some(HudAction::Call(l)) => {
+                        arrive(state, program, program.labels[&l]);
+                        call_from_line(state, program.labels[&l]);
+                    }
                     Some(HudAction::Jump(l)) => {
                         state.stack.clear();
-                        state.pc = program.labels[l];
+                        state.pc = program.labels[&l];
+                        arrive(state, program, state.pc);
                     }
                     _ => return Vec::new(), // `Open` is the frontend's
                 }
@@ -1510,6 +1535,7 @@ pub(crate) fn step_traced(
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 }
+                arrive(state, program, chosen.target);
                 call_from_line(state, chosen.target);
             }
             (Cmd::AskInput { .. }, Some(Input::Text(raw))) => {
@@ -1553,6 +1579,7 @@ pub(crate) fn step_traced(
                 for effect in &chosen.effects {
                     run_effect(effect, &mut state.vars, &mut state.rng, &mut draw, &mut out);
                 }
+                arrive(state, program, chosen.target);
                 if call {
                     call_from_line(state, chosen.target);
                 } else {
@@ -1891,8 +1918,11 @@ pub(crate) fn step_traced(
                 out.push(Cmd::PlayVoice { src: src.clone(), volume: *volume });
                 state.pc += 1;
             }
-            Op::Jump { target, cond } => {
+            Op::Jump { target, cond, args } => {
                 let taken = cond.as_ref().is_none_or(|c| c.test(&state.vars));
+                if taken {
+                    store_args(state, args);
+                }
                 state.pc = if taken { *target } else { state.pc + 1 };
             }
             Op::Call { target, args } => {
@@ -1903,12 +1933,7 @@ pub(crate) fn step_traced(
                 }
                 // The parameters are ordinary variables: every value is worked out
                 // first (so `a=b b=a` swaps), then stored. Nothing undoes it at `::return`.
-                let values: Vec<Value> = args.iter().map(|(_, e)| e.eval(&state.vars)).collect();
-                for ((name, _), value) in args.iter().zip(values) {
-                    if !matches!(value, Value::List(_)) {
-                        state.vars.insert(name.clone(), value);
-                    }
-                }
+                store_args(state, args);
                 state.stack.push(Frame { ret: state.pc + 1, line: false });
                 state.pc = *target;
             }
@@ -3376,6 +3401,30 @@ vars: { amount: 99 }
         assert_eq!(loaded.state().vars["bag"], Value::List(vec![]), "saved");
         game.rollback();
         assert_eq!(game.state().vars["bag"], Value::List(vec!["key".into(), "map".into()]));
+    }
+
+    #[test]
+    fn a_jump_stores_its_values_and_the_defaults_without_a_stack_frame() {
+        let src = "---\nvars: { n: 99 }\n---\n::jump{to=a n=7 who=\"Ren\"}\n::end\n# a(n, who, tag=\"x\")\n**A:** {who} {n} {tag}\n\
+                   ::jump{to=b if=\"n > 100\" k=5}\n::jump{to=b}\n::end\n# b(k=2)\n**A:** k={k}\n";
+        let p = parse(src).unwrap();
+        let (mut game, first) = Session::start(&p);
+        assert_eq!(first, vec![say("A", "Ren 7 x")]);
+        assert!(game.state().stack.is_empty());
+        assert_eq!(game.input(Input::Advance), vec![say("A", "k=2")], "the skipped jump stored nothing; the bare one stores the default");
+    }
+
+    #[test]
+    fn a_choice_link_and_a_hud_jump_store_the_defaults() {
+        let src = "---\nvars: { k: 9 }\n---\n::choice\n- [Go](#b)\n::\n::end\n# b(k=2)\n**A:** k={k}\n::end\n";
+        let p = parse(src).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert_eq!(game.input(Input::Choose(0)).last(), Some(&say("A", "k=2")));
+        assert_eq!(game.state().vars["k"], int(2));
+        let src = "---\nvars: { k: 9 }\n---\n::hud{id=a text=x jump=#b}\n**A:** hi\n::end\n# b(k=2)\n**A:** k={k}\n";
+        let p = parse(src).unwrap();
+        let (mut game, _) = Session::start(&p);
+        assert_eq!(game.input(Input::Hud("a".into())).last(), Some(&say("A", "k=2")));
     }
 
     #[test]

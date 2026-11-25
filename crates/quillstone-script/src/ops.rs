@@ -757,11 +757,15 @@ pub struct Program {
     /// The `Jump` ops the compiler made for `::if` / `::elif` / `::else`, not written as `::jump`.
     pub block_jumps: BTreeSet<usize>,
     /// Labels written with parameters (`# heal(amount, who)`): label -> parameter names.
-    /// Only `::call` reaches them, and it must pass these (those without a default) and no others.
+    /// A `::call` or `::jump` reaching them must pass these (those without a default) and no others.
     pub params: BTreeMap<String, Vec<String>>,
     /// The defaults of those parameters (`# hit(power=1)`): label -> parameter -> value. A `::call`
     /// that leaves one out gets it as a literal argument (the parser adds it), so the runtime sees none missing.
     pub param_defaults: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Labels whose parameters all have defaults: label op index -> those defaults. A `::jump` without
+    /// arguments gets them as arguments (the parser adds them); the runtime stores them where a link,
+    /// HUD button or replay arrives with no op to carry values.
+    pub entry_defaults: BTreeMap<usize, Vec<(String, Value)>>,
     /// Labels whose visits are counted because a `seen(label)` reads them:
     /// op index -> the `seen:` variables to count up when that op runs.
     pub counted: BTreeMap<usize, Vec<String>>,
@@ -865,7 +869,7 @@ impl Program {
             let Some(op) = self.ops.get(at) else { continue };
             out.push(at);
             match op {
-                Op::Jump { target, cond: None } => queue.push_back(*target),
+                Op::Jump { target, cond: None, .. } => queue.push_back(*target),
                 Op::Jump { target, .. } => queue.extend([*target, at + 1]),
                 Op::Call { target, .. } => queue.extend([*target, at + 1]),
                 Op::Choice { options, .. } => queue.extend(options.iter().map(|o| o.target)),
@@ -964,7 +968,7 @@ impl Program {
             .map(|op| match op {
                 Op::Set(_) | Op::Input { .. } | Op::Timing { .. } | Op::Press { .. } => 1,
                 Op::Choice { options, .. } | Op::Reply { options, .. } => options.iter().map(|o| o.effects.len()).sum(),
-                Op::Call { args, .. } => args.len(),
+                Op::Call { args, .. } | Op::Jump { args, .. } => args.len(),
                 _ => 0,
             })
             .sum();
@@ -986,7 +990,7 @@ impl Program {
         for op in &self.ops {
             match op {
                 Op::Input { var: v, .. } | Op::Timing { var: v, .. } | Op::Press { var: v, .. } if v == var => return None,
-                Op::Call { args, .. } => {
+                Op::Call { args, .. } | Op::Jump { args, .. } => {
                     for (_, e) in args.iter().filter(|(k, _)| k == var) {
                         note(e)?;
                     }
@@ -1895,7 +1899,8 @@ pub enum Op {
     /// A key prompt: waits for the key to be pressed `press.count` times within `press.time`, then sets
     /// the text variable `var` to "hit" or "miss". `prompt` is tagged text like `Input`'s (empty: none).
     Press { var: String, prompt: String, press: KeyPress },
-    Jump { target: usize, cond: Option<Cond> },
+    /// `args` are the label's parameters, stored (like `Call`'s) when the jump is taken.
+    Jump { target: usize, cond: Option<Cond>, args: Vec<(String, Expr)> },
     /// Jump to a label and come back at the next op after `::return`. `args` are
     /// the label's parameters: each is evaluated (all of them before any is
     /// stored) and assigned to the ordinary variable of that name before the jump.
@@ -1922,7 +1927,7 @@ impl Op {
 
     pub fn exprs(&self) -> Vec<&Expr> {
         match self {
-            Op::Jump { cond: Some(c), .. } => vec![c],
+            Op::Jump { cond, args, .. } => cond.iter().chain(args.iter().map(|(_, e)| e)).collect(),
             Op::Notify { delta: Some(d), .. } => vec![d],
             Op::Set(e) => vec![&e.value],
             Op::Hud { elem, .. } => elem.exprs(),

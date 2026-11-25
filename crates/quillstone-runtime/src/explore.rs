@@ -92,7 +92,11 @@ fn explore_within(program: &Program, limit: usize, budget: usize) -> Report {
         state.vars.extend(kept);
         // a new game from the start, and one from each chapter (the Chapters screen starts a game at its label)
         let mut starts = vec![state.clone()];
-        starts.extend(program.chapters.iter().filter_map(|c| program.labels.get(&c.label)).map(|&pc| State { pc, ..state.clone() }));
+        starts.extend(program.chapters.iter().filter_map(|c| program.labels.get(&c.label)).map(|&pc| {
+            let mut at = State { pc, ..state.clone() };
+            crate::arrive(&mut at, program, pc);
+            at
+        }));
         // and the splash, which runs on its own before the menu
         let splash = program.labels.get("splash").map(|&pc| State { pc, ..state.clone() });
         let has_splash = splash.is_some();
@@ -659,7 +663,7 @@ impl Explorer<'_> {
                     read.extend(quillstone_script::name_vars(&effect.var).into_iter().map(|n| (at, n, false)));
                 }
                 // A call sets its label's parameters, from the values it passes.
-                Op::Call { args, .. } => set.extend(args.iter().map(|(param, _)| param.as_str())),
+                Op::Call { args, .. } | Op::Jump { args, .. } => set.extend(args.iter().map(|(param, _)| param.as_str())),
                 Op::Say { speaker, text, .. } => {
                     read.extend(braces(text).into_iter().map(|n| (at, n, true)));
                     // a character's name may hold `{variable}`s too
@@ -814,7 +818,10 @@ fn seen_caps(program: &Program) -> Vec<(String, i64)> {
     let mut caps = HashMap::new();
     for op in &program.ops {
         match op {
-            Op::Jump { cond: Some(c), .. } => tested(&mut caps, c),
+            Op::Jump { cond, args, .. } => {
+                cond.iter().for_each(|c| tested(&mut caps, c));
+                args.iter().for_each(|(_, e)| uncapped(&mut caps, e));
+            }
             Op::Set(e) => uncapped(&mut caps, &e.value),
             Op::Call { args, .. } => args.iter().for_each(|(_, e)| uncapped(&mut caps, e)),
             Op::Choice { options, .. } => {

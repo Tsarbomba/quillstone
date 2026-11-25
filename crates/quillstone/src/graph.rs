@@ -150,7 +150,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
         let with = |own: Option<&Expr>| when(&g.iter().chain(own).collect::<Vec<_>>());
         match op {
             // `::if c` skips past its branch when `c` is false; inside it, `c` holds.
-            Op::Jump { target: t, cond: Some(Expr::Not(c)) } if program.block_jumps.contains(&i) => {
+            Op::Jump { target: t, cond: Some(Expr::Not(c)), .. } if program.block_jumps.contains(&i) => {
                 if let Some(to) = target(*t) {
                     add(from, to, Kind::Flow, with(Some(&Expr::Not(c.clone()))));
                 }
@@ -163,7 +163,7 @@ fn build(program: &Program, chapter_roots: bool) -> Graph {
                     add(from, to, Kind::Flow, with(None));
                 }
             }
-            Op::Jump { target: t, cond } => {
+            Op::Jump { target: t, cond, .. } => {
                 if let Some(to) = target(*t) {
                     add(from, to, Kind::Jump, with(cond.as_ref()));
                 }

@@ -354,6 +354,12 @@ impl Parser {
         self.flush(&mut para);
     }
 
+    /// A label with a parameter that has no default: nothing but `::call` / `::jump` with arguments can reach it.
+    /// (`entry_defaults` holds the all-default ones, once `finish` has filled it.)
+    fn needs_values(&self, label: &str, at: usize) -> bool {
+        self.program.params.get(label).is_some_and(|p| !p.is_empty()) && !self.program.entry_defaults.contains_key(&at)
+    }
+
     fn finish(mut self) -> Result<Program, Vec<ParseError>> {
         for block in std::mem::take(&mut self.blocks) {
             self.err(block.line, "`::if` is never closed with `::endif`");
@@ -368,6 +374,15 @@ impl Parser {
         self.program.block_jumps = (0..self.program.ops.len())
             .filter(|i| matches!(self.program.ops[*i], Op::Jump { .. }) && !user_jumps.contains(i))
             .collect();
+        // Labels whose parameters all have defaults can be reached by anything: arriving stores them.
+        for (label, params) in &self.program.params {
+            let defaults = self.program.param_defaults.get(label);
+            let values: Option<Vec<(String, Value)>> =
+                params.iter().map(|p| defaults.and_then(|d| d.get(p)).map(|v| (p.clone(), v.clone()))).collect();
+            if let (Some(values), Some(&at)) = (values.filter(|v| !v.is_empty()), self.program.labels.get(label)) {
+                self.program.entry_defaults.insert(at, values);
+            }
+        }
         let mut typos = 0;
         for f in fixups {
             match self.program.labels.get(&f.label).copied() {
@@ -378,7 +393,7 @@ impl Parser {
                     match &mut self.program.ops[f.op] {
                         Op::Call { target: t, args } => {
                             *t = target;
-                            problems = call_problems(&f.label, params.as_deref(), &defaults, args);
+                            problems = call_problems(&f.label, params.as_deref(), &defaults, args, "call");
                             // a parameter left out takes its default: the call passes it like any other
                             for (k, v) in defaults {
                                 if !args.iter().any(|(a, _)| *a == k) {
@@ -386,21 +401,30 @@ impl Parser {
                                 }
                             }
                         }
-                        Op::Jump { target: t, .. } => {
+                        Op::Jump { target: t, args, .. } => {
                             *t = target;
-                            problems.extend(needs_call(&f.label, params.as_deref(), "`::jump`"));
+                            problems = call_problems(&f.label, params.as_deref(), &defaults, args, "jump");
+                            if args.is_empty() && !problems.is_empty() {
+                                problems = needs_call(&f.label, params.as_deref(), &defaults, "a `::jump` without arguments").into_iter().collect();
+                            }
+                            // as for `::call`: a parameter left out takes its default
+                            for (k, v) in defaults {
+                                if !args.iter().any(|(a, _)| *a == k) {
+                                    args.push((k, Expr::Lit(v)));
+                                }
+                            }
                         }
                         Op::Choice { options, .. } => {
                             if let Some(k) = f.option {
                                 options[k].target = target;
                             }
-                            problems.extend(needs_call(&f.label, params.as_deref(), "a choice or hotspot link"));
+                            problems.extend(needs_call(&f.label, params.as_deref(), &defaults, "a choice or hotspot link"));
                         }
                         Op::Reply { options, .. } => {
                             if let Some(k) = f.option {
                                 options[k].target = target;
                             }
-                            problems.extend(needs_call(&f.label, params.as_deref(), "a reply option"));
+                            problems.extend(needs_call(&f.label, params.as_deref(), &defaults, "a reply option"));
                         }
                         _ => {}
                     }
@@ -419,8 +443,8 @@ impl Parser {
         for (label, line) in std::mem::take(&mut self.item_uses) {
             if !self.program.labels.contains_key(&label) {
                 self.err(line, format!("`use=#{label}`: unknown label `{label}`"));
-            } else if self.program.params.contains_key(&label) {
-                self.err(line, format!("`use=#{label}`: `{label}` takes parameters, and the Use button can't give them"));
+            } else if self.needs_values(&label, self.program.labels[&label]) {
+                self.err(line, format!("`use=#{label}`: `{label}` has a parameter without a default, and the Use button can't give it a value"));
             }
         }
 
@@ -439,8 +463,8 @@ impl Parser {
         for (label, line, key) in std::mem::take(&mut self.hud_calls) {
             if !self.program.labels.contains_key(&label) {
                 self.err(line, format!("`{key}=#{label}`: unknown label `{label}`"));
-            } else if self.program.params.contains_key(&label) {
-                self.err(line, format!("`{key}=#{label}`: `{label}` takes parameters, and a HUD button can't give them"));
+            } else if self.needs_values(&label, self.program.labels[&label]) {
+                self.err(line, format!("`{key}=#{label}`: `{label}` has a parameter without a default, and a HUD button can't give it a value"));
             } else {
                 self.program.hud_calls.insert(label);
             }
@@ -528,9 +552,9 @@ impl Parser {
                     typos += 1;
                     self.err(line, format!("`replays`: there is no label `{label}` ({hint})"));
                 }
-                Some(_) if self.program.params.contains_key(&label) => self.err(
+                Some(at) if self.needs_values(&label, at) => self.err(
                     line,
-                    format!("`replays`: label `{label}` has parameters, so it can't start a scene (a replay starts without a `::call`)"),
+                    format!("`replays`: label `{label}` has a parameter without a default, so it can't start a scene (a replay starts without a `::call`)"),
                 ),
                 Some(at) => {
                     self.program.replay_at.entry(at).or_default().push(label.clone());
@@ -546,9 +570,9 @@ impl Parser {
                     typos += 1;
                     self.err(line, format!("`chapters`: there is no label `{}` ({hint})", chapter.label));
                 }
-                Some(_) if self.program.params.contains_key(&chapter.label) => self.err(
+                Some(at) if self.needs_values(&chapter.label, at) => self.err(
                     line,
-                    format!("`chapters`: label `{}` has parameters, so it can't start a chapter (a chapter starts without a `::call`)", chapter.label),
+                    format!("`chapters`: label `{}` has a parameter without a default, so it can't start a chapter (a chapter starts without a `::call`)", chapter.label),
                 ),
                 Some(at) => {
                     let here = self.program.replay_at.entry(at).or_default();
@@ -1089,7 +1113,7 @@ impl Parser {
             // The story never runs into the splash: it starts at the first op after it.
             self.splash_jump = Some(self.here());
             self.splash_skip = self.splash_jump;
-            self.push(Op::Jump { cond: None, target: 0 }, line);
+            self.push(Op::Jump { cond: None, target: 0, args: vec![] }, line);
         }
         let at = self.here();
         self.program.headings.push(Heading { label: name.clone(), text: text.to_string(), line });
@@ -1259,6 +1283,10 @@ impl Parser {
                 self.call(line, inner);
                 return i;
             }
+            "jump" => {
+                self.jump(line, inner);
+                return i;
+            }
             "set" => {
                 let parts: Vec<&str> =
                     split_top_level(inner, ',').into_iter().map(str::trim).filter(|p| !p.is_empty()).collect();
@@ -1376,29 +1404,58 @@ impl Parser {
     /// A value runs to the next space outside quotes and parentheses, and is an
     /// ordinary expression (so text is quoted).
     fn call(&mut self, line: usize, inner: &str) {
+        if let Some((label, args, _)) = self.call_like(line, inner, "call") {
+            self.fixups.push(Fixup { op: self.here(), option: None, label, line });
+            self.push(Op::Call { target: UNSET, args }, line);
+        }
+    }
+
+    /// `::jump{to=room time="night" if=seen_it}`: the same arguments as `::call`, stored when the jump is taken.
+    fn jump(&mut self, line: usize, inner: &str) {
+        if let Some((label, args, cond)) = self.call_like(line, inner, "jump") {
+            self.fixups.push(Fixup { op: self.here(), option: None, label, line });
+            self.push(Op::Jump { target: UNSET, cond, args }, line);
+        }
+    }
+
+    /// The label, arguments and (for `::jump`) `if=` condition of `::call` / `::jump`.
+    fn call_like(&mut self, line: usize, inner: &str, cmd: &str) -> Option<CallParts> {
         let tokens = match call_tokens(inner) {
             Ok(t) => t,
-            Err(m) => return self.err(line, m),
+            Err(m) => {
+                self.err(line, m.replace("`::call`", &format!("`::{cmd}`")));
+                return None;
+            }
         };
         let mut to: Option<String> = None;
+        let mut cond: Option<Expr> = None;
         let mut args: Vec<(String, Expr)> = Vec::new();
         for (key, value) in tokens {
             match value {
                 None if to.is_none() => to = Some(key),
-                None => self.err(line, format!("unexpected `{key}`: `::call` takes one label (arguments are written `name=value`)")),
+                None => self.err(line, format!("unexpected `{key}`: `::{cmd}` takes one label (arguments are written `name=value`)")),
                 Some(v) if key == "to" => match (&to, unquote(&v)) {
-                    (Some(_), _) => self.err(line, "`::call` names its label twice"),
+                    (Some(_), _) => self.err(line, format!("`::{cmd}` names its label twice")),
                     (None, label) => to = Some(label.to_string()),
                 },
+                Some(v) if key == "if" && cmd == "jump" => {
+                    if cond.is_some() {
+                        self.err(line, "`if` is given twice in this `::jump`");
+                    }
+                    match parse_expr(unquote(&v)).and_then(|e| self.check_expr(&e).map(|()| e)) {
+                        Ok(e) => cond = Some(e),
+                        Err(m) => self.err(line, m),
+                    }
+                }
                 Some(v) => {
                     if !is_plain_ident(&key) || is_keyword(&key) {
                         self.err(line, format!("`{key}` can't be an argument name (arguments are the label's parameter names)"));
                     } else if args.iter().any(|(k, _)| *k == key) {
-                        self.err(line, format!("`{key}` is given twice in this `::call`"));
+                        self.err(line, format!("`{key}` is given twice in this `::{cmd}`"));
                     } else {
                         let checked = parse_expr(&v).and_then(|e| {
                             self.check_expr(&e)?;
-                            self.not_a_list_value(&e, "a `::call` argument")?;
+                            self.not_a_list_value(&e, &format!("a `::{cmd}` argument"))?;
                             Ok(e)
                         });
                         match checked {
@@ -1410,11 +1467,10 @@ impl Parser {
             }
         }
         let Some(to) = to.filter(|t| !slug(t).is_empty()) else {
-            return self.err(line, "`::call` needs a label, like `::call{to=label}`");
+            self.err(line, format!("`::{cmd}` needs a label, like `::{cmd}{{to=label}}`"));
+            return None;
         };
-        let label = slug(&to);
-        self.fixups.push(Fixup { op: self.here(), option: None, label, line });
-        self.push(Op::Call { target: UNSET, args }, line);
+        Some((slug(&to), args, cond))
     }
 
     /// Build an op from attributes. The `Option<String>` is a label to resolve later.
@@ -1793,18 +1849,6 @@ impl Parser {
                 // A looping video never ends by itself, so the player must be able to skip it.
                 let skippable = a.flag("skippable") || looped;
                 Ok((Op::Video { src, fit, looped, skippable }, None))
-            }
-            "jump" => {
-                let to = match a.value("to").or_else(|| a.take_bare().into_iter().next()) {
-                    Some(t) => t,
-                    None => return Err(format!("`::{name}` needs a label, like `::{name}{{to=label}}`")),
-                };
-                let label = Some(slug(&to));
-                let cond = match a.value("if") {
-                    None => None,
-                    Some(c) => Some(parse_expr(&c).and_then(|e| self.check_expr(&e).map(|()| e))?),
-                };
-                Ok((Op::Jump { target: UNSET, cond }, label))
             }
             "input" => {
                 let var = match a.value("var") {
@@ -3113,7 +3157,7 @@ impl Parser {
     /// Emit "jump past this branch unless `cond`" and return its op index.
     fn jump_unless(&mut self, line: usize, cond: Expr) -> usize {
         let idx = self.here();
-        self.push(Op::Jump { target: UNSET, cond: Some(Expr::Not(Box::new(cond))) }, line);
+        self.push(Op::Jump { target: UNSET, cond: Some(Expr::Not(Box::new(cond))), args: vec![] }, line);
         idx
     }
 
@@ -3132,7 +3176,7 @@ impl Parser {
             self.err(line, "`::elif` after `::else`");
         }
         let end_jump = self.here();
-        self.push(Op::Jump { target: UNSET, cond: None }, line);
+        self.push(Op::Jump { target: UNSET, cond: None, args: vec![] }, line);
         block.end_jumps.push(end_jump);
         if let Some(p) = block.pending.take() {
             let here = self.here();
@@ -3152,7 +3196,7 @@ impl Parser {
             self.err(line, "`::if` already has an `::else`");
         }
         let end_jump = self.here();
-        self.push(Op::Jump { target: UNSET, cond: None }, line);
+        self.push(Op::Jump { target: UNSET, cond: None, args: vec![] }, line);
         block.end_jumps.push(end_jump);
         if let Some(p) = block.pending.take() {
             let here = self.here();
@@ -3648,12 +3692,15 @@ fn split_params(text: &str) -> (&str, Option<&str>) {
     (text, None)
 }
 
-/// Problems with the arguments of a `::call` to `label`, whose parameters are `params`.
-fn call_problems(label: &str, params: Option<&[String]>, defaults: &BTreeMap<String, Value>, args: &[(String, Expr)]) -> Vec<String> {
+/// A `::call` / `::jump` read: label, arguments, and the `::jump`'s condition.
+type CallParts = (String, Vec<(String, Expr)>, Option<Expr>);
+
+/// Problems with the arguments of a `::call` or `::jump` to `label`, whose parameters are `params`.
+fn call_problems(label: &str, params: Option<&[String]>, defaults: &BTreeMap<String, Value>, args: &[(String, Expr)], cmd: &str) -> Vec<String> {
     let Some(params) = params else {
         return args
             .iter()
-            .map(|(k, _)| format!("`{label}` takes no parameters, but this `::call` passes `{k}`"))
+            .map(|(k, _)| format!("`{label}` takes no parameters, but this `::{cmd}` passes `{k}`"))
             .collect();
     };
     let takes = format!(
@@ -3665,7 +3712,7 @@ fn call_problems(label: &str, params: Option<&[String]>, defaults: &BTreeMap<Str
         out.push(format!("`{label}` has no parameter `{k}` ({takes})"));
     }
     for p in params.iter().filter(|p| !defaults.contains_key(*p) && !args.iter().any(|(k, _)| k == *p)) {
-        out.push(format!("this `::call` is missing `{p}={{...}}` ({takes})"));
+        out.push(format!("this `::{cmd}` is missing `{p}={{...}}` ({takes})"));
     }
     out
 }
@@ -3674,11 +3721,14 @@ fn call_problems(label: &str, params: Option<&[String]>, defaults: &BTreeMap<Str
 /// meant as plain titles.
 const PARAM_HINT: &str = "(`(a)` right after the name is read as a parameter list; put a space before `(` for a plain title)";
 
-/// A jump or link can't give a parameterized label its values.
-fn needs_call(label: &str, params: Option<&[String]>, what: &str) -> Option<String> {
+/// A bare jump or a link can't give a parameterized label its values (it can when every parameter has a default).
+fn needs_call(label: &str, params: Option<&[String]>, defaults: &BTreeMap<String, Value>, what: &str) -> Option<String> {
     let params = params?;
+    let missing: Vec<&str> = params.iter().filter(|p| !defaults.contains_key(*p)).map(String::as_str).collect();
+    let first = *missing.first()?;
     Some(format!(
-        "`{label}` has parameters ({}), so only `::call{{to={label} ...}}` can go there; {what} can't supply them {PARAM_HINT}",
+        "`{label}` has parameters ({}) and `{first}` has no default, so {what} can't supply them: \
+         give them with `::jump{{to={label} {first}=...}}` or `::call{{to={label} {first}=...}}` {PARAM_HINT}",
         params.join(", ")
     ))
 }
@@ -4594,7 +4644,7 @@ mod tests {
     #[test]
     fn jump_conditions_use_full_expressions() {
         let p = ok("# a\n::jump{to=a if=\"trust >= 2 and not seen\"}\n::jump{to=a if=seen}\n::jump{a}\n");
-        let Op::Jump { target, cond } = &p.ops[0] else { panic!() };
+        let Op::Jump { target, cond, .. } = &p.ops[0] else { panic!() };
         assert_eq!(*target, 0);
         assert_eq!(
             cond,
@@ -4605,7 +4655,7 @@ mod tests {
         );
         let Op::Jump { cond, .. } = &p.ops[1] else { panic!() };
         assert_eq!(cond, &Some(Expr::Var("seen".into())));
-        assert!(matches!(&p.ops[2], Op::Jump { target: 0, cond: None }));
+        assert!(matches!(&p.ops[2], Op::Jump { target: 0, cond: None, args: _ }));
     }
 
     #[test]
@@ -4624,9 +4674,9 @@ mod tests {
         let p = ok("::if{c}\n**X:** A\n::else\n**X:** B\n::endif\n**X:** C\n");
         assert_eq!(
             p.ops[0],
-            Op::Jump { target: 3, cond: Some(Expr::Not(Box::new(Expr::Var("c".into())))) }
+            Op::Jump { target: 3, cond: Some(Expr::Not(Box::new(Expr::Var("c".into())))), args: vec![] }
         );
-        assert!(matches!(&p.ops[2], Op::Jump { target: 4, cond: None }));
+        assert!(matches!(&p.ops[2], Op::Jump { target: 4, cond: None, .. }));
         assert_eq!(p.ops.len(), 6);
     }
 
@@ -4869,7 +4919,7 @@ mod tests {
         bad("::item{id=a use=drink}", 5, "names a label");
         bad("::item{id=a use=#}", 5, "names a label");
         let params = errs(&format!("{head}::item{{id=a use=#heal}}\n# heal(n)\nHi.\n::return\n"));
-        assert!(params.iter().any(|e| e.line == 5 && e.message.contains("takes parameters")), "{params:?}");
+        assert!(params.iter().any(|e| e.line == 5 && e.message.contains("without a default")), "{params:?}");
     }
 
     #[test]
@@ -5928,6 +5978,45 @@ mod tests {
     }
 
     #[test]
+    fn a_jump_takes_arguments_like_a_call() {
+        let sub = "::end\n# room(time, who=\"Mika\")\nHi.\n::return\n";
+        let p = ok(&format!("::jump{{to=room time=\"night\"}}\n{sub}"));
+        let Op::Jump { args, cond: None, .. } = &p.ops[0] else { panic!() };
+        assert_eq!(args.len(), 2, "the default of `who` is passed too");
+        assert_eq!(args[0], ("time".into(), Expr::Lit(Value::Str("night".into()))));
+        ok(&format!("::jump{{room time=(1 + 1) who=\"A\"}}\n{sub}"));
+        let p = ok(&format!("::jump{{to=room time=1 if=\"1\"}}\n{sub}"));
+        assert!(matches!(&p.ops[0], Op::Jump { cond: Some(_), args, .. } if args.len() == 2), "a conditional jump may carry arguments");
+        assert!(has_err(&format!("::jump{{to=room}}\n{sub}"), "`time` has no default"));
+        assert!(has_err(&format!("::jump{{to=room time=1 whom=2}}\n{sub}"), "no parameter `whom`"));
+        assert!(has_err(&format!("::jump{{to=room who=\"x\"}}\n{sub}"), "this `::jump` is missing `time"));
+        assert!(has_err(&format!("::jump{{to=room time=1 time=2}}\n{sub}"), "given twice"));
+        assert!(has_err(&format!("::jump{{to=room time=random(1, 2)}}\n{sub}"), "random"));
+        assert!(has_err("::jump{to=plain x=1}\n::end\n# plain\n::return\n", "takes no parameters"));
+        assert!(has_err("::jump{to=a b}\n# a\n", "takes one label"));
+    }
+
+    #[test]
+    fn links_and_bare_jumps_reach_a_label_whose_parameters_all_have_defaults() {
+        let sub = "::end\n# heal(n=1, who=\"M\")\nHi.\n::return\n";
+        let p = ok(&format!("::jump{{to=heal}}\n{sub}"));
+        assert!(matches!(&p.ops[0], Op::Jump { args, .. } if args.len() == 2), "the defaults are stored at the jump");
+        ok(&format!("::choice\n- [Go](#heal)\n::\n{sub}"));
+        ok(&format!("::hotspots\n- [Go](#heal){{rect=0,0,0.5,0.5}}\n::\n{sub}"));
+        ok(&format!("::hud{{id=a text=x jump=#heal}}\n{sub}"));
+        ok(&format!("::hud{{id=a text=x call=#heal}}\n{sub}"));
+        assert_eq!(ok(&format!("::jump{{to=heal}}\n{sub}")).entry_defaults.len(), 1);
+        // one parameter without a default keeps every route but `::call` / `::jump` with arguments closed
+        let req = "::end\n# heal(n=1, who)\nHi.\n::return\n";
+        assert!(has_err(&format!("::jump{{to=heal}}\n{req}"), "`who` has no default"));
+        assert!(has_err(&format!("::choice\n- [Go](#heal)\n::\n{req}"), "::jump{to=heal who=...}"));
+        assert!(has_err(&format!("::hud{{id=a text=x jump=#heal}}\n{req}"), "without a default"));
+        ok(&format!("::jump{{to=heal who=\"A\"}}\n{req}"));
+        // running on into one is still an error
+        assert!(has_err("Hi.\n# heal(n=1)\n::return\n", "without a `::call`"));
+    }
+
+    #[test]
     fn running_into_a_parameterized_label_is_an_error() {
         let heal = "# heal(amount)\n::return\n";
         // from the label above, from the start of the script, and past an `::if`
@@ -6445,12 +6534,12 @@ mod tests {
             ("", "::hud{id=a text=x jump=#start open=settings}", "not several"),
             ("", "::hud{id=a text=x jump=start}", "`jump=` names a label"),
             ("", "::hud{id=a text=x jump=#nowhere}", "`jump=#nowhere`: unknown label"),
-            ("", "::hud{id=a text=x jump=#ask}", "takes parameters"),
+            ("", "::hud{id=a text=x jump=#ask}", "without a default"),
             ("", "::hud{id=a bar=1 max=2 size=10,10 jump=#phone}", "bar can't be a button"),
             ("", "::hud{id=a text=x call=start}", "names a label"),
             ("", "::hud{id=a text=x call=#}", "names a label"),
             ("", "::hud{id=a text=x call=#nowhere}", "unknown label `nowhere`"),
-            ("", "::hud{id=a text=x call=#ask}", "takes parameters"),
+            ("", "::hud{id=a text=x call=#ask}", "without a default"),
             ("", "::hud{id=a bar=1 max=2 size=10,10 call=#phone}", "bar can't be a button"),
             ("", "::hud{id=a text=x open=map}", "unknown `open=map`"),
             ("", "::hud{id=a text=x open=journal}", "needs a journal"),
@@ -6871,7 +6960,7 @@ mod tests {
     fn a_replay_label_may_not_take_parameters_and_the_number_of_replays_is_not_limited() {
         let src = "---\nreplays: { heal: \"Heal\" }\n---\n# Start\n::call{to=heal amount=1}\n::end\n# heal(amount)\nHi.\n::return\n";
         let e = errs(src);
-        assert!(e.iter().any(|e| e.line == 2 && e.message.contains("has parameters")), "{e:?}");
+        assert!(e.iter().any(|e| e.line == 2 && e.message.contains("without a default")), "{e:?}");
 
         let many = |n: usize| {
             let list: Vec<String> = (0..n).map(|i| format!("s{i}: \"Scene {i}\"")).collect();
@@ -6923,7 +7012,7 @@ mod tests {
         for (bad, want) in [
             ("a: \"A\"", "must look like".to_string()),
             ("{ nowhere: \"N\" }", "there is no label `nowhere`".to_string()),
-            ("{ heal: \"H\" }", "has parameters".to_string()),
+            ("{ heal: \"H\" }", "without a default".to_string()),
             ("{ start: \"A\", start: \"B\" }", "listed twice".to_string()),
             ("{ start: \"A\", part-two: \"A\" }", "titles must differ".to_string()),
             ("{ start: \"A\" | ../x.png }", "inside the game folder".to_string()),
@@ -6986,7 +7075,7 @@ mod tests {
     fn a_splash_label_is_skipped_by_the_story_and_ends_where_the_next_label_starts() {
         let p = ok("# splash\nW.\n# start\nHi.\n");
         assert_eq!(p.labels["splash"], 1);
-        assert_eq!(p.ops[0], Op::Jump { cond: None, target: 3 }, "the story starts past it");
+        assert_eq!(p.ops[0], Op::Jump { cond: None, target: 3, args: vec![] }, "the story starts past it");
         assert_eq!(p.ops[2], Op::Return, "the compiler ends the label with a `::return`");
         let q = ok("# start\nHi.\n# splash\nW.\n");
         assert_eq!((q.labels["splash"], q.ops.len()), (2, 5), "also at the end of the script");
