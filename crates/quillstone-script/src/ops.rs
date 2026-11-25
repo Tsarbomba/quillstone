@@ -1860,6 +1860,8 @@ pub enum Op {
     Wait { seconds: f32 },
     /// Stop with the screen as it is until the player clicks (`::wait{click}`).
     WaitClick,
+    /// Stop until the player uses a HUD button (`::wait{hud}`): clicks, auto and skip don't pass it.
+    WaitHud,
     /// Fullscreen video clip. Waits until it ends or the player skips it.
     Video { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Waits for the player to pick an option (or, when the options have an

@@ -210,6 +210,15 @@ fn explore_within(program: &Program, limit: usize, budget: usize) -> Report {
                 }
                 inputs
             }
+            // Only a HUD button that jumps or calls, shown and active now, gets the story past `::wait{hud}`.
+            Some(Cmd::WaitHud) => {
+                let buttons = state.hud.iter().filter(|h| matches!(h.action, Some(HudAction::Call(_) | HudAction::Jump(_))) && can_press(program, &state, &h.id));
+                let inputs: Vec<_> = buttons.map(|h| (Input::Hud(h.id.clone()), Some(format!("press {}", h.id)))).collect();
+                if inputs.is_empty() {
+                    x.error(state.pc, "hud wait", "`::wait{hud}` waits for a HUD button, but none is shown here", Some(id));
+                }
+                inputs
+            }
             Some(_) => vec![(Input::Advance, None)],
             None => Vec::new(),
         };

@@ -1231,7 +1231,7 @@ impl<'p> Game<'p> {
 
     /// There is a dialogue box for the quick menu to belong to.
     fn quick_menu_possible(&self) -> bool {
-        !self.splash && self.view.dialogue.as_ref().is_some_and(|d| d.place != quillstone_script::Place::Centre) && self.view.video.is_none() && !self.view.finished
+        !self.splash && (self.view.dialogue.as_ref().is_some_and(|d| d.place != quillstone_script::Place::Centre) || matches!(self.session.state().pending, Some(Cmd::WaitHud))) && self.view.video.is_none() && !self.view.finished
     }
 
     /// Whether the cursor is where the `hover` mode shows the menu.
@@ -1383,6 +1383,9 @@ impl<'p> Game<'p> {
     fn advance(&mut self) {
         if self.view.finished {
             return self.go_to_menu(); // the end: back to the title screen
+        }
+        if matches!(self.session.state().pending, Some(Cmd::WaitHud)) {
+            return; // only a HUD button moves on
         }
         let unskippable = matches!(self.session.state().pending, Some(Cmd::PlayVideo { skippable: false, .. }));
         if unskippable && self.cutscene_playing {

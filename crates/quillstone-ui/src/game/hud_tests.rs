@@ -515,3 +515,38 @@ fn a_focused_picture_button_without_a_hover_picture_gets_the_hover_panel_behind_
     key(&mut g, Key::Down); // phone is declared first
     assert!(panel(&g));
 }
+
+const HUD_WAIT: &str = "\
+::hud{id=phone image=assets/phone.png call=#phone x=0.9 y=0.1}
+# start
+**A:** one
+::wait{hud}
+**A:** never
+::end
+# phone
+::set{calls += 1}
+**A:** Ring.
+::return
+";
+
+#[test]
+fn a_hud_wait_ignores_clicks_keys_auto_and_skip_but_a_button_works_and_comes_back_to_it() {
+    let p = parse(&format!("---\nvars: {{ calls: 0 }}\n---\n{HUD_WAIT}")).unwrap();
+    let mut g = instant_game(&p);
+    key(&mut g, Key::Space);
+    assert!(matches!(g.state().pending, Some(Cmd::WaitHud)));
+    assert_eq!(phone(&g).1, 1.0, "the button is lit, not dimmed");
+    key(&mut g, Key::Space);
+    key(&mut g, Key::Enter);
+    click(&mut g, Some((100.0, 500.0)));
+    g.start_skip(SkipMode::Toggled);
+    for _ in 0..5 {
+        g.tick(100.0, false);
+    }
+    assert!(matches!(g.state().pending, Some(Cmd::WaitHud)) && g.screen() == Screen::Story, "nothing passed it");
+    assert_eq!(g.hud_buttons(), ["phone"], "the keyboard reaches the button");
+    click(&mut g, ON_PHONE);
+    assert_eq!((said(&g).as_str(), calls(&g)), ("Ring.", 1));
+    key(&mut g, Key::Space);
+    assert!(matches!(g.state().pending, Some(Cmd::WaitHud)), "back at the wait");
+}

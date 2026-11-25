@@ -1427,6 +1427,7 @@ impl View {
                     self.imagemap = map.clone();
                 }
                 Cmd::Wait { seconds } => self.wait = Some(*seconds),
+                Cmd::WaitHud => self.dialogue = None, // no line while it waits; only a HUD button moves on
                 Cmd::WaitClick => {} // the screen stays as it is; a click is the only way on
                 Cmd::PlayVideo { src, fit, looped, skippable } => {
                     self.dialogue = None;

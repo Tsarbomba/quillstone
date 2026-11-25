@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use quillstone_runtime::{Cmd, Input, Session};
 use quillstone_script::markup::{annotated, plain};
 use quillstone_script::markup::MAX_PAUSE;
-use quillstone_script::{kind_from_path, AssetKind, Op, Place, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
+use quillstone_script::{kind_from_path, AssetKind, HudAction, Op, Place, ParticleKind, Particles, Program, TimingBar, INPUT_MAX_LIMIT, MAX_CHOICE_TIME, MAX_PARTICLES};
 
 mod graph;
 mod lang;
@@ -273,7 +273,7 @@ fn check(path: &Path) -> Result<(), String> {
     for (line, msg) in replay_warnings(&program) {
         found.push(warning(line, msg));
     }
-    for (line, msg) in call_region_warnings(&program) {
+    for (line, msg) in call_region_warnings(&program).into_iter().chain(hud_wait_warnings(&program)) {
         found.push(warning(line, msg));
     }
     if program.id.is_none() && program.title.is_none() {
@@ -342,6 +342,16 @@ fn replay_warnings(program: &Program) -> Vec<(usize, String)> {
         }
     }
     out
+}
+
+/// A `::wait{hud}` in a script with no `::hud` button that jumps or calls: nothing could ever end the wait.
+fn hud_wait_warnings(program: &Program) -> Vec<(usize, String)> {
+    let button = program.ops.iter().any(|op| matches!(op, Op::Hud { elem, .. } if matches!(elem.action, Some(HudAction::Call(_) | HudAction::Jump(_)))));
+    if button {
+        return Vec::new();
+    }
+    let waits = program.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::WaitHud));
+    waits.map(|(pc, _)| (program.lines[pc], "`::wait{hud}` waits for a HUD button, but no `::hud` in the script has `jump=` or `call=`".to_string())).collect()
 }
 
 /// `call` regions whose label can run back to their own screen without a `::return`: each click then adds
@@ -1402,6 +1412,7 @@ fn print_cmds(cmds: &[Cmd]) {
             Cmd::PlayVoice { src, .. } => println!("[voice: {src}]"),
             Cmd::Wait { seconds } => println!("[wait {seconds}s]"),
             Cmd::WaitClick => println!("[click to continue]"),
+            Cmd::WaitHud => println!("[waiting for a HUD button]"),
             Cmd::PlayVideo { src, .. } => println!("[video: {src}]"),
             Cmd::ShowChoices { options, locked } => {
                 println!();
@@ -1535,6 +1546,18 @@ mod tests {
         assert!(w.len() == 1 && w[0].1.contains("\"Door\"") && w[0].1.contains("::return"), "{w:?}");
         let good = parse(&format!("{front}# door\nA door.\n::return\n# bye\nBye.\n")).unwrap();
         assert!(call_region_warnings(&good).is_empty());
+    }
+
+    #[test]
+    fn check_warns_when_a_hud_wait_has_no_button_to_end_it() {
+        let bad = parse("# a
+::wait{hud}
+Bye.
+").unwrap();
+        assert_eq!(hud_wait_warnings(&bad).len(), 1);
+        let good = parse("# a
+::hud{id=s text=\"Status\" x=0.1 y=0.1 call=#st}\n::wait{hud}\n# st\nHi.\n::return\n").unwrap();
+        assert!(hud_wait_warnings(&good).is_empty(), "{:?}", hud_wait_warnings(&good));
     }
 
     /// A script in a fresh folder, with the files `(name, bytes)` beside it.

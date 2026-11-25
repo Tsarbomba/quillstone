@@ -61,6 +61,8 @@ mod use_tests;
 #[cfg(test)]
 mod hud_button_tests;
 #[cfg(test)]
+mod hud_wait_tests;
+#[cfg(test)]
 mod hotspot_call_tests;
 #[cfg(test)]
 mod page_tests;
@@ -215,6 +217,9 @@ pub enum Cmd {
     Wait { seconds: f32 },
     /// Stop until the player advances (`::wait{click}`): the screen stays as it is.
     WaitClick,
+    /// Stop until the player uses a HUD button (`::wait{hud}`): the screen stays as it is, no line is shown,
+    /// and [`Input::Advance`] does nothing.
+    WaitHud,
     /// Play a clip; send [`Input::Advance`] when it ends or the player skips it.
     PlayVideo { src: String, fit: Fit, looped: bool, skippable: bool },
     /// Show choices and wait for [`Input::Choose`]. Only the options currently
@@ -966,10 +971,10 @@ pub fn journal_items(program: &Program, vars: &Vars) -> Vec<(ItemInfo, bool)> {
     open.iter().filter(|id| !done.contains(id)).map(|id| entry(id, false)).chain(done.iter().map(|id| entry(id, true))).collect()
 }
 
-/// The story waits at a line the player advances (not a choice, `::wait`, `::input`, shop, `{nw}`
+/// The story waits at a line the player advances, or at a `::wait{hud}` (not a choice, `::wait`, `::input`, shop, `{nw}`
 /// line or video): the only place a Use or HUD button works.
 pub fn waits_at_line(state: &State) -> bool {
-    matches!(&state.pending, Some(Cmd::Say { .. })) && !moves_on_by_itself(&state.pending) && !state.finished
+    (matches!(&state.pending, Some(Cmd::Say { .. })) && !moves_on_by_itself(&state.pending) || matches!(&state.pending, Some(Cmd::WaitHud))) && !state.finished
 }
 
 /// A call that comes back to this same line, which is shown again. Passing the label's start
@@ -1174,6 +1179,7 @@ pub(crate) fn screen_matches(pending: &Cmd, op: &Op) -> bool {
         (Cmd::Say { .. }, Op::Say { .. })
             | (Cmd::Wait { .. }, Op::Wait { .. } | Op::FadeOut { .. })
             | (Cmd::WaitClick, Op::WaitClick)
+            | (Cmd::WaitHud, Op::WaitHud)
             | (Cmd::PlayVideo { .. }, Op::Video { .. })
             | (Cmd::ShowChoices { .. } | Cmd::ShowHotspots { .. }, Op::Choice { .. })
             | (Cmd::ShowInventory, Op::Inventory)
@@ -1473,13 +1479,13 @@ pub(crate) fn step_traced(
                 let Some(op @ Op::Shop { .. }) = program.ops.get(state.pc) else { return Vec::new() };
                 return show_screen(state, program, op, &mut Vec::new());
             }
-            (Cmd::Say { .. }, Some(Input::Use(id))) => {
+            (Cmd::Say { .. } | Cmd::WaitHud, Some(Input::Use(id))) => {
                 if !can_use(program, state, &id) {
                     return Vec::new();
                 }
                 call_from_line(state, program.labels[program.items[&id].use_label.as_ref().expect("checked by can_use")]);
             }
-            (Cmd::Say { .. }, Some(Input::Hud(id))) => {
+            (Cmd::Say { .. } | Cmd::WaitHud, Some(Input::Hud(id))) => {
                 if !can_press(program, state, &id) {
                     return Vec::new();
                 }
@@ -1492,7 +1498,7 @@ pub(crate) fn step_traced(
                     _ => return Vec::new(), // `Open` is the frontend's
                 }
             }
-            (Cmd::Say { .. }, Some(Input::Reply(id, i))) => {
+            (Cmd::Say { .. } | Cmd::WaitHud, Some(Input::Reply(id, i))) => {
                 if !can_reply(program, state, &id, i) {
                     return Vec::new();
                 }
@@ -1599,6 +1605,7 @@ pub(crate) fn step_traced(
                 return block(state, &mut out, Cmd::Wait { seconds: *seconds });
             }
             Op::WaitClick => return block(state, &mut out, Cmd::WaitClick),
+            Op::WaitHud => return block(state, &mut out, Cmd::WaitHud),
             Op::Choice { options, .. } => {
                 let visible = visible_options(options, &state.vars);
                 if !any_pickable(options, &visible, &state.vars) {

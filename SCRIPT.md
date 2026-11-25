@@ -1669,9 +1669,24 @@ check` tests it as a picture and `package` includes it.
   button simply lights up under the mouse.
 - `call=`, `jump=` and `open=` can't be combined.
 
-**When a button works.** Only while the story waits at a normal line (the same rule as an
-item's Use). Over a choice, a timed choice, `::input`, `::wait`, a shop, a `{nw}` line, a
+**When a button works.** Only while the story waits at a normal line or at a
+`::wait{hud}` (the same rule as an item's Use). Over a choice, a timed choice, `::input`, `::wait`, a shop, a `{nw}` line, a
 replay or while skipping, buttons are drawn dimmed and a press only says "Can't use that now".
+
+**Waiting for a HUD button.** `::wait{hud}` is for a hub the player leaves only through the HUD
+(a Status button, a phone or map button, a sandbox room). It takes no other attribute.
+
+- It stops the story. A click, Enter, Space, auto-forward and skip mode do **not** pass it, and the
+  text box is hidden while it waits. Esc, the quick menu, saving, loading and History work as at a line.
+- A `jump=` or `call=` button (also `open=`, and an item's Use) works while it waits. A `call=` button
+  returns to the same wait, which waits again; a `jump=` leaves it. A button whose `if=` is false
+  isn't shown, so it can't end the wait: keep one shown, or the player is stuck.
+- Keyboard and gamepad reach the buttons as at a line: Up / Down pick one, Enter or Space presses it.
+- Rollback can stop on it, and a save made there loads back into the wait.
+- `quillstone check` makes `::wait{hud}` with any other attribute an error, and warns when no `::hud`
+  has `jump=` or `call=`. `quillstone test` presses each such button that is shown at the wait (it
+  reports an error when none is, since the story can then never go on); `quillstone graph` shows
+  them under its "HUD" node as it does for any HUD button, not as an edge from the wait.
 
 **Clicking.**
 
@@ -1773,7 +1788,7 @@ vars: { who: "mika", name.mika: "Mika", name.ren: "Ren", l1.mika: "Likes tea.", 
 # start
 ::hud{id=status_btn text="Status" x=0.98 y=0.03 back=#00000099 pad=10 call=#status}
 Press Status.
-::end
+::wait{hud}
 
 # status
 ::hud{id=st_back box=#000000cc size=900,700 x=center y=center}
@@ -1797,7 +1812,8 @@ Press Status.
   draws nothing, so a character with fewer lines simply shows fewer.
 - `width=700` wraps a long line inside the box instead of letting it run on.
 - Naming every element of the panel `st_...` lets `::hud{hide=st_*}` close it in one line.
-- The story's line is still pending while the panel is up, so `::textbox{hide}` keeps it from covering the panel.
+- `::wait{hud}` keeps the story at the hub until the button is used (a click elsewhere does nothing);
+  `::textbox{hide}` keeps the text box from covering the panel.
 - `::return` goes back to the story, which shows the line it was on again (the box comes back with it).
 
 `examples/panel.quill.md` is a working one.
@@ -1818,6 +1834,7 @@ Press Status.
 | `::video{src=clip.webm fit=cover loop skippable}` | Fullscreen clip; waits until it ends or the player skips it. `fit`: `contain` (default), `cover`, `stretch`. A `loop` video is always `skippable` (it never ends by itself). |
 | `::wait{time=1.5}` | Pause (`time` above 0); a click skips it. |
 | `::wait{click}` | Stop with the screen as it is until the player clicks (or presses Enter or Space, or confirms on a gamepad). Auto-forward goes on after its delay, skip mode passes it, and rollback can stop on it. `quillstone run` waits for Enter. |
+| `::wait{hud}` | Stop until the player uses a HUD button with `jump=` or `call=`; see "Waiting for a HUD button" under HUD. |
 
 ### Auto-voice
 
@@ -3445,7 +3462,7 @@ Going back further simply stops there, and the backlog lists what that history h
 **Steps that move on by themselves.** Rollback goes past a timed `::wait`, the wait of a
 `::fade{out}`, a video and a line ending in `{nw}`. Roll forward is dropped when the state
 rolled back to is one of those, because there is nothing to come back to. A `::wait{click}` is
-a step like a line: rollback stops there.
+a step like a line: rollback stops there, as it does at a `::wait{hud}`.
 
 **Blocking rollback.** `::rollback{block}` (a command of its own, on its own line) stops the
 player going back past it, for a decision that should stay made or a fight that can't be

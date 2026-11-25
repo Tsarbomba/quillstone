@@ -1762,14 +1762,21 @@ impl Parser {
             }
             "wait" => {
                 let time = a.value("time");
-                let bare = if time.is_none() { a.take_bare().into_iter().next() } else { None };
+                let mut bares = if time.is_none() { a.take_bare() } else { Vec::new() };
+                if bares.len() > 1 {
+                    return Err("`::wait` takes one thing: `time=`, `click` or `hud`".into());
+                }
+                let bare = bares.pop();
                 if bare.as_deref() == Some("click") {
                     return Ok((Op::WaitClick, None));
+                }
+                if bare.as_deref() == Some("hud") {
+                    return Ok((Op::WaitHud, None));
                 }
                 let value = time.or(bare);
                 let seconds = match value.as_deref().map(str::parse::<f32>) {
                     Some(Ok(s)) if s.is_finite() && s > 0.0 => s,
-                    _ => return Err("`::wait` needs a positive number of seconds, like `::wait{time=1.5}`, or `click`".into()),
+                    _ => return Err("`::wait` needs a positive number of seconds, like `::wait{time=1.5}`, `click` or `hud`".into()),
                 };
                 Ok((Op::Wait { seconds }, None))
             }
@@ -4230,6 +4237,13 @@ mod tests {
         assert_eq!(p.ops[1], Op::Voice { src: "v1.ogg".into(), volume: 1.0 });
         assert_eq!(p.ops[2], Op::Wait { seconds: 1.5 });
         assert_eq!(p.ops[3], Op::Wait { seconds: 2.0 });
+    }
+
+    #[test]
+    fn wait_hud_is_its_own_op_and_takes_nothing_else() {
+        assert_eq!(ok("::wait{hud}\n").ops[0], Op::WaitHud);
+        assert!(parse("::wait{hud time=2}\n").is_err());
+        assert!(parse("::wait{hud click}\n").is_err());
     }
 
     #[test]
